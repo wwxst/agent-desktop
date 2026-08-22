@@ -1,0 +1,8 @@
+{
+  "name": "@agent-desktop/agent-loop",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

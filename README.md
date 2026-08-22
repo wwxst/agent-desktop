@@ -31,6 +31,10 @@ Electron desktop client   Electron 桌面客户端  在后续阶段提供本地�
 
 这些都属于未来方向，不代表当前已经实现。
 
+# Current Engineering Foundation（当前工程基础）
+
+项目已进入 TypeScript Monorepo Foundation（TypeScript 单仓库基础）阶段，采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前只建立工程骨架，不代表 Agent Runtime 已实现。
+
 # Development Philosophy（开发原则）
 
 1. 从最小可运行 Agent 开始。

@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/model" },
+    { "path": "./packages/session" },
+    { "path": "./packages/system-prompt" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/agent" },
+    { "path": "./packages/agent-loop" }
+  ]
+}
