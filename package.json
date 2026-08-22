@@ -2,7 +2,7 @@
   "name": "agent-desktop",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.19.0",
+  "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=24.0.0 <27"
   },
@@ -11,7 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "24.13.3",
     "typescript": "7.0.2",
     "vitest": "4.1.11"
   }

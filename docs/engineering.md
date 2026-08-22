@@ -4,11 +4,11 @@
 
 ## Runtime（运行时）
 
-Node.js 24 LTS 是正式运行时基线。Node.js 26 允许开发测试；Node.js 27 及以上版本暂不声明兼容。
+Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；Node.js 27 及以上版本暂不声明兼容。
 
 ## Package Manager（包管理器）
 
-项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.x，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。
+项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。
 
 ## Language（开发语言）
 
@@ -99,7 +99,7 @@ Project References 使用 `composite`。根 `pnpm typecheck` 通过 `tsc -b` 验
 Dependency       Version   用途
 typescript       7.0.2     TypeScript 编译器和 Project References
 vitest           4.1.11    测试运行器
-@types/node      24.x      Node.js 类型声明
+@types/node      24.13.3   Node.js 类型声明
 ```
 
 不引入 ESLint、Prettier、bundler、Electron、React、模型供应商 SDK、Tool schema library 或 Agent Framework。
