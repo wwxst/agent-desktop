@@ -14,13 +14,13 @@ testing                         测试            记录测试策略、验证方
 development guides              开发指南        记录本地开发、验证和协作流程。
 ```
 
-### mvp.md
+### [mvp.md](mvp.md)
 
 MVP 规格
 
 定义当前最小可运行目标、Echo 场景、范围、非目标和验收条件。
 
-### architecture.md
+### [architecture.md](architecture.md)
 
 架构规格
 

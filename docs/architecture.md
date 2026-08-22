@@ -9,35 +9,25 @@
                     用户
                      │
                      ▼
-                ┌─────────┐
-                │  Agent  │
-                │  智能体  │
-                └────┬────┘
-                     │
-                     ▼
-              ┌─────────────┐
-              │ Agent Loop  │
-              │  智能体循环  │
-              └──────┬──────┘
-                     │
-          ┌──────────┼──────────┐
-          │          │          │
-          ▼          ▼          ▼
-       Session      Model      Tools
-        会话         模型        工具
-          │          │          │
-          │          │          ▼
-          │          │    Tool Registry
-          │          │      工具注册表
-          │          │
-          └──────────┼──────────┘
-                     │
-                     ▼
-               System Prompt
-                 系统提示词
+                ┌─────────────┐
+                │    Agent    │
+                │    智能体    │
+                ├─────────────┤
+                │ Model       │
+                │ Session     │
+                │ Tool Registry ─────► Tools
+                │ System Prompt │       工具集合
+                └──────┬──────┘
+                       ▲
+                       │ operates on
+                       │ 操作 Agent
+                ┌──────┴──────┐
+                │ Agent Loop  │
+                │  智能体循环  │
+                └─────────────┘
 ```
 
-核心关系可以概括为：Agent 持有一次运行中的实例状态，Agent Loop 驱动执行算法；Loop 使用 Model、Session、Tool Registry 和 System Prompt 完成一个或多个 Step。
+核心关系可以概括为：Agent 持有 Model、Session、Tool Registry 和 System Prompt；Agent Loop 通过 Agent 使用这些能力；Tool Registry 管理当前 Agent 可以调用的 Tools。
 
 ## Core Concepts（核心概念）
 
@@ -279,31 +269,42 @@ Build Model Input
 Call Model
   │
   ▼
-Has Tool Call?
+Model Response
   │
-  ├── NO ───────────────► Complete Step
-  │                         │
-  │                         ▼
-  │                     Complete Turn
-  │                         │
-  │                         ▼
-  │                        END
-  │
-  └── YES
-        │
-        ▼
-   Execute Tool
-        │
-        ▼
- Append Tool Result
-        │
-        ▼
- Complete Step
-        │
-        └────────────► Next Step
+   ▼
+Has Tool Calls?
+   │
+   ├── NO ───────────────► Complete Step
+   │                         │
+   │                         ▼
+   │                     Complete Turn
+   │                         │
+   │                         ▼
+   │                        END
+   │
+   └── YES
+         │
+         ▼
+   Begin ordered Tool Calls
+   同一 Step 内按顺序开始
+         │
+         ▼
+    Execute next Tool
+         │
+         ▼
+   Append Tool Result
+         │
+         ▼
+   More Tool Calls?
+         │
+         ├── YES ─────────► Execute next Tool
+         │
+         └── NO ──────────► Complete Step
+                              │
+                              └────────────► Next Step
 ```
 
-多个 Tool Call 在 MVP 中按顺序执行，不引入并行 Tool execution（工具并行执行）。每次 Model 返回 Tool Call 后，Loop 追加对应事件，执行 Tool，追加 Tool Result，完成当前 Step，再开始下一 Step。
+一次 Model Response 可以包含多个 Tool Call。MVP 中这些 Tool Calls 属于同一个 Step，并按顺序执行；只有所有 Tool Results 都记录完成后，才完成当前 Step 并进入下一 Step。不引入并行 Tool execution（工具并行执行）。
 
 ## Dependency Rules（依赖规则）
 
