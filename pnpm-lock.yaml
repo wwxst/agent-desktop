@@ -18,17 +18,38 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3))
 
-  packages/agent: {}
+  packages/agent:
+    dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
+      '@agent-desktop/session':
+        specifier: workspace:*
+        version: link:../session
+      '@agent-desktop/system-prompt':
+        specifier: workspace:*
+        version: link:../system-prompt
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../tools
 
   packages/agent-loop: {}
 
   packages/model: {}
 
-  packages/session: {}
+  packages/session:
+    dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
 
   packages/system-prompt: {}
 
-  packages/tools: {}
+  packages/tools:
+    dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
 
 packages:
 

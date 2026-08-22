@@ -2,6 +2,12 @@
   "name": "@agent-desktop/agent",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@agent-desktop/model": "workspace:*",
+    "@agent-desktop/session": "workspace:*",
+    "@agent-desktop/system-prompt": "workspace:*",
+    "@agent-desktop/tools": "workspace:*"
+  },
   "exports": {
     ".": "./src/index.ts"
   }

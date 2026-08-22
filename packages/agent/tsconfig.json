@@ -4,5 +4,11 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src"]
+  "include": ["src"],
+  "references": [
+    { "path": "../model" },
+    { "path": "../session" },
+    { "path": "../system-prompt" },
+    { "path": "../tools" }
+  ]
 }

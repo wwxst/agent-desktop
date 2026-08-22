@@ -2,6 +2,9 @@
   "name": "@agent-desktop/tools",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@agent-desktop/model": "workspace:*"
+  },
   "exports": {
     ".": "./src/index.ts"
   }
