@@ -8,6 +8,7 @@ import {
   ConcatVideosTool,
   CropVideoTool,
   ExtractVideoFramesTool,
+  ExtractVideoRangeFramesTool,
   ProbeMediaTool,
   ResizeVideoTool,
   SetSpeedTool,
@@ -34,10 +35,11 @@ describe('FFmpeg video tools', () => {
       .rejects.toThrow('agent-desktop-command-that-does-not-exist not found in PATH');
   });
 
-  it('exposes the nine model-visible Tool definitions', () => {
+  it('exposes the ten model-visible Tool definitions', () => {
     const tools = [
       new ProbeMediaTool(unusedExecutor),
       new ExtractVideoFramesTool(unusedExecutor),
+      new ExtractVideoRangeFramesTool(unusedExecutor),
       new TrimVideoTool(unusedExecutor),
       new ConcatVideosTool(unusedExecutor),
       new AddAudioTool(unusedExecutor),
@@ -50,6 +52,7 @@ describe('FFmpeg video tools', () => {
     expect(tools.map(({ name }) => name)).toEqual([
       'probe_media',
       'extract_video_frames',
+      'extract_video_range_frames',
       'trim_video',
       'concat_videos',
       'add_audio',
@@ -143,6 +146,128 @@ describe('FFmpeg video tools', () => {
     await expect(tool.execute({ videoPath: 'broken.mp4', outputDir: 'frames' })).resolves.toEqual({
       status: 'error',
       message: 'ffprobe failed: broken input',
+    });
+  });
+
+  it('defines extract_video_range_frames with absolute range inputs', () => {
+    const tool = new ExtractVideoRangeFramesTool(unusedExecutor);
+
+    expect(tool.name).toBe('extract_video_range_frames');
+    expect(tool.inputSchema).toMatchObject({
+      required: ['videoPath', 'outputDir', 'start', 'end'],
+      properties: {
+        videoPath: { type: 'string' },
+        outputDir: { type: 'string' },
+        start: { type: 'number', minimum: 0 },
+        end: { type: 'number' },
+      },
+    });
+  });
+
+  it('validates range frame inputs before starting FFmpeg', async () => {
+    const executeCommand = vi.fn<CommandExecutor>();
+    const tool = new ExtractVideoRangeFramesTool(executeCommand);
+
+    await expect(tool.execute({
+      videoPath: 42,
+      outputDir: 'frames',
+      start: 10,
+      end: 20,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'extract_video_range_frames requires videoPath and outputDir to be strings',
+    });
+    await expect(tool.execute({
+      videoPath: 'input.mp4',
+      outputDir: 'frames',
+      start: -1,
+      end: 20,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'extract_video_range_frames requires finite start >= 0 and end > start',
+    });
+    await expect(tool.execute({
+      videoPath: 'input.mp4',
+      outputDir: 'frames',
+      start: 10,
+      end: 10,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'extract_video_range_frames requires finite start >= 0 and end > start',
+    });
+    await expect(tool.execute({
+      videoPath: 'input.mp4',
+      outputDir: 'frames',
+      start: Number.NaN,
+      end: Number.POSITIVE_INFINITY,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'extract_video_range_frames requires finite start >= 0 and end > start',
+    });
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('extracts six range frames using absolute video timestamps', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'agent-desktop-range-frame-test-'));
+    try {
+      const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
+      const tool = new ExtractVideoRangeFramesTool(executeCommand);
+      const timestamps = [12, 14, 16, 18, 20, 22];
+
+      await expect(tool.execute({
+        videoPath: 'input.mp4',
+        outputDir,
+        start: 10,
+        end: 24,
+      })).resolves.toEqual({
+        status: 'success',
+        output: {
+          start: 10,
+          end: 24,
+          frames: timestamps.map((timestamp, index) => ({
+            timestamp,
+            path: join(outputDir, `frame-${String(index + 1).padStart(3, '0')}.jpg`),
+          })),
+        },
+      });
+
+      for (const [index, timestamp] of timestamps.entries()) {
+        expect(executeCommand).toHaveBeenNthCalledWith(index + 1, 'ffmpeg', [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-ss',
+          String(timestamp),
+          '-i',
+          'input.mp4',
+          '-frames:v',
+          '1',
+          '-vf',
+          "scale='min(640,iw)':-2",
+          '-q:v',
+          '2',
+          join(outputDir, `frame-${String(index + 1).padStart(3, '0')}.jpg`),
+        ]);
+      }
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns range extraction command errors as Tool results', async () => {
+    const executeCommand: CommandExecutor = async () => {
+      throw new Error('ffmpeg failed: cannot seek range');
+    };
+
+    await expect(new ExtractVideoRangeFramesTool(executeCommand).execute({
+      videoPath: 'input.mp4',
+      outputDir: 'frames',
+      start: 10,
+      end: 20,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'ffmpeg failed: cannot seek range',
     });
   });
 

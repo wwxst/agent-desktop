@@ -196,6 +196,44 @@ export interface ExtractVideoFramesOutput {
 }
 
 /**
+ * 按原视频绝对时间抽取 JPG；整段粗看和局部放大只负责各自计算 timestamp[]。
+ * 复用这一小段命令拼装可以保证两种检查能力使用相同的尺寸、质量和文件命名规则。
+ */
+async function extractFramesAtTimestamps(
+  executeCommand: CommandExecutor,
+  videoPath: string,
+  outputDir: string,
+  timestamps: readonly number[],
+): Promise<ExtractedVideoFrame[]> {
+  await mkdir(outputDir, { recursive: true });
+  const frames: ExtractedVideoFrame[] = [];
+
+  for (const [index, timestamp] of timestamps.entries()) {
+    const framePath = join(outputDir, `frame-${String(index + 1).padStart(3, '0')}.jpg`);
+    await executeCommand('ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-ss',
+      String(timestamp),
+      '-i',
+      videoPath,
+      '-frames:v',
+      '1',
+      '-vf',
+      "scale='min(640,iw)':-2",
+      '-q:v',
+      '2',
+      framePath,
+    ]);
+    frames.push({ timestamp, path: framePath });
+  }
+
+  return frames;
+}
+
+/**
  * 从视频中抽取六张代表性 JPG，给视觉 Tool 提供轻量的时间点和图片路径。
  * 图片留在调用方指定的目录，方便后续视觉分析和人工检查；本 Tool 不负责生命周期清理。
  */
@@ -226,34 +264,95 @@ export class ExtractVideoFramesTool implements Tool {
 
     try {
       const duration = await probeDuration(this.executeCommand, input.videoPath);
-      await mkdir(input.outputDir, { recursive: true });
-      const frames: ExtractedVideoFrame[] = [];
-
       // 使用 1/7 到 6/7 的时间点，避开容易出现黑屏或片尾的首尾帧。
-      for (let index = 1; index <= 6; index += 1) {
-        const timestamp = (duration * index) / 7;
-        const framePath = join(input.outputDir, `frame-${String(index).padStart(3, '0')}.jpg`);
-        await this.executeCommand('ffmpeg', [
-          '-y',
-          '-hide_banner',
-          '-loglevel',
-          'error',
-          '-ss',
-          String(timestamp),
-          '-i',
-          input.videoPath,
-          '-frames:v',
-          '1',
-          '-vf',
-          "scale='min(640,iw)':-2",
-          '-q:v',
-          '2',
-          framePath,
-        ]);
-        frames.push({ timestamp, path: framePath });
-      }
+      const timestamps = [1, 2, 3, 4, 5, 6].map((index) => (duration * index) / 7);
+      const frames = await extractFramesAtTimestamps(
+        this.executeCommand,
+        input.videoPath,
+        input.outputDir,
+        timestamps,
+      );
 
       return { status: 'success', output: { duration, frames } satisfies ExtractVideoFramesOutput };
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
+export interface ExtractVideoRangeFramesOutput {
+  readonly start: number;
+  readonly end: number;
+  readonly frames: readonly ExtractedVideoFrame[];
+}
+
+/**
+ * 在指定时间范围内部固定抽取六帧，作为整段六帧粗看之后的局部放大检查。
+ * timestamp 保持原视频绝对时间，让 DeepSeek 可以直接据此选择 trim_video 的时间参数。
+ */
+export class ExtractVideoRangeFramesTool implements Tool {
+  readonly name = 'extract_video_range_frames';
+  readonly description = '在指定原视频时间范围内均匀抽取六帧，用于进一步确认内容变化和近似剪切边界';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      videoPath: { type: 'string' },
+      outputDir: { type: 'string' },
+      start: { type: 'number', minimum: 0 },
+      end: { type: 'number' },
+    },
+    required: ['videoPath', 'outputDir', 'start', 'end'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolExecutionResult> {
+    if (!isRecord(input)
+      || typeof input.videoPath !== 'string'
+      || typeof input.outputDir !== 'string') {
+      return {
+        status: 'error',
+        message: 'extract_video_range_frames requires videoPath and outputDir to be strings',
+      };
+    }
+
+    if (typeof input.start !== 'number'
+      || !Number.isFinite(input.start)
+      || input.start < 0
+      || typeof input.end !== 'number'
+      || !Number.isFinite(input.end)
+      || input.end <= input.start) {
+      return {
+        status: 'error',
+        message: 'extract_video_range_frames requires finite start >= 0 and end > start',
+      };
+    }
+
+    try {
+      // 对象属性进入回调后不会保持类型收窄；局部常量固定已验证的数值边界。
+      const start = input.start;
+      const end = input.end;
+      const rangeDuration = end - start;
+      // 仍取六帧并避开范围首尾；加上 start 后得到可直接用于剪辑决策的绝对时间。
+      const timestamps = [1, 2, 3, 4, 5, 6].map((index) => (
+        start + (rangeDuration * index) / 7
+      ));
+      const frames = await extractFramesAtTimestamps(
+        this.executeCommand,
+        input.videoPath,
+        input.outputDir,
+        timestamps,
+      );
+
+      return {
+        status: 'success',
+        output: {
+          start,
+          end,
+          frames,
+        } satisfies ExtractVideoRangeFramesOutput,
+      };
     } catch (error) {
       return errorResult(error);
     }

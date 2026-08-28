@@ -4,9 +4,9 @@
 
 # Current Phase（当前阶段）
 
-Visual Media Inspection MVP（视频视觉理解最小可行版本）已完成。
+Content-aware Editing Decision MVP（基于内容的剪辑决策最小可行版本）已完成。
 
-当前 Agent 已能通过 FFmpeg 抽取视频画面，使用视觉模型分析画面，并将结果返回给 DeepSeek 继续推理。
+当前 Agent 已能根据视频视觉分析结果，进一步检查局部时间范围，并自主决定保留/删除片段后使用 FFmpeg 生成新视频。
 
 下一阶段尚未开始。
 
