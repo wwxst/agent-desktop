@@ -64,7 +64,7 @@ Core package 不依赖具体模型厂商 SDK。
 具体 Tool implementation 未来不能侵入 Agent Loop。
 ```
 
-Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`；`agent-loop` 仍保持零内部运行时依赖。
+Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 

@@ -33,7 +33,17 @@ importers:
         specifier: workspace:*
         version: link:../tools
 
-  packages/agent-loop: {}
+  packages/agent-loop:
+    dependencies:
+      '@agent-desktop/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
+      '@agent-desktop/session':
+        specifier: workspace:*
+        version: link:../session
 
   packages/model: {}
 

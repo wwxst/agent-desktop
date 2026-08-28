@@ -2,6 +2,11 @@
   "name": "@agent-desktop/agent-loop",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@agent-desktop/agent": "workspace:*",
+    "@agent-desktop/model": "workspace:*",
+    "@agent-desktop/session": "workspace:*"
+  },
   "exports": {
     ".": "./src/index.ts"
   }
