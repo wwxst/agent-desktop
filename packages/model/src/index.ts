@@ -1,6 +1,3 @@
-export type AgentId = string & { readonly __brand: 'AgentId' };
-export type TurnId = string & { readonly __brand: 'TurnId' };
-export type StepId = string & { readonly __brand: 'StepId' };
 export type ToolCallId = string & { readonly __brand: 'ToolCallId' };
 
 /** Provider-neutral description of a tool visible to a model. */
@@ -17,7 +14,6 @@ export interface ToolCall {
 }
 
 export type ModelMessage =
-  | { readonly role: 'system'; readonly content: string }
   | { readonly role: 'user'; readonly content: string }
   | { readonly role: 'assistant'; readonly content?: string; readonly toolCalls: readonly ToolCall[] }
   | { readonly role: 'tool'; readonly toolCallId: ToolCallId; readonly content: string };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { InMemorySession, type SessionEvent, type StepId, type ToolCallId, type TurnId } from '@agent-desktop/session';
+import type { ToolCall, ToolCallId } from '@agent-desktop/model';
+import { InMemorySession, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 
 const turnId = 'turn-1' as TurnId;
 const stepId = 'step-1' as StepId;
@@ -37,5 +38,17 @@ describe('InMemorySession', () => {
 
     expect(success.result.status).toBe('success');
     expect(failure.result.status).toBe('error');
+  });
+
+  it('records the model ToolCall contract without redefining it', () => {
+    const toolCall: ToolCall = { id: toolCallId, name: 'echo', input: 'hello' };
+    const event: SessionEvent = {
+      type: 'assistant.message',
+      turnId,
+      stepId,
+      toolCalls: [toolCall],
+    };
+
+    expect(event.toolCalls).toEqual([toolCall]);
   });
 });

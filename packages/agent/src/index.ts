@@ -1,9 +1,9 @@
-import type { AgentId, Model } from '@agent-desktop/model';
+import type { Model } from '@agent-desktop/model';
 import type { Session } from '@agent-desktop/session';
 import type { SystemPrompt } from '@agent-desktop/system-prompt';
 import type { ToolRegistry } from '@agent-desktop/tools';
 
-export type { AgentId };
+export type AgentId = string & { readonly __brand: 'AgentId' };
 
 /** Runtime identity and dependency container; execution belongs to Agent Loop. */
 export interface Agent {
