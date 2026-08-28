@@ -89,7 +89,7 @@ Project References 使用 `composite`。根 `pnpm typecheck` 通过 `tsc -b` 验
 
 ## Test Runner（测试框架）
 
-项目使用 Vitest 4.1.11。当前没有 Runtime 行为，因此不创建没有价值的 fake test（伪测试）；`pnpm test` 使用 `--passWithNoTests` 验证测试基础设施可以在零测试阶段正常运行。
+项目使用 Vitest 4.1.11。当前已有 Agent Runtime 行为测试，`pnpm test` 运行现有测试套件。
 
 ## Dependencies（依赖）
 

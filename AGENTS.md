@@ -4,9 +4,9 @@
 
 # Current Phase（当前阶段）
 
-当前阶段为 Bootstrap（仓库初始化）。
+当前已完成 Minimal Agent Loop（最小 Agent 循环）。
 
-本阶段没有 Agent Runtime。
+下一阶段为 Runnable Echo Agent（可运行的 Echo Agent）。
 
 # Engineering Rules（工程规则）
 
