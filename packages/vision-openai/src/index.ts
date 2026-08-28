@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Tool, ToolExecutionResult } from '@agent-desktop/tools';
 
-const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
+const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const VISION_MODEL = 'gpt-5.6-luna';
 
 export interface AnalyzeImageInput {
@@ -25,6 +25,7 @@ export interface VisualAnalysis {
 
 export interface AnalyzeImagesToolOptions {
   readonly apiKey: string;
+  readonly baseUrl?: string;
 }
 
 const VISUAL_ANALYSIS_SCHEMA = {
@@ -140,9 +141,12 @@ export class AnalyzeImagesTool implements Tool {
   };
 
   private readonly apiKey: string;
+  private readonly baseUrl: string;
 
   public constructor(options: AnalyzeImagesToolOptions) {
     this.apiKey = options.apiKey;
+    // 统一去掉末尾斜线，让官方地址与 OpenAI-compatible 中转站使用同一拼接规则。
+    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   }
 
   async execute(input: unknown): Promise<ToolExecutionResult> {
@@ -177,7 +181,7 @@ export class AnalyzeImagesTool implements Tool {
         });
       }
 
-      const response = await fetch(OPENAI_RESPONSES_URL, {
+      const response = await fetch(`${this.baseUrl}/responses`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey}`,

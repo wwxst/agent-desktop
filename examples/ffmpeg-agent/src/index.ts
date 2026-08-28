@@ -40,11 +40,19 @@ function printTurnEvents(events: readonly SessionEvent[]): void {
 }
 
 /** CLI 只负责组装依赖；所有 Model、Tool、Result 控制流继续由 runTurn 驱动。 */
-async function runCli(apiKey: string, visionApiKey: string): Promise<void> {
+async function runCli(
+  apiKey: string,
+  visionApiKey: string,
+  visionBaseUrl?: string,
+): Promise<void> {
   const tools = new InMemoryToolRegistry();
   tools.register(new ProbeMediaTool());
   tools.register(new ExtractVideoFramesTool());
-  tools.register(new AnalyzeImagesTool({ apiKey: visionApiKey }));
+  tools.register(new AnalyzeImagesTool(
+    visionBaseUrl === undefined
+      ? { apiKey: visionApiKey }
+      : { apiKey: visionApiKey, baseUrl: visionBaseUrl },
+  ));
   tools.register(new TrimVideoTool());
   tools.register(new ConcatVideosTool());
   tools.register(new AddAudioTool());
@@ -108,7 +116,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runCli(apiKey, process.env.OPENAI_API_KEY ?? '');
+  await runCli(
+    apiKey,
+    process.env.OPENAI_API_KEY ?? '',
+    process.env.OPENAI_BASE_URL,
+  );
 }
 
 void main().catch((error: unknown) => {

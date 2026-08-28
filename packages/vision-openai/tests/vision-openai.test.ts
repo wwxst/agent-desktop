@@ -87,6 +87,35 @@ describe('AnalyzeImagesTool', () => {
     }
   });
 
+  it('uses a configured OpenAI-compatible base URL', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-base-url-'));
+    const imagePath = join(directory, 'frame.jpg');
+    await writeFile(imagePath, Buffer.from([0xff, 0xd8]));
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: JSON.stringify(analysis) }],
+      }],
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const tool = new AnalyzeImagesTool({
+        apiKey: 'relay-key',
+        baseUrl: 'http://relay.example/v1/',
+      });
+
+      await tool.execute({ images: [{ path: imagePath, timestamp: 1 }] });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://relay.example/v1/responses',
+        expect.any(Object),
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('validates image count and image entries before reading files', async () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal('fetch', fetchMock);
