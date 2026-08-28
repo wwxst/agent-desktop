@@ -4,11 +4,17 @@
 
 # Current Phase（当前阶段）
 
-Content-aware Editing Decision MVP（基于内容的剪辑决策最小可行版本）已完成。
+v0.0.2 Video Agent MVP 已完成并通过 Review。
 
-当前 Agent 已能根据视频视觉分析结果，进一步检查局部时间范围，并自主决定保留/删除片段后使用 FFmpeg 生成新视频。
+当前 Agent 已具备：
+- 真实 DeepSeek 推理
+- FFmpeg 多步骤视频处理
+- 视频抽帧与视觉理解
+- 局部时间范围检查
+- 基于视觉内容自主决定保留/删除片段
+- 使用 trim + concat 生成最终视频
 
-下一阶段尚未开始。
+当前暂未进入下一开发阶段。
 
 # Engineering Rules（工程规则）
 
