@@ -8,7 +8,15 @@
 
 当前优先级是建立正确的 Agent Runtime 基础，而不是追求功能数量或 UI 完成度。
 
-当前提交只完成仓库初始化和文档治理基础，不包含 Agent Runtime 实现。
+当前已经完成：
+
+```text
+English term                    中文术语             介绍
+Core Interfaces                 核心接口             定义 Model、Session、Tool、System Prompt 和 Agent 边界。
+Minimal Agent Loop              最小 Agent 循环      跑通 Model、Tool、Result、Model 的执行闭环。
+Runnable Echo Agent             可运行 Echo Agent    从终端组装并运行第一个完整 Agent 示例。
+DeterministicEchoModel          确定性 Echo 模拟模型  只验证 Runtime，不调用真实 LLM API，也不进行大模型推理。
+```
 
 # Long-term Direction（长期方向）
 
@@ -33,7 +41,16 @@ Electron desktop client   Electron 桌面客户端  在后续阶段提供本地�
 
 # Current Engineering Foundation（当前工程基础）
 
-项目已进入 TypeScript Monorepo Foundation（TypeScript 单仓库基础）阶段，采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前只建立工程骨架，不代表 Agent Runtime 已实现。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop 和可运行 Echo Agent。
+
+# Run Echo Agent（运行 Echo Agent）
+
+```bash
+pnpm install
+pnpm echo-agent
+```
+
+输入 `/exit` 退出。Echo Agent 使用上述确定性模拟模型，不调用真实 LLM API。
 
 # Development Philosophy（开发原则）
 

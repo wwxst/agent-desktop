@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"],
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/model" },
+    { "path": "../../packages/session" },
+    { "path": "../../packages/system-prompt" },
+    { "path": "../../packages/tools" },
+    { "path": "../../packages/agent" },
+    { "path": "../../packages/agent-loop" }
+  ]
+}

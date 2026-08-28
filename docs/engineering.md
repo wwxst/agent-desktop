@@ -8,7 +8,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ## Package Manager（包管理器）
 
-项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。
+项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*` 和 `examples/*`。
 
 ## Language（开发语言）
 
@@ -20,7 +20,15 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ## Package Layout（包布局）
 
-当前 package 使用以下结构：
+目录职责如下：
+
+```text
+Directory   中文名称       职责
+packages/   核心模块目录   保存正式 Agent Core 模块
+examples/   可运行示例目录 保存消费 Core 公共 API 的示例，不属于 Agent Core
+```
+
+核心 package 使用以下结构：
 
 ```text
 packages/<package-name>/
@@ -29,6 +37,19 @@ packages/<package-name>/
 ├── src/
 │   └── index.ts
 └── tests/
+```
+
+Echo Agent 示例使用以下结构：
+
+```text
+examples/echo-agent/
+├── package.json
+├── tsconfig.json
+├── src/
+│   ├── echo.ts
+│   └── index.ts
+└── tests/
+    └── echo-agent.test.ts
 ```
 
 `tests/` 只有在真正有测试时才创建，不为了目录完整创建空目录。
@@ -44,13 +65,14 @@ packages/<package-name>/
 @agent-desktop/tools          工具包
 @agent-desktop/agent          智能体包
 @agent-desktop/agent-loop     智能体循环包
+@agent-desktop/example-echo-agent  Echo Agent 示例
 ```
 
-每个 package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/example-echo-agent` 同样是 private ESM package，但它是可运行示例，不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
-源码只放在 `src/`，测试只放在 `tests/`，不要把测试混入 `src/`。每个 package 使用 Project References（项目引用）接入根 `tsconfig.json`。
+源码只放在 `src/`，测试只放在 `tests/`，不要把测试混入 `src/`。每个 workspace project 使用 Project References（项目引用）接入根 `tsconfig.json`。
 
 ## Dependency Rules（依赖规则）
 
@@ -62,6 +84,7 @@ Core package 不依赖 Electron。
 Core package 不依赖 React。
 Core package 不依赖具体模型厂商 SDK。
 具体 Tool implementation 未来不能侵入 Agent Loop。
+examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 ```
 
 Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。
@@ -70,7 +93,7 @@ package 依赖必须反映当前真实源码引用，不能因为以后可能需
 
 ## TypeScript Configuration（TypeScript 配置）
 
-根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []` 和六个 Project References，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
+根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []`、六个 Core Project References 和一个 Echo Agent example Project Reference，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
 
 `tsconfig.base.json` 保持 strict（严格模式）并启用当前有明确收益的选项：
 
