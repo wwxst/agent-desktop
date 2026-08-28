@@ -8,8 +8,12 @@ import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
 import {
   AddAudioTool,
+  AddSubtitlesTool,
   ConcatVideosTool,
+  CropVideoTool,
   ProbeMediaTool,
+  ResizeVideoTool,
+  SetSpeedTool,
   TrimVideoTool,
 } from '@agent-desktop/video-ffmpeg';
 
@@ -40,6 +44,10 @@ async function runCli(apiKey: string): Promise<void> {
   tools.register(new TrimVideoTool());
   tools.register(new ConcatVideosTool());
   tools.register(new AddAudioTool());
+  tools.register(new AddSubtitlesTool());
+  tools.register(new ResizeVideoTool());
+  tools.register(new CropVideoTool());
+  tools.register(new SetSpeedTool());
 
   const agent = createAgent({
     id: 'ffmpeg-agent' as AgentId,
@@ -48,7 +56,7 @@ async function runCli(apiKey: string): Promise<void> {
     tools,
     systemPrompt: new StaticSystemPrompt([
       '你是一个视频处理 Agent。',
-      '需要读取视频信息、裁剪、拼接或添加音频时，使用提供的 FFmpeg tools。',
+      '需要读取视频信息、裁剪时间、拼接、替换音频、添加字幕、调整分辨率、裁剪画面或改变播放速度时，使用提供的 FFmpeg tools。',
       '不要声称已经处理文件，除非 Tool 实际执行成功。',
     ].join('\n')),
   });

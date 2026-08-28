@@ -17,7 +17,7 @@ Minimal Agent Loop              最小 Agent 循环          跑通 Model、Tool
 Runnable Echo Agent             可运行 Echo Agent        从终端组装并运行第一个完整 Agent 示例。
 DeterministicEchoModel          确定性 Echo 模拟模型     只验证 Runtime，不调用真实 LLM API，也不进行大模型推理。
 DeepSeek Real Model Provider    DeepSeek 真实模型适配器  通过原生 fetch 接入真实 DeepSeek Chat Completions API。
-FFmpeg Video Capability         FFmpeg 视频能力          通过本机 FFmpeg 提供探测、裁剪、拼接和音频替换工具。
+FFmpeg Basic Video Editing      FFmpeg 基础视频编辑      通过本机 FFmpeg 提供八个基础视频处理工具。
 ```
 
 # Long-term Direction（长期方向）
@@ -43,7 +43,7 @@ Electron desktop client   Electron 桌面客户端  在后续阶段提供本地�
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器和 FFmpeg 视频能力。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器和 FFmpeg 基础视频编辑能力。
 
 # Run Agents（运行 Agent）
 
@@ -68,6 +68,8 @@ pnpm deepseek-agent
 ```
 
 运行 FFmpeg Agent 前，需要本机安装 `ffmpeg` 和 `ffprobe` 并加入 `PATH`：
+
+当前支持媒体探测、裁剪时间、视频拼接、替换音频、烧录 SRT 字幕、调整分辨率、裁剪画面和视频变速。
 
 ```bash
 pnpm ffmpeg-agent

@@ -89,6 +89,20 @@ function concatFileLine(inputPath: string): string {
   return `file '${escapedPath}'`;
 }
 
+/**
+ * subtitles 的 filename 位于 FFmpeg Filtergraph 内部，必须转义 filter 分隔符。
+ * execFile 已经绕过 shell，因此这里不是 Shell 转义，也不处理命令拼接。
+ */
+function subtitleFilter(subtitlePath: string): string {
+  const normalizedPath = subtitlePath.replace(/\\/g, '/');
+  // 单引号会经过 Filtergraph 和 filename option 两层解析，因此需要关闭引号后保留三层反斜杠。
+  const escapedSingleQuote = "'" + '\\'.repeat(3) + "''";
+  const escapedPath = normalizedPath
+    .replace(/([:,\[\];=])/g, '\\$1')
+    .replace(/'/g, escapedSingleQuote);
+  return `subtitles=filename='${escapedPath}'`;
+}
+
 /** 只读取当前公共输出需要的 format 和首个音视频流字段。 */
 function parseMediaInfo(stdout: string): MediaInfo {
   let payload: unknown;
@@ -345,6 +359,311 @@ export class AddAudioTool implements Tool {
         '-shortest',
         input.outputPath,
       ]);
+      return videoCreated(input.outputPath);
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
+/** 使用 FFmpeg subtitles filter 把外部 SRT 字幕永久烧录进视频画面。 */
+export class AddSubtitlesTool implements Tool {
+  readonly name = 'add_subtitles';
+  readonly description = '将外部 SRT 字幕烧录到视频画面中';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      videoPath: { type: 'string' },
+      subtitlePath: { type: 'string' },
+      outputPath: { type: 'string' },
+    },
+    required: ['videoPath', 'subtitlePath', 'outputPath'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolExecutionResult> {
+    if (!isRecord(input)
+      || typeof input.videoPath !== 'string'
+      || typeof input.subtitlePath !== 'string'
+      || typeof input.outputPath !== 'string') {
+      return {
+        status: 'error',
+        message: 'add_subtitles requires videoPath, subtitlePath, and outputPath to be strings',
+      };
+    }
+
+    if (!input.subtitlePath.toLowerCase().endsWith('.srt')) {
+      return { status: 'error', message: 'add_subtitles only supports .srt subtitle files' };
+    }
+
+    try {
+      await this.executeCommand('ffmpeg', [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        input.videoPath,
+        '-vf',
+        subtitleFilter(input.subtitlePath),
+        '-map',
+        '0:v:0',
+        '-map',
+        '0:a?',
+        '-c:v',
+        'libx264',
+        '-c:a',
+        'copy',
+        input.outputPath,
+      ]);
+      return videoCreated(input.outputPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/No such filter:\s*['"]?subtitles/i.test(message)) {
+        return { status: 'error', message: 'FFmpeg subtitles filter is not available' };
+      }
+      return errorResult(error);
+    }
+  }
+}
+
+/** scale filter 将每一帧直接缩放到用户指定宽高，不隐式保持原始比例。 */
+export class ResizeVideoTool implements Tool {
+  readonly name = 'resize_video';
+  readonly description = '将视频画面直接缩放到指定宽度和高度';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      inputPath: { type: 'string' },
+      outputPath: { type: 'string' },
+      width: { type: 'number', exclusiveMinimum: 0 },
+      height: { type: 'number', exclusiveMinimum: 0 },
+    },
+    required: ['inputPath', 'outputPath', 'width', 'height'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolExecutionResult> {
+    if (!isRecord(input)
+      || typeof input.inputPath !== 'string'
+      || typeof input.outputPath !== 'string') {
+      return {
+        status: 'error',
+        message: 'resize_video requires inputPath and outputPath to be strings',
+      };
+    }
+
+    if (typeof input.width !== 'number'
+      || !Number.isFinite(input.width)
+      || input.width <= 0
+      || typeof input.height !== 'number'
+      || !Number.isFinite(input.height)
+      || input.height <= 0) {
+      return {
+        status: 'error',
+        message: 'resize_video requires finite width > 0 and height > 0',
+      };
+    }
+
+    try {
+      await this.executeCommand('ffmpeg', [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        input.inputPath,
+        '-vf',
+        `scale=${input.width}:${input.height}`,
+        '-map',
+        '0:v:0',
+        '-map',
+        '0:a?',
+        '-c:v',
+        'libx264',
+        '-c:a',
+        'copy',
+        input.outputPath,
+      ]);
+      return videoCreated(input.outputPath);
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
+/** crop filter 从每一帧的 x、y 起点截取指定宽高矩形。 */
+export class CropVideoTool implements Tool {
+  readonly name = 'crop_video';
+  readonly description = '从视频画面指定坐标裁出固定宽高的矩形区域';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      inputPath: { type: 'string' },
+      outputPath: { type: 'string' },
+      x: { type: 'number', minimum: 0 },
+      y: { type: 'number', minimum: 0 },
+      width: { type: 'number', exclusiveMinimum: 0 },
+      height: { type: 'number', exclusiveMinimum: 0 },
+    },
+    required: ['inputPath', 'outputPath', 'x', 'y', 'width', 'height'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolExecutionResult> {
+    if (!isRecord(input)
+      || typeof input.inputPath !== 'string'
+      || typeof input.outputPath !== 'string') {
+      return {
+        status: 'error',
+        message: 'crop_video requires inputPath and outputPath to be strings',
+      };
+    }
+
+    if (typeof input.x !== 'number'
+      || !Number.isFinite(input.x)
+      || input.x < 0
+      || typeof input.y !== 'number'
+      || !Number.isFinite(input.y)
+      || input.y < 0
+      || typeof input.width !== 'number'
+      || !Number.isFinite(input.width)
+      || input.width <= 0
+      || typeof input.height !== 'number'
+      || !Number.isFinite(input.height)
+      || input.height <= 0) {
+      return {
+        status: 'error',
+        message: 'crop_video requires finite x >= 0, y >= 0, width > 0, and height > 0',
+      };
+    }
+
+    try {
+      await this.executeCommand('ffmpeg', [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        input.inputPath,
+        '-vf',
+        `crop=${input.width}:${input.height}:${input.x}:${input.y}`,
+        '-map',
+        '0:v:0',
+        '-map',
+        '0:a?',
+        '-c:v',
+        'libx264',
+        '-c:a',
+        'copy',
+        input.outputPath,
+      ]);
+      return videoCreated(input.outputPath);
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
+/** 在 0.5～2.0 倍范围内同步调整视频时间戳与音频节奏。 */
+export class SetSpeedTool implements Tool {
+  readonly name = 'set_speed';
+  readonly description = '在 0.5 到 2.0 倍范围内同步调整视频播放速度';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      inputPath: { type: 'string' },
+      outputPath: { type: 'string' },
+      speed: { type: 'number', minimum: 0.5, maximum: 2 },
+    },
+    required: ['inputPath', 'outputPath', 'speed'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolExecutionResult> {
+    if (!isRecord(input)
+      || typeof input.inputPath !== 'string'
+      || typeof input.outputPath !== 'string') {
+      return {
+        status: 'error',
+        message: 'set_speed requires inputPath and outputPath to be strings',
+      };
+    }
+
+    if (typeof input.speed !== 'number'
+      || !Number.isFinite(input.speed)
+      || input.speed < 0.5
+      || input.speed > 2) {
+      return {
+        status: 'error',
+        message: 'set_speed requires a finite speed between 0.5 and 2.0',
+      };
+    }
+
+    try {
+      // 先探测首个音轨，避免无音频视频引用 0:a:0 时产生无意义错误。
+      const audioProbe = await this.executeCommand('ffprobe', [
+        '-v',
+        'error',
+        '-select_streams',
+        'a:0',
+        '-show_entries',
+        'stream=index',
+        '-of',
+        'csv=p=0',
+        input.inputPath,
+      ]);
+      const hasAudio = audioProbe.stdout.trim().length > 0;
+
+      if (hasAudio) {
+        // setpts 控制视频帧时间戳，atempo 控制音频节奏；同一倍率保持音视频同步。
+        await this.executeCommand('ffmpeg', [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-i',
+          input.inputPath,
+          '-filter_complex',
+          `[0:v:0]setpts=PTS/${input.speed}[video];[0:a:0]atempo=${input.speed}[audio]`,
+          '-map',
+          '[video]',
+          '-map',
+          '[audio]',
+          '-c:v',
+          'libx264',
+          '-c:a',
+          'aac',
+          input.outputPath,
+        ]);
+      } else {
+        // 无音轨时只改变视频时间戳，并显式禁止输出音频。
+        await this.executeCommand('ffmpeg', [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-i',
+          input.inputPath,
+          '-vf',
+          `setpts=PTS/${input.speed}`,
+          '-map',
+          '0:v:0',
+          '-an',
+          '-c:v',
+          'libx264',
+          input.outputPath,
+        ]);
+      }
+
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);

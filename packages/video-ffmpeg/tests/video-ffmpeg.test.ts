@@ -2,14 +2,19 @@ import { describe, expect, it, vi } from 'vitest';
 import { access, readFile } from 'node:fs/promises';
 import {
   AddAudioTool,
+  AddSubtitlesTool,
   ConcatVideosTool,
+  CropVideoTool,
   ProbeMediaTool,
+  ResizeVideoTool,
+  SetSpeedTool,
   TrimVideoTool,
   executeFileCommand,
   type CommandExecutor,
 } from '../src/index.js';
 
 const unusedExecutor: CommandExecutor = vi.fn(async () => ({ stdout: '', stderr: '' }));
+const escapedFilterQuote = "'" + '\\'.repeat(3) + "''";
 
 describe('FFmpeg video tools', () => {
   it('executes a program with a direct argument array', async () => {
@@ -26,12 +31,16 @@ describe('FFmpeg video tools', () => {
       .rejects.toThrow('agent-desktop-command-that-does-not-exist not found in PATH');
   });
 
-  it('exposes the four model-visible Tool definitions', () => {
+  it('exposes the eight model-visible Tool definitions', () => {
     const tools = [
       new ProbeMediaTool(unusedExecutor),
       new TrimVideoTool(unusedExecutor),
       new ConcatVideosTool(unusedExecutor),
       new AddAudioTool(unusedExecutor),
+      new AddSubtitlesTool(unusedExecutor),
+      new ResizeVideoTool(unusedExecutor),
+      new CropVideoTool(unusedExecutor),
+      new SetSpeedTool(unusedExecutor),
     ];
 
     expect(tools.map(({ name }) => name)).toEqual([
@@ -39,6 +48,10 @@ describe('FFmpeg video tools', () => {
       'trim_video',
       'concat_videos',
       'add_audio',
+      'add_subtitles',
+      'resize_video',
+      'crop_video',
+      'set_speed',
     ]);
     expect(tools.every(({ description, inputSchema }) => (
       description.length > 0 && typeof inputSchema === 'object'
@@ -304,5 +317,334 @@ describe('FFmpeg video tools', () => {
       status: 'error',
       message: 'ffprobe returned invalid JSON',
     });
+  });
+
+  it('defines add_subtitles as an SRT burn-in Tool', () => {
+    const tool = new AddSubtitlesTool(unusedExecutor);
+
+    expect(tool.name).toBe('add_subtitles');
+    expect(tool.description).toContain('SRT');
+    expect(tool.inputSchema).toMatchObject({
+      properties: {
+        videoPath: { type: 'string' },
+        subtitlePath: { type: 'string' },
+        outputPath: { type: 'string' },
+      },
+      required: ['videoPath', 'subtitlePath', 'outputPath'],
+    });
+  });
+
+  it('rejects invalid add_subtitles input and non-SRT subtitles', async () => {
+    const executeCommand = vi.fn<CommandExecutor>();
+    const tool = new AddSubtitlesTool(executeCommand);
+
+    await expect(tool.execute({
+      videoPath: 'input.mp4',
+      subtitlePath: 42,
+      outputPath: 'output.mp4',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'add_subtitles requires videoPath, subtitlePath, and outputPath to be strings',
+    });
+    await expect(tool.execute({
+      videoPath: 'input.mp4',
+      subtitlePath: 'subtitle.ass',
+      outputPath: 'output.mp4',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'add_subtitles only supports .srt subtitle files',
+    });
+
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'C:\\videos\\subtitle.srt',
+      "subtitles=filename='C\\:/videos/subtitle.srt'",
+    ],
+    [
+      'C:\\my videos\\subtitle file.srt',
+      "subtitles=filename='C\\:/my videos/subtitle file.srt'",
+    ],
+    [
+      'C:\\videos\\part,one[final];x=1.srt',
+      "subtitles=filename='C\\:/videos/part\\,one\\[final\\]\\;x\\=1.srt'",
+    ],
+    [
+      "C:\\videos\\subtitle's.srt",
+      "subtitles=filename='C\\:/videos/subtitle" + escapedFilterQuote + "s.srt'",
+    ],
+  ])('escapes an SRT path for the subtitles filter: %s', async (subtitlePath, filter) => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
+    const tool = new AddSubtitlesTool(executeCommand);
+
+    const result = await tool.execute({
+      videoPath: 'input.mp4',
+      subtitlePath,
+      outputPath: 'output.mp4',
+    });
+
+    expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'input.mp4',
+      '-vf',
+      filter,
+      '-map',
+      '0:v:0',
+      '-map',
+      '0:a?',
+      '-c:v',
+      'libx264',
+      '-c:a',
+      'copy',
+      'output.mp4',
+    ]);
+    expect(result).toEqual({ status: 'success', output: 'Video created: output.mp4' });
+  });
+
+  it('reports an unavailable subtitles filter explicitly', async () => {
+    const executeCommand: CommandExecutor = async () => {
+      throw new Error("ffmpeg failed: No such filter: 'subtitles'");
+    };
+
+    await expect(new AddSubtitlesTool(executeCommand).execute({
+      videoPath: 'input.mp4',
+      subtitlePath: 'subtitle.srt',
+      outputPath: 'output.mp4',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'FFmpeg subtitles filter is not available',
+    });
+  });
+
+  it('defines resize_video and crop_video with their required inputs', () => {
+    const resize = new ResizeVideoTool(unusedExecutor);
+    const crop = new CropVideoTool(unusedExecutor);
+
+    expect(resize.name).toBe('resize_video');
+    expect(resize.inputSchema).toMatchObject({
+      required: ['inputPath', 'outputPath', 'width', 'height'],
+    });
+    expect(crop.name).toBe('crop_video');
+    expect(crop.inputSchema).toMatchObject({
+      required: ['inputPath', 'outputPath', 'x', 'y', 'width', 'height'],
+    });
+  });
+
+  it('validates resize dimensions before starting FFmpeg', async () => {
+    const executeCommand = vi.fn<CommandExecutor>();
+    const tool = new ResizeVideoTool(executeCommand);
+
+    await expect(tool.execute({
+      inputPath: 'input.mp4',
+      outputPath: 'output.mp4',
+      width: 0,
+      height: Number.POSITIVE_INFINITY,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'resize_video requires finite width > 0 and height > 0',
+    });
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('builds direct scale arguments for resize_video', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
+    const tool = new ResizeVideoTool(executeCommand);
+
+    const result = await tool.execute({
+      inputPath: 'input.mp4',
+      outputPath: 'portrait.mp4',
+      width: 1080,
+      height: 1920,
+    });
+
+    expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'input.mp4',
+      '-vf',
+      'scale=1080:1920',
+      '-map',
+      '0:v:0',
+      '-map',
+      '0:a?',
+      '-c:v',
+      'libx264',
+      '-c:a',
+      'copy',
+      'portrait.mp4',
+    ]);
+    expect(result).toEqual({ status: 'success', output: 'Video created: portrait.mp4' });
+  });
+
+  it('validates crop coordinates and dimensions before starting FFmpeg', async () => {
+    const executeCommand = vi.fn<CommandExecutor>();
+    const tool = new CropVideoTool(executeCommand);
+
+    await expect(tool.execute({
+      inputPath: 'input.mp4',
+      outputPath: 'output.mp4',
+      x: -1,
+      y: Number.NaN,
+      width: 0,
+      height: 360,
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'crop_video requires finite x >= 0, y >= 0, width > 0, and height > 0',
+    });
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('builds direct crop arguments for crop_video', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
+    const tool = new CropVideoTool(executeCommand);
+
+    const result = await tool.execute({
+      inputPath: 'input.mp4',
+      outputPath: 'cropped.mp4',
+      x: 100,
+      y: 50,
+      width: 640,
+      height: 360,
+    });
+
+    expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'input.mp4',
+      '-vf',
+      'crop=640:360:100:50',
+      '-map',
+      '0:v:0',
+      '-map',
+      '0:a?',
+      '-c:v',
+      'libx264',
+      '-c:a',
+      'copy',
+      'cropped.mp4',
+    ]);
+    expect(result).toEqual({ status: 'success', output: 'Video created: cropped.mp4' });
+  });
+
+  it('defines set_speed with the supported speed range', () => {
+    const tool = new SetSpeedTool(unusedExecutor);
+
+    expect(tool.name).toBe('set_speed');
+    expect(tool.inputSchema).toMatchObject({
+      properties: {
+        speed: { type: 'number', minimum: 0.5, maximum: 2 },
+      },
+      required: ['inputPath', 'outputPath', 'speed'],
+    });
+  });
+
+  it.each([0.49, 2.01, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects unsupported speed %s before probing media',
+    async (speed) => {
+      const executeCommand = vi.fn<CommandExecutor>();
+      const tool = new SetSpeedTool(executeCommand);
+
+      await expect(tool.execute({
+        inputPath: 'input.mp4',
+        outputPath: 'output.mp4',
+        speed,
+      })).resolves.toEqual({
+        status: 'error',
+        message: 'set_speed requires a finite speed between 0.5 and 2.0',
+      });
+      expect(executeCommand).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps video and audio synchronized when an audio stream exists', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+      command === 'ffprobe'
+        ? { stdout: '1\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    ));
+    const tool = new SetSpeedTool(executeCommand);
+
+    const result = await tool.execute({
+      inputPath: 'input.mp4',
+      outputPath: 'faster.mp4',
+      speed: 1.5,
+    });
+
+    expect(executeCommand).toHaveBeenNthCalledWith(1, 'ffprobe', [
+      '-v',
+      'error',
+      '-select_streams',
+      'a:0',
+      '-show_entries',
+      'stream=index',
+      '-of',
+      'csv=p=0',
+      'input.mp4',
+    ]);
+    expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'input.mp4',
+      '-filter_complex',
+      '[0:v:0]setpts=PTS/1.5[video];[0:a:0]atempo=1.5[audio]',
+      '-map',
+      '[video]',
+      '-map',
+      '[audio]',
+      '-c:v',
+      'libx264',
+      '-c:a',
+      'aac',
+      'faster.mp4',
+    ]);
+    expect(result).toEqual({ status: 'success', output: 'Video created: faster.mp4' });
+  });
+
+  it('changes only video timing when no audio stream exists', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+      command === 'ffprobe'
+        ? { stdout: '', stderr: '' }
+        : { stdout: '', stderr: '' }
+    ));
+    const tool = new SetSpeedTool(executeCommand);
+
+    const result = await tool.execute({
+      inputPath: 'silent.mp4',
+      outputPath: 'slower.mp4',
+      speed: 0.5,
+    });
+
+    expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'silent.mp4',
+      '-vf',
+      'setpts=PTS/0.5',
+      '-map',
+      '0:v:0',
+      '-an',
+      '-c:v',
+      'libx264',
+      'slower.mp4',
+    ]);
+    expect(result).toEqual({ status: 'success', output: 'Video created: slower.mp4' });
   });
 });

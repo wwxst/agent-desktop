@@ -6,9 +6,7 @@
 
 v0.0.1 Agent MVP（Agent 最小可行版本）已完成。
 
-当前阶段为 FFmpeg Video Capability（FFmpeg 视频能力）。
-
-FFmpeg Video Capability（FFmpeg 视频能力）已完成。
+FFmpeg Basic Video Editing（FFmpeg 基础视频编辑）已完成。
 
 下一步尚未开始。
 
