@@ -24,8 +24,8 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ```text
 Directory   中文名称       职责
-packages/   核心模块目录   保存正式 Agent Core 模块
-examples/   可运行示例目录 保存消费 Core 公共 API 的示例，不属于 Agent Core
+packages/   正式模块目录   保存 Agent Core 与具体 Provider 模块
+examples/   可运行示例目录 保存消费正式模块公共 API 的示例，不属于 Agent Core
 ```
 
 核心 package 使用以下结构：
@@ -52,6 +52,16 @@ examples/echo-agent/
     └── echo-agent.test.ts
 ```
 
+DeepSeek Agent 示例使用以下结构：
+
+```text
+examples/deepseek-agent/
+├── package.json
+├── tsconfig.json
+└── src/
+    └── index.ts
+```
+
 `tests/` 只有在真正有测试时才创建，不为了目录完整创建空目录。
 
 ## Package Naming（包命名）
@@ -59,16 +69,18 @@ examples/echo-agent/
 公开 workspace package 统一使用 `@agent-desktop/*` 命名空间：
 
 ```text
-@agent-desktop/model          模型包
-@agent-desktop/session        会话包
-@agent-desktop/system-prompt 系统提示词包
-@agent-desktop/tools          工具包
-@agent-desktop/agent          智能体包
-@agent-desktop/agent-loop     智能体循环包
-@agent-desktop/example-echo-agent  Echo Agent 示例
+@agent-desktop/model                   模型包
+@agent-desktop/session                 会话包
+@agent-desktop/system-prompt           系统提示词包
+@agent-desktop/tools                   工具包
+@agent-desktop/agent                   智能体包
+@agent-desktop/agent-loop              智能体循环包
+@agent-desktop/model-deepseek          DeepSeek 模型适配器包
+@agent-desktop/example-echo-agent      Echo Agent 示例
+@agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/example-echo-agent` 同样是 private ESM package，但它是可运行示例，不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体 Provider package，不属于 Agent Core；两个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
@@ -85,15 +97,16 @@ Core package 不依赖 React。
 Core package 不依赖具体模型厂商 SDK。
 具体 Tool implementation 未来不能侵入 Agent Loop。
 examples 可以依赖 Core package，Core package 不能反向依赖 examples。
+具体 Provider 可以依赖 model，Core package 不能反向依赖具体 Provider。
 ```
 
-Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。
+Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。Commit 7 中，`model-deepseek` 只依赖 `model`。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
 ## TypeScript Configuration（TypeScript 配置）
 
-根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []`、六个 Core Project References 和一个 Echo Agent example Project Reference，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
+根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []`、六个 Core Project References、一个 DeepSeek Provider Project Reference 和两个 example Project References，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
 
 `tsconfig.base.json` 保持 strict（严格模式）并启用当前有明确收益的选项：
 

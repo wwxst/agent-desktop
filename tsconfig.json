@@ -7,6 +7,8 @@
     { "path": "./packages/tools" },
     { "path": "./packages/agent" },
     { "path": "./packages/agent-loop" },
-    { "path": "./examples/echo-agent" }
+    { "path": "./packages/model-deepseek" },
+    { "path": "./examples/echo-agent" },
+    { "path": "./examples/deepseek-agent" }
   ]
 }

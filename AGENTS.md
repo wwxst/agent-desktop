@@ -4,9 +4,13 @@
 
 # Current Phase（当前阶段）
 
-v0.0.1 Agent MVP（Agent 最小可行版本）已完成并通过 Review。
+v0.0.1 Agent MVP（Agent 最小可行版本）已完成。
 
-当前暂未进入下一开发阶段。
+当前阶段为 Real Model Provider（真实模型接入）。
+
+DeepSeek Provider（DeepSeek 模型适配器）已完成。
+
+下一步尚未开始。
 
 # Engineering Rules（工程规则）
 

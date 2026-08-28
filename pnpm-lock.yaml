@@ -18,6 +18,27 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3))
 
+  examples/deepseek-agent:
+    dependencies:
+      '@agent-desktop/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@agent-desktop/agent-loop':
+        specifier: workspace:*
+        version: link:../../packages/agent-loop
+      '@agent-desktop/model-deepseek':
+        specifier: workspace:*
+        version: link:../../packages/model-deepseek
+      '@agent-desktop/session':
+        specifier: workspace:*
+        version: link:../../packages/session
+      '@agent-desktop/system-prompt':
+        specifier: workspace:*
+        version: link:../../packages/system-prompt
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+
   examples/echo-agent:
     dependencies:
       '@agent-desktop/agent':
@@ -67,6 +88,12 @@ importers:
         version: link:../session
 
   packages/model: {}
+
+  packages/model-deepseek:
+    dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
 
   packages/session:
     dependencies:

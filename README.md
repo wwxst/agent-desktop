@@ -11,11 +11,12 @@
 当前已经完成：
 
 ```text
-English term                    中文术语             介绍
-Core Interfaces                 核心接口             定义 Model、Session、Tool、System Prompt 和 Agent 边界。
-Minimal Agent Loop              最小 Agent 循环      跑通 Model、Tool、Result、Model 的执行闭环。
-Runnable Echo Agent             可运行 Echo Agent    从终端组装并运行第一个完整 Agent 示例。
-DeterministicEchoModel          确定性 Echo 模拟模型  只验证 Runtime，不调用真实 LLM API，也不进行大模型推理。
+English term                    中文术语                 介绍
+Core Interfaces                 核心接口                 定义 Model、Session、Tool、System Prompt 和 Agent 边界。
+Minimal Agent Loop              最小 Agent 循环          跑通 Model、Tool、Result、Model 的执行闭环。
+Runnable Echo Agent             可运行 Echo Agent        从终端组装并运行第一个完整 Agent 示例。
+DeterministicEchoModel          确定性 Echo 模拟模型      只验证 Runtime，不调用真实 LLM API，也不进行大模型推理。
+DeepSeek Real Model Provider    DeepSeek 真实模型适配器   通过原生 fetch 接入真实 DeepSeek Chat Completions API。
 ```
 
 # Long-term Direction（长期方向）
@@ -41,16 +42,30 @@ Electron desktop client   Electron 桌面客户端  在后续阶段提供本地�
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop 和可运行 Echo Agent。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent 和 DeepSeek 真实模型适配器。
 
-# Run Echo Agent（运行 Echo Agent）
+# Run Agents（运行 Agent）
+
+```text
+Command               模型类型          说明
+pnpm echo-agent       确定性模拟模型     无需 API Key，不调用真实 LLM API
+pnpm deepseek-agent   DeepSeek 真模型    需要 DEEPSEEK_API_KEY，调用真实 DeepSeek API
+```
+
+运行 Echo Agent：
 
 ```bash
 pnpm install
 pnpm echo-agent
 ```
 
-输入 `/exit` 退出。Echo Agent 使用上述确定性模拟模型，不调用真实 LLM API。
+运行 DeepSeek Agent 前，必须由运行环境提供 `DEEPSEEK_API_KEY`：
+
+```bash
+pnpm deepseek-agent
+```
+
+两个 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
 
 # Development Philosophy（开发原则）
 

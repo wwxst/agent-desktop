@@ -1,0 +1,11 @@
+{
+  "name": "@agent-desktop/model-deepseek",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-desktop/model": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
