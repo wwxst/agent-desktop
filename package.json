@@ -10,7 +10,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run --passWithNoTests",
     "echo-agent": "node --experimental-transform-types examples/echo-agent/src/index.ts",
-    "deepseek-agent": "node --experimental-transform-types examples/deepseek-agent/src/index.ts"
+    "deepseek-agent": "node --experimental-transform-types examples/deepseek-agent/src/index.ts",
+    "ffmpeg-agent": "node --experimental-transform-types examples/ffmpeg-agent/src/index.ts"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

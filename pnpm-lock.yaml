@@ -60,6 +60,30 @@ importers:
         specifier: workspace:*
         version: link:../../packages/tools
 
+  examples/ffmpeg-agent:
+    dependencies:
+      '@agent-desktop/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@agent-desktop/agent-loop':
+        specifier: workspace:*
+        version: link:../../packages/agent-loop
+      '@agent-desktop/model-deepseek':
+        specifier: workspace:*
+        version: link:../../packages/model-deepseek
+      '@agent-desktop/session':
+        specifier: workspace:*
+        version: link:../../packages/session
+      '@agent-desktop/system-prompt':
+        specifier: workspace:*
+        version: link:../../packages/system-prompt
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@agent-desktop/video-ffmpeg':
+        specifier: workspace:*
+        version: link:../../packages/video-ffmpeg
+
   packages/agent:
     dependencies:
       '@agent-desktop/model':
@@ -108,6 +132,12 @@ importers:
       '@agent-desktop/model':
         specifier: workspace:*
         version: link:../model
+
+  packages/video-ffmpeg:
+    dependencies:
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../tools
 
 packages:
 

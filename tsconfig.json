@@ -8,7 +8,9 @@
     { "path": "./packages/agent" },
     { "path": "./packages/agent-loop" },
     { "path": "./packages/model-deepseek" },
+    { "path": "./packages/video-ffmpeg" },
     { "path": "./examples/echo-agent" },
-    { "path": "./examples/deepseek-agent" }
+    { "path": "./examples/deepseek-agent" },
+    { "path": "./examples/ffmpeg-agent" }
   ]
 }

@@ -1,0 +1,14 @@
+{
+  "name": "@agent-desktop/example-ffmpeg-agent",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-desktop/agent": "workspace:*",
+    "@agent-desktop/agent-loop": "workspace:*",
+    "@agent-desktop/model-deepseek": "workspace:*",
+    "@agent-desktop/session": "workspace:*",
+    "@agent-desktop/system-prompt": "workspace:*",
+    "@agent-desktop/tools": "workspace:*",
+    "@agent-desktop/video-ffmpeg": "workspace:*"
+  }
+}

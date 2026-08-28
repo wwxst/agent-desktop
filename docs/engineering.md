@@ -24,7 +24,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ```text
 Directory   中文名称       职责
-packages/   正式模块目录   保存 Agent Core 与具体 Provider 模块
+packages/   正式模块目录   保存 Agent Core、具体 Provider 与具体 Tool 模块
 examples/   可运行示例目录 保存消费正式模块公共 API 的示例，不属于 Agent Core
 ```
 
@@ -62,6 +62,16 @@ examples/deepseek-agent/
     └── index.ts
 ```
 
+FFmpeg Agent 示例使用以下结构：
+
+```text
+examples/ffmpeg-agent/
+├── package.json
+├── tsconfig.json
+└── src/
+    └── index.ts
+```
+
 `tests/` 只有在真正有测试时才创建，不为了目录完整创建空目录。
 
 ## Package Naming（包命名）
@@ -76,11 +86,13 @@ examples/deepseek-agent/
 @agent-desktop/agent                   智能体包
 @agent-desktop/agent-loop              智能体循环包
 @agent-desktop/model-deepseek          DeepSeek 模型适配器包
+@agent-desktop/video-ffmpeg            FFmpeg 视频工具包
 @agent-desktop/example-echo-agent      Echo Agent 示例
 @agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
+@agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体 Provider package，不属于 Agent Core；两个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体 Provider package，`@agent-desktop/video-ffmpeg` 是具体 Tool package，二者都不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
@@ -98,15 +110,16 @@ Core package 不依赖具体模型厂商 SDK。
 具体 Tool implementation 未来不能侵入 Agent Loop。
 examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 具体 Provider 可以依赖 model，Core package 不能反向依赖具体 Provider。
+具体 Tool package 可以依赖 tools，Core package 不能反向依赖具体 Tool package。
 ```
 
-Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。Commit 7 中，`model-deepseek` 只依赖 `model`。
+Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。Commit 7 中，`model-deepseek` 只依赖 `model`。Commit 8 中，`video-ffmpeg` 只依赖 `tools`。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
 ## TypeScript Configuration（TypeScript 配置）
 
-根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []`、六个 Core Project References、一个 DeepSeek Provider Project Reference 和两个 example Project References，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
+根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []`、六个 Core Project References、一个 DeepSeek Provider Project Reference、一个 FFmpeg Tool Project Reference 和三个 example Project References，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
 
 `tsconfig.base.json` 保持 strict（严格模式）并启用当前有明确收益的选项：
 
@@ -125,7 +138,7 @@ Project References 使用 `composite`。根 `pnpm typecheck` 通过 `tsc -b` 验
 
 ## Test Runner（测试框架）
 
-项目使用 Vitest 4.1.11。当前已有 Agent Runtime 行为测试，`pnpm test` 运行现有测试套件。
+项目使用 Vitest 4.1.11。当前已有 Agent Runtime 和 FFmpeg Tool 行为测试，`pnpm test` 运行现有测试套件。
 
 ## Dependencies（依赖）
 
@@ -138,7 +151,7 @@ vitest           4.1.11    测试运行器
 @types/node      24.13.3   Node.js 类型声明
 ```
 
-不引入 ESLint、Prettier、bundler、Electron、React、模型供应商 SDK、Tool schema library 或 Agent Framework。
+不引入 ESLint、Prettier、bundler、Electron、React、模型供应商 SDK、第三方 FFmpeg SDK、Tool schema library 或 Agent Framework。
 
 ## 0.x Policy（0.x 策略）
 
