@@ -6,9 +6,11 @@
 
 v0.0.1 Agent MVP（Agent 最小可行版本）已完成。
 
-FFmpeg Basic Video Editing（FFmpeg 基础视频编辑）已完成。
+Video Editing Agent MVP（视频剪辑 Agent 最小可行版本）已完成。
 
-下一步尚未开始。
+当前 Agent 已能通过真实 DeepSeek，在一个 Turn 中连续组合多个 FFmpeg Tool 完成视频处理任务。
+
+下一阶段尚未开始。
 
 # Engineering Rules（工程规则）
 

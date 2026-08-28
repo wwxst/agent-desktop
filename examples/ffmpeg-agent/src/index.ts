@@ -57,7 +57,14 @@ async function runCli(apiKey: string): Promise<void> {
     systemPrompt: new StaticSystemPrompt([
       '你是一个视频处理 Agent。',
       '需要读取视频信息、裁剪时间、拼接、替换音频、添加字幕、调整分辨率、裁剪画面或改变播放速度时，使用提供的 FFmpeg tools。',
-      '不要声称已经处理文件，除非 Tool 实际执行成功。',
+      // 一个自然语言编辑请求对用户是一个 Turn；多项操作由 Agent Loop 中的多个 Step 完成。
+      '一次自然语言视频编辑请求就是一个 Turn；如果请求包含多个操作，必须在同一个 Turn 中通过多个连续的 Tool Call 和 Step 完成。',
+      '只有前一个 Tool 成功后才能继续下一个操作；Tool 返回 error 时必须让模型看到错误，并且不能声称任务成功。',
+      '上一个视频 Tool 产生的 outputPath 必须作为下一个视频 Tool 的 inputPath 或 videoPath。',
+      '中间文件放在最终 outputPath 的同一目录，文件名由你根据需要决定；不要自动删除中间文件。',
+      'Tool 的选择和顺序由你根据用户请求决定，不要假定或硬编码固定顺序。',
+      '不要在执行前输出单独的计划，直接调用完成当前请求所需的 Tool；最后一个 Tool 必须写入用户要求的最终 outputPath。',
+      '不要声称已经处理文件，除非最后的 Tool 实际执行成功。',
     ].join('\n')),
   });
   const terminal = createInterface({ input, output });
