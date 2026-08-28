@@ -4,11 +4,9 @@
 
 # Current Phase（当前阶段）
 
-v0.0.1 Agent MVP（Agent 最小可行版本）已完成。
+Visual Media Inspection MVP（视频视觉理解最小可行版本）已完成。
 
-Video Editing Agent MVP（视频剪辑 Agent 最小可行版本）已完成。
-
-当前 Agent 已能通过真实 DeepSeek，在一个 Turn 中连续组合多个 FFmpeg Tool 完成视频处理任务。
+当前 Agent 已能通过 FFmpeg 抽取视频画面，使用视觉模型分析画面，并将结果返回给 DeepSeek 继续推理。
 
 下一阶段尚未开始。
 

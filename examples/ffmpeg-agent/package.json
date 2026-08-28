@@ -9,6 +9,7 @@
     "@agent-desktop/session": "workspace:*",
     "@agent-desktop/system-prompt": "workspace:*",
     "@agent-desktop/tools": "workspace:*",
-    "@agent-desktop/video-ffmpeg": "workspace:*"
+    "@agent-desktop/video-ffmpeg": "workspace:*",
+    "@agent-desktop/vision-openai": "workspace:*"
   }
 }

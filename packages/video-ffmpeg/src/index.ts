@@ -1,6 +1,6 @@
 import type { Tool, ToolExecutionResult } from '@agent-desktop/tools';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -131,6 +131,24 @@ function parseMediaInfo(stdout: string): MediaInfo {
   };
 }
 
+/** 抽帧只需要 duration；复用统一的 ffprobe JSON 解析，避免复制协议字段读取逻辑。 */
+async function probeDuration(executeCommand: CommandExecutor, inputPath: string): Promise<number> {
+  const { stdout } = await executeCommand('ffprobe', [
+    '-v',
+    'error',
+    '-print_format',
+    'json',
+    '-show_format',
+    '-show_streams',
+    inputPath,
+  ]);
+  const duration = parseMediaInfo(stdout).duration;
+  if (duration === null || duration <= 0) {
+    throw new Error('extract_video_frames requires a positive media duration');
+  }
+  return duration;
+}
+
 /** 使用 ffprobe 读取媒体容器和音视频流的基本信息。 */
 export class ProbeMediaTool implements Tool {
   readonly name = 'probe_media';
@@ -161,6 +179,81 @@ export class ProbeMediaTool implements Tool {
         input.inputPath,
       ]);
       return { status: 'success', output: parseMediaInfo(stdout) };
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
+export interface ExtractedVideoFrame {
+  readonly timestamp: number;
+  readonly path: string;
+}
+
+export interface ExtractVideoFramesOutput {
+  readonly duration: number;
+  readonly frames: readonly ExtractedVideoFrame[];
+}
+
+/**
+ * 从视频中抽取六张代表性 JPG，给视觉 Tool 提供轻量的时间点和图片路径。
+ * 图片留在调用方指定的目录，方便后续视觉分析和人工检查；本 Tool 不负责生命周期清理。
+ */
+export class ExtractVideoFramesTool implements Tool {
+  readonly name = 'extract_video_frames';
+  readonly description = '从视频中均匀抽取六张代表性画面并返回图片路径与时间戳';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      videoPath: { type: 'string' },
+      outputDir: { type: 'string' },
+    },
+    required: ['videoPath', 'outputDir'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolExecutionResult> {
+    if (!isRecord(input)
+      || typeof input.videoPath !== 'string'
+      || typeof input.outputDir !== 'string') {
+      return {
+        status: 'error',
+        message: 'extract_video_frames requires videoPath and outputDir to be strings',
+      };
+    }
+
+    try {
+      const duration = await probeDuration(this.executeCommand, input.videoPath);
+      await mkdir(input.outputDir, { recursive: true });
+      const frames: ExtractedVideoFrame[] = [];
+
+      // 使用 1/7 到 6/7 的时间点，避开容易出现黑屏或片尾的首尾帧。
+      for (let index = 1; index <= 6; index += 1) {
+        const timestamp = (duration * index) / 7;
+        const framePath = join(input.outputDir, `frame-${String(index).padStart(3, '0')}.jpg`);
+        await this.executeCommand('ffmpeg', [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-ss',
+          String(timestamp),
+          '-i',
+          input.videoPath,
+          '-frames:v',
+          '1',
+          '-vf',
+          "scale='min(640,iw)':-2",
+          '-q:v',
+          '2',
+          framePath,
+        ]);
+        frames.push({ timestamp, path: framePath });
+      }
+
+      return { status: 'success', output: { duration, frames } satisfies ExtractVideoFramesOutput };
     } catch (error) {
       return errorResult(error);
     }

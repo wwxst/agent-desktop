@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   AddAudioTool,
   AddSubtitlesTool,
   ConcatVideosTool,
   CropVideoTool,
+  ExtractVideoFramesTool,
   ProbeMediaTool,
   ResizeVideoTool,
   SetSpeedTool,
@@ -31,9 +34,10 @@ describe('FFmpeg video tools', () => {
       .rejects.toThrow('agent-desktop-command-that-does-not-exist not found in PATH');
   });
 
-  it('exposes the eight model-visible Tool definitions', () => {
+  it('exposes the nine model-visible Tool definitions', () => {
     const tools = [
       new ProbeMediaTool(unusedExecutor),
+      new ExtractVideoFramesTool(unusedExecutor),
       new TrimVideoTool(unusedExecutor),
       new ConcatVideosTool(unusedExecutor),
       new AddAudioTool(unusedExecutor),
@@ -45,6 +49,7 @@ describe('FFmpeg video tools', () => {
 
     expect(tools.map(({ name }) => name)).toEqual([
       'probe_media',
+      'extract_video_frames',
       'trim_video',
       'concat_videos',
       'add_audio',
@@ -56,6 +61,89 @@ describe('FFmpeg video tools', () => {
     expect(tools.every(({ description, inputSchema }) => (
       description.length > 0 && typeof inputSchema === 'object'
     ))).toBe(true);
+  });
+
+  it('defines extract_video_frames with only videoPath and outputDir inputs', () => {
+    const tool = new ExtractVideoFramesTool(unusedExecutor);
+
+    expect(tool.name).toBe('extract_video_frames');
+    expect(tool.inputSchema).toMatchObject({
+      required: ['videoPath', 'outputDir'],
+      properties: {
+        videoPath: { type: 'string' },
+        outputDir: { type: 'string' },
+      },
+    });
+  });
+
+  it('extracts six evenly spaced frames without using the first or last timestamp', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'agent-desktop-frame-test-'));
+    try {
+      const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+        command === 'ffprobe'
+          ? {
+            stdout: JSON.stringify({ format: { duration: '42' }, streams: [] }),
+            stderr: '',
+          }
+          : { stdout: '', stderr: '' }
+      ));
+      const tool = new ExtractVideoFramesTool(executeCommand);
+
+      await expect(tool.execute({ videoPath: 'input.mp4', outputDir })).resolves.toEqual({
+        status: 'success',
+        output: {
+          duration: 42,
+          frames: [1, 2, 3, 4, 5, 6].map((index) => ({
+            timestamp: (42 * index) / 7,
+            path: join(outputDir, `frame-${String(index).padStart(3, '0')}.jpg`),
+          })),
+        },
+      });
+
+      expect(executeCommand).toHaveBeenNthCalledWith(1, 'ffprobe', [
+        '-v',
+        'error',
+        '-print_format',
+        'json',
+        '-show_format',
+        '-show_streams',
+        'input.mp4',
+      ]);
+      for (const [index, timestamp] of [6, 12, 18, 24, 30, 36].entries()) {
+        expect(executeCommand).toHaveBeenNthCalledWith(index + 2, 'ffmpeg', [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-ss',
+          String(timestamp),
+          '-i',
+          'input.mp4',
+          '-frames:v',
+          '1',
+          '-vf',
+          "scale='min(640,iw)':-2",
+          '-q:v',
+          '2',
+          join(outputDir, `frame-${String(index + 1).padStart(3, '0')}.jpg`),
+        ]);
+      }
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns extraction errors without hiding the failing command', async () => {
+    const executeCommand: CommandExecutor = async (command) => {
+      if (command === 'ffprobe') throw new Error('ffprobe failed: broken input');
+      throw new Error('ffmpeg failed: cannot write frame');
+    };
+    const tool = new ExtractVideoFramesTool(executeCommand);
+
+    await expect(tool.execute({ videoPath: 'broken.mp4', outputDir: 'frames' })).resolves.toEqual({
+      status: 'error',
+      message: 'ffprobe failed: broken input',
+    });
   });
 
   it('rejects invalid inputs before starting FFmpeg', async () => {

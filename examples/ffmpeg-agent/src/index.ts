@@ -6,11 +6,13 @@ import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
+import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 import {
   AddAudioTool,
   AddSubtitlesTool,
   ConcatVideosTool,
   CropVideoTool,
+  ExtractVideoFramesTool,
   ProbeMediaTool,
   ResizeVideoTool,
   SetSpeedTool,
@@ -38,9 +40,11 @@ function printTurnEvents(events: readonly SessionEvent[]): void {
 }
 
 /** CLI 只负责组装依赖；所有 Model、Tool、Result 控制流继续由 runTurn 驱动。 */
-async function runCli(apiKey: string): Promise<void> {
+async function runCli(apiKey: string, visionApiKey: string): Promise<void> {
   const tools = new InMemoryToolRegistry();
   tools.register(new ProbeMediaTool());
+  tools.register(new ExtractVideoFramesTool());
+  tools.register(new AnalyzeImagesTool({ apiKey: visionApiKey }));
   tools.register(new TrimVideoTool());
   tools.register(new ConcatVideosTool());
   tools.register(new AddAudioTool());
@@ -57,6 +61,8 @@ async function runCli(apiKey: string): Promise<void> {
     systemPrompt: new StaticSystemPrompt([
       '你是一个视频处理 Agent。',
       '需要读取视频信息、裁剪时间、拼接、替换音频、添加字幕、调整分辨率、裁剪画面或改变播放速度时，使用提供的 FFmpeg tools。',
+      '当用户询问视频画面内容，或需要理解画面才能决定下一步时，先使用 extract_video_frames，再把返回的图片路径和时间戳交给 analyze_images。',
+      '视觉工具只负责观察并返回描述；根据视觉结果回答用户，或继续执行视频处理 Tool，不要让视觉模型决定剪辑方案。',
       // 一个自然语言编辑请求对用户是一个 Turn；多项操作由 Agent Loop 中的多个 Step 完成。
       '一次自然语言视频编辑请求就是一个 Turn；如果请求包含多个操作，必须在同一个 Turn 中通过多个连续的 Tool Call 和 Step 完成。',
       '只有前一个 Tool 成功后才能继续下一个操作；Tool 返回 error 时必须让模型看到错误，并且不能声称任务成功。',
@@ -102,7 +108,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runCli(apiKey);
+  await runCli(apiKey, process.env.OPENAI_API_KEY ?? '');
 }
 
 void main().catch((error: unknown) => {

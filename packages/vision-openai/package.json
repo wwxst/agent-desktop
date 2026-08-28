@@ -1,0 +1,11 @@
+{
+  "name": "@agent-desktop/vision-openai",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-desktop/tools": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
