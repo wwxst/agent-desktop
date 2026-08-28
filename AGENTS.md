@@ -25,6 +25,13 @@
 * 不把 Tool（工具）的具体实现耦合进 Agent Loop（Agent 循环）。
 * `0.x` 阶段发现边界错误时优先直接修正，不保留废弃兼容层。
 
+# Code Comment Standard（代码注释规范）
+
+* 核心代码使用中文近逐行注释，重点说明代码“做什么、为什么”。
+* 复杂 TypeScript 语法和架构原因必须解释。
+* 简单语句无需机械注释。
+* 注释必须与代码同步更新。
+
 # Minimal Implementation Principle（最小实现原则）
 
 以下是强制规范：
