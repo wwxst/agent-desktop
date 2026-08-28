@@ -4,11 +4,9 @@
 
 # Current Phase（当前阶段）
 
-Runnable Echo Agent（可运行的 Echo Agent）已完成。
+v0.0.1 Agent MVP（Agent 最小可行版本）已完成并通过 Review。
 
-当前正在进行 MVP Review（MVP 评审）。
-
-通过 Review 后标记 `v0.0.1-agent-mvp`。
+当前暂未进入下一开发阶段。
 
 # Engineering Rules（工程规则）
 
