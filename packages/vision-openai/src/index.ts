@@ -51,9 +51,12 @@ function isAnalyzeImageInput(value: unknown): value is AnalyzeImageInput {
 }
 
 function errorResult(error: unknown): ToolResult {
+  // 只把标准 Error 转为 Tool 失败；非 Error 抛出值属于程序错误，继续向上暴露。
+  if (!(error instanceof Error)) throw error;
+
   return {
     status: 'error',
-    message: error instanceof Error ? error.message : String(error),
+    message: error.message,
   };
 }
 

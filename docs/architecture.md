@@ -358,7 +358,7 @@ MVP 至少需要能够解释以下失败：
 
 ```text
 Failure boundary          失败边界            MVP 处理方式
-Model failure             模型失败            记录失败事实，结束或标记当前 Turn
+Model failure             模型失败            异常向上抛出，保留失败前已写入的 Session 事件
 Tool not found            工具不存在          产生可追溯的 Tool Result error
 Tool execution failure    工具执行失败        产生带错误状态的 Tool Result
 Malformed tool call       工具调用格式错误    不执行未知输入，记录可解释失败
