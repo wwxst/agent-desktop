@@ -87,12 +87,13 @@ examples/ffmpeg-agent/
 @agent-desktop/agent-loop              智能体循环包
 @agent-desktop/model-deepseek          DeepSeek 模型适配器包
 @agent-desktop/video-ffmpeg            FFmpeg 视频工具包
+@agent-desktop/vision-openai           Vision 视觉工具包
 @agent-desktop/example-echo-agent      Echo Agent 示例
 @agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
 @agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体 Provider package，`@agent-desktop/video-ffmpeg` 是具体 Tool package，二者都不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，三者都不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
@@ -113,13 +114,13 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 具体 Tool package 可以依赖 tools，Core package 不能反向依赖具体 Tool package。
 ```
 
-Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。Commit 7 中，`model-deepseek` 只依赖 `model`。视频工具和视觉工具依赖 `model`、`tools`，三个 example 只依赖实际使用的 package。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`model-deepseek` 依赖 `model`，`video-ffmpeg` 和 `vision-openai` 依赖 `model`、`tools`，三个 example 只依赖各自实际使用的 package。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
 ## TypeScript Configuration（TypeScript 配置）
 
-根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []`、六个 Core Project References、一个 DeepSeek Provider Project Reference、一个 FFmpeg Tool Project Reference 和三个 example Project References，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
+根 `tsconfig.json` 是 Solution Config（解决方案配置），使用 `files: []` 并通过 Project References（项目引用）显式引用当前所有 workspace TypeScript projects，不把整个 monorepo 粗暴 include 成一个巨大 TypeScript Program。
 
 `tsconfig.base.json` 保持 strict（严格模式）并启用当前有明确收益的选项：
 

@@ -30,6 +30,6 @@ export class InMemoryToolRegistry implements ToolRegistry {
 
   get(name: string): Tool | undefined { return this.tools.get(name); }
 
-  // 返回新数组，避免调用方改变注册表内部集合。
+  // 按 Map 的注册顺序将工具转换为只读数组供调用方枚举。
   list(): readonly Tool[] { return [...this.tools.values()]; }
 }

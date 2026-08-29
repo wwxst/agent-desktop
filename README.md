@@ -1,6 +1,6 @@
 # Project（项目）
 
-这是一个从零开发的通用 Agent Client。
+这是一个从零开发、以视频自动剪辑为核心目标的 Agent Client。
 
 # Current Status（当前状态）
 
@@ -23,30 +23,9 @@ Visual Media Inspection         视频视觉理解            FFmpeg 抽取代�
 Content-aware Editing           基于内容的剪辑          Agent 可进一步检查局部范围，自主选择保留片段并使用 FFmpeg 重新拼接。
 ```
 
-# Long-term Direction（长期方向）
-
-未来大致包括：
-
-```text
-English term              中文术语             介绍
-Agent Core                Agent 核心           定义 Agent 的基础状态、请求和执行结果等核心概念。
-Agent Loop                Agent 循环           负责驱动 Agent 持续处理输入、调用能力并产生下一步行动。
-Model abstraction         模型抽象             用统一接口连接不同模型，避免核心逻辑绑定具体模型厂商。
-Tool system               工具系统             为 Agent 提供可发现、可调用、可扩展的外部能力。
-Session/event log         会话与事件日志       记录 Agent 执行过程，作为恢复和审计的事实来源。
-Context                   上下文               管理 Agent 在一次执行中可使用的历史、输入和相关信息。
-Skills                    技能系统             将面向特定任务的知识、流程和能力组织为可扩展技能。
-Permission                权限系统             控制 Agent 是否可以执行敏感操作，并保留明确的授权边界。
-Persistence               持久化               保存会话、配置和其他需要跨进程或跨时间保留的数据。
-Client protocol           客户端协议           定义 Agent Runtime 与不同客户端之间的通信契约。
-Electron desktop client   Electron 桌面客户端  在后续阶段提供本地优先的桌面交互界面。
-```
-
-这些都属于未来方向，不代表当前已经实现。
-
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器和 FFmpeg 基础视频编辑能力。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、Vision 视觉理解和基于内容的剪辑能力。
 
 # Run Agents（运行 Agent）
 

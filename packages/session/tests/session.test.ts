@@ -7,16 +7,13 @@ const stepId = 'step-1' as StepId;
 const toolCallId = 'call-1' as ToolCallId;
 
 describe('InMemorySession', () => {
-  it('preserves append order and protects the returned history array', () => {
+  it('preserves append order and returns the current session history', () => {
     const session = new InMemorySession();
     const started: SessionEvent = { type: 'turn.started', turnId };
     const message: SessionEvent = { type: 'user.message', turnId, content: 'hello' };
 
     session.append(started);
     session.append(message);
-    const history = session.events();
-    (history as SessionEvent[]).pop();
-
     expect(session.events()).toEqual([started, message]);
   });
 

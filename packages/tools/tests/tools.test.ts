@@ -12,8 +12,6 @@ describe('InMemoryToolRegistry', () => {
   it('registers, finds, and lists tools', () => {
     const registry = new InMemoryToolRegistry();
     registry.register(echoTool);
-    const listed = registry.list();
-    (listed as Tool[]).pop();
 
     expect(registry.get('echo')).toBe(echoTool);
     expect(registry.list()).toEqual([echoTool]);

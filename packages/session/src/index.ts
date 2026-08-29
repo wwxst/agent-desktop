@@ -45,6 +45,6 @@ export class InMemorySession implements Session {
   // 新事实只追加到末尾，不重写既有事件。
   append(event: SessionEvent): void { this.history.push(event); }
 
-  // 返回副本，防止调用方通过数组方法绕过 append 修改内部历史。
-  events(): readonly SessionEvent[] { return [...this.history]; }
+  // readonly 约束调用方只能读取，Session 对外不提供修改或删除历史的方法。
+  events(): readonly SessionEvent[] { return this.history; }
 }

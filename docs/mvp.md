@@ -1,4 +1,6 @@
-# Agent Desktop MVP
+# Agent Runtime MVP — Historical v0.0.1 Specification
+
+本文档记录 `v0.0.1-agent-mvp` 阶段的历史 MVP 范围，不代表当前产品范围或后续开发路线。当前项目状态以 `README.md` 和 `AGENTS.md` 为准。
 
 ## MVP Goal（MVP 目标）
 

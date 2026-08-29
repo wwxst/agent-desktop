@@ -16,9 +16,9 @@ development guides              开发指南        记录本地开发、验证�
 
 ### [mvp.md](mvp.md)
 
-MVP 规格
+v0.0.1 Agent Runtime MVP 历史规格
 
-定义当前最小可运行目标、Echo 场景、范围、非目标和验收条件。
+记录最初 Echo Agent MVP 的目标、范围和验收条件，不是当前产品路线图。
 
 ### [architecture.md](architecture.md)
 
