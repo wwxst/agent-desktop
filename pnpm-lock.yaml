@@ -77,6 +77,9 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../../packages/session
+      '@agent-desktop/speech-openai':
+        specifier: workspace:*
+        version: link:../../packages/speech-openai
       '@agent-desktop/system-prompt':
         specifier: workspace:*
         version: link:../../packages/system-prompt
@@ -130,6 +133,15 @@ importers:
       '@agent-desktop/model':
         specifier: workspace:*
         version: link:../model
+
+  packages/speech-openai:
+    dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../tools
 
   packages/system-prompt: {}
 

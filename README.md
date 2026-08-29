@@ -21,11 +21,12 @@ FFmpeg Basic Video Editing      FFmpeg 基础视频编辑      通过本机 FFmp
 Multi-step Video Editing        多步骤视频剪辑          Agent 可以在一个 Turn 中连续组合多个 FFmpeg Tool 完成视频处理任务。
 Visual Media Inspection         视频视觉理解            FFmpeg 抽取代表性视频帧，OpenAI Vision 分析画面，DeepSeek 继续推理。
 Content-aware Editing           基于内容的剪辑          Agent 可进一步检查局部范围，自主选择保留片段并使用 FFmpeg 重新拼接。
+Speech Understanding            语音理解                 FFmpeg 提取视频音频，OpenAI Speech-to-Text 转录，DeepSeek 根据 transcript 继续理解。
 ```
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、Vision 视觉理解和基于内容的剪辑能力。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、Vision 视觉理解、Speech 语音理解和基于内容的剪辑能力。
 
 # Run Agents（运行 Agent）
 
@@ -53,7 +54,7 @@ pnpm deepseek-agent
 
 当前支持媒体探测、裁剪时间、视频拼接、替换音频、烧录 SRT 字幕、调整分辨率、裁剪画面和视频变速。
 
-视觉分析会先抽取六张代表性 JPG，再通过 OpenAI Vision 返回结构化画面描述；DeepSeek 负责调用 Tool 和回答问题。运行视觉分析需要 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ffmpeg` 和 `ffprobe`。OpenAI-compatible 中转站可以通过 `OPENAI_BASE_URL` 指定，未设置时使用 OpenAI 官方地址。
+视觉分析会先抽取六张代表性 JPG，再通过 OpenAI Vision 返回结构化画面描述；语音理解会先由 FFmpeg 提取单声道 16 kHz MP3，再通过 OpenAI Speech-to-Text 返回文字 transcript；DeepSeek 负责调用 Tool 和回答问题。运行视觉或语音理解需要 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ffmpeg` 和 `ffprobe`。OpenAI-compatible 中转站可以通过 `OPENAI_BASE_URL` 指定；语音 endpoint 必须兼容 `/v1/audio/transcriptions` 和 `gpt-4o-transcribe`。
 
 基于内容剪辑时，Agent 会先分析整段画面，在需要时进一步检查局部时间范围，然后自主选择保留片段并使用现有裁剪和拼接 Tool 生成新视频。
 

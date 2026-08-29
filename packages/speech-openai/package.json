@@ -1,0 +1,12 @@
+{
+  "name": "@agent-desktop/speech-openai",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agent-desktop/model": "workspace:*",
+    "@agent-desktop/tools": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

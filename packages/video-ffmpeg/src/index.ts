@@ -86,6 +86,61 @@ function videoCreated(outputPath: string): ToolResult {
   return { status: 'success', output: `Video created: ${outputPath}` };
 }
 
+/** 从视频提取供语音识别使用的单声道 16 kHz MP3 音频。 */
+export class ExtractAudioTool implements Tool {
+  readonly name = 'extract_audio';
+  readonly description = '从视频中提取单声道 16 kHz MP3 音频';
+  readonly inputSchema = {
+    type: 'object',
+    properties: {
+      videoPath: { type: 'string' },
+      outputPath: { type: 'string' },
+    },
+    required: ['videoPath', 'outputPath'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown): Promise<ToolResult> {
+    if (!isRecord(input)
+      || typeof input.videoPath !== 'string'
+      || typeof input.outputPath !== 'string') {
+      return {
+        status: 'error',
+        message: 'extract_audio requires videoPath and outputPath to be strings',
+      };
+    }
+
+    if (!input.outputPath.toLowerCase().endsWith('.mp3')) {
+      return { status: 'error', message: 'extract_audio only supports .mp3 outputPath' };
+    }
+
+    try {
+      // 只保留语音识别需要的音频：去掉视频、转单声道并统一为 16 kHz。
+      await this.executeCommand('ffmpeg', [
+        '-y',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        input.videoPath,
+        '-vn',
+        '-ac',
+        '1',
+        '-ar',
+        '16000',
+        '-c:a',
+        'libmp3lame',
+        input.outputPath,
+      ]);
+      return { status: 'success', output: `Audio created: ${input.outputPath}` };
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
 /** ffconcat 是文件格式而不是 shell；这里只转义它自己的路径语法。 */
 function concatFileLine(inputPath: string): string {
   const normalizedPath = inputPath.replace(/\\/g, '/');

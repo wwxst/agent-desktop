@@ -14,6 +14,7 @@
     { "path": "../../packages/agent" },
     { "path": "../../packages/agent-loop" },
     { "path": "../../packages/video-ffmpeg" },
-    { "path": "../../packages/vision-openai" }
+    { "path": "../../packages/vision-openai" },
+    { "path": "../../packages/speech-openai" }
   ]
 }

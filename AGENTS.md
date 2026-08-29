@@ -6,17 +6,11 @@ Agent Core 可以保持通用，但所有新增能力、抽象和架构必须服
 
 # Current Phase（当前阶段）
 
-v0.0.2 Video Agent MVP 已完成并通过 Review。
+Speech Understanding MVP 已完成。
 
-当前 Agent 已具备：
-- 真实 DeepSeek 推理
-- FFmpeg 多步骤视频处理
-- 视频抽帧与视觉理解
-- 局部时间范围检查
-- 基于视觉内容自主决定保留/删除片段
-- 使用 trim + concat 生成最终视频
+当前 Agent 已能从视频提取音频，通过 Speech-to-Text 获取对白 / 旁白文本，并交给 DeepSeek 继续理解和决策。
 
-当前暂未进入下一开发阶段。
+下一阶段尚未开始。
 
 # Engineering Rules（工程规则）
 

@@ -6,12 +6,14 @@ import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
+import { TranscribeAudioTool } from '@agent-desktop/speech-openai';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 import {
   AddAudioTool,
   AddSubtitlesTool,
   ConcatVideosTool,
   CropVideoTool,
+  ExtractAudioTool,
   ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool,
   ProbeMediaTool,
@@ -50,7 +52,13 @@ async function runCli(
   tools.register(new ProbeMediaTool());
   tools.register(new ExtractVideoFramesTool());
   tools.register(new ExtractVideoRangeFramesTool());
+  tools.register(new ExtractAudioTool());
   tools.register(new AnalyzeImagesTool(
+    visionBaseUrl === undefined
+      ? { apiKey: visionApiKey }
+      : { apiKey: visionApiKey, baseUrl: visionBaseUrl },
+  ));
+  tools.register(new TranscribeAudioTool(
     visionBaseUrl === undefined
       ? { apiKey: visionApiKey }
       : { apiKey: visionApiKey, baseUrl: visionBaseUrl },
@@ -72,6 +80,8 @@ async function runCli(
       '需要读取视频信息、裁剪时间、拼接、替换音频、添加字幕、调整分辨率、裁剪画面或改变播放速度时，使用提供的 FFmpeg tools。',
       '当用户询问视频画面内容，或需要理解画面才能决定下一步时，先使用 extract_video_frames，再把返回的图片路径和时间戳交给 analyze_images。',
       '视觉工具只负责观察并返回描述；根据视觉结果回答用户，或继续执行视频处理 Tool，不要让视觉模型决定剪辑方案。',
+      '当用户要求了解视频中的对白、旁白、口播或主要语音内容时，使用 extract_audio 生成 MP3，再使用 transcribe_audio 获取文字 transcript，然后根据 transcript 回答或继续推理。',
+      'transcribe_audio 只负责把 MP3 转成文字，不负责总结、剪辑决策、时间戳或字幕生成。',
       '当用户要求根据画面内容决定保留、删除或重排片段时，先使用 extract_video_frames 和 analyze_images 粗看整段视频。',
       '如果粗看只能确定大致范围但无法判断剪切边界，使用 extract_video_range_frames 检查该范围，再把返回的图片路径和绝对时间戳交给 analyze_images；仍不确定时可以继续缩小范围检查。',
       '抽取的画面只是采样，时间戳只能作为近似时间依据，不能假装内容变化精确发生在某张采样帧；边界影响明显时必须继续缩小范围确认。',

@@ -7,6 +7,7 @@ import {
   AddSubtitlesTool,
   ConcatVideosTool,
   CropVideoTool,
+  ExtractAudioTool,
   ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool,
   ProbeMediaTool,
@@ -35,13 +36,14 @@ describe('FFmpeg video tools', () => {
       .rejects.toThrow('agent-desktop-command-that-does-not-exist not found in PATH');
   });
 
-  it('exposes the ten model-visible Tool definitions', () => {
+  it('exposes the eleven model-visible Tool definitions', () => {
     const tools = [
       new ProbeMediaTool(unusedExecutor),
       new ExtractVideoFramesTool(unusedExecutor),
       new ExtractVideoRangeFramesTool(unusedExecutor),
       new TrimVideoTool(unusedExecutor),
       new ConcatVideosTool(unusedExecutor),
+      new ExtractAudioTool(unusedExecutor),
       new AddAudioTool(unusedExecutor),
       new AddSubtitlesTool(unusedExecutor),
       new ResizeVideoTool(unusedExecutor),
@@ -55,6 +57,7 @@ describe('FFmpeg video tools', () => {
       'extract_video_range_frames',
       'trim_video',
       'concat_videos',
+      'extract_audio',
       'add_audio',
       'add_subtitles',
       'resize_video',
@@ -64,6 +67,83 @@ describe('FFmpeg video tools', () => {
     expect(tools.every(({ description, inputSchema }) => (
       description.length > 0 && typeof inputSchema === 'object'
     ))).toBe(true);
+  });
+
+  it('defines extract_audio as an MP3-only Tool', () => {
+    const tool = new ExtractAudioTool(unusedExecutor);
+
+    expect(tool.name).toBe('extract_audio');
+    expect(tool.description).toContain('MP3');
+    expect(tool.inputSchema).toMatchObject({
+      properties: {
+        videoPath: { type: 'string' },
+        outputPath: { type: 'string' },
+      },
+      required: ['videoPath', 'outputPath'],
+    });
+  });
+
+  it('rejects non-MP3 extract_audio outputs before running FFmpeg', async () => {
+    const executeCommand = vi.fn<CommandExecutor>();
+    const tool = new ExtractAudioTool(executeCommand);
+
+    await expect(tool.execute({
+      videoPath: 'input.mp4',
+      outputPath: 'audio.wav',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'extract_audio only supports .mp3 outputPath',
+    });
+    await expect(tool.execute({
+      videoPath: 42,
+      outputPath: 'audio.mp3',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'extract_audio requires videoPath and outputPath to be strings',
+    });
+
+    expect(executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('builds mono 16 kHz MP3 extraction arguments', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
+    const tool = new ExtractAudioTool(executeCommand);
+
+    await expect(tool.execute({
+      videoPath: 'input video.mp4',
+      outputPath: 'speech.mp3',
+    })).resolves.toEqual({ status: 'success', output: 'Audio created: speech.mp3' });
+
+    expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'input video.mp4',
+      '-vn',
+      '-ac',
+      '1',
+      '-ar',
+      '16000',
+      '-c:a',
+      'libmp3lame',
+      'speech.mp3',
+    ]);
+  });
+
+  it('returns extract_audio execution failures as Tool errors', async () => {
+    const executeCommand: CommandExecutor = async () => {
+      throw new Error('ffmpeg failed: cannot extract audio');
+    };
+
+    await expect(new ExtractAudioTool(executeCommand).execute({
+      videoPath: 'broken.mp4',
+      outputPath: 'speech.mp3',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'ffmpeg failed: cannot extract audio',
+    });
   });
 
   it('defines extract_video_frames with only videoPath and outputDir inputs', () => {
