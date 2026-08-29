@@ -33,12 +33,13 @@ docs/defensive-patterns.md
 把消费者分为：
 
 ```text
-Production Consumer     生产代码消费者    packages/*/src、examples/*/src、实际运行脚本和配置
+Production Consumer     生产代码消费者    packages/*/src 默认属于此类；实际运行脚本和配置也属于此类
 Test Consumer           测试消费者        tests 和测试夹具
 Documentation Consumer  文档消费者        README、docs、注释和 Skill
+Ambiguous Consumer      待确认消费者      examples/*/src，必须根据真实运行用途再分类
 ```
 
-测试、README、docs 和注释不是生产消费者。`examples/*/src` 是当前可运行产品路径，属于生产代码。
+测试、README、docs 和注释不是生产消费者。`examples/*/src` 不自动算生产消费者；先检查 README、根 scripts、package references、当前产品入口和真实用途，再归类为 Production 或 Non-production。
 
 没有完成消费者分类，不得提出删除或简化。
 
@@ -55,6 +56,21 @@ Documentation Consumer  文档消费者        README、docs、注释和 Skill
 - 包装层只搬运复杂度，没有减少代码、状态或公共表面。
 - 第三方异常数据通过默认值伪装成成功。
 - 已删除功能遗留的兼容代码或死代码。
+
+## Hand-rolled Infrastructure（手写基础设施审查）
+
+如果发现手写的 parser（解析器）、retry（重试）、glob（文件匹配）或其他基础设施，先检查 Node builtin（Node 内置能力）和成熟依赖是否能覆盖实际语义。
+
+优先使用 Node builtin。只有引入成熟依赖能够产生明显净删除时，才把依赖替换列为候选；继续遵守“不新增无必要依赖”。
+
+按以下公式计算净复杂度：
+
+```text
+Net deletion = 删除的实现 + 删除的专用测试 + 删除的专用文档
+               - 新增 glue（胶水代码） - 新增依赖成本
+```
+
+如果净复杂度没有明显下降，或依赖只把复杂度搬到新的 Wrapper、Adapter 或配置中，拒绝该候选。检查依赖的维护状态、实际语义覆盖和残留胶水后再列 Finding。
 
 ## Rejected Candidates（必须拒绝的候选）
 
@@ -93,6 +109,14 @@ Documentation Consumer  文档消费者        README、docs、注释和 Skill
 5. 检查删除后是否真正减少代码、状态、公共 API 或调用链。
 6. 如果复杂度只是被搬到新的 Wrapper、Manager、Factory 或文件中，拒绝该候选。
 7. 如果证据不足，不列 Finding。
+
+## Repository-wide Coverage（全仓库范围覆盖）
+
+Repository-wide Review（全仓库审查）必须先完整覆盖用户声明的审查范围一次，才能根据 Stop Condition 输出 `Governance Review PASS`。
+
+开始时列出范围清单并逐项检查。优先检查近期生产代码增量较大、生命周期或外部边界逻辑较集中的区域；Review 要广，Finding 要少。
+
+发现第一个 Finding 后，继续完成剩余范围审查，不得提前结束。完成一轮范围覆盖并满足 Stop Condition 后立即停止，不为了继续寻找问题反复扫描。
 
 ## Review Findings（审查结果）
 
