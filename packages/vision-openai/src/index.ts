@@ -1,26 +1,13 @@
 import { readFile } from 'node:fs/promises';
-import type { Tool, ToolExecutionResult } from '@agent-desktop/tools';
+import type { Tool } from '@agent-desktop/tools';
+import type { ToolResult } from '@agent-desktop/model';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const VISION_MODEL = 'gpt-5.6-luna';
 
-export interface AnalyzeImageInput {
+interface AnalyzeImageInput {
   readonly path: string;
   readonly timestamp: number;
-}
-
-export interface VisualFrameAnalysis {
-  readonly timestamp: number;
-  readonly description: string;
-  readonly subjects: readonly string[];
-  readonly actions: readonly string[];
-  readonly scene: string;
-  readonly visibleText: readonly string[];
-}
-
-export interface VisualAnalysis {
-  readonly summary: string;
-  readonly frames: readonly VisualFrameAnalysis[];
 }
 
 export interface AnalyzeImagesToolOptions {
@@ -63,7 +50,7 @@ function isAnalyzeImageInput(value: unknown): value is AnalyzeImageInput {
     && Number.isFinite(value.timestamp);
 }
 
-function errorResult(error: unknown): ToolExecutionResult {
+function errorResult(error: unknown): ToolResult {
   return {
     status: 'error',
     message: error instanceof Error ? error.message : String(error),
@@ -149,7 +136,7 @@ export class AnalyzeImagesTool implements Tool {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   }
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || !Array.isArray(input.images)
       || (input.images.length < 1 || input.images.length > 6)) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Agent, AgentId } from '@agent-desktop/agent';
+import type { Agent } from '@agent-desktop/agent';
 import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent, type TurnId } from '@agent-desktop/session';
 import { runTurn } from '../src/index.js';
@@ -38,7 +38,6 @@ class ScriptedModel implements Model {
 
 function createTestAgent(model: Model, session = new InMemorySession(), tools = new TestToolRegistry()): Agent {
   return {
-    id: 'agent-1' as AgentId,
     model,
     session,
     tools,
@@ -199,8 +198,9 @@ describe('runTurn', () => {
     expect(model.requests[1]?.messages.at(-1)).toEqual({ role: 'tool', toolCallId: callId, content: 'boom' });
   });
 
-  it('converts a non-stringifiable thrown value to a stable error result', async () => {
+  it('does not convert a non-Error thrown value into a tool result', async () => {
     const callId = 'non-error-call' as ToolCallId;
+    const thrown = Object.create(null) as object;
     const model = new ScriptedModel([
       { toolCalls: [{ id: callId, name: 'throw-value', input: null }] },
       { text: 'continued', toolCalls: [] },
@@ -210,19 +210,51 @@ describe('runTurn', () => {
       name: 'throw-value',
       description: 'Throws a value.',
       inputSchema: {},
-      execute: async () => { throw Object.create(null); },
+      execute: async () => { throw thrown; },
     });
     const session = new InMemorySession();
 
-    await runTurn(createTestAgent(model, session, tools), 'run tool');
+    await expect(runTurn(createTestAgent(model, session, tools), 'run tool'))
+      .rejects.toBe(thrown);
+    expect(session.events().some((event) => event.type === 'tool.result')).toBe(false);
+  });
 
-    const result = session.events().find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => event.type === 'tool.result');
-    expect(result?.result).toEqual({ status: 'error', message: 'Unknown tool execution error' });
-    expect(model.requests[1]?.messages.at(-1)).toEqual({
-      role: 'tool',
-      toolCallId: callId,
-      content: 'Unknown tool execution error',
+  it('does not hide a circular tool result', async () => {
+    const callId = 'circular-call' as ToolCallId;
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'circular', input: null }] },
+      { text: 'continued', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'circular',
+      description: 'Returns a circular value.',
+      inputSchema: {},
+      execute: async () => ({ status: 'success', output: circular }),
     });
+
+    await expect(runTurn(createTestAgent(model, new InMemorySession(), tools), 'run tool'))
+      .rejects.toThrow(TypeError);
+  });
+
+  it('rejects an undefined tool result output', async () => {
+    const callId = 'undefined-call' as ToolCallId;
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'undefined-result', input: null }] },
+      { text: 'continued', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'undefined-result',
+      description: 'Returns undefined.',
+      inputSchema: {},
+      execute: async () => ({ status: 'success', output: undefined }),
+    });
+
+    await expect(runTurn(createTestAgent(model, new InMemorySession(), tools), 'run tool'))
+      .rejects.toThrow('Tool result output must be JSON-serializable');
   });
 
   it('rebuilds prior user and assistant messages from Session', async () => {

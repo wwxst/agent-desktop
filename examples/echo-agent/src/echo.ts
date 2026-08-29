@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { createAgent, type Agent, type AgentId } from '@agent-desktop/agent';
-import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
+import type { Agent } from '@agent-desktop/agent';
+import type { Model, ModelRequest, ModelResponse, ToolCallId, ToolResult } from '@agent-desktop/model';
 import { InMemorySession } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
-import { InMemoryToolRegistry, type Tool, type ToolExecutionResult } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 
 interface EchoInput {
   readonly text: string;
@@ -30,7 +30,7 @@ export class EchoTool implements Tool {
     additionalProperties: false,
   };
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     // 工具边界接收 unknown，因此在读取 text 前完成当前示例所需的最小校验。
     if (!isEchoInput(input)) {
       return { status: 'error', message: 'Echo tool requires input.text to be a string' };
@@ -80,13 +80,12 @@ export function createEchoAgent(): Agent {
   const tools = new InMemoryToolRegistry();
   tools.register(new EchoTool());
 
-  return createAgent({
-    id: 'echo-agent' as AgentId,
+  return {
     model: new DeterministicEchoModel(),
     session: new InMemorySession(),
     tools,
     systemPrompt: new StaticSystemPrompt(
       'You are the Agent Desktop Echo Agent. Use the echo tool when asked to echo text.',
     ),
-  });
+  };
 }

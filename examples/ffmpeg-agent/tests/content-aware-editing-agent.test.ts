@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAgent, type Agent, type AgentId } from '@agent-desktop/agent';
+import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
@@ -57,14 +57,13 @@ function createEditingAgent(model: Model, session: InMemorySession): Agent {
   tools.register(new TrimVideoTool(executeCommand));
   tools.register(new ConcatVideosTool(executeCommand));
 
-  return createAgent({
-    id: 'content-aware-editing-test-agent' as AgentId,
+  return {
     model,
     session,
     tools,
     // 决策由脚本模型表达；Agent Loop 只承载观察结果和后续 Tool Call，不实现 Planner。
     systemPrompt: new StaticSystemPrompt('Observe video content, refine uncertain ranges, then edit.'),
-  });
+  };
 }
 
 afterEach(() => {

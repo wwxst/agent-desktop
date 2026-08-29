@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAgent, type Agent, type AgentId } from '@agent-desktop/agent';
+import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
@@ -43,13 +43,12 @@ function createVisualAgent(model: Model, session: InMemorySession, outputDir: st
   tools.register(new ExtractVideoFramesTool(executeCommand));
   tools.register(new AnalyzeImagesTool({ apiKey: 'test-openai-key' }));
 
-  return createAgent({
-    id: 'visual-test-agent' as AgentId,
+  return {
     model,
     session,
     tools,
     systemPrompt: new StaticSystemPrompt('Inspect video frames and report observations.'),
-  });
+  };
 }
 
 afterEach(() => {

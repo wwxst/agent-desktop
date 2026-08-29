@@ -1,30 +1,25 @@
-import type { ToolCall, ToolCallId } from '@agent-desktop/model';
+import type { ToolCall, ToolCallId, ToolResult } from '@agent-desktop/model';
 
 // 两种品牌类型都基于 string，但在编译期分别约束 Turn 和 Step 的归属关系。
 export type TurnId = string & { readonly __brand: 'TurnId' };
 export type StepId = string & { readonly __brand: 'StepId' };
 
-// status 是判别字段：成功结果保存未知输出，失败结果只保存可序列化的错误事实。
-export type ToolResult =
-  | { readonly status: 'success'; readonly output: unknown }
-  | { readonly status: 'error'; readonly message: string; readonly code?: string };
-
 /** 记录一次 Turn 已经开始。 */
-export interface TurnStartedEvent { readonly type: 'turn.started'; readonly turnId: TurnId; readonly timestamp?: string; }
+export interface TurnStartedEvent { readonly type: 'turn.started'; readonly turnId: TurnId; }
 /** 记录进入 Session 的原始用户输入。 */
-export interface UserMessageEvent { readonly type: 'user.message'; readonly turnId: TurnId; readonly content: string; readonly timestamp?: string; }
+export interface UserMessageEvent { readonly type: 'user.message'; readonly turnId: TurnId; readonly content: string; }
 /** 记录一次模型调用所对应 Step 的开始。 */
-export interface StepStartedEvent { readonly type: 'step.started'; readonly turnId: TurnId; readonly stepId: StepId; readonly timestamp?: string; }
+export interface StepStartedEvent { readonly type: 'step.started'; readonly turnId: TurnId; readonly stepId: StepId; }
 /** 完整保存模型文本和工具调用，两者不是互斥关系。 */
-export interface AssistantMessageEvent { readonly type: 'assistant.message'; readonly turnId: TurnId; readonly stepId: StepId; readonly content?: string; readonly toolCalls: readonly ToolCall[]; readonly timestamp?: string; }
+export interface AssistantMessageEvent { readonly type: 'assistant.message'; readonly turnId: TurnId; readonly stepId: StepId; readonly content?: string; readonly toolCalls: readonly ToolCall[]; }
 /** 在执行前记录工具调用，确保后续成功或失败结果都有可追踪的起点。 */
-export interface ToolCalledEvent { readonly type: 'tool.called'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly name: string; readonly input: unknown; readonly timestamp?: string; }
+export interface ToolCalledEvent { readonly type: 'tool.called'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly name: string; readonly input: unknown; }
 /** 保存工具执行事实，并通过 ToolCallId 与调用事件建立关联。 */
-export interface ToolResultEvent { readonly type: 'tool.result'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly result: ToolResult; readonly timestamp?: string; }
+export interface ToolResultEvent { readonly type: 'tool.result'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly result: ToolResult; }
 /** 记录当前 Step 的所有模型输出和工具结果已经处理完成。 */
-export interface StepCompletedEvent { readonly type: 'step.completed'; readonly turnId: TurnId; readonly stepId: StepId; readonly timestamp?: string; }
+export interface StepCompletedEvent { readonly type: 'step.completed'; readonly turnId: TurnId; readonly stepId: StepId; }
 /** 记录 Turn 已经自然结束。 */
-export interface TurnCompletedEvent { readonly type: 'turn.completed'; readonly turnId: TurnId; readonly timestamp?: string; }
+export interface TurnCompletedEvent { readonly type: 'turn.completed'; readonly turnId: TurnId; }
 
 // type 字段组成可辨识联合，消费方可以通过 switch 获得精确的事件类型收窄。
 export type SessionEvent =

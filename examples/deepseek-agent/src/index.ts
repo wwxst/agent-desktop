@@ -1,11 +1,12 @@
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
-import { createAgent, type AgentId } from '@agent-desktop/agent';
+import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import type { ToolResult } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
-import { InMemoryToolRegistry, type Tool, type ToolExecutionResult } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 
 interface EchoInput {
   readonly text: string;
@@ -30,7 +31,7 @@ class EchoTool implements Tool {
     additionalProperties: false,
   };
 
-  async execute(inputValue: unknown): Promise<ToolExecutionResult> {
+  async execute(inputValue: unknown): Promise<ToolResult> {
     if (!isEchoInput(inputValue)) {
       return { status: 'error', message: 'Echo tool requires input.text to be a string' };
     }
@@ -63,15 +64,14 @@ async function runCli(apiKey: string): Promise<void> {
   const tools = new InMemoryToolRegistry();
   tools.register(new EchoTool());
 
-  const agent = createAgent({
-    id: 'deepseek-agent' as AgentId,
+  const agent: Agent = {
     model: new DeepSeekModel({ apiKey }),
     session: new InMemorySession(),
     tools,
     systemPrompt: new StaticSystemPrompt(
       'You are the Agent Desktop DeepSeek Agent. Use the echo tool when the user asks you to echo text.',
     ),
-  });
+  };
   const terminal = createInterface({ input, output });
 
   output.write('Agent Desktop DeepSeek Agent\n\n');

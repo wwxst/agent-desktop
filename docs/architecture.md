@@ -54,7 +54,7 @@ Responsibilities    职责        追加并读取一次 Agent 执行过程中发
 Owns                拥有        append-only event log（只追加事件日志）
 Does Not Own        不负责      不调用 Model，不执行 Tool，不决定 Loop 算法
 Dependencies        依赖        核心事件类型和可重建历史的值类型
-Consumers           使用者      Agent、Agent Loop、测试和未来持久化适配层
+Consumers           使用者      Agent、Agent Loop 和测试
 ```
 
 Session（会话）不是简单的聊天消息数组，而是 Agent 执行历史的事实来源。MVP 阶段 Session 可以只存在内存中，但数据模型从第一版开始必须支持 append-only（只追加）。
@@ -89,14 +89,14 @@ Tool（工具）是一个可调用能力。MVP 不规定具体 schema library；
 
 ```text
 English field       中文字段    说明
-Responsibilities    职责        表示一个运行中的 Agent 实例及其状态和依赖
-Owns                拥有        实例身份、Model、Session、Tool Registry 和 System Prompt
+Responsibilities    职责        表示一次运行所需的 Agent 依赖
+Owns                拥有        Model、Session、Tool Registry 和 System Prompt
 Does Not Own        不负责      不拥有驱动多 Step 的算法，不把所有行为塞进一个巨型类
 Dependencies        依赖        Model、Session、Tool Registry 和 System Prompt 抽象
-Consumers           使用者      客户端入口和 Agent Loop
+Consumers           使用者      当前示例入口和 Agent Loop
 ```
 
-Agent（智能体）是运行上下文的持有者。它提供 Loop 执行所需的依赖和身份，但不等于 Loop 算法本身。
+Agent（智能体）只持有 Loop 执行所需的依赖，不等于 Loop 算法本身。
 
 ### Agent Loop
 
@@ -106,10 +106,10 @@ Responsibilities    职责        驱动 Turn、Step、Model 调用和顺序 Too
 Owns                拥有        执行算法、当前控制流和下一步决策
 Does Not Own        不负责      不拥有 Model Provider 类型，不替代 Session 事实，不实现 Tool 细节
 Dependencies        依赖        Agent 暴露的 Model、Session、Tool Registry 和 System Prompt
-Consumers           使用者      Agent 的运行入口和未来客户端协议适配层
+Consumers           使用者      Agent 的运行入口
 ```
 
-Agent Loop（智能体循环）是驱动执行过程的算法。它可以演进为不同策略，而 Agent 的外部身份、Session、Tool 和 Model 概念不需要被全部推翻。
+Agent Loop（智能体循环）是当前驱动执行过程的算法。
 
 ## Agent and Agent Loop Separation（Agent 与循环分离）
 
@@ -118,14 +118,14 @@ Agent Loop（智能体循环）是驱动执行过程的算法。它可以演进�
 ```text
 Agent
 智能体
-持有一次运行中的实例状态、身份和依赖。
+持有一次运行所需的依赖。
 
 Agent Loop
 智能体循环
 驱动一次 Turn 内的 Step、Model 调用、Tool 调用和结束判断。
 ```
 
-Loop 可以操作 Agent 提供的抽象，但不能把 Agent 设计成包含所有执行分支的巨大类。这样未来替换 Loop 策略时，Session、Tool Registry 和 Model 抽象仍可复用。
+Loop 可以操作 Agent 提供的抽象，但不能把 Agent 设计成包含所有执行分支的巨大类。
 
 ## Turn and Step（轮次与步骤）
 
@@ -167,14 +167,14 @@ MVP 只定义以下最小事件集合：
 
 ```text
 Event name           中文含义    记录内容
-turn.started         轮次开始    Turn 身份和开始时间
+turn.started         轮次开始    Turn 身份
 user.message         用户消息    进入本次 Turn 的用户输入
 step.started         步骤开始    Step 身份及所属 Turn
 assistant.message    助手消息    Model 产生的文本输出或可关联的调用信息
 tool.called          工具调用    Tool 名称、调用身份和经过约束的输入
 tool.result          工具结果    Tool 返回值及 success 或 error 状态
 step.completed       步骤完成    Step 的完成状态
-turn.completed       轮次完成    Turn 的最终状态和结束信息
+turn.completed       轮次完成    Turn 已完成
 ```
 
 `tool.result` 的 `error` 状态表达 Tool Error（工具错误），因此 MVP 不额外增加复杂的错误事件类型；语义上仍然必须区分 Tool Call、Tool Result 和 Tool Error。
@@ -202,7 +202,7 @@ Model 的通用边界是：
 Input                输入        Model Request
 Output               输出        Model Response 或 Model Events
 Minimum content      最小内容    assistant text 和 tool calls
-Provider boundary    提供商边界  具体 SDK 类型只停留在未来 Model Adapter 层
+Provider boundary    提供商边界  具体 SDK 类型只停留在 Provider package
 ```
 
 Core 不得绑定以下具体接口或 SDK：
@@ -213,7 +213,7 @@ DeepSeek API
 Anthropic Messages API
 ```
 
-Provider-specific types（提供商专属类型）必须停留在未来 Model Adapter（模型适配层），不能泄漏到 Agent、Agent Loop 或 Session。
+Provider-specific types（提供商专属类型）必须停留在具体 Provider package（提供商包），不能泄漏到 Agent、Agent Loop 或 Session。
 
 ## Tool and Tool Registry（工具与工具注册表）
 
@@ -232,7 +232,7 @@ input schema     输入约束    描述合法输入的形状和限制
 execute          执行        接收合法输入并返回结果或错误
 ```
 
-Tool Registry 负责注册、查找和返回 Tool，不负责执行 Loop 算法。MVP 不确定必须使用 Zod、JSON Schema library 或 Valibot；schema library 属于后续工程实现决策。
+Tool Registry 负责注册、查找和返回 Tool，不负责执行 Loop 算法。MVP 不要求使用 Zod、JSON Schema library 或 Valibot，当前通过 Tool 的 inputSchema 描述输入约束。
 
 ## Tool Execution Failure（工具执行失败）
 
@@ -331,7 +331,7 @@ Tool 不依赖 Agent Loop。
 Session 不依赖具体 Model Provider。
 Core 不依赖 Electron。
 Core 不依赖 React。
-Core 不依赖未来具体 Tool implementation。
+Core 不依赖具体 Tool implementation。
 Agent Loop 不依赖 OpenAI 或 DeepSeek SDK。
 Session 不依赖 UI。
 ```
@@ -350,7 +350,7 @@ INV-007   Tool implementations do not control the Agent Loop.    Tool 实现不�
 INV-008   Model-visible facts are reconstructable from Session.  模型看到过的历史事实能够从 Session 重建。
 ```
 
-这些不变量是 MVP 的设计约束。后续新增不变量时，必须仍然服务于当前核心边界，不超过实际需要。
+这些不变量是 MVP 的设计约束。新增不变量必须服务于当前核心边界，不超过实际需要。
 
 ## Failure Boundaries（失败边界）
 
@@ -362,27 +362,6 @@ Model failure             模型失败            记录失败事实，结束或
 Tool not found            工具不存在          产生可追溯的 Tool Result error
 Tool execution failure    工具执行失败        产生带错误状态的 Tool Result
 Malformed tool call       工具调用格式错误    不执行未知输入，记录可解释失败
-Agent cancellation        Agent 取消          只记录为未来扩展 seam，不设计完整生命周期
 ```
 
 当前不加入 Retry、Backoff 或 Circuit Breaker。失败边界的目标是让 Session 状态可解释，而不是一次性解决所有恢复策略。
-
-## Future Extension Seams（未来扩展接缝）
-
-MVP 核心边界应允许未来插入以下能力，但本次不设计这些系统：
-
-```text
-Persistence       持久化
-Real Model Providers  真实模型提供商
-File / Shell Tools    文件与命令行工具
-Context            上下文
-Permission         权限
-Skills             技能
-Compaction         上下文压缩
-Client Protocol    客户端协议
-Electron           Electron 桌面客户端
-SubAgent           子智能体
-Workflow           工作流
-```
-
-这些扩展必须通过明确边界接入，不得反向改变 MVP 对 Agent、Agent Loop、Model、Tool 和 Session 的基本定义。

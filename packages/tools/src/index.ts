@@ -1,19 +1,14 @@
-import type { ModelToolDefinition } from '@agent-desktop/model';
+import type { ModelToolDefinition, ToolResult } from '@agent-desktop/model';
 
 // 复用 Model 定义，避免 Tools package 再声明一份可能漂移的模型可见契约。
 export type { ModelToolDefinition };
-
-// status 构成可辨识联合；运行时输出保持 unknown，由 Agent Loop 决定如何投影给模型。
-export type ToolExecutionResult =
-  | { readonly status: 'success'; readonly output: unknown }
-  | { readonly status: 'error'; readonly message: string; readonly code?: string };
 
 /**
  * Tool 在模型可见描述上增加 execute 运行能力。
  * Tool 只能返回执行结果，不能反向控制 Agent Loop 的生命周期。
  */
 export interface Tool extends ModelToolDefinition {
-  execute(input: unknown): Promise<ToolExecutionResult>;
+  execute(input: unknown): Promise<ToolResult>;
 }
 
 /** 工具注册表只负责注册、查找和枚举，不承担工具执行或循环调度。 */

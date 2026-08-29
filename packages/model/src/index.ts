@@ -1,6 +1,11 @@
 // 品牌类型让 Tool Call 标识不能与任意字符串或其他 ID 混用。
 export type ToolCallId = string & { readonly __brand: 'ToolCallId' };
 
+// Tool Result 是模型上下文和 Session 共同使用的供应商无关结果，不归 Tools 或 Session 单独重复定义。
+export type ToolResult =
+  | { readonly status: 'success'; readonly output: unknown }
+  | { readonly status: 'error'; readonly message: string };
+
 /** 模型可见的供应商无关工具描述，刻意不包含运行时 execute 方法。 */
 export interface ModelToolDefinition {
   readonly name: string;

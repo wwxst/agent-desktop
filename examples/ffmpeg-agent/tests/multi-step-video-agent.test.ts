@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAgent, type Agent, type AgentId } from '@agent-desktop/agent';
+import { type Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
@@ -34,13 +34,12 @@ function createVideoAgent(model: Model, session: InMemorySession): Agent {
   tools.register(new ResizeVideoTool(executeCommand));
   tools.register(new AddSubtitlesTool(executeCommand));
 
-  return createAgent({
-    id: 'ffmpeg-test-agent' as AgentId,
+  return {
     model,
     session,
     tools,
     systemPrompt: new StaticSystemPrompt('Use the available video tools.'),
-  });
+  };
 }
 
 function toolEvents(session: InMemorySession): Extract<SessionEvent, { type: 'tool.called' }>[] {

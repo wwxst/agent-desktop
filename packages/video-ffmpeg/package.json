@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@agent-desktop/model": "workspace:*",
     "@agent-desktop/tools": "workspace:*"
   },
   "exports": {

@@ -1,4 +1,5 @@
-import type { Tool, ToolExecutionResult } from '@agent-desktop/tools';
+import type { Tool } from '@agent-desktop/tools';
+import type { ToolResult } from '@agent-desktop/model';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -45,7 +46,7 @@ export const executeFileCommand: CommandExecutor = (command, args) => (
 );
 
 /** probe_media 返回给模型的稳定结构，不把完整 ffprobe JSON 暴露给 Session。 */
-export interface MediaInfo {
+interface MediaInfo {
   readonly duration: number | null;
   readonly width: number | null;
   readonly height: number | null;
@@ -57,7 +58,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function errorResult(error: unknown): ToolExecutionResult {
+function errorResult(error: unknown): ToolResult {
   return {
     status: 'error',
     message: error instanceof Error ? error.message : String(error),
@@ -78,7 +79,7 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function videoCreated(outputPath: string): ToolExecutionResult {
+function videoCreated(outputPath: string): ToolResult {
   return { status: 'success', output: `Video created: ${outputPath}` };
 }
 
@@ -113,8 +114,12 @@ function parseMediaInfo(stdout: string): MediaInfo {
     throw new Error('ffprobe returned invalid JSON');
   }
 
-  const format = isRecord(payload) && isRecord(payload.format) ? payload.format : {};
-  const streams = isRecord(payload) && Array.isArray(payload.streams) ? payload.streams : [];
+  if (!isRecord(payload) || !isRecord(payload.format) || !Array.isArray(payload.streams)) {
+    throw new Error('ffprobe response is missing format or streams');
+  }
+
+  const format = payload.format;
+  const streams = payload.streams;
   const videoStream = streams.find((stream) => (
     isRecord(stream) && stream.codec_type === 'video'
   ));
@@ -162,7 +167,7 @@ export class ProbeMediaTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.inputPath !== 'string') {
       return { status: 'error', message: 'probe_media requires inputPath to be a string' };
     }
@@ -185,12 +190,12 @@ export class ProbeMediaTool implements Tool {
   }
 }
 
-export interface ExtractedVideoFrame {
+interface ExtractedVideoFrame {
   readonly timestamp: number;
   readonly path: string;
 }
 
-export interface ExtractVideoFramesOutput {
+interface ExtractVideoFramesOutput {
   readonly duration: number;
   readonly frames: readonly ExtractedVideoFrame[];
 }
@@ -252,7 +257,7 @@ export class ExtractVideoFramesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputDir !== 'string') {
@@ -280,7 +285,7 @@ export class ExtractVideoFramesTool implements Tool {
   }
 }
 
-export interface ExtractVideoRangeFramesOutput {
+interface ExtractVideoRangeFramesOutput {
   readonly start: number;
   readonly end: number;
   readonly frames: readonly ExtractedVideoFrame[];
@@ -307,7 +312,7 @@ export class ExtractVideoRangeFramesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputDir !== 'string') {
@@ -377,7 +382,7 @@ export class TrimVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -445,7 +450,7 @@ export class ConcatVideosTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || !Array.isArray(input.inputPaths)
       || input.inputPaths.length === 0
@@ -516,7 +521,7 @@ export class AddAudioTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.audioPath !== 'string'
@@ -575,7 +580,7 @@ export class AddSubtitlesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.subtitlePath !== 'string'
@@ -639,7 +644,7 @@ export class ResizeVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -708,7 +713,7 @@ export class CropVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -780,7 +785,7 @@ export class SetSpeedTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolExecutionResult> {
+  async execute(input: unknown): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {

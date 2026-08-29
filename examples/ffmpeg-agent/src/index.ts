@@ -1,6 +1,6 @@
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
-import { createAgent, type AgentId } from '@agent-desktop/agent';
+import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
@@ -63,8 +63,7 @@ async function runCli(
   tools.register(new CropVideoTool());
   tools.register(new SetSpeedTool());
 
-  const agent = createAgent({
-    id: 'ffmpeg-agent' as AgentId,
+  const agent: Agent = {
     model: new DeepSeekModel({ apiKey }),
     session: new InMemorySession(),
     tools,
@@ -87,7 +86,7 @@ async function runCli(
       '不要在执行前输出单独的计划，直接调用完成当前请求所需的 Tool；最后一个 Tool 必须写入用户要求的最终 outputPath。',
       '不要声称已经处理文件，除非最后的 Tool 实际执行成功。',
     ].join('\n')),
-  });
+  };
   const terminal = createInterface({ input, output });
 
   output.write('Agent Desktop FFmpeg Agent\n\n');

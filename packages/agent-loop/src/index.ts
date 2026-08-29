@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Agent } from '@agent-desktop/agent';
-import type { ModelMessage, ModelResponse, ModelToolDefinition, ToolCall } from '@agent-desktop/model';
-import type { SessionEvent, StepId, ToolResult, TurnId } from '@agent-desktop/session';
+import type { ModelMessage, ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
+import type { SessionEvent, StepId, TurnId } from '@agent-desktop/session';
 
 /** 一次 Turn 的最小公开结果；不返回可变 Session，调用方通过 Agent 自己读取历史。 */
 export interface RunTurnResult {
@@ -27,13 +27,10 @@ function formatToolResultForModel(result: ToolResult): string {
   // 字符串保持原样，避免 JSON.stringify 额外添加引号。
   if (typeof result.output === 'string') return result.output;
 
-  try {
-    // JSON 兼容值使用 JSON 文本；undefined 等无 JSON 结果的值退回 String。
-    return JSON.stringify(result.output) ?? String(result.output);
-  } catch {
-    // 循环引用等值无法 JSON 序列化时，按最小规则使用字符串表示。
-    return String(result.output);
-  }
+  // 模型 Tool Message 必须是字符串；没有 JSON 表示时直接暴露程序错误，不用默认文本掩盖。
+  const formatted = JSON.stringify(result.output);
+  if (formatted === undefined) throw new Error('Tool result output must be JSON-serializable');
+  return formatted;
 }
 
 /**
@@ -77,18 +74,6 @@ function buildToolDefinitions(agent: Agent): ModelToolDefinition[] {
   return agent.tools.list().map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 }
 
-/** 把任意 JavaScript 抛出值收敛为可写入 Session 的稳定文本。 */
-function formatThrownValue(error: unknown): string {
-  // 标准 Error 优先保留其业务消息，不把堆栈等运行时对象写入 Session。
-  if (error instanceof Error) return error.message;
-
-  try {
-    return String(error);
-  } catch {
-    return 'Unknown tool execution error';
-  }
-}
-
 /** 执行单个 Tool Call，并保证调用事件与结果事件使用同一个 ToolCallId。 */
 async function executeToolCall(agent: Agent, turnId: TurnId, stepId: StepId, toolCall: ToolCall): Promise<void> {
   // 查找和执行前先记录调用，即使工具不存在或抛错也保留完整起点。
@@ -111,8 +96,9 @@ async function executeToolCall(agent: Agent, turnId: TurnId, stepId: StepId, too
     try {
       result = await tool.execute(toolCall.input);
     } catch (error) {
-      // Tool 运行时异常属于执行结果，必须转换后继续下一 Step。
-      result = { status: 'error', message: formatThrownValue(error) };
+      // Tool 的 Error 失败按既有契约回写结果；其他抛出值不是合法 Tool 错误，直接暴露程序错误。
+      if (!(error instanceof Error)) throw error;
+      result = { status: 'error', message: error.message };
     }
   }
 

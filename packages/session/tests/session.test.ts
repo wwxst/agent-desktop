@@ -9,7 +9,7 @@ const toolCallId = 'call-1' as ToolCallId;
 describe('InMemorySession', () => {
   it('preserves append order and protects the returned history array', () => {
     const session = new InMemorySession();
-    const started: SessionEvent = { type: 'turn.started', turnId, timestamp: '2026-01-01T00:00:00.000Z' };
+    const started: SessionEvent = { type: 'turn.started', turnId };
     const message: SessionEvent = { type: 'user.message', turnId, content: 'hello' };
 
     session.append(started);
@@ -33,7 +33,7 @@ describe('InMemorySession', () => {
       turnId,
       stepId,
       toolCallId,
-      result: { status: 'error', message: 'failed', code: 'E_TEST' },
+      result: { status: 'error', message: 'failed' },
     };
 
     expect(success.result.status).toBe('success');

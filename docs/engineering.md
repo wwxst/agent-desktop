@@ -107,13 +107,13 @@ examples/ffmpeg-agent/
 Core package 不依赖 Electron。
 Core package 不依赖 React。
 Core package 不依赖具体模型厂商 SDK。
-具体 Tool implementation 未来不能侵入 Agent Loop。
+具体 Tool implementation 不能侵入 Agent Loop。
 examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 具体 Provider 可以依赖 model，Core package 不能反向依赖具体 Provider。
 具体 Tool package 可以依赖 tools，Core package 不能反向依赖具体 Tool package。
 ```
 
-Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。Commit 7 中，`model-deepseek` 只依赖 `model`。Commit 8 中，`video-ffmpeg` 只依赖 `tools`。
+Commit 4 开始建立真实接口依赖：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`。Commit 5 中，`agent-loop` 依赖 `agent`、`model` 和 `session`。Commit 7 中，`model-deepseek` 只依赖 `model`。视频工具和视觉工具依赖 `model`、`tools`，三个 example 只依赖实际使用的 package。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 

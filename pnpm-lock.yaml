@@ -26,6 +26,9 @@ importers:
       '@agent-desktop/agent-loop':
         specifier: workspace:*
         version: link:../../packages/agent-loop
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../../packages/model
       '@agent-desktop/model-deepseek':
         specifier: workspace:*
         version: link:../../packages/model-deepseek
@@ -138,12 +141,18 @@ importers:
 
   packages/video-ffmpeg:
     dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../tools
 
   packages/vision-openai:
     dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../tools

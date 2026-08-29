@@ -521,7 +521,7 @@ describe('FFmpeg video tools', () => {
     });
   });
 
-  it('reports malformed ffprobe JSON as a Tool error', async () => {
+  it('reports malformed ffprobe data as a Tool error', async () => {
     const executeCommand: CommandExecutor = async () => ({ stdout: '{invalid', stderr: '' });
 
     await expect(new ProbeMediaTool(executeCommand).execute({
@@ -529,6 +529,14 @@ describe('FFmpeg video tools', () => {
     })).resolves.toEqual({
       status: 'error',
       message: 'ffprobe returned invalid JSON',
+    });
+
+    const missingFields: CommandExecutor = async () => ({ stdout: '{}', stderr: '' });
+    await expect(new ProbeMediaTool(missingFields).execute({
+      inputPath: 'input.mp4',
+    })).resolves.toEqual({
+      status: 'error',
+      message: 'ffprobe response is missing format or streams',
     });
   });
 
