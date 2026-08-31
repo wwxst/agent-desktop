@@ -6,9 +6,14 @@ Agent Core 可以保持通用，但所有新增能力、抽象和架构必须服
 
 # Current Phase（当前阶段）
 
-Speech Understanding MVP 已完成。
-
-当前 Agent 已能从视频提取音频，通过 Speech-to-Text 获取对白 / 旁白文本，并交给 DeepSeek 继续理解和决策。
+```text
+English status                            中文状态              说明
+Speech Understanding MVP implementation  语音理解 MVP 实现     实现已完成。
+Automated Tests                           自动化测试            已通过。
+Real FFmpeg Audio Extraction              真实 FFmpeg 音频提取  已通过。
+Real Speech API Validation                真实语音 API 验证     当前 endpoint 不可用，尚未完成。
+DeepSeek + Speech End-to-End Validation   端到端语音理解验证    当前 endpoint 不可用，尚未完成。
+```
 
 下一阶段尚未开始。
 
