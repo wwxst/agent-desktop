@@ -7,12 +7,9 @@ Agent Core 可以保持通用，但所有新增能力、抽象和架构必须服
 # Current Phase（当前阶段）
 
 ```text
-English status                            中文状态              说明
-Speech Understanding MVP implementation  语音理解 MVP 实现     实现已完成。
-Automated Tests                           自动化测试            已通过。
-Real FFmpeg Audio Extraction              真实 FFmpeg 音频提取  已通过。
-Real Speech API Validation                真实语音 API 验证     当前 endpoint 不可用，尚未完成。
-DeepSeek + Speech End-to-End Validation   端到端语音理解验证    当前 endpoint 不可用，尚未完成。
+English status                     中文状态                 说明
+Local Speech implementation        本地语音实现             实现已完成。
+Real whisper.cpp E2E validation    真实 whisper.cpp 端到端验证 进行中或待完成。
 ```
 
 下一阶段尚未开始。

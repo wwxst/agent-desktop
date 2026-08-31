@@ -15,6 +15,6 @@
     { "path": "../../packages/agent-loop" },
     { "path": "../../packages/video-ffmpeg" },
     { "path": "../../packages/vision-openai" },
-    { "path": "../../packages/speech-openai" }
+    { "path": "../../packages/speech-whisper-cpp" }
   ]
 }

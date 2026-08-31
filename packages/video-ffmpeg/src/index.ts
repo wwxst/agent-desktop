@@ -86,10 +86,10 @@ function videoCreated(outputPath: string): ToolResult {
   return { status: 'success', output: `Video created: ${outputPath}` };
 }
 
-/** 从视频提取供语音识别使用的单声道 16 kHz MP3 音频。 */
+/** 从视频提取供本地语音识别使用的单声道 16 kHz 16-bit PCM WAV 音频。 */
 export class ExtractAudioTool implements Tool {
   readonly name = 'extract_audio';
-  readonly description = '从视频中提取单声道 16 kHz MP3 音频';
+  readonly description = '从视频中提取单声道 16 kHz 16-bit PCM WAV 音频';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -112,12 +112,12 @@ export class ExtractAudioTool implements Tool {
       };
     }
 
-    if (!input.outputPath.toLowerCase().endsWith('.mp3')) {
-      return { status: 'error', message: 'extract_audio only supports .mp3 outputPath' };
+    if (!input.outputPath.toLowerCase().endsWith('.wav')) {
+      return { status: 'error', message: 'extract_audio only supports .wav outputPath' };
     }
 
     try {
-      // 只保留语音识别需要的音频：去掉视频、转单声道并统一为 16 kHz。
+      // 只保留本地 Whisper 需要的标准音频：去掉视频、转单声道并统一为 16 kHz 16-bit PCM WAV。
       await this.executeCommand('ffmpeg', [
         '-y',
         '-hide_banner',
@@ -126,12 +126,12 @@ export class ExtractAudioTool implements Tool {
         '-i',
         input.videoPath,
         '-vn',
-        '-ac',
-        '1',
         '-ar',
         '16000',
+        '-ac',
+        '1',
         '-c:a',
-        'libmp3lame',
+        'pcm_s16le',
         input.outputPath,
       ]);
       return { status: 'success', output: `Audio created: ${input.outputPath}` };

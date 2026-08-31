@@ -1,5 +1,5 @@
 {
-  "name": "@agent-desktop/speech-openai",
+  "name": "@agent-desktop/speech-whisper-cpp",
   "private": true,
   "type": "module",
   "dependencies": {

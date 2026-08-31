@@ -69,11 +69,11 @@ describe('FFmpeg video tools', () => {
     ))).toBe(true);
   });
 
-  it('defines extract_audio as an MP3-only Tool', () => {
+  it('defines extract_audio as a WAV-only Tool', () => {
     const tool = new ExtractAudioTool(unusedExecutor);
 
     expect(tool.name).toBe('extract_audio');
-    expect(tool.description).toContain('MP3');
+    expect(tool.description).toContain('WAV');
     expect(tool.inputSchema).toMatchObject({
       properties: {
         videoPath: { type: 'string' },
@@ -83,20 +83,20 @@ describe('FFmpeg video tools', () => {
     });
   });
 
-  it('rejects non-MP3 extract_audio outputs before running FFmpeg', async () => {
+  it('rejects non-WAV extract_audio outputs before running FFmpeg', async () => {
     const executeCommand = vi.fn<CommandExecutor>();
     const tool = new ExtractAudioTool(executeCommand);
 
     await expect(tool.execute({
       videoPath: 'input.mp4',
-      outputPath: 'audio.wav',
+      outputPath: 'audio.mp3',
     })).resolves.toEqual({
       status: 'error',
-      message: 'extract_audio only supports .mp3 outputPath',
+      message: 'extract_audio only supports .wav outputPath',
     });
     await expect(tool.execute({
       videoPath: 42,
-      outputPath: 'audio.mp3',
+      outputPath: 'audio.wav',
     })).resolves.toEqual({
       status: 'error',
       message: 'extract_audio requires videoPath and outputPath to be strings',
@@ -105,14 +105,14 @@ describe('FFmpeg video tools', () => {
     expect(executeCommand).not.toHaveBeenCalled();
   });
 
-  it('builds mono 16 kHz MP3 extraction arguments', async () => {
+  it('builds mono 16 kHz 16-bit WAV extraction arguments', async () => {
     const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
     const tool = new ExtractAudioTool(executeCommand);
 
     await expect(tool.execute({
       videoPath: 'input video.mp4',
-      outputPath: 'speech.mp3',
-    })).resolves.toEqual({ status: 'success', output: 'Audio created: speech.mp3' });
+      outputPath: 'speech.wav',
+    })).resolves.toEqual({ status: 'success', output: 'Audio created: speech.wav' });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-y',
@@ -122,13 +122,13 @@ describe('FFmpeg video tools', () => {
       '-i',
       'input video.mp4',
       '-vn',
-      '-ac',
-      '1',
       '-ar',
       '16000',
+      '-ac',
+      '1',
       '-c:a',
-      'libmp3lame',
-      'speech.mp3',
+      'pcm_s16le',
+      'speech.wav',
     ]);
   });
 
@@ -139,7 +139,7 @@ describe('FFmpeg video tools', () => {
 
     await expect(new ExtractAudioTool(executeCommand).execute({
       videoPath: 'broken.mp4',
-      outputPath: 'speech.mp3',
+      outputPath: 'speech.wav',
     })).resolves.toEqual({
       status: 'error',
       message: 'ffmpeg failed: cannot extract audio',

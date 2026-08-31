@@ -77,9 +77,9 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../../packages/session
-      '@agent-desktop/speech-openai':
+      '@agent-desktop/speech-whisper-cpp':
         specifier: workspace:*
-        version: link:../../packages/speech-openai
+        version: link:../../packages/speech-whisper-cpp
       '@agent-desktop/system-prompt':
         specifier: workspace:*
         version: link:../../packages/system-prompt
@@ -134,7 +134,7 @@ importers:
         specifier: workspace:*
         version: link:../model
 
-  packages/speech-openai:
+  packages/speech-whisper-cpp:
     dependencies:
       '@agent-desktop/model':
         specifier: workspace:*
