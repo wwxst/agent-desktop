@@ -8,7 +8,10 @@
   },
   "scripts": {
     "typecheck": "tsc -b",
-    "test": "vitest run --passWithNoTests",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "test": "vitest run",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check": "pnpm typecheck && pnpm typecheck:tests && pnpm test && pnpm check:architecture && git diff --check",
     "echo-agent": "node --experimental-transform-types examples/echo-agent/src/index.ts",
     "deepseek-agent": "node --experimental-transform-types examples/deepseek-agent/src/index.ts",
     "ffmpeg-agent": "node --experimental-transform-types examples/ffmpeg-agent/src/index.ts"

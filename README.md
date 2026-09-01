@@ -17,7 +17,7 @@ Minimal Agent Loop              最小 Agent 循环          跑通 Model、Tool
 Runnable Echo Agent             可运行 Echo Agent        从终端组装并运行第一个完整 Agent 示例。
 DeterministicEchoModel          确定性 Echo 模拟模型     只验证 Runtime，不调用真实 LLM API，也不进行大模型推理。
 DeepSeek Real Model Provider    DeepSeek 真实模型适配器  通过原生 fetch 接入真实 DeepSeek Chat Completions API。
-FFmpeg Basic Video Editing      FFmpeg 基础视频编辑      通过本机 FFmpeg 提供八个基础视频处理工具。
+FFmpeg Basic Video Editing      FFmpeg 基础视频编辑      通过本机 FFmpeg 提供八项基础视频编辑能力。
 Multi-step Video Editing        多步骤视频剪辑          Agent 可以在一个 Turn 中连续组合多个 FFmpeg Tool 完成视频处理任务。
 Visual Media Inspection         视频视觉理解            FFmpeg 抽取代表性视频帧，OpenAI Vision 分析画面，DeepSeek 继续推理。
 Content-aware Editing           基于内容的剪辑          Agent 可进一步检查局部范围，自主选择保留片段并使用 FFmpeg 重新拼接。
@@ -68,6 +68,17 @@ pnpm ffmpeg-agent
 ```
 
 所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
+
+# Mechanical Gate（机械门禁）
+
+提交代码前执行统一本地门禁：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm check
+```
+
+`pnpm check` 包含源码和测试类型检查、全部测试、稳定架构边界检查和 `git diff --check`。门禁定义与 CI 入口以 [`docs/engineering.md`](docs/engineering.md#step-3-automated-validation自动化验证) 为准；当前架构职责和不变量以 [`docs/architecture.md`](docs/architecture.md) 为准。
 
 # Development Workflow（开发流程）
 

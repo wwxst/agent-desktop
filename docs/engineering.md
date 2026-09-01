@@ -2,6 +2,16 @@
 
 本文档是当前项目立即生效的工程技术基线。创建 package、修改 TypeScript 配置、引入依赖或修改 workspace 前，必须先遵守本文档。
 
+## Complexity, Evidence, and Decision（复杂度、证据与决策）
+
+这是项目的最高工程原则：不是追求最少代码，也不是追求最专业架构，而是要求每一份复杂度都有当前理由，每一个关键行为都有验证证据，每一个重要决策都有唯一出处。
+
+```text
+Complexity  复杂度  只有在当前需求、边界或验证要求明确支撑时才引入
+Evidence    证据    关键行为必须有可复现的测试、检查或真实链路结果
+Decision    决策    重要取舍必须记录唯一来源，避免同一规则在多处重复定义
+```
+
 ## Runtime（运行时）
 
 Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；Node.js 27 及以上版本暂不声明兼容。
@@ -195,13 +205,51 @@ Non-goals        不做什么    本阶段明确排除的能力
 
 ### Step 3 Automated Validation（自动化验证）
 
-每个功能阶段必须执行：
+每个功能阶段必须执行以下统一门禁：
 
 ```text
 pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-git diff --check
+pnpm check
+```
+
+`pnpm check` 是本地机械检查的唯一入口，依次执行 `pnpm typecheck`、`pnpm typecheck:tests`、`pnpm test`、`pnpm check:architecture` 和 `git diff --check`。CI 在准备相同版本的 Node.js 与 pnpm 后执行同一入口。
+
+### Architecture Gate（架构门禁）
+
+`pnpm check:architecture` 使用 Node.js 和仓库已有的 TypeScript 词法扫描器读取各正式 workspace package 的 `src/` 与 `tests/` imports，并与 `package.json` 声明对照。它只自动检查能够稳定判断的边界：
+
+```text
+Rule                         规则                         检查内容
+Declared imports             声明与引用                   src 和 tests 引用的 workspace package 必须在 package.json 声明；未被静态引用的声明只作为 Review 信号
+Core UI boundary             核心与 UI 边界                 Core package 不得依赖 React、React DOM 或 Electron
+Provider boundary            Provider 边界                  Core package 不得依赖具体 Model Provider 或 Tool implementation
+Example direction            示例依赖方向                 packages 不得反向依赖 examples
+Package boundary             package 边界                   只有包含 package.json 的目录进入当前 workspace 检查
+```
+
+Session、Turn、Step、Tool Result、异常传播和 Agent 与 Agent Loop 的行为不变量继续由 `tests/` 与 Review 验证；脚本不对无法可靠静态判断的行为做假检查。
+
+### Validation Scope（验证范围）
+
+五层验证体系是分类模型，不是每次变更都必须完成的清单。只实施当前有真实需求、稳定基础和合理收益支撑的层；没有对应问题的建议明确记为不实施。
+
+```text
+Review signal             审查信号       未覆盖代码、难测试代码或暂时无静态调用只能触发审查，不能单独作为删除依据
+Deletion evidence         删除证据       删除前必须确认真实调用链、运行时注册、配置引用、公共 API 和当前业务消费者均无用途
+Review scope              审查范围       Simplification Review 只覆盖本次修改模块、直接调用链和本次验证暴露的问题
+Reuse first               优先复用       新 Gate、测试脚本和 CI 优先复用现有脚本、TypeScript、Vitest 和 Node 能力
+Real verification         真实验证       只整理已有稳定入口；缺少本机依赖或凭据时明确 FAIL/SKIP，不把跳过伪装成 PASS
+```
+
+这套边界不改变 `AGENTS.md` 的强规则；本文件只定义验证层选择、工程 Gate 和审查范围。
+
+当前验证层适用性如下：
+
+```text
+Static / Architecture Gate       已实施       `pnpm check:architecture` 检查稳定的依赖与 import 边界
+Unit / Contract / Integration    已具备       现有 Vitest 测试覆盖 Runtime 和 Tool 的关键行为，`pnpm typecheck:tests` 检查测试类型
+Expected Output / Build Smoke    不实施       `tsc -b` 已由 typecheck 覆盖，当前没有独立发布或消费者构建流程
+Real E2E                         已有入口     复用 `pnpm deepseek-agent` 和 `pnpm ffmpeg-agent` 的真实执行方式
 ```
 
 ### Step 4 Review（审查）
@@ -242,7 +290,7 @@ git diff --check
 
 * 是否可以用更简单的实现完成当前需求？
 * 是否存在可以删除的代码、配置、依赖或抽象？
-* 是否符合 [`.agents/skills/find-simplifications/SKILL.md`](../.agents/skills/find-simplifications/SKILL.md)？
+* 是否符合 [`.agents/skills/engineering-governance/SKILL.md`](../.agents/skills/engineering-governance/SKILL.md) 及其简化审查 reference？
 
 Review 必须明确记录：
 
@@ -266,6 +314,15 @@ Output           输出        工具结果、模型结果或生成文件
 Result           结果        是否通过以及可核对的证据
 ```
 
+当前可重复执行的真实入口如下：
+
+```text
+pnpm deepseek-agent   DeepSeek 真实模型链路       需要 DEEPSEEK_API_KEY，交互式输入任务
+pnpm ffmpeg-agent     完整视频 Agent 链路         入口启动需 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；执行对应 Tool 需 ffmpeg、ffprobe、whisper-cli，视觉调用时另需 OPENAI_API_KEY
+```
+
+当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 入口中组合验证。入口启动时缺少其必需环境变量会以非零状态退出；外部二进制、模型或 Vision Key 在 Tool 执行边界暴露失败。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。
+
 无法执行真实验证时，必须明确说明原因、未验证范围和风险，不得将 Real Verification 标记为通过。
 
 ### Step 6 Merge Main（合并主分支）
@@ -274,9 +331,7 @@ Result           结果        是否通过以及可核对的证据
 
 ```text
 Gate                         Required result
-pnpm typecheck               PASS
-pnpm test                    PASS
-git diff --check             PASS
+pnpm check                   PASS
 Review                       PASS
 Real Verification            PASS（仅涉及真实外部链路时要求）
 ```

@@ -71,6 +71,9 @@ importers:
       '@agent-desktop/agent-loop':
         specifier: workspace:*
         version: link:../../packages/agent-loop
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../../packages/model
       '@agent-desktop/model-deepseek':
         specifier: workspace:*
         version: link:../../packages/model-deepseek

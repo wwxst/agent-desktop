@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node", "vitest"]
+  },
+  "include": [
+    "packages/*/tests/**/*.ts",
+    "examples/*/tests/**/*.ts",
+    "scripts/**/*.test.ts"
+  ]
+}

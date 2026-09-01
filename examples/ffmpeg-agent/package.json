@@ -5,6 +5,7 @@
   "dependencies": {
     "@agent-desktop/agent": "workspace:*",
     "@agent-desktop/agent-loop": "workspace:*",
+    "@agent-desktop/model": "workspace:*",
     "@agent-desktop/model-deepseek": "workspace:*",
     "@agent-desktop/session": "workspace:*",
     "@agent-desktop/speech-whisper-cpp": "workspace:*",
