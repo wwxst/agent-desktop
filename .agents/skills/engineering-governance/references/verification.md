@@ -28,7 +28,7 @@ Architecture Gate 当前检查：真实 `src/` 和 `tests/` imports 必须在 pa
 
 ## 自动化测试边界
 
-当前测试覆盖 13 个测试文件、92 个测试（数量是本轮盘点快照，修改后以命令输出为准），集中在 `packages/*/tests` 和 `examples/*/tests`。
+当前测试覆盖 15 个测试文件、99 个测试（数量是本轮盘点快照，修改后以命令输出为准），集中在 `packages/*/tests` 和 `examples/*/tests`。
 
 测试应优先组合真实内部组件：`runTurn`、`Agent`、`InMemorySession`、`InMemoryToolRegistry` 和真实 Tool 类保持不替换；只在真实外部边界替换：
 
@@ -42,7 +42,7 @@ Filesystem                temporary fixture or controlled IO  boundary behavior 
 
 不要为了 Mock 方便改变生产接口、加入 DI Container、Factory 或额外的测试专用抽象。测试描述当前行为，不自动证明行为有生产价值；若行为应删除，测试也应随行为删除或改写。
 
-现有关键行为证据包括：Turn/Step 生命周期、多个 Tool Call 的顺序、未知 Tool、Tool Error、Model failure、Session 重建、结果 JSON 序列化、FFmpeg 参数和失败、ffprobe 异常结构、Vision 响应解析、Whisper JSON 时间轴。
+现有关键行为证据包括：Turn/Step 生命周期、多个 Tool Call 的顺序、未知 Tool、Tool Error、Model failure、Session 重建、结果 JSON 序列化、FFmpeg 参数和失败、ffprobe 异常结构、Vision 响应解析、Whisper JSON 时间轴，以及 Agent Execution Trace 事件和 JSONL 写入。
 
 ## 真实外部能力
 

@@ -21,7 +21,7 @@ description: Use when Codex changes, reviews, verifies, or records work in the A
 
 ## Current Reality（当前现实）
 
-项目处于 `0.x` 视频 Agent 阶段，当前重点是视频自动剪辑的可解释运行时。现有能力包括 Agent Runtime、Echo 示例、DeepSeek Provider、FFmpeg 编辑和抽帧、OpenAI Vision 画面观察、whisper.cpp 语音段落时间轴，以及基于这些结果的多步和内容剪辑。
+项目处于 `0.x` 视频 Agent 阶段，当前重点是视频自动剪辑的可解释运行时。现有能力包括 Agent Runtime、Echo 示例、DeepSeek Provider、FFmpeg 编辑和抽帧、OpenAI Vision 画面观察、whisper.cpp 语音段落时间轴、Agent Execution Trace（智能体执行追踪）以及基于这些结果的多步和内容剪辑。Execution Trace 当前由 `ffmpeg-agent` 写入本地 JSONL，仅用于运行诊断。
 
 每次工作先读根 `AGENTS.md`，并用 `rg --files -g AGENTS.md` 检查子目录规则；再按风险加载：
 

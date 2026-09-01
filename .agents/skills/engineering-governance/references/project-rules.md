@@ -4,7 +4,7 @@
 
 ## 产品与阶段
 
-项目使命是开发以视频自动剪辑为核心的 Agent Client。Agent Core 可以保持供应商无关，但新增能力必须服务已确认的视频剪辑需求。当前处于 `0.x`，Timeline-aware Understanding（带时间轴的视频内容理解）已完成；下一阶段尚未开始。Commit 14 已合并到 `main`，新的能力仍需从功能分支开始。
+项目使命是开发以视频自动剪辑为核心的 Agent Client。Agent Core 可以保持供应商无关，但新增能力必须服务已确认的视频剪辑需求。当前处于 `0.x`，Timeline-aware Understanding（带时间轴的视频内容理解）和 Agent Execution Trace（智能体执行追踪）已完成并合并到 `main`；下一阶段尚未开始。Commit 14 和 Commit 15 已合并到 `main`，新的能力仍需从功能分支开始。
 
 当前生产意图中的主要能力：
 
@@ -16,6 +16,7 @@ FFmpeg editing                FFmpeg 视频编辑             ffmpeg/ffprobe 进
 Visual inspection             视觉画面观察                抽帧后由 OpenAI Responses API 返回观察
 Speech timeline               语音时间轴                  标准 WAV 交给 whisper.cpp JSON 输出
 Content-aware editing         基于内容剪辑                Agent 根据观察和时间轴选择 trim/concat
+Agent execution trace         智能体执行追踪              ffmpeg-agent 将 Turn、Model 和 Tool 的诊断事件写入本地 JSONL
 ```
 
 ## 核心调用链
@@ -44,16 +45,17 @@ Package                                  Depends on
 @agent-desktop/session                  @agent-desktop/model
 @agent-desktop/agent                    model, session, system-prompt, tools
 @agent-desktop/agent-loop               agent, model, session
+@agent-desktop/execution-trace          agent-loop
 @agent-desktop/model-deepseek           model
 @agent-desktop/video-ffmpeg             model, tools
 @agent-desktop/vision-openai            model, tools
 @agent-desktop/speech-whisper-cpp       model, tools
 example-echo-agent                      agent, agent-loop, model, session, system-prompt, tools
 example-deepseek-agent                  agent, agent-loop, model, model-deepseek, session, system-prompt, tools
-example-ffmpeg-agent                    agent, agent-loop, model-deepseek, session, speech-whisper-cpp, system-prompt, tools, video-ffmpeg, vision-openai
+example-ffmpeg-agent                    agent, agent-loop, execution-trace, model, model-deepseek, session, speech-whisper-cpp, system-prompt, tools, video-ffmpeg, vision-openai
 ```
 
-Core package 是 `model`、`session`、`system-prompt`、`tools`、`agent` 和 `agent-loop`。`model-deepseek` 是具体 Provider；`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 是具体 Tool/外部边界；三个 example 是可运行组装入口，不属于 Core。
+Core package 是 `model`、`session`、`system-prompt`、`tools`、`agent` 和 `agent-loop`。`execution-trace` 是独立的运行诊断 package，不属于 Agent Core；`model-deepseek` 是具体 Provider；`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 是具体 Tool/外部边界；三个 example 是可运行组装入口，不属于 Core。
 
 必须保持：Core 不依赖 UI、具体 Provider 或具体 Tool；Provider 只能适配 Core Model；Tool package 只能使用 Tool/Model 契约；package 依赖必须反映真实 imports；examples 可以向下依赖，packages 不能反向依赖 examples。
 
@@ -103,6 +105,6 @@ ENG-005   No empty shells for future features.                   不为未来功
 
 ## 非目标与边界
 
-当前没有生产消费者的方向包括 Electron/React UI、持久化、Plugin Runtime、Hook/Event Bus、Workflow Engine、统一 E2E Framework、执行 Trace 平台、重试基础设施、数据库契约、发布流水线、Mutation/Stress 平台和未来兼容 API。`feature/agent-trace` 与 `packages/execution-trace` 是独立未来方向，不属于当前运行时。
+当前没有生产消费者的方向包括 Electron/React UI、Trace 日志 UI、日志上传与搜索、Plugin Runtime、Hook/Event Bus、Workflow Engine、统一 E2E Framework、重试基础设施、数据库契约、发布流水线、Mutation/Stress 平台和未来兼容 API。当前 `packages/execution-trace` 由 `ffmpeg-agent` 真实消费，只提供本地 JSONL 运行诊断，不扩展为通用 Trace 平台。
 
 发现真实需求时，先写 Design（目标、问题、影响范围、非目标）并给出生产调用链和证据；不要因为通用方法论列出该能力就提前实施。

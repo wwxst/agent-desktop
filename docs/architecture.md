@@ -414,7 +414,7 @@ turn.completed     轮次完成    durationMs、stepCount
 turn.failed        轮次失败    durationMs、errorName、errorMessage
 ```
 
-JSONL Writer（JSONL 写入器）在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次写入，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`；Trace 不改变既有错误传播和 Session 行为。
+JSONL Writer（JSONL 写入器）在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次写入，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`。正常写入时 Trace 不改变既有错误传播和 Session 行为；Trace 写入本身失败时，`await trace.write` 的异常按程序错误向上暴露。
 
 Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态、耗时和错误信息，不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
 

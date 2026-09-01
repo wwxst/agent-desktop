@@ -44,7 +44,7 @@ Commit 14 是否已合并              git branch/log 与 AGENTS 状态对照
 OPENAI_API_KEY 是否启动即必需      对照 ffmpeg-agent 的实际环境检查与 Tool 调用
 FFmpeg 工具数量与编辑能力数量      对照注册列表、package exports 和 README 文字
 计划/日志是否被当作当前架构        明确 docs/superpowers/plans 与 logs 不是 Current Truth
-未来 execution-trace 方向          对照当前 package graph 和生产 imports
+execution-trace 当前状态            对照当前 package graph、生产 imports 和 `ffmpeg-agent` 的本地 JSONL 输出
 ```
 
 ## 沉淀检查
