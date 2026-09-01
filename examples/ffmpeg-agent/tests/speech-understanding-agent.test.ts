@@ -34,10 +34,20 @@ function createSpeechAgent(model: Model, session: InMemorySession, workspace: st
     await writeFile(outputPath, 'fake wav bytes');
     return { stdout: '', stderr: '' };
   };
-  const executeWhisper: WhisperCommandExecutor = async () => ({
-    stdout: 'The speaker explains the video topic.\n',
-    stderr: '',
-  });
+  const executeWhisper: WhisperCommandExecutor = async (_command, args) => {
+    const outputFlagIndex = args.indexOf('-of');
+    const outputBase = args[outputFlagIndex + 1];
+    if (outputFlagIndex === -1 || outputBase === undefined) {
+      throw new Error('Missing whisper-cli -of output base');
+    }
+    await writeFile(`${outputBase}.json`, JSON.stringify({
+      transcription: [{
+        offsets: { from: 1200, to: 4600 },
+        text: ' The speaker explains the video topic. ',
+      }],
+    }));
+    return { stdout: '', stderr: '' };
+  };
   const tools = new InMemoryToolRegistry();
   tools.register(new ExtractAudioTool(executeCommand));
   tools.register(new TranscribeAudioTool({ modelPath: 'ggml-small.bin' }, executeWhisper));
@@ -88,7 +98,17 @@ describe('Speech Understanding Agent', () => {
       expect(calls.map((event) => event.name)).toEqual(['extract_audio', 'transcribe_audio']);
       expect(results.map((event) => event.result)).toEqual([
         { status: 'success', output: `Audio created: ${audioPath}` },
-        { status: 'success', output: 'The speaker explains the video topic.' },
+        {
+          status: 'success',
+          output: {
+            text: 'The speaker explains the video topic.',
+            segments: [{
+              start: 1.2,
+              end: 4.6,
+              text: 'The speaker explains the video topic.',
+            }],
+          },
+        },
       ]);
       expect(model.requests[1]?.messages.at(-1)).toEqual({
         role: 'tool',
@@ -98,7 +118,14 @@ describe('Speech Understanding Agent', () => {
       expect(model.requests[2]?.messages.at(-1)).toEqual({
         role: 'tool',
         toolCallId: 'transcribe-audio',
-        content: 'The speaker explains the video topic.',
+        content: JSON.stringify({
+          text: 'The speaker explains the video topic.',
+          segments: [{
+            start: 1.2,
+            end: 4.6,
+            text: 'The speaker explains the video topic.',
+          }],
+        }),
       });
       expect(events.filter((event) => event.type === 'turn.started')).toHaveLength(1);
       expect(events.filter((event) => event.type === 'step.completed')).toHaveLength(3);

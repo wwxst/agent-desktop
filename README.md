@@ -22,11 +22,12 @@ Multi-step Video Editing        多步骤视频剪辑          Agent 可以在�
 Visual Media Inspection         视频视觉理解            FFmpeg 抽取代表性视频帧，OpenAI Vision 分析画面，DeepSeek 继续推理。
 Content-aware Editing           基于内容的剪辑          Agent 可进一步检查局部范围，自主选择保留片段并使用 FFmpeg 重新拼接。
 Local Speech Understanding      本地语音理解             FFmpeg 提取标准 WAV，whisper.cpp 本地转录，DeepSeek 根据 transcript 继续理解；Tool 接入、自动化验证和真实端到端验证均已完成。
+Timeline-aware Understanding    带时间轴的视频内容理解   Local Speech 提供按秒的 segment-level semantic timeline，DeepSeek 已能基于时间范围理解视频语音内容。
 ```
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音 Tool 接入和基于内容的剪辑能力。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力。
 
 # Run Agents（运行 Agent）
 
@@ -54,9 +55,9 @@ pnpm deepseek-agent
 
 当前支持媒体探测、裁剪时间、视频拼接、替换音频、烧录 SRT 字幕、调整分辨率、裁剪画面和视频变速。
 
-视觉分析会先抽取六张代表性 JPG，再通过 OpenAI Vision 返回结构化画面描述；本地语音理解会先由 FFmpeg 提取单声道 16 kHz 16-bit PCM WAV，再由 whisper.cpp 在本机完成转录；DeepSeek 负责调用 Tool 和回答问题。运行视觉分析需要 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ffmpeg` 和 `ffprobe`；运行本地语音理解需要 `DEEPSEEK_API_KEY`、`WHISPER_MODEL_PATH`、`ffmpeg`、`ffprobe` 和本机 `whisper-cli`，也可以通过 `WHISPER_CLI_PATH` 指定可执行文件路径。
+视觉分析会先抽取六张代表性 JPG，再通过 OpenAI Vision 返回结构化画面描述；本地语音理解会先由 FFmpeg 提取单声道 16 kHz 16-bit PCM WAV，再由 whisper.cpp 在本机返回完整文字和按秒的段落时间轴；DeepSeek 负责调用 Tool 和回答问题。运行视觉分析需要 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ffmpeg` 和 `ffprobe`；运行本地语音理解需要 `DEEPSEEK_API_KEY`、`WHISPER_MODEL_PATH`、`ffmpeg`、`ffprobe` 和本机 `whisper-cli`，也可以通过 `WHISPER_CLI_PATH` 指定可执行文件路径。
 
-本地语音 Tool 接入、自动化测试、真实 FFmpeg WAV 提取、真实 whisper.cpp 转录和 DeepSeek + Local Speech 端到端链路均已验证。真实运行仍需要在仓库外准备官方 whisper.cpp `whisper-cli` 和 `ggml-small.bin`。
+本地语音 Tool 接入、自动化测试、真实 FFmpeg WAV 提取、真实 whisper.cpp JSON 时间轴和 DeepSeek + Local Speech 端到端链路均已验证。`transcribe_audio` 返回完整 `text`，并通过 `segments.start`、`segments.end` 和 `segments.text` 表示每段语音在视频第几秒说了什么。真实运行仍需要在仓库外准备官方 whisper.cpp `whisper-cli` 和 `ggml-small.bin`。
 
 基于内容剪辑时，Agent 会先分析整段画面，在需要时进一步检查局部时间范围，然后自主选择保留片段并使用现有裁剪和拼接 Tool 生成新视频。
 

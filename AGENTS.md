@@ -10,7 +10,8 @@ Agent Core 可以保持通用，但所有新增能力、抽象和架构必须服
 English status                    中文状态                      说明
 Video Agent MVP                   视频智能体最小可行版本        v0.0.2 已完成。
 Local Speech Understanding MVP    本地语音理解最小可行版本      已通过真实 whisper.cpp 端到端验证。
-Commit 14                         第十四阶段提交                尚未开始。
+Timeline-aware Understanding      带时间轴的视频内容理解        已通过真实 whisper.cpp 与 DeepSeek 端到端验证。
+Commit 14 Feature Branch          第十四阶段功能分支            开发已完成，尚未合并 `main`。
 ```
 
 下一阶段尚未开始。

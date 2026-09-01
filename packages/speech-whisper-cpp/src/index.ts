@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Tool } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 
@@ -18,6 +21,17 @@ export type CommandExecutor = (
   command: string,
   args: readonly string[],
 ) => Promise<CommandOutput>;
+
+interface TranscriptSegment {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+
+interface TranscriptionResult {
+  readonly text: string;
+  readonly segments: readonly TranscriptSegment[];
+}
 
 /** 直接执行 whisper-cli，绕过 shell 并保留可注入的最小进程测试接缝。 */
 export const executeFileCommand: CommandExecutor = (command, args) => (
@@ -41,7 +55,54 @@ export const executeFileCommand: CommandExecutor = (command, args) => (
 );
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 只解析当前业务消费的官方 JSON 字段，损坏的外部进程输出直接失败。 */
+function parseWhisperJson(contents: string): TranscriptionResult {
+  let root: unknown;
+  try {
+    root = JSON.parse(contents);
+  } catch {
+    throw new Error('Whisper produced invalid JSON');
+  }
+
+  if (!isRecord(root)) throw new Error('Whisper JSON root must be an object');
+  if (!Array.isArray(root.transcription)) {
+    throw new Error('Whisper JSON transcription must be an array');
+  }
+
+  const segments: TranscriptSegment[] = [];
+  for (const [index, value] of root.transcription.entries()) {
+    if (!isRecord(value)) throw new Error(`Whisper JSON segment ${index} must be an object`);
+    if (typeof value.text !== 'string') {
+      throw new Error(`Whisper JSON segment ${index} text must be a string`);
+    }
+    if (!isRecord(value.offsets)) {
+      throw new Error(`Whisper JSON segment ${index} offsets must be an object`);
+    }
+
+    const from = value.offsets.from;
+    const to = value.offsets.to;
+    if (typeof from !== 'number' || !Number.isFinite(from)
+      || typeof to !== 'number' || !Number.isFinite(to)) {
+      throw new Error(`Whisper JSON segment ${index} offsets.from and offsets.to must be finite numbers`);
+    }
+    if (from < 0 || to < from) {
+      throw new Error(`Whisper JSON segment ${index} offsets must satisfy 0 <= from <= to`);
+    }
+
+    const text = value.text.trim();
+    if (text.length === 0) continue;
+    // whisper.cpp offsets 使用毫秒；Tool 在外部边界转换为 Agent 使用的秒。
+    segments.push({ start: from / 1000, end: to / 1000, text });
+  }
+
+  if (segments.length === 0) throw new Error('Whisper produced an empty transcript');
+  return {
+    text: segments.map((segment) => segment.text).join(' '),
+    segments,
+  };
 }
 
 function errorResult(error: unknown): ToolResult {
@@ -50,10 +111,10 @@ function errorResult(error: unknown): ToolResult {
   return { status: 'error', message: error.message };
 }
 
-/** 通过 stdout 直接取得识别文本，不创建临时 txt 或引入额外生命周期。 */
+/** 读取 whisper.cpp 官方 JSON，返回完整文字和 segment-level 时间轴。 */
 export class TranscribeAudioTool implements Tool {
   readonly name = 'transcribe_audio';
-  readonly description = '使用本机 whisper.cpp 将标准 WAV 音频转录为文字';
+  readonly description = '使用本机 whisper.cpp 将标准 WAV 音频转录为文字和段落时间轴';
   readonly inputSchema = {
     type: 'object',
     properties: { audioPath: { type: 'string' } },
@@ -85,22 +146,28 @@ export class TranscribeAudioTool implements Tool {
     }
 
     try {
-      // -l auto 保留多语言识别，-np/-nt 让 stdout 只承载当前 MVP 需要的纯文字。
-      const { stdout } = await this.executeCommand(this.command, [
-        '-m',
-        this.modelPath,
-        '-f',
-        input.audioPath,
-        '-l',
-        'auto',
-        '-np',
-        '-nt',
-      ]);
-      const transcript = stdout.trim();
-      if (transcript.length === 0) {
-        return { status: 'error', message: 'Whisper produced an empty transcript' };
+      const temporaryDirectory = await mkdtemp(join(tmpdir(), 'agent-desktop-whisper-'));
+      const outputBase = join(temporaryDirectory, 'transcript');
+      try {
+        // 普通 JSON 已提供 segment offsets；不使用包含无消费者 token 信息的 -ojf。
+        await this.executeCommand(this.command, [
+          '-m',
+          this.modelPath,
+          '-f',
+          input.audioPath,
+          '-l',
+          'auto',
+          '-np',
+          '-oj',
+          '-of',
+          outputBase,
+        ]);
+        const json = await readFile(`${outputBase}.json`, 'utf8');
+        return { status: 'success', output: parseWhisperJson(json) };
+      } finally {
+        // 只清理本次调用创建的目录，不扫描或管理其他临时资源。
+        await rm(temporaryDirectory, { recursive: true, force: true });
       }
-      return { status: 'success', output: transcript };
     } catch (error) {
       return errorResult(error);
     }

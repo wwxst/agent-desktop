@@ -88,13 +88,13 @@ examples/ffmpeg-agent/
 @agent-desktop/model-deepseek          DeepSeek 模型适配器包
 @agent-desktop/video-ffmpeg            FFmpeg 视频工具包
 @agent-desktop/vision-openai           Vision 视觉工具包
-@agent-desktop/speech-whisper-cpp      whisper.cpp 本地语音转录工具包
+@agent-desktop/speech-whisper-cpp      whisper.cpp 本地语音时间轴工具包
 @agent-desktop/example-echo-agent      Echo Agent 示例
 @agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
 @agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录 Tool package，四者都不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者都不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
