@@ -11,8 +11,12 @@ English status                    中文状态                      说明
 Video Agent MVP                   视频智能体最小可行版本        v0.0.2 已完成。
 Local Speech Understanding MVP    本地语音理解最小可行版本      已通过真实 whisper.cpp 端到端验证。
 Timeline-aware Understanding      带时间轴的视频内容理解        已通过真实 whisper.cpp 与 DeepSeek 端到端验证。
+Agent Execution Trace MVP         智能体全链路执行日志最小版本  已通过真实成功与失败链路验证。
 Commit 14 Feature Branch          第十四阶段功能分支            开发已完成并已合并 `main`。
+Commit 15 Feature Branch          第十五阶段功能分支            开发已完成并已合并 `main`。
 ```
+
+当前 `ffmpeg-agent` 为每个用户 Turn 生成独立 `traceId`，并将 Turn、Model 和 Tool 的执行状态与耗时写入本地 JSONL；Trace 不参与 Agent 推理。
 
 下一阶段尚未开始。
 

@@ -366,9 +366,19 @@ Malformed tool call       工具调用格式错误    不执行未知输入，�
 
 当前不加入 Retry、Backoff 或 Circuit Breaker。失败边界的目标是让 Session 状态可解释，而不是一次性解决所有恢复策略。
 
-## Future Agent Execution Trace（未来智能体执行追踪）
+## Agent Execution Trace（智能体执行追踪）
 
-Agent Execution Trace（智能体执行追踪）是未来方向，用于问题定位、用户反馈复现和 Agent 行为分析。当前只记录方向，不实现类型、接口、存储、日志框架或运行时行为。
+Agent Execution Trace（智能体执行追踪）用于定位一次 Agent Turn 在 Model、Tool 或 Turn 哪一层发生问题。Agent Loop 产生语义事件，`@agent-desktop/execution-trace` 将事件追加到本地 JSONL；当前 `ffmpeg-agent` 为每次用户输入创建独立 `traceId`。
+
+Session（会话）与 Trace 必须保持不同职责：
+
+```text
+Concept            中文概念    职责
+Session            会话        保存模型可见业务事实，用于重建 Model Context
+Execution Trace    执行追踪    保存运行顺序、状态、耗时和错误定位信息
+```
+
+Trace 不参与 Agent 推理，不能用于重建 Model Context，也不复制完整 Session Event、用户输入、Model 内容或 Tool 内容。
 
 ```text
 traceId
@@ -389,20 +399,23 @@ Tool Result
 Final Response
 ```
 
-未来实现时优先记录轻量执行元数据：
+MVP 事件集合如下：
 
 ```text
-Field           中文字段    说明
-traceId         追踪标识    关联一次完整执行
-timestamp       时间戳      记录事件发生时间
-component       组件        标识 Model、Tool 或运行时组件
-duration        耗时        记录当前步骤执行时间
-status          状态        记录成功或失败
-error type      错误类型    记录可分类的失败类型
-tool name       工具名称    标识实际调用的 Tool
-version         版本        记录相关组件版本
+Event              中文事件    记录内容
+turn.started       轮次开始    turnId
+model.started      模型开始    turnId、stepId、messageCount、toolDefinitionCount
+model.completed    模型完成    durationMs、toolCallCount、hasText
+model.failed       模型失败    durationMs、errorName、errorMessage
+tool.started       工具开始    turnId、stepId、toolCallId、toolName
+tool.completed     工具完成    durationMs
+tool.failed        工具失败    durationMs、errorName（如有）、errorMessage
+turn.completed     轮次完成    durationMs、stepCount
+turn.failed        轮次失败    durationMs、errorName、errorMessage
 ```
 
-版本信息方向包括 Agent version（智能体版本）、Tool version（工具版本）、FFmpeg version、Whisper version 和 Model version（模型版本）。
+JSONL Writer（JSONL 写入器）在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次写入，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`；Trace 不改变既有错误传播和 Session 行为。
 
-未来 Trace 不保存视频原文件、大量模型输入输出或用户隐私内容。当前禁止为该方向提前新增 logging framework（日志框架）、database log（数据库日志）、OpenTelemetry、ELK、Jaeger、Plugin system（插件系统）、PluginManager、Runtime loader（运行时加载器）、Agent memory（智能体记忆）、Database（数据库）、Task system（任务系统）或 Workflow engine（工作流引擎）；这些能力当前没有生产消费者。
+Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态、耗时和错误信息，不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
+
+当前不实现日志 UI、上传、搜索、过滤、rotation（轮转）、retention（保留策略）、版本探测、queue（队列）、buffer（缓冲）、retry（重试）、fallback logger（兜底日志器）、OpenTelemetry、ELK、Jaeger、Zipkin 或 Sentry integration；这些能力当前没有生产消费者。

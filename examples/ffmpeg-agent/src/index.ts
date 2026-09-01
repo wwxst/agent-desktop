@@ -1,7 +1,11 @@
 import { stdin as input, stdout as output } from 'node:process';
+import { stderr } from 'node:process';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
+import { JsonlExecutionTrace } from '@agent-desktop/execution-trace';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
@@ -112,7 +116,10 @@ async function runCli(
       if (userInput === '/exit') break;
 
       const eventStart = agent.session.events().length;
-      const result = await runTurn(agent, userInput);
+      await mkdir('logs', { recursive: true });
+      const trace = new JsonlExecutionTrace(join('logs', 'agent-trace.jsonl'));
+      stderr.write(`Trace: ${trace.id}\n`);
+      const result = await runTurn(agent, userInput, trace);
       const turnEvents = agent.session.events().slice(eventStart);
 
       printTurnEvents(turnEvents);

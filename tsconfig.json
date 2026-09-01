@@ -7,6 +7,7 @@
     { "path": "./packages/tools" },
     { "path": "./packages/agent" },
     { "path": "./packages/agent-loop" },
+    { "path": "./packages/execution-trace" },
     { "path": "./packages/model-deepseek" },
     { "path": "./packages/video-ffmpeg" },
     { "path": "./packages/vision-openai" },

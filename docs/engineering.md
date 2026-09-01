@@ -95,6 +95,7 @@ examples/ffmpeg-agent/
 @agent-desktop/tools                   工具包
 @agent-desktop/agent                   智能体包
 @agent-desktop/agent-loop              智能体循环包
+@agent-desktop/execution-trace         智能体执行追踪 JSONL 包
 @agent-desktop/model-deepseek          DeepSeek 模型适配器包
 @agent-desktop/video-ffmpeg            FFmpeg 视频工具包
 @agent-desktop/vision-openai           Vision 视觉工具包
@@ -104,7 +105,7 @@ examples/ffmpeg-agent/
 @agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者都不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。`@agent-desktop/execution-trace` 只把 Agent Loop 产生的运行诊断事件写入本地 JSONL，不属于 Agent Core；`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
@@ -125,7 +126,7 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 具体 Tool package 可以依赖 tools，Core package 不能反向依赖具体 Tool package。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，三个 example 只依赖各自实际使用的 package。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`execution-trace` 依赖 `agent-loop` 导出的 Trace 契约，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，三个 example 只依赖各自实际使用的 package。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
@@ -161,6 +162,10 @@ feature/<short-name>
   ▼
 Design → Implementation → Automated Validation → Review → Real Verification
 设计     实现             自动化验证              审查     真实验证
+  │
+  ▼
+commit and push feature branch
+提交并推送功能分支
   │
   ▼
 merge feature branch → main
