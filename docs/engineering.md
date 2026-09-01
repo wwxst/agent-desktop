@@ -138,6 +138,175 @@ verbatimModuleSyntax
 
 Project References 使用 `composite`。根 `pnpm typecheck` 通过 `tsc -b` 验证 package graph（包依赖图）。
 
+## Feature Branch Workflow（功能分支工作流）
+
+从 Commit 14 开始，所有新增能力禁止直接在 `main` 开发。完整流程如下：
+
+```text
+main
+  │
+  ▼
+feature/<short-name>
+  │
+  ▼
+Design → Implementation → Automated Validation → Review → Real Verification
+设计     实现             自动化验证              审查     真实验证
+  │
+  ▼
+merge feature branch → main
+合并功能分支到主分支
+  │
+  ▼
+tag (milestone)
+里程碑完成后创建标签
+```
+
+Feature Branch（功能分支）统一使用 `feature/<short-name>` 命名，`short-name` 必须简短并能表达当前能力。
+
+```text
+Valid branch name                  有效分支名称
+feature/video-understanding        视频理解
+feature/agent-trace                智能体执行追踪
+feature/batch-editing              批量剪辑
+
+Invalid branch name                无效分支名称
+test                               无明确含义
+tmp                                无明确含义
+fix123                             无明确含义
+new                                无明确含义
+```
+
+### Step 1 Design（设计）
+
+开发前必须明确以下内容：
+
+```text
+Goal             目标        本阶段要交付的真实结果
+Problem          问题        当前要解决的具体问题
+Impact scope     影响范围    允许修改的模块、接口和行为
+Non-goals        不做什么    本阶段明确排除的能力
+```
+
+除非当前需求已经证明确实需要，否则不得引入未来抽象、Plugin Runtime（插件运行时）、Provider Factory（供应商工厂）、Manager（管理器）或 Framework（框架）。
+
+### Step 2 Implementation（实现）
+
+只实现当前需求，保持最小改动，不污染 Agent Core（智能体核心），不重复已有能力，不增加无生产消费者 API（应用程序编程接口）。
+
+### Step 3 Automated Validation（自动化验证）
+
+每个功能阶段必须执行：
+
+```text
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+git diff --check
+```
+
+### Step 4 Review（审查）
+
+每个 Commit 完成后，必须基于实际变更进行 Review，不能用“代码看过”或“测试通过”代替。至少检查以下内容：
+
+#### Architecture（架构）
+
+* 是否修改 Core？
+* 是否产生重复职责？
+* 是否增加未来扩展接缝？
+* 是否引入当前需求不需要的抽象、层次或依赖？
+* 是否违反现有架构边界？
+
+#### Code（代码）
+
+* 是否存在防御式编程？
+* 是否存在默认值掩盖错误？
+* 是否存在无生产消费者代码？
+* 是否存在不必要的复杂度、重复逻辑或无效封装？
+* 是否正确处理错误、边界条件和资源生命周期？
+* 是否符合 [`docs/defensive-patterns.md`](./defensive-patterns.md)？
+
+#### Tests（测试）
+
+* 测试是否描述真实行为？
+* 是否为了测试制造不存在的契约？
+* 是否覆盖本次变更的关键路径和失败路径？
+* 是否存在只验证实现细节、没有验证实际行为的测试？
+
+#### Documentation（文档）
+
+* 是否和实际实现一致？
+* 是否需要同步更新架构、工程流程或使用说明？
+* 是否存在过时、含糊或相互矛盾的描述？
+
+#### Simplification（简化）
+
+* 是否可以用更简单的实现完成当前需求？
+* 是否存在可以删除的代码、配置、依赖或抽象？
+* 是否符合 [`.agents/skills/find-simplifications/SKILL.md`](../.agents/skills/find-simplifications/SKILL.md)？
+
+Review 必须明确记录：
+
+```text
+Review:
+- Findings:
+- Required changes:
+- Decision: PASS / CHANGES_REQUIRED
+```
+
+发现问题后，必须先修复并重新执行 Automated Validation（自动化验证）和 Review。只有 `Decision: PASS` 后才能进入合并流程。
+
+### Step 5 Real Verification（真实验证）
+
+变更涉及 FFmpeg、Whisper、Vision 或 Model API（模型接口）时，必须运行真实链路，不能只报告 `tests passed`。
+
+```text
+Real chain       真实链路    实际经过的模型、工具和外部运行时
+Input            输入        真实使用的任务和媒体输入
+Output           输出        工具结果、模型结果或生成文件
+Result           结果        是否通过以及可核对的证据
+```
+
+无法执行真实验证时，必须明确说明原因、未验证范围和风险，不得将 Real Verification 标记为通过。
+
+### Step 6 Merge Main（合并主分支）
+
+只有以下条件全部满足，才允许把 Feature Branch 合并到 `main`：
+
+```text
+Gate                         Required result
+pnpm typecheck               PASS
+pnpm test                    PASS
+git diff --check             PASS
+Review                       PASS
+Real Verification            PASS（仅涉及真实外部链路时要求）
+```
+
+合并方式为 `merge feature branch → main`。只有 milestone（里程碑）完成后才创建 tag（标签）。
+
+### Commit Report（提交汇报）
+
+每个 Commit 完成后必须按以下格式汇报：
+
+```text
+Commit:
+Message:
+
+Changed:
+
+Validation:
+
+Review:
+- Findings:
+- Required changes:
+- Decision:
+
+Real verification:
+
+Main status:
+```
+
+任一自动化验证、Review 或必要的真实验证未通过时，不得合并到 `main`，不得进入下一阶段；必须先修复并重新执行完整流程。
+
 ## Test Runner（测试框架）
 
 项目使用 Vitest 4.1.11。当前已有 Agent Runtime 和 FFmpeg Tool 行为测试，`pnpm test` 运行现有测试套件。

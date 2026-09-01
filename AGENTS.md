@@ -7,9 +7,10 @@ Agent Core 可以保持通用，但所有新增能力、抽象和架构必须服
 # Current Phase（当前阶段）
 
 ```text
-English status                     中文状态                 说明
-Local Speech implementation        本地语音实现             实现已完成。
-Real whisper.cpp E2E validation    真实 whisper.cpp 端到端验证 进行中或待完成。
+English status                    中文状态                      说明
+Video Agent MVP                   视频智能体最小可行版本        v0.0.2 已完成。
+Local Speech Understanding MVP    本地语音理解最小可行版本      已通过真实 whisper.cpp 端到端验证。
+Commit 14                         第十四阶段提交                尚未开始。
 ```
 
 下一阶段尚未开始。
@@ -31,6 +32,7 @@ Real whisper.cpp E2E validation    真实 whisper.cpp 端到端验证 进行中�
 * 不把 Tool（工具）的具体实现耦合进 Agent Loop（Agent 循环）。
 * `0.x` 阶段发现边界错误时优先直接修正，不保留废弃兼容层。
 * 修改异常处理、进程调用、第三方数据解析或生命周期逻辑前，先阅读 [`docs/defensive-patterns.md`](docs/defensive-patterns.md)。
+* 从 Commit 14 开始，新增能力禁止直接在 `main` 开发；必须遵守 [`docs/engineering.md`](docs/engineering.md) 定义的 Feature Branch（功能分支）、验证、Review（审查）和合并流程。
 
 # Code Comment Standard（代码注释规范）
 
