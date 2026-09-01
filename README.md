@@ -23,6 +23,7 @@ Visual Media Inspection         视频视觉理解            FFmpeg 抽取代�
 Content-aware Editing           基于内容的剪辑          Agent 可进一步检查局部范围，自主选择保留片段并使用 FFmpeg 重新拼接。
 Local Speech Understanding      本地语音理解             FFmpeg 提取标准 WAV，whisper.cpp 本地转录，DeepSeek 根据 transcript 继续理解；Tool 接入、自动化验证和真实端到端验证均已完成。
 Timeline-aware Understanding    带时间轴的视频内容理解   Local Speech 提供按秒的 segment-level semantic timeline，DeepSeek 已能基于时间范围理解视频语音内容。
+Agent Execution Trace           智能体全链路执行日志     为每个 ffmpeg-agent Turn 记录 Model、Tool 和 Turn 的状态与耗时，已通过真实成功与失败链路验证。
 ```
 
 # Current Engineering Foundation（当前工程基础）
@@ -68,6 +69,8 @@ pnpm ffmpeg-agent
 ```
 
 所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
+
+`ffmpeg-agent` 每次处理用户输入时会在 stderr 显示 `Trace: <traceId>`，并把本地执行诊断追加到 `logs/agent-trace.jsonl`。Trace 只记录关联 ID、事件类型、计数、状态、耗时和错误信息，不记录完整用户 Prompt、Model 请求或响应、Tool 输入或输出、Transcript、Vision 分析、API Key 或环境变量值。Session（会话）仍保存模型可见业务事实，Trace（执行追踪）只用于运行诊断；详细边界与事件定义见 [`docs/architecture.md`](docs/architecture.md#agent-execution-trace智能体执行追踪)。
 
 # Development Workflow（开发流程）
 

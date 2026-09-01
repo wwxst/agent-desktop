@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { Agent } from '@agent-desktop/agent';
 import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent, type TurnId } from '@agent-desktop/session';
-import { runTurn } from '../src/index.js';
+import {
+  runTurn,
+  type ExecutionTrace,
+  type ExecutionTraceEvent,
+} from '../src/index.js';
 
 type Tool = Parameters<Agent['tools']['register']>[0];
 type ToolRegistry = Agent['tools'];
@@ -47,6 +51,16 @@ function createTestAgent(model: Model, session = new InMemorySession(), tools = 
 
 function eventTypes(session: InMemorySession): string[] {
   return session.events().map((event) => event.type);
+}
+
+function createTestTrace(events: ExecutionTraceEvent[]): ExecutionTrace {
+  return {
+    id: 'trace-test',
+    write(event): Promise<void> {
+      events.push(event);
+      return Promise.resolve();
+    },
+  };
 }
 
 describe('runTurn', () => {
@@ -172,6 +186,37 @@ describe('runTurn', () => {
       role: 'tool',
       toolCallId: callId,
       content: 'Tool not found: missing',
+    });
+  });
+
+  it('traces an unknown tool as a failed Tool boundary', async () => {
+    const callId = 'trace-missing-call' as ToolCallId;
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'missing', input: null }] },
+      { text: 'handled missing tool', toolCalls: [] },
+    ]);
+    const traceEvents: ExecutionTraceEvent[] = [];
+
+    await runTurn(
+      createTestAgent(model),
+      'use missing',
+      createTestTrace(traceEvents),
+    );
+
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      'turn.started',
+      'model.started',
+      'model.completed',
+      'tool.started',
+      'tool.failed',
+      'model.started',
+      'model.completed',
+      'turn.completed',
+    ]);
+    expect(traceEvents.find((event) => event.type === 'tool.failed')).toMatchObject({
+      toolCallId: callId,
+      toolName: 'missing',
+      errorMessage: 'Tool not found: missing',
     });
   });
 
@@ -311,5 +356,134 @@ describe('runTurn', () => {
 
     await expect(runTurn(createTestAgent(model, session), 'hello')).rejects.toThrow('model down');
     expect(eventTypes(session)).toEqual(['turn.started', 'user.message', 'step.started']);
+  });
+
+  it('traces successful Model and Tool boundaries in execution order', async () => {
+    const callId = 'trace-call' as ToolCallId;
+    const model = new ScriptedModel([
+      { text: 'calling echo', toolCalls: [{ id: callId, name: 'echo', input: 'private input' }] },
+      { text: 'private final response', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'echo',
+      description: 'Returns its input.',
+      inputSchema: { type: 'string' },
+      execute: async () => ({ status: 'success', output: 'private output' }),
+    });
+    const traceEvents: ExecutionTraceEvent[] = [];
+
+    const result = await runTurn(
+      createTestAgent(model, new InMemorySession(), tools),
+      'private user input',
+      createTestTrace(traceEvents),
+    );
+
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      'turn.started',
+      'model.started',
+      'model.completed',
+      'tool.started',
+      'tool.completed',
+      'model.started',
+      'model.completed',
+      'turn.completed',
+    ]);
+    expect(traceEvents.every((event) => event.turnId === result.turnId)).toBe(true);
+
+    const modelStarted = traceEvents.filter(
+      (event): event is Extract<ExecutionTraceEvent, { type: 'model.started' }> => event.type === 'model.started',
+    );
+    expect(modelStarted).toMatchObject([
+      { messageCount: 1, toolDefinitionCount: 1 },
+      { messageCount: 3, toolDefinitionCount: 1 },
+    ]);
+
+    const modelCompleted = traceEvents.filter(
+      (event): event is Extract<ExecutionTraceEvent, { type: 'model.completed' }> => event.type === 'model.completed',
+    );
+    expect(modelCompleted).toMatchObject([
+      { toolCallCount: 1, hasText: true },
+      { toolCallCount: 0, hasText: true },
+    ]);
+
+    const toolStarted = traceEvents.find(
+      (event): event is Extract<ExecutionTraceEvent, { type: 'tool.started' }> => event.type === 'tool.started',
+    );
+    expect(toolStarted).toMatchObject({
+      stepId: modelStarted[0]?.stepId,
+      toolCallId: callId,
+      toolName: 'echo',
+    });
+    expect(traceEvents.filter((event) => 'durationMs' in event)
+      .every((event) => event.durationMs >= 0)).toBe(true);
+    expect(traceEvents).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ input: expect.anything() }),
+      expect.objectContaining({ output: expect.anything() }),
+      expect.objectContaining({ content: expect.anything() }),
+    ]));
+  });
+
+  it('traces a Tool error result without changing Agent Loop behavior', async () => {
+    const callId = 'failed-call' as ToolCallId;
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'failing', input: null }] },
+      { text: 'handled failure', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'failing',
+      description: 'Returns an error.',
+      inputSchema: {},
+      execute: async () => ({ status: 'error', message: 'controlled failure' }),
+    });
+    const session = new InMemorySession();
+    const traceEvents: ExecutionTraceEvent[] = [];
+
+    const result = await runTurn(
+      createTestAgent(model, session, tools),
+      'run failing tool',
+      createTestTrace(traceEvents),
+    );
+
+    expect(result.response.text).toBe('handled failure');
+    expect(traceEvents.find((event) => event.type === 'tool.failed')).toMatchObject({
+      type: 'tool.failed',
+      toolCallId: callId,
+      toolName: 'failing',
+      errorMessage: 'controlled failure',
+    });
+    expect(session.events().find((event) => event.type === 'tool.result')).toMatchObject({
+      result: { status: 'error', message: 'controlled failure' },
+    });
+    expect(traceEvents.at(-1)?.type).toBe('turn.completed');
+  });
+
+  it('traces Model and Turn failures while preserving the original Error', async () => {
+    const failure = new TypeError('model unavailable');
+    const model: Model = { complete: async () => { throw failure; } };
+    const traceEvents: ExecutionTraceEvent[] = [];
+
+    await expect(runTurn(
+      createTestAgent(model),
+      'private user input',
+      createTestTrace(traceEvents),
+    )).rejects.toBe(failure);
+
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      'turn.started',
+      'model.started',
+      'model.failed',
+      'turn.failed',
+    ]);
+    expect(traceEvents.find((event) => event.type === 'model.failed')).toMatchObject({
+      errorName: 'TypeError',
+      errorMessage: 'model unavailable',
+    });
+    expect(traceEvents.at(-1)).toMatchObject({
+      type: 'turn.failed',
+      errorName: 'TypeError',
+      errorMessage: 'model unavailable',
+    });
   });
 });

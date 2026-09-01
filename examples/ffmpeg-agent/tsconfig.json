@@ -13,6 +13,7 @@
     { "path": "../../packages/tools" },
     { "path": "../../packages/agent" },
     { "path": "../../packages/agent-loop" },
+    { "path": "../../packages/execution-trace" },
     { "path": "../../packages/video-ffmpeg" },
     { "path": "../../packages/vision-openai" },
     { "path": "../../packages/speech-whisper-cpp" }
