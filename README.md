@@ -81,7 +81,7 @@ pnpm check
 
 `pnpm check` 包含源码和测试类型检查、全部测试、稳定架构边界检查和 `git diff --check`。门禁定义与 CI 入口以 [`docs/engineering.md`](docs/engineering.md#step-3-automated-validation自动化验证) 为准；当前架构职责和不变量以 [`docs/architecture.md`](docs/architecture.md) 为准。
 
-`ffmpeg-agent` 每次处理用户输入时会在 stderr 显示 `Trace: <traceId>`，并把本地执行诊断追加到 `logs/agent-trace.jsonl`。Trace 只记录关联 ID、事件类型、计数、状态、耗时和错误信息，不记录完整用户 Prompt、Model 请求或响应、Tool 输入或输出、Transcript、Vision 分析、API Key 或环境变量值。Session（会话）仍保存模型可见业务事实，Trace（执行追踪）只用于运行诊断；详细边界与事件定义见 [`docs/architecture.md`](docs/architecture.md#agent-execution-trace智能体执行追踪)。
+`ffmpeg-agent` 每次处理用户输入时会在 stderr 显示 `Trace: <traceId>`，并把本地执行诊断追加到 `logs/agent-trace.jsonl`。Trace 只记录关联 ID、事件类型、计数、状态、耗时和受控错误定位信息，不记录完整用户 Prompt、Model 请求或响应、Tool 输入或输出、Transcript、Vision 分析、API Key 或环境变量值。Session（会话）仍保存模型可见业务事实，Trace（执行追踪）只用于运行诊断；详细边界与事件定义见 [`docs/architecture.md`](docs/architecture.md#agent-execution-trace智能体执行追踪)。
 
 # Development Workflow（开发流程）
 

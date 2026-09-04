@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
-import { JsonlExecutionTrace } from '@agent-desktop/execution-trace';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
@@ -25,6 +24,7 @@ import {
   SetSpeedTool,
   TrimVideoTool,
 } from '@agent-desktop/video-ffmpeg';
+import { createJsonlTrace } from './trace.ts';
 
 function formatToolResult(event: ToolResultEvent): string {
   if (event.result.status === 'error') return event.result.message;
@@ -117,9 +117,9 @@ async function runCli(
 
       const eventStart = agent.session.events().length;
       await mkdir('logs', { recursive: true });
-      const trace = new JsonlExecutionTrace(join('logs', 'agent-trace.jsonl'));
+      const trace = createJsonlTrace(join('logs', 'agent-trace.jsonl'));
       stderr.write(`Trace: ${trace.id}\n`);
-      const result = await runTurn(agent, userInput, trace);
+      const result = await runTurn(agent, userInput, trace.write);
       const turnEvents = agent.session.events().slice(eventStart);
 
       printTurnEvents(turnEvents);

@@ -3,18 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
-import { JsonlExecutionTrace } from '../src/index.js';
+import { createJsonlTrace } from '../src/trace.js';
 
 type TurnStartedEvent = Extract<ExecutionTraceEvent, { type: 'turn.started' }>;
 
-describe('JsonlExecutionTrace', () => {
+describe('createJsonlTrace', () => {
   it('writes ordered events as JSONL with one stable traceId and timestamps', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'agent-desktop-trace-'));
     const tracePath = join(workspace, 'agent-trace.jsonl');
     const turnId = 'turn-1' as TurnStartedEvent['turnId'];
 
     try {
-      const trace = new JsonlExecutionTrace(tracePath);
+      const trace = createJsonlTrace(tracePath);
       expect(trace.id).toMatch(/^[0-9a-f-]{36}$/);
 
       await trace.write({ type: 'turn.started', turnId });

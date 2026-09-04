@@ -54,12 +54,8 @@ function eventTypes(session: InMemorySession): string[] {
 }
 
 function createTestTrace(events: ExecutionTraceEvent[]): ExecutionTrace {
-  return {
-    id: 'trace-test',
-    write(event): Promise<void> {
-      events.push(event);
-      return Promise.resolve();
-    },
+  return async (event: ExecutionTraceEvent) => {
+    events.push(event);
   };
 }
 

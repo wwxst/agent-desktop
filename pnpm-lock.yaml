@@ -74,9 +74,6 @@ importers:
       '@agent-desktop/model':
         specifier: workspace:*
         version: link:../../packages/model
-      '@agent-desktop/execution-trace':
-        specifier: workspace:*
-        version: link:../../packages/execution-trace
       '@agent-desktop/model-deepseek':
         specifier: workspace:*
         version: link:../../packages/model-deepseek
@@ -125,12 +122,6 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../session
-
-  packages/execution-trace:
-    dependencies:
-      '@agent-desktop/agent-loop':
-        specifier: workspace:*
-        version: link:../agent-loop
 
   packages/model: {}
 

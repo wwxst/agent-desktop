@@ -23,10 +23,7 @@ export type ExecutionTraceEvent =
   | { readonly type: 'turn.failed'; readonly turnId: TurnId; readonly durationMs: number; readonly errorName: string; readonly errorMessage: string };
 
 /** Agent Loop 产生事件，具体持久化方式由当前生产入口提供。 */
-export interface ExecutionTrace {
-  readonly id: string;
-  write(event: ExecutionTraceEvent): Promise<void>;
-}
+export type ExecutionTrace = (event: ExecutionTraceEvent) => void | Promise<void>;
 
 function createTurnId(): TurnId {
   // Node.js 原生 UUID 已满足唯一性需求，类型断言只负责附加编译期品牌。
@@ -110,7 +107,7 @@ async function executeToolCall(
     input: toolCall.input,
   });
 
-  await trace?.write({
+  await trace?.({
     type: 'tool.started',
     turnId,
     stepId,
@@ -139,7 +136,7 @@ async function executeToolCall(
 
   const durationMs = Date.now() - startedAt;
   if (result.status === 'success') {
-    await trace?.write({
+    await trace?.({
       type: 'tool.completed',
       turnId,
       stepId,
@@ -148,7 +145,7 @@ async function executeToolCall(
       durationMs,
     });
   } else {
-    await trace?.write(errorName === undefined
+    await trace?.(errorName === undefined
       ? {
           type: 'tool.failed',
           turnId,
@@ -184,7 +181,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
   let stepCount = 0;
   const turnStartedAt = Date.now();
 
-  await trace?.write({ type: 'turn.started', turnId });
+  await trace?.({ type: 'turn.started', turnId });
 
   try {
     // Turn 生命周期先于用户消息写入，固定 Session 中的事实顺序。
@@ -200,7 +197,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
       // System Prompt、历史消息和工具描述都从 Agent 的当前依赖即时构建。
       const messages = buildModelMessages(agent.session.events());
       const tools = buildToolDefinitions(agent);
-      await trace?.write({
+      await trace?.({
         type: 'model.started',
         turnId,
         stepId,
@@ -219,7 +216,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
       } catch (error) {
         // 非 Error 抛出值继续直接传播，不为 Trace 制造默认错误文本。
         if (!(error instanceof Error)) throw error;
-        await trace?.write({
+        await trace?.({
           type: 'model.failed',
           turnId,
           stepId,
@@ -230,7 +227,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
         throw error;
       }
 
-      await trace?.write({
+      await trace?.({
         type: 'model.completed',
         turnId,
         stepId,
@@ -255,7 +252,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
       if (response.toolCalls.length === 0) {
         // 零 Tool Call 是 MVP 的自然终止条件，完成 Turn 后返回最后模型响应。
         agent.session.append({ type: 'turn.completed', turnId });
-        await trace?.write({
+        await trace?.({
           type: 'turn.completed',
           turnId,
           durationMs: Date.now() - turnStartedAt,
@@ -267,7 +264,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
   } catch (error) {
     // runTurn 的 Error 异常记录后仍按原语义向上传播。
     if (!(error instanceof Error)) throw error;
-    await trace?.write({
+    await trace?.({
       type: 'turn.failed',
       turnId,
       durationMs: Date.now() - turnStartedAt,
