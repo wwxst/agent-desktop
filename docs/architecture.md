@@ -29,6 +29,21 @@
 
 核心关系可以概括为：Agent 持有 Model、Session、Tool Registry 和 System Prompt；Agent Loop 通过 Agent 使用这些能力；Tool Registry 管理当前 Agent 可以调用的 Tools。
 
+### Video Agent Application Layer（视频智能体应用层）
+
+`@agent-desktop/video-agent` 负责组装当前正式视频 Agent 的 Model、InMemorySession、System Prompt 和视频相关 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace Writer。当前 `examples/ffmpeg-agent` 负责读取配置、管理交互和 Trace，并调用 `createVideoAgent(...)`；未来桌面客户端可以复用同一应用层入口。
+
+```text
+Video Agent Application
+视频智能体应用层
+        │
+        ├── examples/ffmpeg-agent
+        │   CLI（命令行入口）
+        │
+        └── Future Desktop App
+            未来桌面客户端
+```
+
 ## Core Concepts（核心概念）
 
 每个核心概念都必须有清晰职责，并且能够在不阅读内部实现的情况下被其他模块使用。

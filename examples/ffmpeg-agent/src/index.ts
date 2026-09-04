@@ -3,28 +3,10 @@ import { stderr } from 'node:process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import type { Agent } from '@agent-desktop/agent';
 import { runTurn } from '@agent-desktop/agent-loop';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
-import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
-import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
-import { InMemoryToolRegistry } from '@agent-desktop/tools';
-import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
-import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
+import { type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
+import { createVideoAgent } from '@agent-desktop/video-agent';
 import { createJsonlTrace } from './trace.ts';
-import {
-  AddAudioTool,
-  AddSubtitlesTool,
-  ConcatVideosTool,
-  CropVideoTool,
-  ExtractAudioTool,
-  ExtractVideoFramesTool,
-  ExtractVideoRangeFramesTool,
-  ProbeMediaTool,
-  ResizeVideoTool,
-  SetSpeedTool,
-  TrimVideoTool,
-} from '@agent-desktop/video-ffmpeg';
 
 function formatToolResult(event: ToolResultEvent): string {
   if (event.result.status === 'error') return event.result.message;
@@ -52,58 +34,17 @@ async function runCli(
   whisperModelPath: string,
   whisperCommand: string | undefined,
   visionApiKey: string,
+  deepSeekBaseUrl: string | undefined,
   visionBaseUrl?: string,
 ): Promise<void> {
-  const tools = new InMemoryToolRegistry();
-  tools.register(new ProbeMediaTool());
-  tools.register(new ExtractVideoFramesTool());
-  tools.register(new ExtractVideoRangeFramesTool());
-  tools.register(new ExtractAudioTool());
-  tools.register(new AnalyzeImagesTool(
-    visionBaseUrl === undefined
-      ? { apiKey: visionApiKey }
-      : { apiKey: visionApiKey, baseUrl: visionBaseUrl },
-  ));
-  tools.register(new TranscribeAudioTool(
-    whisperCommand === undefined
-      ? { modelPath: whisperModelPath }
-      : { modelPath: whisperModelPath, command: whisperCommand },
-  ));
-  tools.register(new TrimVideoTool());
-  tools.register(new ConcatVideosTool());
-  tools.register(new AddAudioTool());
-  tools.register(new AddSubtitlesTool());
-  tools.register(new ResizeVideoTool());
-  tools.register(new CropVideoTool());
-  tools.register(new SetSpeedTool());
-
-  const agent: Agent = {
-    model: new DeepSeekModel({ apiKey }),
-    session: new InMemorySession(),
-    tools,
-    systemPrompt: new StaticSystemPrompt([
-      '你是一个视频处理 Agent。',
-      '需要读取视频信息、裁剪时间、拼接、替换音频、添加字幕、调整分辨率、裁剪画面或改变播放速度时，使用提供的 FFmpeg tools。',
-      '当用户询问视频画面内容，或需要理解画面才能决定下一步时，先使用 extract_video_frames，再把返回的图片路径和时间戳交给 analyze_images。',
-      '视觉工具只负责观察并返回描述；根据视觉结果回答用户，或继续执行视频处理 Tool，不要让视觉模型决定剪辑方案。',
-      '当用户要求了解视频中的对白、旁白、口播或主要语音内容时，使用 extract_audio 生成标准 WAV，再使用 transcribe_audio 获取完整 text 和 segments，然后根据结果回答或继续推理。',
-      'transcribe_audio 返回的 segments.start、segments.end 和 segments.text 表示每段语音在视频第几秒说了什么；需要结合该时段画面时，继续使用 extract_video_range_frames 和 analyze_images。',
-      'transcribe_audio 只负责把 WAV 转成带段落时间轴的文字，不负责总结、剪辑决策或字幕生成。',
-      '当用户要求按对白内容删除、按语义保留或删除、删除废话，或保留某个主题的部分时，优先使用 extract_audio 和 transcribe_audio；根据 segments.start、segments.end 和 segments.text 找到候选保留区间。',
-      '如果语音时间轴已经足够确定剪辑边界，直接使用 trim_video，不要额外调用 Vision；只有语义边界需要画面确认时，才对候选区间使用 extract_video_range_frames 和 analyze_images。',
-      '抽取的画面只是采样，时间戳只能作为近似时间依据，不能假装内容变化精确发生在某张采样帧；边界影响明显时必须继续缩小范围确认。',
-      '每个保留片段都要分别确认内容进入和退出的近似边界，不能因为目标内容靠近视频开头或结尾就默认保留到首尾；范围内出现后续不同内容时必须继续检查退出边界。',
-      '剪辑决定由你综合语音时间轴和必要的视觉 Tool Result 作出；确定多个保留范围和顺序后，分别从原视频使用 trim_video 生成片段，再用 concat_videos 生成最终文件，不要要求视觉模型输出剪辑计划。',
-      // 一个自然语言编辑请求对用户是一个 Turn；多项操作由 Agent Loop 中的多个 Step 完成。
-      '一次自然语言视频编辑请求就是一个 Turn；如果请求包含多个操作，必须在同一个 Turn 中通过多个连续的 Tool Call 和 Step 完成。',
-      '只有前一个 Tool 成功后才能继续下一个操作；Tool 返回 error 时必须让模型看到错误，并且不能声称任务成功。',
-      '同一条处理链需要继续处理上一步结果时，使用上一个视频 Tool 产生的 outputPath；多个不连续保留区间应分别从原视频裁剪，再按语义顺序拼接。',
-      '中间文件放在最终 outputPath 的同一目录，文件名由你根据需要决定；不要自动删除中间文件。',
-      'Tool 的选择和顺序由你根据用户请求决定，不要因为某个 Tool 可用就固定调用它；例如固定秒数裁剪可以直接使用 trim_video，不需要语音识别或视觉分析。',
-      '不要在执行前输出单独的计划，直接调用完成当前请求所需的 Tool；最后一个 Tool 必须写入用户要求的最终 outputPath。',
-      '不要声称已经处理文件，除非最后的 Tool 实际执行成功。',
-    ].join('\n')),
-  };
+  const agent = createVideoAgent({
+    deepSeekApiKey: apiKey,
+    whisperModelPath,
+    visionApiKey,
+    ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
+    ...(whisperCommand === undefined ? {} : { whisperCliPath: whisperCommand }),
+    ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
+  });
   const terminal = createInterface({ input, output });
 
   output.write('Agent Desktop FFmpeg Agent\n\n');
@@ -154,6 +95,7 @@ async function main(): Promise<void> {
     whisperModelPath,
     process.env.WHISPER_CLI_PATH,
     process.env.OPENAI_API_KEY ?? '',
+    process.env.DEEPSEEK_BASE_URL,
     process.env.OPENAI_BASE_URL,
   );
 }

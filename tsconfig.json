@@ -9,6 +9,7 @@
     { "path": "./packages/agent-loop" },
     { "path": "./packages/model-deepseek" },
     { "path": "./packages/video-ffmpeg" },
+    { "path": "./packages/video-agent" },
     { "path": "./packages/vision-openai" },
     { "path": "./packages/speech-whisper-cpp" },
     { "path": "./examples/echo-agent" },

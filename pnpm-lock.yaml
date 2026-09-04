@@ -74,9 +74,6 @@ importers:
       '@agent-desktop/model':
         specifier: workspace:*
         version: link:../../packages/model
-      '@agent-desktop/model-deepseek':
-        specifier: workspace:*
-        version: link:../../packages/model-deepseek
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../../packages/session
@@ -89,6 +86,9 @@ importers:
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../../packages/tools
+      '@agent-desktop/video-agent':
+        specifier: workspace:*
+        version: link:../../packages/video-agent
       '@agent-desktop/video-ffmpeg':
         specifier: workspace:*
         version: link:../../packages/video-ffmpeg
@@ -153,6 +153,33 @@ importers:
       '@agent-desktop/model':
         specifier: workspace:*
         version: link:../model
+
+  packages/video-agent:
+    dependencies:
+      '@agent-desktop/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@agent-desktop/model-deepseek':
+        specifier: workspace:*
+        version: link:../model-deepseek
+      '@agent-desktop/session':
+        specifier: workspace:*
+        version: link:../session
+      '@agent-desktop/speech-whisper-cpp':
+        specifier: workspace:*
+        version: link:../speech-whisper-cpp
+      '@agent-desktop/system-prompt':
+        specifier: workspace:*
+        version: link:../system-prompt
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../tools
+      '@agent-desktop/video-ffmpeg':
+        specifier: workspace:*
+        version: link:../video-ffmpeg
+      '@agent-desktop/vision-openai':
+        specifier: workspace:*
+        version: link:../vision-openai
 
   packages/video-ffmpeg:
     dependencies:

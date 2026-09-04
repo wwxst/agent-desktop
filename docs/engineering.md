@@ -99,12 +99,13 @@ examples/ffmpeg-agent/
 @agent-desktop/video-ffmpeg            FFmpeg 视频工具包
 @agent-desktop/vision-openai           Vision 视觉工具包
 @agent-desktop/speech-whisper-cpp      whisper.cpp 本地语音时间轴工具包
+@agent-desktop/video-agent             视频智能体应用层包
 @agent-desktop/example-echo-agent      Echo Agent 示例
 @agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
 @agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。Agent Loop 只暴露最小 Trace callback（追踪回调）契约；`ffmpeg-agent` 在自身 `src/trace.ts` 中把运行诊断事件写入本地 JSONL，不属于 Agent Core。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；三个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。Agent Loop 只暴露最小 Trace callback（追踪回调）契约；`ffmpeg-agent` 在自身 `src/trace.ts` 中把运行诊断事件写入本地 JSONL，不属于 Agent Core。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；`@agent-desktop/video-agent` 是组装正式视频 Agent 的应用层包，不承担 CLI、UI 或持久化；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
@@ -125,7 +126,7 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 具体 Tool package 可以依赖 tools，Core package 不能反向依赖具体 Tool package。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，三个 example 只依赖各自实际使用的 package；`ffmpeg-agent` 的 Trace Writer 直接消费 `agent-loop` 的 Trace callback（追踪回调）类型。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool 和 `session`，三个 example 只依赖各自实际使用的 package；`ffmpeg-agent` 的 Trace Writer 直接消费 `agent-loop` 的 Trace callback（追踪回调）类型。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 

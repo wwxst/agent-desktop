@@ -11,12 +11,14 @@ English status                    中文状态                      说明
 Video Agent MVP                   视频智能体最小可行版本        v0.0.2 已完成。
 Local Speech Understanding MVP    本地语音理解最小可行版本      已通过真实 whisper.cpp 端到端验证。
 Timeline-aware Understanding      带时间轴的视频内容理解        已通过真实 whisper.cpp 与 DeepSeek 端到端验证。
-Agent Execution Trace MVP         智能体全链路执行日志最小版本  运行诊断事件写入本地 JSONL；本次真实成功/失败链路为 SKIP（环境缺少外部依赖）。
+Agent Execution Trace MVP         智能体全链路执行日志最小版本  运行诊断事件写入本地 JSONL；真实成功/失败链路已验证。
+Semantic Video Editing             语义视频剪辑              已完成单区间、多区间真实语义剪辑并合并 `main`。
+Video Agent Application Layer      视频智能体应用层            当前从 `ffmpeg-agent` 提取正式视频 Agent 组装边界。
 ```
 
 当前 `ffmpeg-agent` 为每个用户 Turn 生成独立 `traceId`，并将 Turn、Model 和 Tool 的执行状态与耗时写入本地 JSONL；Trace 不参与 Agent 推理。
 
-下一阶段尚未开始。
+Commit 17 视频智能体应用层正在开发中。
 
 # Engineering Rules（工程规则）
 

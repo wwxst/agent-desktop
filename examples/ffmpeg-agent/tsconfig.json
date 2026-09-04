@@ -8,14 +8,8 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../../packages/model-deepseek" },
     { "path": "../../packages/session" },
-    { "path": "../../packages/system-prompt" },
-    { "path": "../../packages/tools" },
-    { "path": "../../packages/agent" },
     { "path": "../../packages/agent-loop" },
-    { "path": "../../packages/video-ffmpeg" },
-    { "path": "../../packages/vision-openai" },
-    { "path": "../../packages/speech-whisper-cpp" }
+    { "path": "../../packages/video-agent" }
   ]
 }

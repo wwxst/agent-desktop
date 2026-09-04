@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../agent" },
+    { "path": "../model-deepseek" },
+    { "path": "../session" },
+    { "path": "../speech-whisper-cpp" },
+    { "path": "../system-prompt" },
+    { "path": "../tools" },
+    { "path": "../video-ffmpeg" },
+    { "path": "../vision-openai" }
+  ]
+}

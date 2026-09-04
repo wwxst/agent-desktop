@@ -1,17 +1,18 @@
 {
-  "name": "@agent-desktop/example-ffmpeg-agent",
+  "name": "@agent-desktop/video-agent",
   "private": true,
   "type": "module",
   "dependencies": {
     "@agent-desktop/agent": "workspace:*",
-    "@agent-desktop/agent-loop": "workspace:*",
-    "@agent-desktop/model": "workspace:*",
+    "@agent-desktop/model-deepseek": "workspace:*",
     "@agent-desktop/session": "workspace:*",
     "@agent-desktop/speech-whisper-cpp": "workspace:*",
     "@agent-desktop/system-prompt": "workspace:*",
     "@agent-desktop/tools": "workspace:*",
-    "@agent-desktop/video-agent": "workspace:*",
     "@agent-desktop/video-ffmpeg": "workspace:*",
     "@agent-desktop/vision-openai": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
   }
 }
