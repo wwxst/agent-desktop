@@ -409,13 +409,13 @@ model.completed    模型完成    durationMs、toolCallCount、hasText
 model.failed       模型失败    durationMs、errorName、errorMessage
 tool.started       工具开始    turnId、stepId、toolCallId、toolName
 tool.completed     工具完成    durationMs
-tool.failed        工具失败    durationMs、errorName（如有）、errorMessage
+tool.failed        工具失败    durationMs、errorName（如有）
 turn.completed     轮次完成    durationMs、stepCount
 turn.failed        轮次失败    durationMs、errorName、errorMessage
 ```
 
 JSONL Writer（JSONL 写入器）在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次写入，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`。正常写入时 Trace 不改变既有错误传播和 Session 行为；Trace 写入本身失败时，`await trace.write` 的异常按程序错误向上暴露。
 
-Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态、耗时和错误信息，不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
+Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态、耗时和 Model/Turn 错误信息；Tool 失败不保存错误消息，避免间接写入 Tool input/output。日志不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
 
 当前不实现日志 UI、上传、搜索、过滤、rotation（轮转）、retention（保留策略）、版本探测、queue（队列）、buffer（缓冲）、retry（重试）、fallback logger（兜底日志器）、OpenTelemetry、ELK、Jaeger、Zipkin 或 Sentry integration；这些能力当前没有生产消费者。

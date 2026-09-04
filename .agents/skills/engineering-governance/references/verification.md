@@ -22,7 +22,7 @@ pnpm check:architecture    Node + TypeScript scanner 的稳定依赖边界检查
 git diff --check           空白和补丁格式检查
 ```
 
-CI 使用 Node.js `24.19.0`、pnpm `11.22.0`，安装锁文件后执行同一 `pnpm check`。本地运行时版本低于声明基线时要在结果中说明；不要把不同运行时下的结果描述成 CI 等价证据。
+CI 使用 Node.js `24.19.0`、pnpm `11.22.0`，安装锁文件后执行同一 `pnpm check`，并对 GitHub 事件基线提交到当前 `HEAD` 的已提交差异执行 `git diff --check`；新分支没有有效基线提交时检查空树到当前 `HEAD`。本地运行时版本低于声明基线时要在结果中说明；不要把不同运行时下的结果描述成 CI 等价证据。
 
 Architecture Gate 当前检查：真实 `src/` 和 `tests/` imports 必须在 package manifest 声明；Core 不得依赖 React、React DOM、Electron、具体 Provider 或具体 Tool；packages 不得依赖 examples；只有包含 `package.json` 的目录进入扫描。未被静态引用的声明只是 Review signal，不是删除证据。脚本不假装判断运行时注册、生命周期、业务顺序或外部服务结果。
 

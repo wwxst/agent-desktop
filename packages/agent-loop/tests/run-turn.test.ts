@@ -213,11 +213,12 @@ describe('runTurn', () => {
       'model.completed',
       'turn.completed',
     ]);
-    expect(traceEvents.find((event) => event.type === 'tool.failed')).toMatchObject({
+    const failedEvent = traceEvents.find((event) => event.type === 'tool.failed');
+    expect(failedEvent).toMatchObject({
       toolCallId: callId,
       toolName: 'missing',
-      errorMessage: 'Tool not found: missing',
     });
+    expect(failedEvent).not.toHaveProperty('errorMessage');
   });
 
   it('converts a thrown tool error to an error result and continues', async () => {
@@ -435,7 +436,7 @@ describe('runTurn', () => {
       name: 'failing',
       description: 'Returns an error.',
       inputSchema: {},
-      execute: async () => ({ status: 'error', message: 'controlled failure' }),
+      execute: async () => ({ status: 'error', message: 'Failed to open E:\\private\\clip.mp4' }),
     });
     const session = new InMemorySession();
     const traceEvents: ExecutionTraceEvent[] = [];
@@ -447,14 +448,15 @@ describe('runTurn', () => {
     );
 
     expect(result.response.text).toBe('handled failure');
-    expect(traceEvents.find((event) => event.type === 'tool.failed')).toMatchObject({
+    const failedEvent = traceEvents.find((event) => event.type === 'tool.failed');
+    expect(failedEvent).toMatchObject({
       type: 'tool.failed',
       toolCallId: callId,
       toolName: 'failing',
-      errorMessage: 'controlled failure',
     });
+    expect(failedEvent).not.toHaveProperty('errorMessage');
     expect(session.events().find((event) => event.type === 'tool.result')).toMatchObject({
-      result: { status: 'error', message: 'controlled failure' },
+      result: { status: 'error', message: 'Failed to open E:\\private\\clip.mp4' },
     });
     expect(traceEvents.at(-1)?.type).toBe('turn.completed');
   });

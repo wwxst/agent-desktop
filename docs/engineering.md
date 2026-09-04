@@ -217,7 +217,7 @@ pnpm install --frozen-lockfile
 pnpm check
 ```
 
-`pnpm check` 是本地机械检查的唯一入口，依次执行 `pnpm typecheck`、`pnpm typecheck:tests`、`pnpm test`、`pnpm check:architecture` 和 `git diff --check`。CI 在准备相同版本的 Node.js 与 pnpm 后执行同一入口。
+`pnpm check` 是本地机械检查的唯一入口，依次执行 `pnpm typecheck`、`pnpm typecheck:tests`、`pnpm test`、`pnpm check:architecture` 和 `git diff --check`。CI 在准备相同版本的 Node.js 与 pnpm 后执行同一入口，并额外使用 GitHub 事件的基线提交到当前 `HEAD` 执行 `git diff --check`；新分支没有有效基线提交时检查空树到当前 `HEAD`，确保干净检出中的已提交差异也进入补丁格式检查。
 
 ### Architecture Gate（架构门禁）
 

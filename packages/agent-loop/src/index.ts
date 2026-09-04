@@ -18,7 +18,7 @@ export type ExecutionTraceEvent =
   | { readonly type: 'model.failed'; readonly turnId: TurnId; readonly stepId: StepId; readonly durationMs: number; readonly errorName: string; readonly errorMessage: string }
   | { readonly type: 'tool.started'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string }
   | { readonly type: 'tool.completed'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string; readonly durationMs: number }
-  | { readonly type: 'tool.failed'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string; readonly durationMs: number; readonly errorName?: string; readonly errorMessage: string }
+  | { readonly type: 'tool.failed'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string; readonly durationMs: number; readonly errorName?: string }
   | { readonly type: 'turn.completed'; readonly turnId: TurnId; readonly durationMs: number; readonly stepCount: number }
   | { readonly type: 'turn.failed'; readonly turnId: TurnId; readonly durationMs: number; readonly errorName: string; readonly errorMessage: string };
 
@@ -156,7 +156,6 @@ async function executeToolCall(
           toolCallId: toolCall.id,
           toolName: toolCall.name,
           durationMs,
-          errorMessage: result.message,
         }
       : {
           type: 'tool.failed',
@@ -166,7 +165,6 @@ async function executeToolCall(
           toolName: toolCall.name,
           durationMs,
           errorName,
-          errorMessage: result.message,
         });
   }
 
