@@ -368,7 +368,7 @@ Malformed tool call       工具调用格式错误    不执行未知输入，�
 
 ## Agent Execution Trace（智能体执行追踪）
 
-Agent Execution Trace（智能体执行追踪）用于定位一次 Agent Turn 在 Model、Tool 或 Turn 哪一层发生问题。Agent Loop 通过最小回调产生语义事件；当前 `ffmpeg-agent` 私有的 `src/trace.ts` 将事件追加到本地 JSONL，并为每次用户输入创建独立 `traceId`。
+Agent Execution Trace（智能体执行追踪）用于定位一次 Agent Turn 在 Model、Tool 或 Turn 哪一层发生问题。Agent Loop 通过最小 `ExecutionTrace` callback（执行追踪回调）产生语义事件，当前 `ffmpeg-agent` 在入口内将事件追加到本地 JSONL，并为每次用户输入创建独立 `traceId`。
 
 Session（会话）与 Trace 必须保持不同职责：
 
@@ -414,8 +414,8 @@ turn.completed     轮次完成    durationMs、stepCount
 turn.failed        轮次失败    durationMs、errorName、errorMessage
 ```
 
-JSONL Writer（JSONL 写入器）是 `ffmpeg-agent` 私有辅助文件（helper），在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次回调，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`。正常写入时 Trace 不改变既有错误传播和 Session 行为；Trace 写入本身失败时，回调异常按程序错误向上暴露。
+JSONL Writer（JSONL 写入器）在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次 callback（回调）写入，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`。正常写入时 Trace 不改变既有错误传播和 Session 行为；Trace 写入本身失败时，callback 的异常按程序错误向上暴露。
 
-Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态、耗时和 Model/Turn 错误信息；Tool 失败不保存错误消息，避免间接写入 Tool input/output。日志不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
+Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态和 Model/Turn 错误信息；Tool 失败不保存错误消息，避免间接写入 Tool input/output。日志不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
 
 当前不实现日志 UI、上传、搜索、过滤、rotation（轮转）、retention（保留策略）、版本探测、queue（队列）、buffer（缓冲）、retry（重试）、fallback logger（兜底日志器）、OpenTelemetry、ELK、Jaeger、Zipkin 或 Sentry integration；这些能力当前没有生产消费者。

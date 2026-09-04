@@ -11,6 +11,7 @@ import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
 import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
+import { createJsonlTrace } from './trace.ts';
 import {
   AddAudioTool,
   AddSubtitlesTool,
@@ -24,7 +25,6 @@ import {
   SetSpeedTool,
   TrimVideoTool,
 } from '@agent-desktop/video-ffmpeg';
-import { createJsonlTrace } from './trace.ts';
 
 function formatToolResult(event: ToolResultEvent): string {
   if (event.result.status === 'error') return event.result.message;
