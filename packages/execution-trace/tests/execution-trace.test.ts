@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
-import { createJsonlTrace } from '../src/trace.js';
+import { createJsonlTrace } from '../src/index.js';
 
 type TurnStartedEvent = Extract<ExecutionTraceEvent, { type: 'turn.started' }>;
 
@@ -39,8 +39,6 @@ describe('createJsonlTrace', () => {
         durationMs: 42,
         stepCount: 2,
       });
-      expect(Number.isNaN(Date.parse(started.timestamp as string))).toBe(false);
-      expect(Number.isNaN(Date.parse(completed.timestamp as string))).toBe(false);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

@@ -13,12 +13,13 @@ Local Speech Understanding MVP    本地语音理解最小可行版本      已�
 Timeline-aware Understanding      带时间轴的视频内容理解        已通过真实 whisper.cpp 与 DeepSeek 端到端验证。
 Agent Execution Trace MVP         智能体全链路执行日志最小版本  运行诊断事件写入本地 JSONL；真实成功/失败链路已验证。
 Semantic Video Editing             语义视频剪辑              已完成单区间、多区间真实语义剪辑并合并 `main`。
-Video Agent Application Layer      视频智能体应用层            当前从 `ffmpeg-agent` 提取正式视频 Agent 组装边界。
+Video Agent Application Layer      视频智能体应用层            已完成并合并 `main`，由 CLI 与 Desktop 共同复用。
+Agent Desktop Shell                智能体桌面应用外壳          Commit 18 功能分支开发已完成，尚未合并 `main`。
 ```
 
-当前 `ffmpeg-agent` 为每个用户 Turn 生成独立 `traceId`，并将 Turn、Model 和 Tool 的执行状态与耗时写入本地 JSONL；Trace 不参与 Agent 推理。
+当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
 
-Commit 17 视频智能体应用层正在开发中。
+Commit 18 已在 `feature/agent-desktop-shell` 功能分支完成开发，尚未合并 `main`；Core 与 `agent-loop` 未修改；下一阶段尚未开始。
 
 # Engineering Rules（工程规则）
 

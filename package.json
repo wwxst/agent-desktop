@@ -14,7 +14,9 @@
     "check": "pnpm typecheck && pnpm typecheck:tests && pnpm test && pnpm check:architecture && git diff --check",
     "echo-agent": "node --experimental-transform-types examples/echo-agent/src/index.ts",
     "deepseek-agent": "node --experimental-transform-types examples/deepseek-agent/src/index.ts",
-    "ffmpeg-agent": "node --experimental-transform-types examples/ffmpeg-agent/src/index.ts"
+    "ffmpeg-agent": "node --experimental-transform-types examples/ffmpeg-agent/src/index.ts",
+    "desktop:build": "pnpm --filter @agent-desktop/desktop build",
+    "desktop": "pnpm --filter @agent-desktop/desktop start"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

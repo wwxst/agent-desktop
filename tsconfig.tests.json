@@ -6,11 +6,15 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
+    "jsx": "react-jsx",
     "types": ["node", "vitest"]
   },
   "include": [
     "packages/*/tests/**/*.ts",
     "examples/*/tests/**/*.ts",
+    "apps/*/tests/**/*.ts",
+    "apps/*/tests/**/*.tsx",
+    "apps/*/src/**/*.d.ts",
     "scripts/**/*.test.ts"
   ]
 }

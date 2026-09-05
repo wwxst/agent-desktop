@@ -32,6 +32,7 @@ function runArchitectureCheck(cwd: string): Promise<CheckResult> {
 
 async function createFixture(testSource: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'agent-desktop-architecture-test-'));
+  await mkdir(join(root, 'apps'), { recursive: true });
   await mkdir(join(root, 'examples'), { recursive: true });
   await mkdir(join(root, 'packages', 'model', 'src'), { recursive: true });
   await mkdir(join(root, 'packages', 'sample', 'src'), { recursive: true });
@@ -64,6 +65,31 @@ describe('architecture gate', () => {
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(
         '@agent-desktop/sample: imports undeclared workspace dependency @agent-desktop/model',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks workspace imports declared by desktop apps from TSX source', async () => {
+    const root = await createFixture('export {};\n');
+    await mkdir(join(root, 'apps', 'desktop', 'src'), { recursive: true });
+    await writeFile(join(root, 'apps', 'desktop', 'package.json'), JSON.stringify({
+      name: '@agent-desktop/desktop',
+      private: true,
+      type: 'module',
+    }));
+    await writeFile(
+      join(root, 'apps', 'desktop', 'src', 'index.tsx'),
+      "import type { Model } from '@agent-desktop/model';\nvoid (null as Model);\n",
+    );
+
+    try {
+      const result = await runArchitectureCheck(root);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        '@agent-desktop/desktop: imports undeclared workspace dependency @agent-desktop/model',
       );
     } finally {
       await rm(root, { recursive: true, force: true });

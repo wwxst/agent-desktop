@@ -1,3 +1,7 @@
 packages:
   - packages/*
   - examples/*
+  - apps/*
+allowBuilds:
+  electron: true
+  esbuild: true

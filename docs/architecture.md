@@ -1,6 +1,6 @@
 # Agent Desktop Architecture
 
-本文档定义 Agent Runtime MVP（智能体运行时最小可行版本）的核心边界。它描述职责、事实流和依赖方向，不描述 TypeScript 文件结构，也不预先设计 MVP 之后的系统。
+本文档定义 Agent Runtime MVP（智能体运行时最小可行版本）及当前视频智能体应用层的核心边界。它描述职责、事实流和依赖方向，不预先设计当前范围之外的系统。
 
 ## Core Relationship（核心关系）
 
@@ -31,7 +31,7 @@
 
 ### Video Agent Application Layer（视频智能体应用层）
 
-`@agent-desktop/video-agent` 负责组装当前正式视频 Agent 的 Model、InMemorySession、System Prompt 和视频相关 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace Writer。当前 `examples/ffmpeg-agent` 负责读取配置、管理交互和 Trace，并调用 `createVideoAgent(...)`；未来桌面客户端可以复用同一应用层入口。
+`@agent-desktop/video-agent` 负责组装当前正式视频 Agent 的 Model、InMemorySession、System Prompt 和视频相关 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace 持久化。`examples/ffmpeg-agent` 与 `apps/desktop` 负责各自的配置和入口交互，并共同调用 `createVideoAgent(...)`。
 
 ```text
 Video Agent Application
@@ -40,9 +40,24 @@ Video Agent Application
         ├── examples/ffmpeg-agent
         │   CLI（命令行入口）
         │
-        └── Future Desktop App
-            未来桌面客户端
+        └── apps/desktop
+            Desktop（桌面应用入口）
 ```
+
+### Desktop Application Boundary（桌面应用边界）
+
+`apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的单页桌面客户端。它只负责当前视频任务所需的入口和展示：选择视频文件、提交自然语言剪辑任务、展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、展示最终回复并打开输出文件。每个窗口持有一个内存中的 Session（会话）。
+
+```text
+Layer                 中文名称         职责
+Renderer              渲染进程         收集视频选择和自然语言任务，展示回复与 Tool 活动
+Preload contextBridge 预加载安全桥     通过 contextBridge 暴露受限桌面 API
+Electron Main         Electron 主进程  持有窗口 Session，组装并执行视频 Agent
+createVideoAgent      组装视频智能体   创建 Model、Session、System Prompt 和视频 Tool
+runTurn               执行任务轮次     驱动一次 Turn 的 Model 与 Tool 执行
+```
+
+Desktop 不把 Agent Core（智能体核心）逻辑放入 UI，也不修改 Core 或 Agent Loop；历史记录、设置、任务管理和播放器不在当前应用范围内。
 
 ## Core Concepts（核心概念）
 
@@ -383,7 +398,7 @@ Malformed tool call       工具调用格式错误    不执行未知输入，�
 
 ## Agent Execution Trace（智能体执行追踪）
 
-Agent Execution Trace（智能体执行追踪）用于定位一次 Agent Turn 在 Model、Tool 或 Turn 哪一层发生问题。Agent Loop 通过最小 `ExecutionTrace` callback（执行追踪回调）产生语义事件，当前 `ffmpeg-agent` 在入口内将事件追加到本地 JSONL，并为每次用户输入创建独立 `traceId`。
+Agent Execution Trace（智能体执行追踪）用于定位一次 Agent Turn 在 Model、Tool 或 Turn 哪一层发生问题。Agent Loop 通过最小 `ExecutionTrace` callback（执行追踪回调）产生语义事件，`@agent-desktop/execution-trace` 只负责本地 JSONL 持久化，并由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；每次用户输入创建独立 `traceId`。
 
 Session（会话）与 Trace 必须保持不同职责：
 
@@ -431,6 +446,6 @@ turn.failed        轮次失败    durationMs、errorName、errorMessage
 
 JSONL Writer（JSONL 写入器）在每行增加同一个 `traceId` 和写入时的 ISO `timestamp`。Agent Loop 使用 `Date.now()` 计算毫秒耗时，并 `await` 每次 callback（回调）写入，使日志顺序与实际串行执行顺序一致。Tool 返回 `status: error` 时记录 `tool.failed`，但只有 `runTurn` 自身异常退出才记录 `turn.failed`。正常写入时 Trace 不改变既有错误传播和 Session 行为；Trace 写入本身失败时，callback 的异常按程序错误向上暴露。
 
-Trace 当前固定写入运行目录下的 `logs/agent-trace.jsonl`。日志只包含关联 ID、事件类型、计数、状态和 Model/Turn 错误信息；Tool 失败不保存错误消息，避免间接写入 Tool input/output。日志不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
+Trace 当前固定写入仓库根目录下的 `logs/agent-trace.jsonl`。CLI 与 Desktop 都将入口工作目录解析到该路径。日志只包含关联 ID、事件类型、计数、状态和 Model/Turn 错误信息；Tool 失败不保存错误消息，避免间接写入 Tool input/output。日志不保存完整用户 Prompt、Model Request/Response、Tool input/output、Transcript、Vision analysis、图片、视频内容、API Key、环境变量值或错误 stack。
 
-当前不实现日志 UI、上传、搜索、过滤、rotation（轮转）、retention（保留策略）、版本探测、queue（队列）、buffer（缓冲）、retry（重试）、fallback logger（兜底日志器）、OpenTelemetry、ELK、Jaeger、Zipkin 或 Sentry integration；这些能力当前没有生产消费者。
+Desktop 会消费 Trace callback 中的 Tool 活动并展示执行状态，但不提供独立的 Trace 日志 UI。当前不实现日志上传、搜索、过滤、rotation（轮转）、retention（保留策略）、版本探测、queue（队列）、buffer（缓冲）、retry（重试）、fallback logger（兜底日志器）、OpenTelemetry、ELK、Jaeger、Zipkin 或 Sentry integration；这些能力当前没有生产消费者。

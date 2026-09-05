@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/agent-loop" },
+    { "path": "../../packages/execution-trace" },
+    { "path": "../../packages/model" },
+    { "path": "../../packages/session" },
+    { "path": "../../packages/video-agent" }
+  ]
+}

@@ -10,6 +10,7 @@
   "references": [
     { "path": "../../packages/session" },
     { "path": "../../packages/agent-loop" },
+    { "path": "../../packages/execution-trace" },
     { "path": "../../packages/video-agent" }
   ]
 }

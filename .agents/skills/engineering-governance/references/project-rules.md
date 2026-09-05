@@ -4,7 +4,7 @@
 
 ## 产品与阶段
 
-项目使命是开发以视频自动剪辑为核心的 Agent Client。Agent Core 可以保持供应商无关，但新增能力必须服务已确认的视频剪辑需求。当前处于 `0.x`，Timeline-aware Understanding（带时间轴的视频内容理解）和 Agent Execution Trace（智能体执行追踪）已完成并合并到 `main`；下一阶段尚未开始。Commit 14 和 Commit 15 已合并到 `main`，新的能力仍需从功能分支开始。
+项目使命是开发以视频自动剪辑为核心的 Agent Client。Agent Core 可以保持供应商无关，但新增能力必须服务已确认的视频剪辑需求。当前处于 `0.x`，Timeline-aware Understanding（带时间轴的视频内容理解）、Agent Execution Trace（智能体执行追踪）和 Video Agent Application Layer（视频智能体应用层）已完成并合并到 `main`；Commit 18 的 Agent Desktop Shell（智能体桌面应用外壳）功能分支开发已完成，尚未合并 `main`；下一阶段尚未开始。
 
 当前生产意图中的主要能力：
 
@@ -16,7 +16,8 @@ FFmpeg editing                FFmpeg 视频编辑             ffmpeg/ffprobe 进
 Visual inspection             视觉画面观察                抽帧后由 OpenAI Responses API 返回观察
 Speech timeline               语音时间轴                  标准 WAV 交给 whisper.cpp JSON 输出
 Content-aware editing         基于内容剪辑                Agent 根据观察和时间轴选择 trim/concat
-Agent execution trace         智能体执行追踪              ffmpeg-agent 将 Turn、Model 和 Tool 的诊断事件写入本地 JSONL
+Agent execution trace         智能体执行追踪              execution-trace 将 Turn、Model 和 Tool 的诊断事件写入本地 JSONL，由 ffmpeg-agent 与 Desktop 消费
+Desktop application           桌面应用                    Electron 单页入口承载当前视频任务的文件选择、自然语言任务、Tool 活动、最终回复和输出文件打开
 ```
 
 ## 核心调用链
@@ -24,7 +25,15 @@ Agent execution trace         智能体执行追踪              ffmpeg-agent �
 所有变更先沿这条真实链路核对，不按文件名猜测职责：
 
 ```text
-example CLI
+Entry                  中文入口       负责内容
+CLI or Desktop entry   命令行或桌面入口  读取入口配置并提交用户任务
+createVideoAgent       组装视频智能体  组装正式视频 Agent 依赖
+runTurn                执行任务轮次    驱动一次 Turn 的 Model 与 Tool 执行
+```
+
+```text
+CLI or Desktop entry
+  → createVideoAgent
   → runTurn
   → Agent
   → Model.complete / Session.events / ToolRegistry / SystemPrompt.build
@@ -33,11 +42,11 @@ example CLI
   → next Model.complete
 ```
 
-`packages/agent-loop/src/index.ts` 负责 Turn、Step、模型请求、按响应顺序执行 Tool 和结束判断。CLI 只组装依赖并展示事件；Tool 不控制 Loop；Session 是 append-only（只追加）事实来源。
+`packages/agent-loop/src/index.ts` 负责 Turn、Step、模型请求、按响应顺序执行 Tool 和结束判断。CLI 与 Desktop 只组装依赖并展示事件；Tool 不控制 Loop；Session 是 append-only（只追加）事实来源。Desktop 的调用链为 Renderer（渲染进程）→ Preload contextBridge（预加载安全桥）→ Electron Main（Electron 主进程）→ `createVideoAgent` → `runTurn`。
 
 ## Workspace 与依赖图
 
-正式 workspace 只有包含 `package.json` 的 `packages/*` 和 `examples/*` 目录。当前 package 关系以 manifests 和真实 imports 同时为准：
+正式 workspace 只有包含 `package.json` 的 `packages/*`、`examples/*` 和 `apps/*` 目录。当前 package 关系以 manifests 和真实 imports 同时为准：
 
 ```text
 Package                                  Depends on
@@ -53,9 +62,10 @@ Package                                  Depends on
 example-echo-agent                      agent, agent-loop, model, session, system-prompt, tools
 example-deepseek-agent                  agent, agent-loop, model, model-deepseek, session, system-prompt, tools
 example-ffmpeg-agent                    agent, agent-loop, execution-trace, model, model-deepseek, session, speech-whisper-cpp, system-prompt, tools, video-ffmpeg, vision-openai
+apps/desktop                            agent-loop, execution-trace, model, session, video-agent
 ```
 
-Core package 是 `model`、`session`、`system-prompt`、`tools`、`agent` 和 `agent-loop`。`execution-trace` 是独立的运行诊断 package，不属于 Agent Core；`model-deepseek` 是具体 Provider；`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 是具体 Tool/外部边界；三个 example 是可运行组装入口，不属于 Core。
+Core package 是 `model`、`session`、`system-prompt`、`tools`、`agent` 和 `agent-loop`。`execution-trace` 是独立的运行诊断 package，只负责本地 JSONL 持久化，由 `ffmpeg-agent` 与 Desktop 消费，不属于 Agent Core；`model-deepseek` 是具体 Provider；`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 是具体 Tool/外部边界；三个 example 与 `apps/desktop` 是可运行组装入口，不属于 Core。
 
 必须保持：Core 不依赖 UI、具体 Provider 或具体 Tool；Provider 只能适配 Core Model；Tool package 只能使用 Tool/Model 契约；package 依赖必须反映真实 imports；examples 可以向下依赖，packages 不能反向依赖 examples。
 
@@ -105,6 +115,8 @@ ENG-005   No empty shells for future features.                   不为未来功
 
 ## 非目标与边界
 
-当前没有生产消费者的方向包括 Electron/React UI、Trace 日志 UI、日志上传与搜索、Plugin Runtime、Hook/Event Bus、Workflow Engine、统一 E2E Framework、重试基础设施、数据库契约、发布流水线、Mutation/Stress 平台和未来兼容 API。当前 `packages/execution-trace` 由 `ffmpeg-agent` 真实消费，只提供本地 JSONL 运行诊断，不扩展为通用 Trace 平台。
+当前明确不实现的方向包括历史记录、设置、任务管理、播放器、独立 Trace 日志 UI、日志上传与搜索、Plugin Runtime、Hook/Event Bus、Workflow Engine、统一 E2E Framework、重试基础设施、数据库契约、发布流水线、Mutation/Stress 平台和未来兼容 API。Desktop 已消费共享 Trace callback（追踪回调）中的 Tool 活动；`packages/execution-trace` 仍只负责本地 JSONL 运行诊断，不扩展为通用 Trace 平台。
+
+`apps/desktop` 仅在应用包内使用 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4；根 workspace 的 `allowBuilds` 只允许 `electron` 和 `esbuild`。
 
 发现真实需求时，先写 Design（目标、问题、影响范围、非目标）并给出生产调用链和证据；不要因为通用方法论列出该能力就提前实施。

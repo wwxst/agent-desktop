@@ -4,7 +4,7 @@ import process from 'node:process';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
 
 const rootDirectory = process.cwd();
-const workspaceDirectories = ['packages', 'examples'];
+const workspaceDirectories = ['packages', 'examples', 'apps'];
 const corePackages = new Set([
   '@agent-desktop/model',
   '@agent-desktop/session',
@@ -21,15 +21,15 @@ const toolPackages = new Set([
 ]);
 const forbiddenCoreModules = new Set(['react', 'react-dom', 'electron']);
 
-async function findFiles(directory, suffix) {
+async function findFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
 
   for (const entry of entries) {
     const entryPath = join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await findFiles(entryPath, suffix));
-    } else if (entry.isFile() && entry.name.endsWith(suffix)) {
+      files.push(...await findFiles(entryPath));
+    } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))) {
       files.push(entryPath);
     }
   }
@@ -132,7 +132,7 @@ async function sourceImports(directoryPath) {
     const sourceDirectory = join(directoryPath, sourceDirectoryName);
     let files;
     try {
-      files = await findFiles(sourceDirectory, '.ts');
+      files = await findFiles(sourceDirectory);
     } catch (error) {
       // tests 目录按需存在；缺失目录不是架构错误，其他文件系统错误继续暴露。
       if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue;

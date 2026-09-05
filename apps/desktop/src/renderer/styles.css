@@ -1,0 +1,433 @@
+:root {
+  color: #202522;
+  background: #f4f5f2;
+  font-family:
+    Inter, "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #176b57;
+  outline-offset: 2px;
+}
+
+.app-shell {
+  height: 100vh;
+  padding: 0 28px 28px;
+}
+
+.app-header {
+  min-height: 88px;
+  max-width: 1440px;
+  margin: 0 auto;
+  border-bottom: 1px solid #d9ddd8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.app-kicker,
+.section-label {
+  margin: 0 0 4px;
+  color: #6b726e;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0;
+  font-size: 24px;
+  font-weight: 680;
+  letter-spacing: 0;
+}
+
+h2 {
+  margin-bottom: 0;
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: 0;
+}
+
+.runtime-state,
+.activity-count {
+  flex: 0 0 auto;
+  border: 1px solid #c9d1cc;
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: #4f5a54;
+  background: #fafbf9;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workspace {
+  width: 100%;
+  max-width: 1440px;
+  height: calc(100vh - 144px);
+  min-height: 0;
+  margin: 28px auto 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 28px;
+}
+
+.conversation,
+.activity-panel {
+  min-width: 0;
+  border: 1px solid #d9ddd8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.conversation {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.section-heading {
+  min-height: 68px;
+  border-bottom: 1px solid #e4e7e3;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.message-list {
+  min-height: 0;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.empty-message {
+  height: 100%;
+  min-height: 220px;
+  color: #6b726e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.empty-message strong {
+  color: #303632;
+  font-size: 15px;
+}
+
+.message {
+  width: min(680px, 88%);
+  margin-bottom: 20px;
+  border-left: 3px solid #c8ceca;
+  padding: 2px 0 2px 16px;
+}
+
+.message-user {
+  margin-left: auto;
+  border-left-color: #3f7b68;
+}
+
+.message-agent {
+  border-left-color: #34739d;
+}
+
+.message-error {
+  border-left-color: #b1463f;
+}
+
+.message-author,
+.output-label,
+.selected-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #6b726e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.message p {
+  margin-bottom: 0;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.result-meta {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  color: #6b726e;
+  font-size: 12px;
+}
+
+.result-meta code {
+  color: #39413d;
+  overflow-wrap: anywhere;
+}
+
+.output-file {
+  margin-top: 16px;
+  border-top: 1px solid #e5e8e5;
+  padding-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.output-file strong,
+.selected-video strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.composer {
+  border-top: 1px solid #d9ddd8;
+  padding: 20px;
+  background: #fafbf9;
+}
+
+.selected-video,
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.selected-video {
+  margin-bottom: 18px;
+}
+
+.selected-video > div,
+.output-file > div {
+  min-width: 0;
+}
+
+.prompt-field {
+  display: block;
+  color: #3b423e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.prompt-field textarea {
+  width: 100%;
+  min-height: 104px;
+  margin-top: 8px;
+  border: 1px solid #bdc5c0;
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: #202522;
+  background: #ffffff;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.prompt-field textarea::placeholder {
+  color: #919893;
+}
+
+.composer-actions {
+  margin-top: 14px;
+}
+
+.composer-actions > span {
+  color: #777e79;
+  font-size: 12px;
+}
+
+.button {
+  min-height: 36px;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.button-primary {
+  min-width: 88px;
+  border: 1px solid #176b57;
+  color: #ffffff;
+  background: #176b57;
+}
+
+.button-primary:not(:disabled):hover {
+  background: #105846;
+}
+
+.button-secondary {
+  border: 1px solid #b9c1bc;
+  color: #303632;
+  background: #ffffff;
+}
+
+.button-secondary:not(:disabled):hover {
+  border-color: #8c9690;
+  background: #f1f3f0;
+}
+
+.activity-panel {
+  align-self: start;
+  max-height: 100%;
+  min-height: 320px;
+  overflow-y: auto;
+}
+
+.activity-empty {
+  margin: 0;
+  padding: 22px 20px;
+  color: #777e79;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.activity-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-item {
+  min-height: 64px;
+  border-bottom: 1px solid #e8eae7;
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #747b76;
+  font-size: 12px;
+}
+
+.activity-item:last-child {
+  border-bottom: 0;
+}
+
+.activity-item > div {
+  min-width: 0;
+}
+
+.activity-item strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #303632;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.activity-status {
+  font-weight: 700;
+}
+
+.status-running {
+  color: #8a6418;
+}
+
+.status-completed {
+  color: #247058;
+}
+
+.status-failed {
+  color: #a13e38;
+}
+
+@media (max-width: 860px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    padding: 0 18px 20px;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    margin-top: 20px;
+    gap: 20px;
+  }
+
+  .conversation {
+    min-height: 620px;
+  }
+
+  .activity-panel {
+    min-height: 220px;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-shell {
+    padding: 0 12px 16px;
+  }
+
+  .app-header {
+    min-height: 76px;
+  }
+
+  h1 {
+    font-size: 21px;
+  }
+
+  .runtime-state {
+    display: none;
+  }
+
+  .message-list,
+  .composer {
+    padding: 16px;
+  }
+
+  .message {
+    width: 100%;
+  }
+
+  .selected-video,
+  .output-file {
+    align-items: flex-end;
+  }
+
+  .composer-actions > span {
+    max-width: 52%;
+  }
+}

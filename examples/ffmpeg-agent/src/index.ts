@@ -4,9 +4,9 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { runTurn } from '@agent-desktop/agent-loop';
+import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import { type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
-import { createJsonlTrace } from './trace.ts';
 
 function formatToolResult(event: ToolResultEvent): string {
   if (event.result.status === 'error') return event.result.message;

@@ -24,11 +24,11 @@ git diff --check           空白和补丁格式检查
 
 CI 使用 Node.js `24.19.0`、pnpm `11.22.0`，安装锁文件后执行同一 `pnpm check`，并对 GitHub 事件基线提交到当前 `HEAD` 的已提交差异执行 `git diff --check`；新分支没有有效基线提交时检查空树到当前 `HEAD`。本地运行时版本低于声明基线时要在结果中说明；不要把不同运行时下的结果描述成 CI 等价证据。
 
-Architecture Gate 当前检查：真实 `src/` 和 `tests/` imports 必须在 package manifest 声明；Core 不得依赖 React、React DOM、Electron、具体 Provider 或具体 Tool；packages 不得依赖 examples；只有包含 `package.json` 的目录进入扫描。未被静态引用的声明只是 Review signal，不是删除证据。脚本不假装判断运行时注册、生命周期、业务顺序或外部服务结果。
+Architecture Gate 当前检查：各 workspace package 的 `src/` 和 `tests/` 下 `.ts`、`.tsx` 文件 imports 必须在 package manifest 声明；Core 不得依赖 React、React DOM、Electron、具体 Provider 或具体 Tool；packages 不得依赖 examples；只有包含 `package.json` 的目录进入扫描。`apps/desktop` 作为应用消费者，其依赖方向由 manifest、imports 和 Review 共同确认。未被静态引用的声明只是 Review signal，不是删除证据。脚本不假装判断运行时注册、生命周期、业务顺序或外部服务结果。
 
 ## 自动化测试边界
 
-当前测试覆盖 15 个测试文件、99 个测试（数量是本轮盘点快照，修改后以命令输出为准），集中在 `packages/*/tests` 和 `examples/*/tests`。
+当前自动化测试分布在 `packages/*/tests`、`examples/*/tests` 和 `apps/*/tests`；具体数量以执行命令输出为准。
 
 测试应优先组合真实内部组件：`runTurn`、`Agent`、`InMemorySession`、`InMemoryToolRegistry` 和真实 Tool 类保持不替换；只在真实外部边界替换：
 
@@ -56,15 +56,16 @@ FFmpeg / ffprobe            `video-ffmpeg` 通过 `execFile` 调用 PATH 中的 
 whisper.cpp                 `speech-whisper-cpp` 调用 `whisper-cli` 或 `WHISPER_CLI_PATH`，读取 JSON timeline
 ```
 
-当前两个真实执行入口：
+当前三个真实执行入口：
 
 ```text
 Command                 Required environment                                             Scope
 pnpm deepseek-agent     DEEPSEEK_API_KEY                                                  DeepSeek + Echo Tool 闭环
 pnpm ffmpeg-agent       DEEPSEEK_API_KEY、WHISPER_MODEL_PATH             完整视频 Agent；执行对应 Tool 需 ffmpeg、ffprobe、whisper-cli，视觉调用时还需 OPENAI_API_KEY
+pnpm desktop            DEEPSEEK_API_KEY、WHISPER_MODEL_PATH             Electron Desktop 视频 Agent；执行对应 Tool 需 ffmpeg、ffprobe、whisper-cli，视觉调用时还需 OPENAI_API_KEY
 ```
 
-`OPENAI_BASE_URL` 可选；`ffmpeg-agent` 启动时只强制检查 DeepSeek Key 和 Whisper model path，Vision Tool 在实际调用时检查 `OPENAI_API_KEY`。`WHISPER_CLI_PATH` 可替代默认 PATH 命令。CLI 是交互式入口，以 `/exit` 结束；当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或非交互通用 E2E 命令。
+`OPENAI_BASE_URL` 可选；`ffmpeg-agent` 与 Desktop 启动时只强制检查 `DEEPSEEK_API_KEY` 和 `WHISPER_MODEL_PATH`，Vision Tool 在实际调用时检查 `OPENAI_API_KEY`。`WHISPER_CLI_PATH` 可替代默认 PATH 命令。CLI 是交互式入口，以 `/exit` 结束；Desktop 是 Electron 单页入口；当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或非交互通用 E2E 命令。
 
 真实视频链路按现有 System Prompt 组合 `probe_media`、抽帧/视觉、`extract_audio`/`transcribe_audio`、`trim_video` 和 `concat_videos` 等内部组件。视觉模型只观察，剪辑决定由 Agent 根据 Tool Result 作出；采样时间戳是近似证据，边界不确定时继续缩小范围。
 

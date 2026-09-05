@@ -18,7 +18,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ## Package Manager（包管理器）
 
-项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*` 和 `examples/*`。
+项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*`、`examples/*` 和 `apps/*`；当前应用入口为 `apps/desktop`。
 
 ## Language（开发语言）
 
@@ -26,7 +26,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ## Module System（模块系统）
 
-所有 package 使用 ESM（ECMAScript 模块），TypeScript 模块解析使用 NodeNext。Core package 不使用 CommonJS。
+所有源码 package 使用 ESM（ECMAScript 模块），TypeScript 模块解析使用 NodeNext。Core package 不使用 CommonJS；`apps/desktop` 的 Electron Main（主进程）和 Preload（预加载）源码保持 ESM，并由 esbuild 输出 Electron 所需的 CJS（CommonJS）文件。
 
 ## Package Layout（包布局）
 
@@ -36,6 +36,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 Directory   中文名称       职责
 packages/   正式模块目录   保存 Agent Core、具体 Provider 与具体 Tool 模块
 examples/   可运行示例目录 保存消费正式模块公共 API 的示例，不属于 Agent Core
+apps/       应用目录       保存面向用户的应用入口，不把 UI 逻辑放入 Agent Core
 ```
 
 核心 package 使用以下结构：
@@ -84,6 +85,21 @@ examples/ffmpeg-agent/
 
 `tests/` 只有在真正有测试时才创建，不为了目录完整创建空目录。
 
+Desktop Application（桌面应用）使用以下结构：
+
+```text
+apps/desktop/
+├── package.json
+├── tsconfig.json
+├── vite.config.ts
+├── src/
+│   ├── main/
+│   ├── preload/
+│   ├── renderer/
+│   └── shared/
+└── tests/
+```
+
 ## Package Naming（包命名）
 
 公开 workspace package 统一使用 `@agent-desktop/*` 命名空间：
@@ -95,17 +111,19 @@ examples/ffmpeg-agent/
 @agent-desktop/tools                   工具包
 @agent-desktop/agent                   智能体包
 @agent-desktop/agent-loop              智能体循环包
+@agent-desktop/execution-trace         执行追踪持久化包
 @agent-desktop/model-deepseek          DeepSeek 模型适配器包
 @agent-desktop/video-ffmpeg            FFmpeg 视频工具包
 @agent-desktop/vision-openai           Vision 视觉工具包
 @agent-desktop/speech-whisper-cpp      whisper.cpp 本地语音时间轴工具包
 @agent-desktop/video-agent             视频智能体应用层包
+@agent-desktop/desktop                 Electron 桌面应用包
 @agent-desktop/example-echo-agent      Echo Agent 示例
 @agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
 @agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。Agent Loop 只暴露最小 Trace callback（追踪回调）契约；`ffmpeg-agent` 在自身 `src/trace.ts` 中把运行诊断事件写入本地 JSONL，不属于 Agent Core。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；`@agent-desktop/video-agent` 是组装正式视频 Agent 的应用层包，不承担 CLI、UI 或持久化；三个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。Agent Loop 只暴露最小 Trace callback（追踪回调）契约；`@agent-desktop/execution-trace` 只负责本地 JSONL 持久化，由 `ffmpeg-agent` 与 `apps/desktop` 两个真实入口消费，不属于 Agent Core。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；`@agent-desktop/video-agent` 是组装正式视频 Agent 的应用层包，不承担 CLI、UI 或持久化；`@agent-desktop/desktop` 是 Electron 应用入口；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 
@@ -124,9 +142,10 @@ Core package 不依赖具体模型厂商 SDK。
 examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 具体 Provider 可以依赖 model，Core package 不能反向依赖具体 Provider。
 具体 Tool package 可以依赖 tools，Core package 不能反向依赖具体 Tool package。
+应用 package 可以依赖所需的 Core、应用层和运行诊断 package，应用依赖不得反向进入 Core。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool 和 `session`，三个 example 只依赖各自实际使用的 package；`ffmpeg-agent` 的 Trace Writer 直接消费 `agent-loop` 的 Trace callback（追踪回调）类型。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool 和 `session`，三个 example 与 `apps/desktop` 只依赖各自实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
@@ -221,7 +240,7 @@ pnpm check
 
 ### Architecture Gate（架构门禁）
 
-`pnpm check:architecture` 使用 Node.js 和仓库已有的 TypeScript 词法扫描器读取各正式 workspace package 的 `src/` 与 `tests/` imports，并与 `package.json` 声明对照。它只自动检查能够稳定判断的边界：
+`pnpm check:architecture` 使用 Node.js 和仓库已有的 TypeScript 词法扫描器读取各正式 workspace package 的 `src/` 与 `tests/` 中 `.ts`、`.tsx` 文件的 imports，并与 `package.json` 声明对照。它只自动检查能够稳定判断的边界：
 
 ```text
 Rule                         规则                         检查内容
@@ -230,6 +249,7 @@ Core UI boundary             核心与 UI 边界                 Core package �
 Provider boundary            Provider 边界                  Core package 不得依赖具体 Model Provider 或 Tool implementation
 Example direction            示例依赖方向                 packages 不得反向依赖 examples
 Package boundary             package 边界                   只有包含 package.json 的目录进入当前 workspace 检查
+Source scope                 源码范围                     扫描 `src/` 与 `tests/` 下的 `.ts`、`.tsx` 文件
 ```
 
 Session、Turn、Step、Tool Result、异常传播和 Agent 与 Agent Loop 的行为不变量继续由 `tests/` 与 Review 验证；脚本不对无法可靠静态判断的行为做假检查。
@@ -253,8 +273,8 @@ Real verification         真实验证       只整理已有稳定入口；缺�
 ```text
 Static / Architecture Gate       已实施       `pnpm check:architecture` 检查稳定的依赖与 import 边界
 Unit / Contract / Integration    已具备       现有 Vitest 测试覆盖 Runtime 和 Tool 的关键行为，`pnpm typecheck:tests` 检查测试类型
-Expected Output / Build Smoke    不实施       `tsc -b` 已由 typecheck 覆盖，当前没有独立发布或消费者构建流程
-Real E2E                         已有入口     复用 `pnpm deepseek-agent` 和 `pnpm ffmpeg-agent` 的真实执行方式
+Expected Output / Build Smoke    已具备       `pnpm desktop:build` 构建 Desktop 的 Main、Preload 和 Renderer
+Real E2E                         已有入口     复用 `pnpm deepseek-agent`、`pnpm ffmpeg-agent` 和 `pnpm desktop` 的真实执行方式
 ```
 
 ### Step 4 Review（审查）
@@ -382,7 +402,7 @@ vitest           4.1.11    测试运行器
 @types/node      24.13.3   Node.js 类型声明
 ```
 
-不引入 ESLint、Prettier、bundler、Electron、React、模型供应商 SDK、第三方 FFmpeg SDK、Tool schema library 或 Agent Framework。
+根与 Core package 不引入 ESLint、Prettier、模型供应商 SDK、第三方 FFmpeg SDK、Tool schema library 或 Agent Framework。`apps/desktop` 是当前明确的应用消费者，只在该 package 使用 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4；这些应用依赖不得进入 Core。根 workspace 的 `allowBuilds` 只允许 `electron` 和 `esbuild`。
 
 ## 0.x Policy（0.x 策略）
 

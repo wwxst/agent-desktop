@@ -6,7 +6,7 @@
 
 项目处于非常早期的 `0.x` 开发阶段。
 
-当前优先级是建立正确的 Agent Runtime 基础，而不是追求功能数量或 UI 完成度。
+当前优先级是通过最小桌面入口交付可用的视频 Agent 闭环，而不是扩展无关功能。
 
 当前已经完成：
 
@@ -23,22 +23,24 @@ Visual Media Inspection         视频视觉理解            FFmpeg 抽取代�
 Content-aware Editing           基于内容的剪辑          Agent 可进一步检查局部范围，自主选择保留片段并使用 FFmpeg 重新拼接。
 Local Speech Understanding      本地语音理解             FFmpeg 提取标准 WAV，whisper.cpp 本地转录，DeepSeek 根据 transcript 继续理解；Tool 接入、自动化验证和真实端到端验证均已完成。
 Timeline-aware Understanding    带时间轴的视频内容理解   Local Speech 提供按秒的 segment-level semantic timeline，DeepSeek 已能基于时间范围理解视频语音内容。
-Agent Execution Trace           智能体全链路执行日志     为每个 ffmpeg-agent Turn 记录 Model、Tool 和 Turn 的状态与耗时；真实成功/失败链路已完成验证。
+Agent Execution Trace           智能体全链路执行日志     独立 package 将 CLI 与 Desktop 的 Model、Tool 和 Turn 诊断事件写入本地 JSONL。
 Semantic Video Editing          语义视频剪辑             Agent 根据语音时间轴和必要的视觉确认，自主裁剪并拼接语义片段；已完成真实单区间和多区间验证。
-Video Agent Application Layer   视频智能体应用层         `@agent-desktop/video-agent` 统一组装正式视频 Agent，当前由 CLI 使用，未来可由桌面客户端使用。
+Video Agent Application Layer   视频智能体应用层         `@agent-desktop/video-agent` 统一组装正式视频 Agent，由 CLI 与 Desktop 共同复用。
+Agent Desktop Shell             智能体桌面应用外壳       单页 Electron 客户端提供选视频、输入任务、查看 Tool 活动、读取回复和打开输出文件的闭环。
 ```
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`apps/desktop` 使用 Electron 44.0.0、React 19.2.8、Vite 8.2.2 和 esbuild 0.27.4 组装单页桌面客户端。
 
 # Run Agents（运行 Agent）
 
 ```text
-Command               模型类型           说明
-pnpm echo-agent       确定性模拟模型     无需 API Key，不调用真实 LLM API
-pnpm deepseek-agent   DeepSeek 真模型    需要 DEEPSEEK_API_KEY，调用真实 DeepSeek API
-pnpm ffmpeg-agent     DeepSeek 真模型    需要 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH，以及 PATH 中的 ffmpeg、ffprobe 和 whisper-cli
+Command               中文入口           说明
+pnpm echo-agent       确定性示例入口     无需 API Key，不调用真实 LLM API
+pnpm deepseek-agent   DeepSeek 命令行    需要 DEEPSEEK_API_KEY，调用真实 DeepSeek API
+pnpm ffmpeg-agent     视频命令行入口     需要 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；按任务使用本机媒体工具
+pnpm desktop          桌面应用入口       构建并启动 Electron 单页客户端，环境与媒体工具要求同视频命令行入口
 ```
 
 运行 Echo Agent：
@@ -72,6 +74,23 @@ pnpm ffmpeg-agent
 
 所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
 
+运行 Desktop（桌面应用）前必须提供 `DEEPSEEK_API_KEY` 和 `WHISPER_MODEL_PATH`：
+
+```bash
+pnpm desktop
+```
+
+Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口只保留一个内存 Session（会话），当前不提供历史记录、设置、任务管理或播放器。
+
+```text
+Layer                 中文名称         职责
+Renderer              渲染进程         收集文件和自然语言任务，展示回复与 Tool 活动
+Preload contextBridge 预加载安全桥     暴露受限的桌面 API
+Electron Main         Electron 主进程  持有窗口状态并调用应用层
+createVideoAgent      组装视频智能体   创建正式视频 Agent
+runTurn               执行任务轮次     驱动 Model 与 Tool 执行
+```
+
 # Mechanical Gate（机械门禁）
 
 提交代码前执行统一本地门禁：
@@ -83,7 +102,7 @@ pnpm check
 
 `pnpm check` 包含源码和测试类型检查、全部测试、稳定架构边界检查和 `git diff --check`。门禁定义与 CI 入口以 [`docs/engineering.md`](docs/engineering.md#step-3-automated-validation自动化验证) 为准；当前架构职责和不变量以 [`docs/architecture.md`](docs/architecture.md) 为准。
 
-`ffmpeg-agent` 每次处理用户输入时会在 stderr 显示 `Trace: <traceId>`，并把本地执行诊断追加到 `logs/agent-trace.jsonl`。Trace 只记录关联 ID、事件类型、计数、状态、耗时和受控错误定位信息，不记录完整用户 Prompt、Model 请求或响应、Tool 输入或输出、Transcript、Vision 分析、API Key 或环境变量值。Session（会话）仍保存模型可见业务事实，Trace（执行追踪）只用于运行诊断；Commit 15 的真实成功/失败链路已验证，详细边界与事件定义见 [`docs/architecture.md`](docs/architecture.md#agent-execution-trace智能体执行追踪)。
+`@agent-desktop/execution-trace` 只负责把本地执行诊断追加到 `logs/agent-trace.jsonl`，当前由 `ffmpeg-agent` 与 Desktop 两个真实入口消费。Trace 只记录关联 ID、事件类型、计数、状态、耗时和受控错误定位信息，不记录完整用户 Prompt、Model 请求或响应、Tool 输入或输出、Transcript、Vision 分析、API Key 或环境变量值。Session（会话）仍保存模型可见业务事实，Trace（执行追踪）只用于运行诊断；详细边界与事件定义见 [`docs/architecture.md`](docs/architecture.md#agent-execution-trace智能体执行追踪)。
 
 # Development Workflow（开发流程）
 
