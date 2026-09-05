@@ -3,7 +3,6 @@ import type { ToolCallId } from '@agent-desktop/model';
 import type { SessionEvent, StepId, TurnId } from '@agent-desktop/session';
 import {
   buildAgentPrompt,
-  createIsolatedVideoAgent,
   findSuccessfulOutputPath,
 } from '../src/main/agent-task.js';
 
@@ -38,20 +37,6 @@ function outputEvents(
 }
 
 describe('desktop agent task', () => {
-  it('creates a fresh session for every desktop task', () => {
-    const options = {
-      deepSeekApiKey: 'test-deepseek-key',
-      whisperModelPath: 'test-whisper-model.bin',
-      visionApiKey: 'test-openai-key',
-    } as const;
-
-    const firstAgent = createIsolatedVideoAgent(options);
-    const secondAgent = createIsolatedVideoAgent(options);
-
-    expect(secondAgent).not.toBe(firstAgent);
-    expect(secondAgent.session).not.toBe(firstAgent.session);
-  });
-
   it('passes the selected video and deterministic output path to the Agent', () => {
     expect(buildAgentPrompt(
       '删除无关内容，只保留核心部分',

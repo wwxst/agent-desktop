@@ -3,9 +3,9 @@ import { basename, join, parse, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { runTurn, type ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
+import { createVideoAgent } from '@agent-desktop/video-agent';
 import {
   buildAgentPrompt,
-  createIsolatedVideoAgent,
   findSuccessfulOutputPath,
 } from './agent-task.js';
 import { DESKTOP_CHANNELS, type AgentTaskResult, type ToolActivityEvent } from '../shared/ipc.js';
@@ -62,7 +62,7 @@ function registerIpcHandlers(): void {
     const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
     const whisperCliPath = process.env.WHISPER_CLI_PATH;
     const visionBaseUrl = process.env.OPENAI_BASE_URL;
-    const taskAgent = createIsolatedVideoAgent({
+    const taskAgent = createVideoAgent({
       deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
       whisperModelPath: requireEnvironment('WHISPER_MODEL_PATH'),
       visionApiKey: process.env.OPENAI_API_KEY ?? '',
