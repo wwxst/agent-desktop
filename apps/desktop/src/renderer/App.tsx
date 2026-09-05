@@ -87,7 +87,7 @@ export function App() {
     <div className="app-shell">
       <header className="app-header">
         <div className="header-inner">
-          <div className="brand-mark" aria-hidden="true">A</div>
+          <div className="brand-mark" aria-hidden="true">▶</div>
           <div className="brand-copy">
             <h1>Agent Desktop</h1>
             <span>视频智能剪辑</span>
@@ -100,8 +100,14 @@ export function App() {
         <div className="conversation-feed" aria-live="polite">
           {!submittedPrompt && (
             <div className="empty-state">
-              <span aria-hidden="true">A</span>
-              <p>等待任务</p>
+              <span className="empty-state-mark" aria-hidden="true">▶</span>
+              <h2>开始一个视频任务</h2>
+              <p>选择一个视频，然后告诉 Agent 你想怎么处理。</p>
+              <ul className="example-list" aria-label="任务示例">
+                <li>删除无关内容，只保留核心部分</li>
+                <li>找出讲 Japan 的片段</li>
+                <li>把开头压缩得更紧凑</li>
+              </ul>
             </div>
           )}
 
@@ -130,7 +136,7 @@ export function App() {
           {isProcessing && (
             <article className="message-block agent-message">
               <div className="message-heading">
-                <span className="message-avatar agent-avatar" aria-hidden="true">A</span>
+                <span className="message-avatar agent-avatar" aria-hidden="true">▶</span>
                 <strong>Agent</strong>
               </div>
               <div className="message-content processing-line">
@@ -143,7 +149,7 @@ export function App() {
           {result && (
             <article className="message-block agent-message">
               <div className="message-heading">
-                <span className="message-avatar agent-avatar" aria-hidden="true">A</span>
+                <span className="message-avatar agent-avatar" aria-hidden="true">▶</span>
                 <strong>Agent</strong>
               </div>
               <div className="message-content">

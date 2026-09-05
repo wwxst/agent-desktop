@@ -15,6 +15,23 @@ afterEach(() => {
 });
 
 describe('App', () => {
+  it('shows a useful video-task empty state before the first task', () => {
+    window.agentDesktop = {
+      selectVideoFile: async () => null,
+      runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-empty' }),
+      onAgentEvent: () => () => undefined,
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+
+    expect(screen.getByText('开始一个视频任务')).toBeTruthy();
+    expect(screen.getByText('选择一个视频，然后告诉 Agent 你想怎么处理。')).toBeTruthy();
+    expect(screen.getByText('删除无关内容，只保留核心部分')).toBeTruthy();
+    expect(screen.getByText('找出讲 Japan 的片段')).toBeTruthy();
+    expect(screen.getByText('把开头压缩得更紧凑')).toBeTruthy();
+  });
+
   it('selects a video, sends the task, and displays the final result', async () => {
     const runAgentTask = vi.fn(async () => ({
       responseText: '剪辑已经完成。',
