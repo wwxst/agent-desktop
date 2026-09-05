@@ -3,36 +3,21 @@ import { basename, join, parse, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { runTurn, type ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
-import { createVideoAgent } from '@agent-desktop/video-agent';
-import { buildAgentPrompt, findSuccessfulOutputPath } from './agent-task.js';
+import {
+  buildAgentPrompt,
+  createIsolatedVideoAgent,
+  findSuccessfulOutputPath,
+} from './agent-task.js';
 import { DESKTOP_CHANNELS, type AgentTaskResult, type ToolActivityEvent } from '../shared/ipc.js';
 
 let mainWindow: BrowserWindow | null = null;
 let selectedVideoPath: string | undefined;
 let outputFilePath: string | undefined;
-let agent: ReturnType<typeof createVideoAgent> | undefined;
 
 function requireEnvironment(name: 'DEEPSEEK_API_KEY' | 'WHISPER_MODEL_PATH'): string {
   const value = process.env[name];
   if (value === undefined || value.length === 0) throw new Error(`缺少 ${name} 环境变量。`);
   return value;
-}
-
-function currentAgent(): ReturnType<typeof createVideoAgent> {
-  if (agent !== undefined) return agent;
-
-  const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
-  const whisperCliPath = process.env.WHISPER_CLI_PATH;
-  const visionBaseUrl = process.env.OPENAI_BASE_URL;
-  agent = createVideoAgent({
-    deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
-    whisperModelPath: requireEnvironment('WHISPER_MODEL_PATH'),
-    visionApiKey: process.env.OPENAI_API_KEY ?? '',
-    ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
-    ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
-    ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
-  });
-  return agent;
 }
 
 function defaultOutputPath(inputPath: string): string {
@@ -74,7 +59,17 @@ function registerIpcHandlers(): void {
     }
     if (selectedVideoPath === undefined) throw new Error('请先选择视频文件。');
 
-    const taskAgent = currentAgent();
+    const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
+    const whisperCliPath = process.env.WHISPER_CLI_PATH;
+    const visionBaseUrl = process.env.OPENAI_BASE_URL;
+    const taskAgent = createIsolatedVideoAgent({
+      deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
+      whisperModelPath: requireEnvironment('WHISPER_MODEL_PATH'),
+      visionApiKey: process.env.OPENAI_API_KEY ?? '',
+      ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
+      ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
+      ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
+    });
     const requestedOutputPath = defaultOutputPath(selectedVideoPath);
     // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
     const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
@@ -112,7 +107,6 @@ function registerIpcHandlers(): void {
 function createWindow(): void {
   selectedVideoPath = undefined;
   outputFilePath = undefined;
-  agent = undefined;
   mainWindow = new BrowserWindow({
     width: 1120,
     height: 760,

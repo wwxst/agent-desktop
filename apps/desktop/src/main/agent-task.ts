@@ -1,4 +1,10 @@
 import type { SessionEvent, TurnId } from '@agent-desktop/session';
+import { createVideoAgent, type VideoAgentOptions } from '@agent-desktop/video-agent';
+
+/** 每次桌面任务都组装新的视频 Agent，确保 InMemorySession 不跨任务复用。 */
+export function createIsolatedVideoAgent(options: VideoAgentOptions): ReturnType<typeof createVideoAgent> {
+  return createVideoAgent(options);
+}
 
 /** 把 Renderer 的用户意图与 Main 持有的视频路径组合成一次 Agent 输入。 */
 export function buildAgentPrompt(prompt: string, inputPath: string, outputPath: string): string {
