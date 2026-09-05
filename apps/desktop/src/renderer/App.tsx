@@ -74,7 +74,9 @@ export function App() {
     setIsProcessing(true);
 
     try {
-      setResult(await window.agentDesktop.runAgentTask(taskPrompt));
+      const taskResult = await window.agentDesktop.runAgentTask(taskPrompt);
+      setResult(taskResult);
+      setPrompt('');
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '任务执行失败。');
     } finally {

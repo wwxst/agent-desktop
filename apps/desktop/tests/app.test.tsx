@@ -57,6 +57,9 @@ describe('App', () => {
 
     await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('删除无关内容，只保留核心部分'));
     expect(await screen.findByText('剪辑已经完成。')).toBeTruthy();
+    expect(screen.getByText('删除无关内容，只保留核心部分')).toBeTruthy();
+    expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('');
+    expect(screen.getAllByLabelText('视频附件：sintel-trailer.mp4')).toHaveLength(2);
     expect(screen.getByText('sintel-trailer-edited.mp4')).toBeTruthy();
     expect(screen.getByText('视频 · 已完成')).toBeTruthy();
 
@@ -142,5 +145,28 @@ describe('App', () => {
 
     fireEvent.click(summary);
     expect(screen.getByText('probe_media')).toBeTruthy();
+  });
+
+  it('keeps the prompt when the task fails', async () => {
+    const prompt = '保留核心内容';
+    window.agentDesktop = {
+      selectVideoFile: async () => ({ name: 'sintel-trailer.mp4' }),
+      runAgentTask: async () => {
+        throw new Error('处理失败。');
+      },
+      onAgentEvent: () => () => undefined,
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    expect(await screen.findByText('sintel-trailer.mp4')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('剪辑需求'), {
+      target: { value: prompt },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(await screen.findByText('处理失败。')).toBeTruthy();
+    expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe(prompt);
   });
 });
