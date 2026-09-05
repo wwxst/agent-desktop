@@ -4,22 +4,14 @@ import type {
   SelectedVideo,
   ToolActivityEvent,
 } from '../shared/ipc.js';
+import { ArtifactCard } from './components/ArtifactCard.js';
+import { AttachmentChip } from './components/AttachmentChip.js';
+import { Composer } from './components/Composer.js';
+import {
+  ToolActivity,
+  type ToolActivityItem,
+} from './components/ToolActivity.js';
 import './styles.css';
-
-type ToolActivityStatus = 'running' | 'completed' | 'failed';
-
-interface ToolActivityItem {
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly status: ToolActivityStatus;
-  readonly durationMs?: number;
-}
-
-const STATUS_LABELS: Record<ToolActivityStatus, string> = {
-  running: '执行中',
-  completed: '已完成',
-  failed: '失败',
-};
 
 function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
   if (event.type === 'tool.started') {
@@ -42,10 +34,12 @@ export function App() {
   const [selectedVideo, setSelectedVideo] = useState<SelectedVideo | null>(null);
   const [prompt, setPrompt] = useState('');
   const [submittedPrompt, setSubmittedPrompt] = useState('');
+  const [submittedVideoName, setSubmittedVideoName] = useState('');
   const [result, setResult] = useState<AgentTaskResult | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [toolActivity, setToolActivity] = useState<ToolActivityItem[]>([]);
+  const [toolsExpanded, setToolsExpanded] = useState(true);
 
   useEffect(() => window.agentDesktop.onAgentEvent((event) => {
     const nextItem = toActivityItem(event);
@@ -55,10 +49,7 @@ export function App() {
         (item) => item.toolCallId === nextItem.toolCallId,
       );
 
-      if (existingIndex === -1) {
-        return [...currentItems, nextItem];
-      }
-
+      if (existingIndex === -1) return [...currentItems, nextItem];
       return currentItems.map((item, index) => (
         index === existingIndex ? nextItem : item
       ));
@@ -67,22 +58,19 @@ export function App() {
 
   const selectVideo = async () => {
     const video = await window.agentDesktop.selectVideoFile();
-    if (video) {
-      setSelectedVideo(video);
-    }
+    if (video) setSelectedVideo(video);
   };
 
   const sendTask = async () => {
     const taskPrompt = prompt.trim();
-    if (!taskPrompt || !selectedVideo) {
-      return;
-    }
+    if (!taskPrompt || !selectedVideo) return;
 
     setSubmittedPrompt(taskPrompt);
+    setSubmittedVideoName(selectedVideo.name);
     setResult(null);
     setErrorMessage('');
-    // 新任务只展示本 Turn 的 Tool Activity，避免与上一次执行混淆。
     setToolActivity([]);
+    setToolsExpanded(true);
     setIsProcessing(true);
 
     try {
@@ -91,154 +79,110 @@ export function App() {
       setErrorMessage(error instanceof Error ? error.message : '任务执行失败。');
     } finally {
       setIsProcessing(false);
+      setToolsExpanded(false);
     }
   };
 
   return (
     <div className="app-shell">
       <header className="app-header">
-        <div>
-          <p className="app-kicker">视频智能剪辑</p>
-          <h1>Agent Desktop</h1>
+        <div className="header-inner">
+          <div className="brand-mark" aria-hidden="true">A</div>
+          <div className="brand-copy">
+            <h1>Agent Desktop</h1>
+            <span>视频智能剪辑</span>
+          </div>
+          <span className="runtime-state"><i aria-hidden="true" />本地运行</span>
         </div>
-        <span className="runtime-state">本地运行</span>
       </header>
 
-      <main className="workspace">
-        <section className="conversation" aria-labelledby="conversation-heading">
-          <div className="section-heading">
-            <div>
-              <p className="section-label">当前任务</p>
-              <h2 id="conversation-heading">消息</h2>
+      <main className="conversation-scroll" aria-label="对话工作区">
+        <div className="conversation-feed" aria-live="polite">
+          {!submittedPrompt && (
+            <div className="empty-state">
+              <span aria-hidden="true">A</span>
+              <p>等待任务</p>
             </div>
-          </div>
-
-          <div className="message-list" aria-live="polite">
-            {!submittedPrompt && (
-              <div className="empty-message">
-                <strong>等待新任务</strong>
-              </div>
-            )}
-
-            {submittedPrompt && (
-              <article className="message message-user">
-                <span className="message-author">你的需求</span>
-                <p>{submittedPrompt}</p>
-              </article>
-            )}
-
-            {isProcessing && (
-              <article className="message message-agent">
-                <span className="message-author">Agent</span>
-                <p>正在处理视频...</p>
-              </article>
-            )}
-
-            {result && (
-              <article className="message message-agent">
-                <span className="message-author">Agent</span>
-                <p>{result.responseText}</p>
-                <div className="result-meta">
-                  <span>Trace ID</span>
-                  <code>{result.traceId}</code>
-                </div>
-                {result.outputFileName && (
-                  <div className="output-file">
-                    <div>
-                      <span className="output-label">输出文件</span>
-                      <strong>{result.outputFileName}</strong>
-                    </div>
-                    <button
-                      className="button button-secondary"
-                      type="button"
-                      onClick={() => void window.agentDesktop.openOutputFile()}
-                    >
-                      打开文件
-                    </button>
-                  </div>
-                )}
-              </article>
-            )}
-
-            {errorMessage && (
-              <article className="message message-error" role="alert">
-                <span className="message-author">任务失败</span>
-                <p>{errorMessage}</p>
-              </article>
-            )}
-          </div>
-
-          <div className="composer">
-            <div className="selected-video">
-              <div>
-                <span className="selected-label">已选视频</span>
-                <strong>{selectedVideo?.name ?? '尚未选择视频'}</strong>
-              </div>
-              <button
-                className="button button-secondary"
-                type="button"
-                disabled={isProcessing}
-                onClick={() => void selectVideo()}
-              >
-                选择视频
-              </button>
-            </div>
-
-            <label className="prompt-field">
-              <span>剪辑需求</span>
-              <textarea
-                value={prompt}
-                disabled={isProcessing}
-                placeholder="例如：删除无关内容，只保留核心部分"
-                rows={4}
-                onChange={(event) => setPrompt(event.target.value)}
-              />
-            </label>
-
-            <div className="composer-actions">
-              <span>{isProcessing ? '处理中，请稍候' : '就绪'}</span>
-              <button
-                className="button button-primary"
-                type="button"
-                disabled={isProcessing || !selectedVideo || !prompt.trim()}
-                onClick={() => void sendTask()}
-              >
-                发送
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <aside className="activity-panel" aria-labelledby="activity-heading">
-          <div className="section-heading">
-            <div>
-              <p className="section-label">执行明细</p>
-              <h2 id="activity-heading">Tool Activity</h2>
-            </div>
-            {toolActivity.length > 0 && (
-              <span className="activity-count">{toolActivity.length}</span>
-            )}
-          </div>
-
-          {toolActivity.length === 0 ? (
-            <p className="activity-empty">暂无工具活动</p>
-          ) : (
-            <ol className="activity-list">
-              {toolActivity.map((item) => (
-                <li key={item.toolCallId} className="activity-item">
-                  <div>
-                    <strong>{item.toolName}</strong>
-                    <span className={`activity-status status-${item.status}`}>
-                      {STATUS_LABELS[item.status]}
-                    </span>
-                  </div>
-                  {item.durationMs !== undefined && <span>{item.durationMs} ms</span>}
-                </li>
-              ))}
-            </ol>
           )}
-        </aside>
+
+          {submittedPrompt && (
+            <article className="message-block user-message">
+              <div className="message-heading">
+                <span className="message-avatar user-avatar">你</span>
+                <strong>你</strong>
+              </div>
+              <div className="message-content">
+                <AttachmentChip name={submittedVideoName} />
+                <p>{submittedPrompt}</p>
+              </div>
+            </article>
+          )}
+
+          {toolActivity.length > 0 && (
+            <ToolActivity
+              items={toolActivity}
+              expanded={toolsExpanded}
+              isProcessing={isProcessing}
+              onToggle={() => setToolsExpanded((expanded) => !expanded)}
+            />
+          )}
+
+          {isProcessing && (
+            <article className="message-block agent-message">
+              <div className="message-heading">
+                <span className="message-avatar agent-avatar" aria-hidden="true">A</span>
+                <strong>Agent</strong>
+              </div>
+              <div className="message-content processing-line">
+                <i aria-hidden="true" />
+                <p>正在处理视频</p>
+              </div>
+            </article>
+          )}
+
+          {result && (
+            <article className="message-block agent-message">
+              <div className="message-heading">
+                <span className="message-avatar agent-avatar" aria-hidden="true">A</span>
+                <strong>Agent</strong>
+              </div>
+              <div className="message-content">
+                <p className="agent-response">{result.responseText}</p>
+                {result.outputFileName && (
+                  <ArtifactCard
+                    fileName={result.outputFileName}
+                    onOpen={() => void window.agentDesktop.openOutputFile()}
+                  />
+                )}
+                <p className="trace-id">Trace: <code>{result.traceId}</code></p>
+              </div>
+            </article>
+          )}
+
+          {errorMessage && (
+            <article className="message-block error-message" role="alert">
+              <div className="message-heading">
+                <span className="message-avatar error-avatar" aria-hidden="true">!</span>
+                <strong>任务失败</strong>
+              </div>
+              <div className="message-content"><p>{errorMessage}</p></div>
+            </article>
+          )}
+        </div>
       </main>
+
+      <footer className="composer-dock">
+        <div className="composer-wrap">
+          <Composer
+            selectedVideo={selectedVideo}
+            prompt={prompt}
+            isProcessing={isProcessing}
+            onPromptChange={setPrompt}
+            onSelectVideo={() => void selectVideo()}
+            onSend={() => void sendTask()}
+          />
+        </div>
+      </footer>
     </div>
   );
 }
