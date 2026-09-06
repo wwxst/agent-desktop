@@ -139,15 +139,18 @@ describe('App', () => {
     expect(screen.getByText('视频 · 已完成')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
-    expect(openOutputFile).toHaveBeenCalledOnce();
+    expect(openOutputFile).toHaveBeenCalledWith('sintel-trailer-edited.mp4');
   });
 
   it('updates Tool activity from the shared trace event', async () => {
     let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
-      runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-2' }),
+      runAgentTask: () => new Promise((resolve) => {
+        resolveTask = resolve;
+      }),
       onAgentEvent: (listener) => {
         receiveEvent = listener;
         return () => undefined;
@@ -156,6 +159,10 @@ describe('App', () => {
     } satisfies DesktopApi;
 
     render(<App />);
+    fireEvent.change(screen.getByLabelText('剪辑需求'), {
+      target: { value: '检查视频' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
       type: 'tool.started',
       turnId: 'turn-1' as never,
@@ -177,6 +184,8 @@ describe('App', () => {
     }));
     expect(screen.getByText('已完成')).toBeTruthy();
     expect(screen.getByText('24 ms')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: 'done', traceId: 'trace-2' }));
   });
 
   it('collapses completed Tool activity and lets the user expand it', async () => {
@@ -249,6 +258,154 @@ describe('App', () => {
     await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('介绍一下这个客户端的能力。'));
     expect(await screen.findByText('这是一个文本回复。')).toBeTruthy();
     expect(screen.queryByLabelText(/视频附件：/)).toBeNull();
+  });
+
+  it('keeps two complete text turns in the visible conversation', async () => {
+    const runAgentTask = vi.fn()
+      .mockResolvedValueOnce({ responseText: '已经记住。', traceId: 'trace-turn-1' })
+      .mockResolvedValueOnce({ responseText: '你刚才让我记住的数字是 731。', traceId: 'trace-turn-2' });
+    window.agentDesktop = {
+      selectVideoFile: async () => null,
+      removeSelectedVideo: async () => undefined,
+      runAgentTask,
+      onAgentEvent: () => () => undefined,
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    const composerInput = screen.getByLabelText('剪辑需求');
+    fireEvent.change(composerInput, { target: { value: '请记住数字 731。' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText('已经记住。')).toBeTruthy();
+
+    fireEvent.change(composerInput, { target: { value: '我刚才让你记住的数字是多少？' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText('你刚才让我记住的数字是 731。')).toBeTruthy();
+
+    expect(screen.getAllByLabelText('你的任务')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Agent 回复')).toHaveLength(2);
+    expect(screen.getByText('请记住数字 731。')).toBeTruthy();
+    expect(screen.getByText('我刚才让你记住的数字是多少？')).toBeTruthy();
+    expect(screen.getByText('trace-turn-1')).toBeTruthy();
+    expect(screen.getByText('trace-turn-2')).toBeTruthy();
+  });
+
+  it('keeps Tool activity with the Agent reply from its own turn', async () => {
+    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
+      resolveTask = resolve;
+    }));
+    window.agentDesktop = {
+      selectVideoFile: async () => null,
+      removeSelectedVideo: async () => undefined,
+      runAgentTask,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    const composerInput = screen.getByLabelText('剪辑需求');
+    fireEvent.change(composerInput, { target: { value: '第一轮' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'tool.completed',
+      turnId: 'turn-1' as never,
+      stepId: 'step-1' as never,
+      toolCallId: 'call-a' as never,
+      toolName: 'tool_a',
+      durationMs: 10,
+    }));
+    await act(async () => resolveTask?.({ responseText: '第一轮完成', traceId: 'trace-a' }));
+
+    fireEvent.change(composerInput, { target: { value: '第二轮' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'tool.completed',
+      turnId: 'turn-2' as never,
+      stepId: 'step-2' as never,
+      toolCallId: 'call-b' as never,
+      toolName: 'tool_b',
+      durationMs: 20,
+    }));
+    await act(async () => resolveTask?.({ responseText: '第二轮完成', traceId: 'trace-b' }));
+
+    const agentReplies = screen.getAllByLabelText('Agent 回复');
+    const toolSummaries = screen.getAllByRole('button', { name: '已执行 1 个工具' });
+    fireEvent.click(toolSummaries[0]!);
+    fireEvent.click(toolSummaries[1]!);
+    expect(within(agentReplies[0]!).getByText('tool_a')).toBeTruthy();
+    expect(within(agentReplies[0]!).queryByText('tool_b')).toBeNull();
+    expect(within(agentReplies[1]!).getByText('tool_b')).toBeTruthy();
+    expect(within(agentReplies[1]!).queryByText('tool_a')).toBeNull();
+  });
+
+  it('keeps each Artifact in history and opens the matching output', async () => {
+    const runAgentTask = vi.fn()
+      .mockResolvedValueOnce({
+        responseText: '第一轮完成。',
+        outputFileName: 'step1.mp4',
+        traceId: 'trace-artifact-1',
+      })
+      .mockResolvedValueOnce({
+        responseText: '第二轮完成。',
+        outputFileName: 'step2.mp4',
+        traceId: 'trace-artifact-2',
+      });
+    const openOutputFile = vi.fn(async () => undefined);
+    window.agentDesktop = {
+      selectVideoFile: async () => [{ name: 'input.mp4' }],
+      removeSelectedVideo: async () => undefined,
+      runAgentTask,
+      onAgentEvent: () => () => undefined,
+      openOutputFile,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    expect(await screen.findByText('input.mp4')).toBeTruthy();
+    const composerInput = screen.getByLabelText('剪辑需求');
+    fireEvent.change(composerInput, { target: { value: '第一次处理' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText('step1.mp4')).toBeTruthy();
+    fireEvent.change(composerInput, { target: { value: '基于刚才结果继续处理' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText('step2.mp4')).toBeTruthy();
+
+    const openButtons = screen.getAllByRole('button', { name: '打开文件' });
+    fireEvent.click(openButtons[0]!);
+    fireEvent.click(openButtons[1]!);
+    expect(openOutputFile).toHaveBeenNthCalledWith(1, 'step1.mp4');
+    expect(openOutputFile).toHaveBeenNthCalledWith(2, 'step2.mp4');
+  });
+
+  it('does not start another task while the current turn is running', async () => {
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
+      resolveTask = resolve;
+    }));
+    window.agentDesktop = {
+      selectVideoFile: async () => null,
+      removeSelectedVideo: async () => undefined,
+      runAgentTask,
+      onAgentEvent: () => () => undefined,
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    const composerInput = screen.getByLabelText('剪辑需求');
+    fireEvent.change(composerInput, { target: { value: '第一轮' } });
+    const sendButton = screen.getByRole('button', { name: '发送' });
+    fireEvent.click(sendButton);
+
+    expect(sendButton).toHaveProperty('disabled', true);
+    fireEvent.click(sendButton);
+    expect(runAgentTask).toHaveBeenCalledOnce();
+
+    await act(async () => resolveTask?.({ responseText: '完成。', traceId: 'trace-running' }));
   });
 
   it('keeps the prompt when the task fails', async () => {

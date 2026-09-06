@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   AgentTaskResult,
   SelectedVideo,
@@ -12,6 +12,28 @@ import {
   type ToolActivityItem,
 } from './components/ToolActivity.js';
 import './styles.css';
+
+interface UserConversationMessage {
+  readonly id: number;
+  readonly role: 'user';
+  readonly text: string;
+  readonly attachments: readonly string[];
+}
+
+interface AssistantMessageBase {
+  readonly id: number;
+  readonly role: 'assistant';
+  readonly tools: readonly ToolActivityItem[];
+  readonly toolsExpanded: boolean;
+}
+
+type AssistantConversationMessage = AssistantMessageBase & (
+  | { readonly status: 'processing' }
+  | { readonly status: 'completed'; readonly result: AgentTaskResult }
+  | { readonly status: 'failed'; readonly errorMessage: string }
+);
+
+type ConversationMessage = UserConversationMessage | AssistantConversationMessage;
 
 function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
   if (event.type === 'tool.started') {
@@ -33,28 +55,40 @@ function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
 export function App() {
   const [selectedVideos, setSelectedVideos] = useState<readonly SelectedVideo[]>([]);
   const [prompt, setPrompt] = useState('');
-  const [submittedPrompt, setSubmittedPrompt] = useState('');
-  const [submittedVideoNames, setSubmittedVideoNames] = useState<readonly string[]>([]);
-  const [result, setResult] = useState<AgentTaskResult | null>(null);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [messages, setMessages] = useState<readonly ConversationMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [toolActivity, setToolActivity] = useState<ToolActivityItem[]>([]);
-  const [toolsExpanded, setToolsExpanded] = useState(true);
+  const nextMessageId = useRef(1);
+  const conversationScroll = useRef<HTMLElement>(null);
 
   useEffect(() => window.agentDesktop.onAgentEvent((event) => {
     const nextItem = toActivityItem(event);
-    // 同一 Tool Call 的后续事件原位更新，保证执行列表顺序稳定。
-    setToolActivity((currentItems) => {
-      const existingIndex = currentItems.findIndex(
+    // 发送按钮禁止并发，因此 Trace 工具事件只会属于唯一一个处理中 Agent 消息。
+    setMessages((currentMessages) => {
+      const activeIndex = currentMessages.findLastIndex(
+        (message) => message.role === 'assistant' && message.status === 'processing',
+      );
+      const activeMessage = currentMessages[activeIndex];
+      if (activeMessage?.role !== 'assistant') return currentMessages;
+
+      const existingIndex = activeMessage.tools.findIndex(
         (item) => item.toolCallId === nextItem.toolCallId,
       );
+      const tools = existingIndex === -1
+        ? [...activeMessage.tools, nextItem]
+        : activeMessage.tools.map((item, index) => (
+            index === existingIndex ? nextItem : item
+          ));
 
-      if (existingIndex === -1) return [...currentItems, nextItem];
-      return currentItems.map((item, index) => (
-        index === existingIndex ? nextItem : item
+      return currentMessages.map((message, index) => (
+        index === activeIndex ? { ...activeMessage, tools } : message
       ));
     });
   }), []);
+
+  useEffect(() => {
+    const scrollContainer = conversationScroll.current;
+    if (scrollContainer !== null) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+  }, [messages]);
 
   const selectVideo = async () => {
     const videos = await window.agentDesktop.selectVideoFile();
@@ -72,29 +106,65 @@ export function App() {
     const taskPrompt = prompt.trim();
     if (!taskPrompt || isProcessing) return;
 
-    setSubmittedPrompt(taskPrompt);
-    setSubmittedVideoNames(selectedVideos.map((video) => video.name));
-    setResult(null);
-    setErrorMessage('');
-    setToolActivity([]);
-    setToolsExpanded(true);
+    const assistantMessageId = nextMessageId.current + 1;
+    setMessages((currentMessages) => [
+      ...currentMessages,
+      {
+        id: nextMessageId.current,
+        role: 'user',
+        text: taskPrompt,
+        attachments: selectedVideos.map((video) => video.name),
+      },
+      {
+        id: assistantMessageId,
+        role: 'assistant',
+        status: 'processing',
+        tools: [],
+        toolsExpanded: true,
+      },
+    ]);
+    nextMessageId.current += 2;
     setIsProcessing(true);
 
     try {
       const taskResult = await window.agentDesktop.runAgentTask(taskPrompt);
-      setResult(taskResult);
+      setMessages((currentMessages) => currentMessages.map((message) => (
+        message.role === 'assistant' && message.id === assistantMessageId
+          ? {
+              ...message,
+              status: 'completed',
+              result: taskResult,
+              toolsExpanded: false,
+            }
+          : message
+      )));
       setPrompt('');
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '任务执行失败。');
+      const errorMessage = error instanceof Error ? error.message : '任务执行失败。';
+      setMessages((currentMessages) => currentMessages.map((message) => (
+        message.role === 'assistant' && message.id === assistantMessageId
+          ? {
+              ...message,
+              status: 'failed',
+              errorMessage,
+              toolsExpanded: false,
+            }
+          : message
+      )));
     } finally {
       setIsProcessing(false);
-      setToolsExpanded(false);
     }
   };
 
-  const hasConversation = Boolean(
-    submittedPrompt || toolActivity.length || isProcessing || result || errorMessage,
-  );
+  const toggleTools = (messageId: number) => {
+    setMessages((currentMessages) => currentMessages.map((message) => (
+      message.role === 'assistant' && message.id === messageId
+        ? { ...message, toolsExpanded: !message.toolsExpanded }
+        : message
+    )));
+  };
+
+  const hasConversation = messages.length > 0;
   const composer = (
     <Composer
       selectedVideos={selectedVideos}
@@ -134,75 +204,77 @@ export function App() {
 
       <div className="app-main">
       <main
+        ref={conversationScroll}
         className={`conversation-scroll${hasConversation ? '' : ' conversation-scroll-empty'}`}
         aria-label="对话工作区"
       >
         <div className="conversation-feed" aria-live="polite">
-          {submittedPrompt && (
-            <article className="message-block user-message" aria-label="你的任务">
+          {messages.map((message) => message.role === 'user' ? (
+            <article key={message.id} className="message-block user-message" aria-label="你的任务">
               <div className="user-message-content">
-                {submittedVideoNames.length > 0 && (
+                {message.attachments.length > 0 && (
                   <div className="submitted-attachments" aria-label="已提交的视频">
-                    {submittedVideoNames.map((name, index) => (
+                    {message.attachments.map((name, index) => (
                       <AttachmentChip key={`${name}-${index}`} name={name} />
                     ))}
                   </div>
                 )}
-                <p>{submittedPrompt}</p>
+                <p>{message.text}</p>
               </div>
             </article>
-          )}
+          ) : (
+            <article
+              key={message.id}
+              className={`message-block agent-message${message.status === 'failed' ? ' error-message' : ''}`}
+              aria-label="Agent 回复"
+              {...message.status === 'failed' ? { role: 'alert' } : {}}
+            >
+              {message.tools.length > 0 && (
+                <ToolActivity
+                  items={message.tools}
+                  expanded={message.toolsExpanded}
+                  isProcessing={message.status === 'processing'}
+                  onToggle={() => toggleTools(message.id)}
+                />
+              )}
 
-          {toolActivity.length > 0 && (
-            <ToolActivity
-              items={toolActivity}
-              expanded={toolsExpanded}
-              isProcessing={isProcessing}
-              onToggle={() => setToolsExpanded((expanded) => !expanded)}
-            />
-          )}
-
-          {isProcessing && (
-            <article className="message-block agent-message">
-              <div className="agent-heading">
-                <span className="agent-mark" aria-hidden="true">▶</span>
-                <strong>Agent</strong>
-              </div>
-              <div className="message-content processing-line">
-                <i aria-hidden="true" />
-                <p>正在处理视频</p>
-              </div>
+              {message.status === 'failed' ? (
+                <>
+                  <div className="agent-heading error-heading">
+                    <span className="agent-mark error-mark" aria-hidden="true">!</span>
+                    <strong>任务失败</strong>
+                  </div>
+                  <div className="message-content"><p>{message.errorMessage}</p></div>
+                </>
+              ) : (
+                <>
+                  <div className="agent-heading">
+                    <span className="agent-mark" aria-hidden="true">▶</span>
+                    <strong>Agent</strong>
+                  </div>
+                  {message.status === 'processing' ? (
+                    <div className="message-content processing-line">
+                      <i aria-hidden="true" />
+                      <p>正在处理视频</p>
+                    </div>
+                  ) : (
+                    <div className="message-content">
+                      <p className="agent-response">{message.result.responseText}</p>
+                      {message.result.outputFileName && (
+                        <ArtifactCard
+                          fileName={message.result.outputFileName}
+                          onOpen={() => void window.agentDesktop.openOutputFile(
+                            message.result.outputFileName!,
+                          )}
+                        />
+                      )}
+                      <p className="trace-id">Trace: <code>{message.result.traceId}</code></p>
+                    </div>
+                  )}
+                </>
+              )}
             </article>
-          )}
-
-          {result && (
-            <article className="message-block agent-message">
-              <div className="agent-heading">
-                <span className="agent-mark" aria-hidden="true">▶</span>
-                <strong>Agent</strong>
-              </div>
-              <div className="message-content">
-                <p className="agent-response">{result.responseText}</p>
-                {result.outputFileName && (
-                  <ArtifactCard
-                    fileName={result.outputFileName}
-                    onOpen={() => void window.agentDesktop.openOutputFile()}
-                  />
-                )}
-                <p className="trace-id">Trace: <code>{result.traceId}</code></p>
-              </div>
-            </article>
-          )}
-
-          {errorMessage && (
-            <article className="message-block error-message" role="alert">
-              <div className="agent-heading error-heading">
-                <span className="agent-mark error-mark" aria-hidden="true">!</span>
-                <strong>任务失败</strong>
-              </div>
-              <div className="message-content"><p>{errorMessage}</p></div>
-            </article>
-          )}
+          ))}
         </div>
 
         <section

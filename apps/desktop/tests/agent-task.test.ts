@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolCallId } from '@agent-desktop/model';
-import type { SessionEvent, StepId, TurnId } from '@agent-desktop/session';
+import type { ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
+import { InMemorySession, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import {
   buildAgentPrompt,
   findSuccessfulOutputPath,
+  runDesktopAgentTask,
 } from '../src/main/agent-task.js';
 
 const turnId = 'turn-current' as TurnId;
@@ -88,5 +89,46 @@ describe('desktop agent task', () => {
     ];
 
     expect(findSuccessfulOutputPath(events, turnId)).toBeUndefined();
+  });
+
+  it('uses the same Session as model context across two Desktop turns', async () => {
+    const requests: ModelRequest[] = [];
+    const session = new InMemorySession();
+    const agent = {
+      model: {
+        complete: async (request: ModelRequest): Promise<ModelResponse> => {
+          requests.push(request);
+          return {
+            text: requests.length === 1 ? '已经记住。' : '你刚才让我记住的数字是 731。',
+            toolCalls: [],
+          };
+        },
+      },
+      session,
+      tools: {
+        register: () => undefined,
+        get: () => undefined,
+        list: () => [],
+      },
+      systemPrompt: { build: () => '测试 Agent' },
+    };
+    const trace = () => undefined;
+
+    await runDesktopAgentTask(agent, '请记住数字 731。', [], undefined, trace);
+    const second = await runDesktopAgentTask(
+      agent,
+      '我刚才让你记住的数字是多少？',
+      [],
+      undefined,
+      trace,
+    );
+
+    expect(second.responseText).toBe('你刚才让我记住的数字是 731。');
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'user', content: expect.stringContaining('731') }),
+      { role: 'assistant', content: '已经记住。', toolCalls: [] },
+    ]));
+    expect(session.events().filter((event) => event.type === 'turn.started')).toHaveLength(2);
   });
 });

@@ -28,5 +28,5 @@ export interface DesktopApi {
   removeSelectedVideo(index: number): Promise<void>;
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
   onAgentEvent(listener: (event: ToolActivityEvent) => void): () => void;
-  openOutputFile(): Promise<void>;
+  openOutputFile(fileName: string): Promise<void>;
 }

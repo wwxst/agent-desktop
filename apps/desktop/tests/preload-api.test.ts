@@ -30,12 +30,12 @@ describe('createDesktopApi', () => {
     await api.selectVideoFile();
     await api.removeSelectedVideo(1);
     await api.runAgentTask('保留核心内容');
-    await api.openOutputFile();
+    await api.openOutputFile('step1.mp4');
     expect(invocations).toEqual([
       { channel: 'desktop:select-video', args: [] },
       { channel: 'desktop:remove-video', args: [1] },
       { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
-      { channel: 'desktop:open-output-file', args: [] },
+      { channel: 'desktop:open-output-file', args: ['step1.mp4'] },
     ]);
 
     const events: unknown[] = [];

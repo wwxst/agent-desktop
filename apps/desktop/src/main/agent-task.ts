@@ -1,3 +1,4 @@
+import { runTurn, type ExecutionTrace } from '@agent-desktop/agent-loop';
 import type { SessionEvent, TurnId } from '@agent-desktop/session';
 
 /** 把 Renderer 的用户意图与 Main 持有的视频路径集合组合成一次 Agent 输入。 */
@@ -54,4 +55,28 @@ export function findSuccessfulOutputPath(
   }
 
   return undefined;
+}
+
+/** 在窗口持有的同一个 Agent 上执行一轮任务，让 Session 成为跨轮模型上下文的唯一来源。 */
+export async function runDesktopAgentTask(
+  agent: Parameters<typeof runTurn>[0],
+  prompt: string,
+  inputPaths: readonly string[],
+  outputPath: string | undefined,
+  trace: ExecutionTrace,
+) {
+  const result = await runTurn(
+    agent,
+    buildAgentPrompt(prompt, inputPaths, outputPath),
+    trace,
+  );
+  if (result.response.text === undefined) {
+    throw new Error('Agent 未返回最终文本回复。');
+  }
+
+  return {
+    responseText: result.response.text,
+    turnId: result.turnId,
+    outputPath: findSuccessfulOutputPath(agent.session.events(), result.turnId),
+  };
 }

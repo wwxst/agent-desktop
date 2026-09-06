@@ -25,8 +25,8 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       ipc.on(DESKTOP_CHANNELS.agentEvent, receive);
       return () => ipc.removeListener(DESKTOP_CHANNELS.agentEvent, receive);
     },
-    openOutputFile: async () => {
-      await ipc.invoke(DESKTOP_CHANNELS.openOutputFile);
+    openOutputFile: async (fileName) => {
+      await ipc.invoke(DESKTOP_CHANNELS.openOutputFile, fileName);
     },
   };
 }

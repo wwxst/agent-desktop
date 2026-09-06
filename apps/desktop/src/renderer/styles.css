@@ -325,6 +325,10 @@ textarea:focus-visible {
   margin-bottom: 7px;
 }
 
+.agent-message > .tool-activity {
+  margin-bottom: 20px;
+}
+
 .agent-heading strong {
   color: var(--text-muted);
   font-size: 12px;
