@@ -37,7 +37,7 @@ function outputEvents(
 }
 
 describe('desktop agent task', () => {
-  it('passes the selected video and deterministic output path to the Agent', () => {
+  it('passes Windows video paths with JSON-safe separators to the Agent', () => {
     expect(buildAgentPrompt(
       '删除无关内容，只保留核心部分',
       ['D:\\videos\\sintel-trailer.mp4'],
@@ -45,8 +45,8 @@ describe('desktop agent task', () => {
     )).toBe([
       '删除无关内容，只保留核心部分',
       '',
-      '输入视频 1：D:\\videos\\sintel-trailer.mp4',
-      '最终输出文件：D:\\videos\\sintel-trailer-edited.mp4',
+      '输入视频 1：D:/videos/sintel-trailer.mp4',
+      '最终输出文件：D:/videos/sintel-trailer-edited.mp4',
     ].join('\n'));
   });
 
@@ -66,9 +66,9 @@ describe('desktop agent task', () => {
     )).toBe([
       '把两个视频拼接起来',
       '',
-      '输入视频 1：D:\\videos\\intro.mp4',
-      '输入视频 2：D:\\videos\\main.mp4',
-      '最终输出文件：D:\\videos\\intro-edited.mp4',
+      '输入视频 1：D:/videos/intro.mp4',
+      '输入视频 2：D:/videos/main.mp4',
+      '最终输出文件：D:/videos/intro-edited.mp4',
     ].join('\n'));
   });
 

@@ -112,11 +112,6 @@ export function App() {
       <aside className="app-sidebar" aria-label="工作区导航">
         <div className="sidebar-brand">
           <strong>Agent Desktop</strong>
-          <span className="sidebar-brand-chevron" aria-hidden="true">
-            <svg viewBox="0 0 12 12" width="12" height="12" focusable="false">
-              <path d="m3 4.5 3 3 3-3" />
-            </svg>
-          </span>
         </div>
         <div className="sidebar-section-label">工作区</div>
         <div className="sidebar-workspace" aria-label="当前工作区">
@@ -129,7 +124,7 @@ export function App() {
         </div>
         <div className="sidebar-session" aria-current="page">
           <span>当前任务</span>
-          <small>{hasConversation ? '进行中' : '新任务'}</small>
+          {isProcessing && <small>进行中</small>}
         </div>
         <div className="sidebar-footer">
           <span className="sidebar-status-dot" aria-hidden="true" />
@@ -218,12 +213,7 @@ export function App() {
             <div className="empty-state">
               <span className="empty-state-mark" aria-hidden="true">▶</span>
               <h2>开始一个视频任务</h2>
-              <p>可选择多个视频，也可以直接告诉 Agent 你想做什么。</p>
-              <ul className="example-list" aria-label="任务示例">
-                <li>删除无关内容，只保留核心部分</li>
-                <li>找出讲 Japan 的片段</li>
-                <li>把开头压缩得更紧凑</li>
-              </ul>
+              <p>选择视频，或者直接告诉 Agent 你想做什么。</p>
             </div>
           )}
           <div className="composer-wrap">{composer}</div>

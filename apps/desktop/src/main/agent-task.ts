@@ -17,8 +17,11 @@ export function buildAgentPrompt(
   return [
     prompt,
     '',
-    ...inputPaths.map((inputPath, index) => `输入视频 ${index + 1}：${inputPath}`),
-    `最终输出文件：${outputPath}`,
+    // Agent 会把这些路径复制进 Tool Call JSON；使用 Windows 同样支持的正斜杠，避免反斜杠被模型输出为非法 JSON 转义。
+    ...inputPaths.map((inputPath, index) => (
+      `输入视频 ${index + 1}：${inputPath.replaceAll('\\', '/')}`
+    )),
+    `最终输出文件：${outputPath.replaceAll('\\', '/')}`,
   ].join('\n');
 }
 

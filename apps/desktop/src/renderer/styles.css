@@ -109,23 +109,6 @@ textarea:focus-visible {
   line-height: 20px;
 }
 
-.sidebar-brand-chevron {
-  display: grid;
-  flex: 0 0 auto;
-  width: 14px;
-  height: 20px;
-  place-items: center;
-  color: var(--text-muted);
-}
-
-.sidebar-brand-chevron svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.25;
-}
-
 .sidebar-section-label {
   margin: 20px 6px 8px;
   color: var(--text-muted);
@@ -299,27 +282,6 @@ textarea:focus-visible {
   background: #f0f4ff;
   font-weight: 700;
   font-size: 14px;
-}
-
-.example-list {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  max-width: 640px;
-  margin-top: 20px;
-  padding: 0;
-  list-style: none;
-}
-
-.example-list li {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 10px;
-  color: var(--text-secondary);
-  background: #fafbfc;
-  font-size: 12px;
-  line-height: 1.35;
 }
 
 .message-block + .message-block,
@@ -936,7 +898,6 @@ textarea:focus-visible {
   }
 
   .sidebar-brand strong,
-  .sidebar-brand-chevron,
   .sidebar-section-label,
   .sidebar-workspace > span:not(.sidebar-folder),
   .sidebar-session span,

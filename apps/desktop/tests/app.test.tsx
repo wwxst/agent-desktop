@@ -32,12 +32,12 @@ describe('App', () => {
     expect(screen.getByText('Agent Desktop')).toBeTruthy();
     expect(screen.queryByText('视频智能剪辑')).toBeNull();
     expect(screen.queryByLabelText('品牌 Logo')).toBeNull();
+    expect(document.querySelector('.sidebar-brand svg')).toBeNull();
+    expect(screen.queryByText('新任务')).toBeNull();
     const emptyWorkspace = screen.getByRole('region', { name: '开始视频任务' });
     expect(screen.getByText('开始一个视频任务')).toBeTruthy();
-    expect(screen.getByText('可选择多个视频，也可以直接告诉 Agent 你想做什么。')).toBeTruthy();
-    expect(screen.getByText('删除无关内容，只保留核心部分')).toBeTruthy();
-    expect(screen.getByText('找出讲 Japan 的片段')).toBeTruthy();
-    expect(screen.getByText('把开头压缩得更紧凑')).toBeTruthy();
+    expect(screen.getByText('选择视频，或者直接告诉 Agent 你想做什么。')).toBeTruthy();
+    expect(screen.queryByLabelText('任务示例')).toBeNull();
     expect(within(emptyWorkspace).getByLabelText('剪辑需求')).toBeTruthy();
     expect(screen.getAllByLabelText('剪辑需求')).toHaveLength(1);
     expect(screen.queryByText('就绪')).toBeNull();
@@ -122,9 +122,11 @@ describe('App', () => {
       target: { value: '删除无关内容，只保留核心部分' },
     });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(screen.getByText('进行中')).toBeTruthy();
 
     await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('删除无关内容，只保留核心部分'));
     expect(await screen.findByText('剪辑已经完成。')).toBeTruthy();
+    expect(screen.queryByText('进行中')).toBeNull();
     expect(screen.queryByRole('region', { name: '开始视频任务' })).toBeNull();
     expect(within(screen.getByRole('region', { name: '任务输入' })).getByLabelText('剪辑需求')).toBeTruthy();
     expect(screen.getAllByLabelText('剪辑需求')).toHaveLength(1);
