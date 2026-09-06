@@ -5,7 +5,8 @@
   "main": "dist/main/index.cjs",
   "scripts": {
     "build": "esbuild src/main/index.ts --bundle --platform=node --target=node24 --format=cjs --external:electron --outfile=dist/main/index.cjs && esbuild src/preload/index.ts --bundle --platform=node --target=node24 --format=cjs --external:electron --outfile=dist/preload/index.cjs && vite build --config vite.config.ts",
-    "start": "pnpm build && electron ."
+    "start": "pnpm build && electron .",
+    "dev": "node scripts/dev.mjs"
   },
   "dependencies": {
     "@agent-desktop/agent-loop": "workspace:*",

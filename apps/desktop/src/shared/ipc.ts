@@ -2,6 +2,7 @@ import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 
 export const DESKTOP_CHANNELS = {
   selectVideo: 'desktop:select-video',
+  removeVideo: 'desktop:remove-video',
   runAgentTask: 'desktop:run-agent-task',
   agentEvent: 'desktop:agent-event',
   openOutputFile: 'desktop:open-output-file',
@@ -23,7 +24,8 @@ export interface AgentTaskResult {
 }
 
 export interface DesktopApi {
-  selectVideoFile(): Promise<SelectedVideo | null>;
+  selectVideoFile(): Promise<readonly SelectedVideo[] | null>;
+  removeSelectedVideo(index: number): Promise<void>;
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
   onAgentEvent(listener: (event: ToolActivityEvent) => void): () => void;
   openOutputFile(): Promise<void>;

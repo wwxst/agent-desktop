@@ -1,11 +1,23 @@
 import type { SessionEvent, TurnId } from '@agent-desktop/session';
 
-/** 把 Renderer 的用户意图与 Main 持有的视频路径组合成一次 Agent 输入。 */
-export function buildAgentPrompt(prompt: string, inputPath: string, outputPath: string): string {
+/** 把 Renderer 的用户意图与 Main 持有的视频路径集合组合成一次 Agent 输入。 */
+export function buildAgentPrompt(
+  prompt: string,
+  inputPaths?: readonly string[],
+  outputPath?: string,
+): string {
+  if (inputPaths === undefined || inputPaths.length === 0 || outputPath === undefined) {
+    return [
+      prompt,
+      '',
+      '当前未选择输入视频。请只根据文字需求回答，不要调用需要媒体文件的 Tool，也不要声称生成了视频文件。',
+    ].join('\n');
+  }
+
   return [
     prompt,
     '',
-    `输入视频：${inputPath}`,
+    ...inputPaths.map((inputPath, index) => `输入视频 ${index + 1}：${inputPath}`),
     `最终输出文件：${outputPath}`,
   ].join('\n');
 }

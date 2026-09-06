@@ -35,6 +35,16 @@ describe('createVideoAgent', () => {
     const systemPrompt = agent.systemPrompt.build();
     expect(systemPrompt).toContain('优先使用 extract_audio 和 transcribe_audio');
     expect(systemPrompt).toContain('多个不连续保留区间应分别从原视频裁剪');
+    expect(systemPrompt).toContain('如果用户提供多个输入视频');
     expect(systemPrompt).toContain('固定秒数裁剪可以直接使用 trim_video');
+  });
+
+  it('can assemble a text-only Agent without registering media transcription', () => {
+    const agent = createVideoAgent({
+      deepSeekApiKey: 'test-deepseek-key',
+      visionApiKey: '',
+    });
+
+    expect(agent.tools.list().map((tool) => tool.name)).not.toContain('transcribe_audio');
   });
 });

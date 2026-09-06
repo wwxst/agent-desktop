@@ -46,7 +46,7 @@ Video Agent Application
 
 ### Desktop Application Boundary（桌面应用边界）
 
-`apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的单页桌面客户端。它只负责当前视频任务所需的入口和展示：选择视频文件、提交自然语言剪辑任务、展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、展示最终回复并打开输出文件。每个窗口持有一个内存中的 Session（会话）。
+`apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的单页桌面客户端。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交视频文件、提交自然语言剪辑任务、展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、展示最终回复并打开输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。每个窗口持有一个内存中的 Session（会话）。
 
 ```text
 Layer                 中文名称         职责

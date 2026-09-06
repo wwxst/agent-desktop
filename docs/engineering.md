@@ -273,9 +273,11 @@ Real verification         真实验证       只整理已有稳定入口；缺�
 ```text
 Static / Architecture Gate       已实施       `pnpm check:architecture` 检查稳定的依赖与 import 边界
 Unit / Contract / Integration    已具备       现有 Vitest 测试覆盖 Runtime 和 Tool 的关键行为，`pnpm typecheck:tests` 检查测试类型
-Expected Output / Build Smoke    已具备       `pnpm desktop:build` 构建 Desktop 的 Main、Preload 和 Renderer
+Expected Output / Build Smoke    已具备       `pnpm desktop:build` 构建 Desktop 的 Main、Preload 和 Renderer；`pnpm desktop:dev` 启动带 Vite 热更新的本地开发窗口
 Real E2E                         已有入口     复用 `pnpm deepseek-agent`、`pnpm ffmpeg-agent` 和 `pnpm desktop` 的真实执行方式
 ```
+
+`desktop:dev` 使用 `DESKTOP_RENDERER_URL` 让 Electron 加载 Vite Dev Server。Vite 开发服务通过 `transformIndexHtml` 仅在 serve 阶段放行内联 CSS 和 HMR WebSocket；生产构建继续使用 Renderer HTML 中的严格 Content Security Policy（内容安全策略）。如果开发窗口出现原始 HTML 而没有样式，优先检查这两个 CSP 来源是否被阻断。
 
 ### Step 4 Review（审查）
 

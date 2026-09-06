@@ -40,13 +40,35 @@ describe('desktop agent task', () => {
   it('passes the selected video and deterministic output path to the Agent', () => {
     expect(buildAgentPrompt(
       '删除无关内容，只保留核心部分',
-      'D:\\videos\\sintel-trailer.mp4',
+      ['D:\\videos\\sintel-trailer.mp4'],
       'D:\\videos\\sintel-trailer-edited.mp4',
     )).toBe([
       '删除无关内容，只保留核心部分',
       '',
-      '输入视频：D:\\videos\\sintel-trailer.mp4',
+      '输入视频 1：D:\\videos\\sintel-trailer.mp4',
       '最终输出文件：D:\\videos\\sintel-trailer-edited.mp4',
+    ].join('\n'));
+  });
+
+  it('marks a text-only task without inventing media paths', () => {
+    expect(buildAgentPrompt('介绍一下这个客户端的能力。')).toBe([
+      '介绍一下这个客户端的能力。',
+      '',
+      '当前未选择输入视频。请只根据文字需求回答，不要调用需要媒体文件的 Tool，也不要声称生成了视频文件。',
+    ].join('\n'));
+  });
+
+  it('lists every selected video in the Agent prompt', () => {
+    expect(buildAgentPrompt(
+      '把两个视频拼接起来',
+      ['D:\\videos\\intro.mp4', 'D:\\videos\\main.mp4'],
+      'D:\\videos\\intro-edited.mp4',
+    )).toBe([
+      '把两个视频拼接起来',
+      '',
+      '输入视频 1：D:\\videos\\intro.mp4',
+      '输入视频 2：D:\\videos\\main.mp4',
+      '最终输出文件：D:\\videos\\intro-edited.mp4',
     ].join('\n'));
   });
 

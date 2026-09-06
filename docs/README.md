@@ -32,4 +32,12 @@ v0.0.1 Agent Runtime MVP 历史规格
 
 定义当前项目已经生效的工程技术基线、包布局和依赖规则。
 
+### [desktop-ui.md](./desktop-ui.md)
+
+桌面端界面基线
+
+定义当前渲染层的布局、对话、输入区、附件、工具活动、产物展示和视觉验收要求。
+
+Desktop 开发时使用 `pnpm desktop:dev`，Renderer（渲染层）的 CSS 和 React 修改会通过 Vite 热更新；生产启动仍使用 `pnpm desktop`。
+
 当前阶段只保留入口，不创建大量空白文档。

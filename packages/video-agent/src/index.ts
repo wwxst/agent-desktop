@@ -23,7 +23,7 @@ import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 export interface VideoAgentOptions {
   readonly deepSeekApiKey: string;
   readonly deepSeekBaseUrl?: string;
-  readonly whisperModelPath: string;
+  readonly whisperModelPath?: string;
   readonly whisperCliPath?: string;
   readonly visionApiKey: string;
   readonly visionBaseUrl?: string;
@@ -50,6 +50,7 @@ const VIDEO_AGENT_SYSTEM_PROMPT = [
   '一次自然语言视频编辑请求就是一个 Turn；如果请求包含多个操作，必须在同一个 Turn 中通过多个连续的 Tool Call 和 Step 完成。',
   '只有前一个 Tool 成功后才能继续下一个操作；Tool 返回 error 时必须让模型看到错误，并且不能声称任务成功。',
   '同一条处理链需要继续处理上一步结果时，使用上一个视频 Tool 产生的 outputPath；多个不连续保留区间应分别从原视频裁剪，再按语义顺序拼接。',
+  '如果用户提供多个输入视频，先分别使用视频 Tool 理解或处理所需来源，再按用户要求使用 concat_videos 合并；最终结果必须写入提示中的最终 outputPath。',
   '中间文件放在最终 outputPath 的同一目录，文件名由你根据需要决定；不要自动删除中间文件。',
   'Tool 的选择和顺序由你根据用户请求决定，不要因为某个 Tool 可用就固定调用它；例如固定秒数裁剪可以直接使用 trim_video，不需要语音识别或视觉分析。',
   '不要在执行前输出单独的计划，直接调用完成当前请求所需的 Tool；最后一个 Tool 必须写入用户要求的最终 outputPath。',
@@ -68,11 +69,13 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
       ? { apiKey: options.visionApiKey }
       : { apiKey: options.visionApiKey, baseUrl: options.visionBaseUrl },
   ));
-  tools.register(new TranscribeAudioTool(
-    options.whisperCliPath === undefined
-      ? { modelPath: options.whisperModelPath }
-      : { modelPath: options.whisperModelPath, command: options.whisperCliPath },
-  ));
+  if (options.whisperModelPath !== undefined) {
+    tools.register(new TranscribeAudioTool(
+      options.whisperCliPath === undefined
+        ? { modelPath: options.whisperModelPath }
+        : { modelPath: options.whisperModelPath, command: options.whisperCliPath },
+    ));
+  }
   tools.register(new TrimVideoTool());
   tools.register(new ConcatVideosTool());
   tools.register(new AddAudioTool());

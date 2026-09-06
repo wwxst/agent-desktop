@@ -29,6 +29,7 @@ describe('desktop preload entry', () => {
       'agentDesktop',
       expect.objectContaining({
         selectVideoFile: expect.any(Function),
+        removeSelectedVideo: expect.any(Function),
         runAgentTask: expect.any(Function),
         onAgentEvent: expect.any(Function),
         openOutputFile: expect.any(Function),

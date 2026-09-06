@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createDesktopApi } from '../src/preload/api.js';
 
 describe('createDesktopApi', () => {
-  it('exposes only the four desktop IPC operations', async () => {
+  it('exposes only the five desktop IPC operations', async () => {
     const invocations: Array<{ channel: string; args: readonly unknown[] }> = [];
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const ipc = {
@@ -22,15 +22,18 @@ describe('createDesktopApi', () => {
     expect(Object.keys(api).sort()).toEqual([
       'onAgentEvent',
       'openOutputFile',
+      'removeSelectedVideo',
       'runAgentTask',
       'selectVideoFile',
     ]);
 
     await api.selectVideoFile();
+    await api.removeSelectedVideo(1);
     await api.runAgentTask('保留核心内容');
     await api.openOutputFile();
     expect(invocations).toEqual([
       { channel: 'desktop:select-video', args: [] },
+      { channel: 'desktop:remove-video', args: [1] },
       { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
       { channel: 'desktop:open-output-file', args: [] },
     ]);

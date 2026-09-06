@@ -26,7 +26,7 @@ Timeline-aware Understanding    带时间轴的视频内容理解   Local Speech
 Agent Execution Trace           智能体全链路执行日志     独立 package 将 CLI 与 Desktop 的 Model、Tool 和 Turn 诊断事件写入本地 JSONL。
 Semantic Video Editing          语义视频剪辑             Agent 根据语音时间轴和必要的视觉确认，自主裁剪并拼接语义片段；已完成真实单区间和多区间验证。
 Video Agent Application Layer   视频智能体应用层         `@agent-desktop/video-agent` 统一组装正式视频 Agent，由 CLI 与 Desktop 共同复用。
-Agent Desktop Shell             智能体桌面应用外壳       单页 Electron 客户端提供选视频、输入任务、查看 Tool 活动、读取回复和打开输出文件的闭环。
+Agent Desktop Shell             智能体桌面应用外壳       单页 Electron 客户端提供选择一个或多个视频、输入任务、查看 Tool 活动、读取回复和打开输出文件的闭环。
 ```
 
 # Current Engineering Foundation（当前工程基础）
@@ -74,7 +74,7 @@ pnpm ffmpeg-agent
 
 所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
 
-运行 Desktop（桌面应用）前必须提供 `DEEPSEEK_API_KEY` 和 `WHISPER_MODEL_PATH`：
+运行 Desktop（桌面应用）时，文字任务只需要 `DEEPSEEK_API_KEY`；选择视频后执行语音理解类剪辑时还必须提供 `WHISPER_MODEL_PATH`：
 
 ```bash
 pnpm desktop

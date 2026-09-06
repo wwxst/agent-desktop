@@ -11,7 +11,7 @@ import {
 import { DESKTOP_CHANNELS, type AgentTaskResult, type ToolActivityEvent } from '../shared/ipc.js';
 
 let mainWindow: BrowserWindow | null = null;
-let selectedVideoPath: string | undefined;
+let selectedVideoPaths: string[] = [];
 let outputFilePath: string | undefined;
 
 function requireEnvironment(name: 'DEEPSEEK_API_KEY' | 'WHISPER_MODEL_PATH'): string {
@@ -42,35 +42,48 @@ function registerIpcHandlers(): void {
     if (mainWindow === null) throw new Error('Desktop window is not available');
 
     const selection = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openFile'],
+      properties: ['openFile', 'multiSelections'],
       filters: [{ name: '视频文件', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] }],
     });
-    const filePath = selection.filePaths[0];
-    if (selection.canceled || filePath === undefined) return null;
+    if (selection.canceled || selection.filePaths.length === 0) return null;
 
-    selectedVideoPath = filePath;
+    selectedVideoPaths.push(...selection.filePaths);
     outputFilePath = undefined;
-    return { name: basename(filePath) };
+    return selectedVideoPaths.map((filePath) => ({ name: basename(filePath) }));
+  });
+
+  ipcMain.handle(DESKTOP_CHANNELS.removeVideo, (_event, index: unknown) => {
+    if (typeof index !== 'number' || !Number.isInteger(index)
+      || index < 0 || index >= selectedVideoPaths.length) {
+      throw new Error('无效的视频附件序号。');
+    }
+
+    selectedVideoPaths.splice(index, 1);
+    outputFilePath = undefined;
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, async (_event, prompt: unknown): Promise<AgentTaskResult> => {
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       throw new Error('请输入剪辑需求。');
     }
-    if (selectedVideoPath === undefined) throw new Error('请先选择视频文件。');
 
     const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
     const whisperCliPath = process.env.WHISPER_CLI_PATH;
     const visionBaseUrl = process.env.OPENAI_BASE_URL;
+    const whisperModelPath = selectedVideoPaths.length === 0
+      ? process.env.WHISPER_MODEL_PATH
+      : requireEnvironment('WHISPER_MODEL_PATH');
     const taskAgent = createVideoAgent({
       deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
-      whisperModelPath: requireEnvironment('WHISPER_MODEL_PATH'),
       visionApiKey: process.env.OPENAI_API_KEY ?? '',
+      ...(whisperModelPath === undefined ? {} : { whisperModelPath }),
       ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
       ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
       ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
     });
-    const requestedOutputPath = defaultOutputPath(selectedVideoPath);
+    const requestedOutputPath = selectedVideoPaths.length === 0
+      ? undefined
+      : defaultOutputPath(selectedVideoPaths[0]!);
     // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
     const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
     await mkdir(logsDirectory, { recursive: true });
@@ -78,7 +91,7 @@ function registerIpcHandlers(): void {
 
     const result = await runTurn(
       taskAgent,
-      buildAgentPrompt(prompt.trim(), selectedVideoPath, requestedOutputPath),
+      buildAgentPrompt(prompt.trim(), selectedVideoPaths, requestedOutputPath),
       async (traceEvent) => {
         await trace.write(traceEvent);
         sendToolActivity(traceEvent);
@@ -105,7 +118,7 @@ function registerIpcHandlers(): void {
 }
 
 function createWindow(): void {
-  selectedVideoPath = undefined;
+  selectedVideoPaths = [];
   outputFilePath = undefined;
   mainWindow = new BrowserWindow({
     width: 1120,
@@ -120,7 +133,13 @@ function createWindow(): void {
       preload: join(app.getAppPath(), 'dist/preload/index.cjs'),
     },
   });
-  void mainWindow.loadFile(join(app.getAppPath(), 'dist/renderer/index.html'));
+  const rendererUrl = process.env.DESKTOP_RENDERER_URL;
+  if (rendererUrl === undefined) {
+    void mainWindow.loadFile(join(app.getAppPath(), 'dist/renderer/index.html'));
+  } else {
+    // 开发模式加载 Vite Dev Server，让 Renderer 的 CSS 和 React 修改即时热更新。
+    void mainWindow.loadURL(rendererUrl);
+  }
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

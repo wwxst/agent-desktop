@@ -29,6 +29,8 @@ Commit 18 已在 `feature/agent-desktop-shell` 功能分支完成开发，尚未
 * 公共接口必须有明确职责。
 * 核心行为需要测试。
 * 改架构时同步更新文档。
+* 修改 Desktop UI（桌面端用户界面）时，必须使用 [`.agents/skills/desktop-frontend/SKILL.md`](.agents/skills/desktop-frontend/SKILL.md)，并以 [`docs/desktop-ui.md`](docs/desktop-ui.md) 作为视觉行为的唯一文档来源。
+* 界面参考图和第三方界面只授权视觉对照；不得据此新增当前 milestone 未明确要求的控件、产品概念或功能。
 * 创建 package、修改 TypeScript 配置、引入依赖或修改 workspace 前，必须遵守 [`docs/engineering.md`](docs/engineering.md) 工程基线。
 * 面向人阅读的文档中，英文术语必须同时提供中文名称和简要说明；代码标识、文件名、命令、协议字段等技术原文可以保留英文。
 * 概念说明必须使用固定宽度的 `text` 代码块：英文术语、中文术语和中文介绍分别作为三列，列之间只使用空格分隔，并确保中文术语和介绍的开头在上下各行从同一个固定显示列开始；不使用 Markdown 表格、`|` 分隔符、空行拆分或 `English（中文）：介绍` 的堆叠格式。
