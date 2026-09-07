@@ -19,6 +19,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-empty' }),
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
@@ -51,6 +52,7 @@ describe('App', () => {
         { name: 'interview.mp4' },
       ]),
       removeSelectedVideo,
+      newSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-remove' }),
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
@@ -77,6 +79,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-add' }),
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
@@ -107,6 +110,7 @@ describe('App', () => {
         { name: 'interview.mp4' },
       ]),
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
       openOutputFile,
@@ -148,6 +152,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask: () => new Promise((resolve) => {
         resolveTask = resolve;
       }),
@@ -194,6 +199,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => ([{ name: 'sintel-trailer.mp4' }]),
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask: () => new Promise((resolve) => {
         resolveTask = resolve;
       }),
@@ -241,6 +247,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
@@ -267,6 +274,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
@@ -299,6 +307,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask,
       onAgentEvent: (listener) => {
         receiveEvent = listener;
@@ -359,6 +368,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => [{ name: 'input.mp4' }],
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
       openOutputFile,
@@ -390,6 +400,7 @@ describe('App', () => {
     window.agentDesktop = {
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
@@ -408,11 +419,104 @@ describe('App', () => {
     await act(async () => resolveTask?.({ responseText: '完成。', traceId: 'trace-running' }));
   });
 
+  it('starts a new session and clears messages, tools, artifacts, traces, draft, and videos', async () => {
+    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let resolveFirstTask: ((result: AgentTaskResult) => void) | undefined;
+    const newSession = vi.fn(async () => undefined);
+    const runAgentTask = vi.fn()
+      .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => {
+        resolveFirstTask = resolve;
+      }))
+      .mockResolvedValueOnce({ responseText: '第二轮完成。', traceId: 'trace-new-2' });
+    window.agentDesktop = {
+      selectVideoFile: async () => [{ name: 'input.mp4' }],
+      removeSelectedVideo: async () => undefined,
+      newSession,
+      runAgentTask,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    expect(await screen.findByLabelText('视频附件：input.mp4')).toBeTruthy();
+    const composerInput = screen.getByLabelText('剪辑需求');
+
+    fireEvent.change(composerInput, { target: { value: '第一轮任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'tool.completed',
+      turnId: 'turn-new-1' as never,
+      stepId: 'step-new-1' as never,
+      toolCallId: 'call-new-1' as never,
+      toolName: 'trim_video',
+      durationMs: 18,
+    }));
+    await act(async () => resolveFirstTask?.({
+      responseText: '第一轮完成。',
+      outputFileName: 'first-output.mp4',
+      traceId: 'trace-new-1',
+    }));
+    expect(await screen.findByText('first-output.mp4')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '已执行 1 个工具' })).toBeTruthy();
+
+    fireEvent.change(composerInput, { target: { value: '第二轮任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText('第二轮完成。')).toBeTruthy();
+    fireEvent.change(composerInput, { target: { value: '未发送草稿' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '新会话' }));
+
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    expect(screen.queryByText('第一轮任务')).toBeNull();
+    expect(screen.queryByText('第二轮任务')).toBeNull();
+    expect(screen.queryByText('第一轮完成。')).toBeNull();
+    expect(screen.queryByText('第二轮完成。')).toBeNull();
+    expect(screen.queryByRole('button', { name: '已执行 1 个工具' })).toBeNull();
+    expect(screen.queryByText('first-output.mp4')).toBeNull();
+    expect(screen.queryByText('trace-new-1')).toBeNull();
+    expect(screen.queryByText('trace-new-2')).toBeNull();
+    expect(screen.queryByLabelText('视频附件：input.mp4')).toBeNull();
+    expect((composerInput as HTMLTextAreaElement).value).toBe('');
+    expect(screen.getByRole('region', { name: '开始视频任务' })).toBeTruthy();
+  });
+
+  it('disables new session while the Agent is processing', async () => {
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const newSession = vi.fn(async () => undefined);
+    window.agentDesktop = {
+      selectVideoFile: async () => null,
+      removeSelectedVideo: async () => undefined,
+      newSession,
+      runAgentTask: () => new Promise((resolve) => {
+        resolveTask = resolve;
+      }),
+      onAgentEvent: () => () => undefined,
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    const newSessionButton = screen.getByRole('button', { name: '新会话' });
+    fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '处理中任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    expect(newSessionButton).toHaveProperty('disabled', true);
+    fireEvent.click(newSessionButton);
+    expect(newSession).not.toHaveBeenCalled();
+
+    await act(async () => resolveTask?.({ responseText: '完成。', traceId: 'trace-finished' }));
+    expect(newSessionButton).toHaveProperty('disabled', false);
+  });
+
   it('keeps the prompt when the task fails', async () => {
     const prompt = '保留核心内容';
     window.agentDesktop = {
       selectVideoFile: async () => ([{ name: 'sintel-trailer.mp4' }]),
       removeSelectedVideo: async () => undefined,
+      newSession: async () => undefined,
       runAgentTask: async () => {
         throw new Error('处理失败。');
       },

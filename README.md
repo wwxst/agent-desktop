@@ -81,7 +81,7 @@ pnpm ffmpeg-agent
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口持有一个 Video Agent（视频智能体）和一个内存 Session（会话），后续发送复用同一 Session 并在界面保留当前窗口的多轮历史。关闭应用后 Session 和界面历史消失，当前不提供重启恢复、设置、任务管理或播放器。
+Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口持有一个 Video Agent（视频智能体）和一个内存 Session（会话），后续发送复用同一 Session 并在界面保留当前窗口的多轮历史。点击侧栏“新会话”会创建新的 Agent 和 InMemorySession，并清空当前界面、附件与文件引用；已生成的视频和日志文件不会删除。关闭应用后 Session 和界面历史消失，当前不提供重启恢复、设置、任务管理或播放器。
 
 ```text
 Layer                 中文名称         职责

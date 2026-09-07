@@ -12,11 +12,31 @@ let selectedVideoPaths: string[] = [];
 let taskAgent: ReturnType<typeof createVideoAgent>;
 let outputSequence = 0;
 let outputFilePaths = new Map<string, string>();
+let isTaskRunning = false;
 
 function requireEnvironment(name: 'DEEPSEEK_API_KEY' | 'WHISPER_MODEL_PATH'): string {
   const value = process.env[name];
   if (value === undefined || value.length === 0) throw new Error(`缺少 ${name} 环境变量。`);
   return value;
+}
+
+/** 为当前窗口创建全新的 Agent / Session，并清空只属于旧会话的文件引用。 */
+function resetAgentSession(): void {
+  selectedVideoPaths = [];
+  outputSequence = 0;
+  outputFilePaths = new Map();
+  const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
+  const whisperCliPath = process.env.WHISPER_CLI_PATH;
+  const whisperModelPath = process.env.WHISPER_MODEL_PATH;
+  const visionBaseUrl = process.env.OPENAI_BASE_URL;
+  taskAgent = createVideoAgent({
+    deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
+    visionApiKey: process.env.OPENAI_API_KEY ?? '',
+    ...(whisperModelPath === undefined ? {} : { whisperModelPath }),
+    ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
+    ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
+    ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
+  });
 }
 
 function defaultOutputPath(inputPath: string, sequence: number): string {
@@ -60,41 +80,51 @@ function registerIpcHandlers(): void {
     selectedVideoPaths.splice(index, 1);
   });
 
+  ipcMain.handle(DESKTOP_CHANNELS.newSession, () => {
+    if (isTaskRunning) throw new Error('Agent 正在执行，无法新建会话。');
+    resetAgentSession();
+  });
+
   ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, async (_event, prompt: unknown): Promise<AgentTaskResult> => {
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       throw new Error('请输入剪辑需求。');
     }
 
-    if (selectedVideoPaths.length > 0) requireEnvironment('WHISPER_MODEL_PATH');
-    const requestedOutputPath = selectedVideoPaths.length === 0
-      ? undefined
-      : defaultOutputPath(selectedVideoPaths[0]!, ++outputSequence);
-    // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
-    const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
-    await mkdir(logsDirectory, { recursive: true });
-    const trace = createJsonlTrace(join(logsDirectory, 'agent-trace.jsonl'));
+    isTaskRunning = true;
+    try {
+      if (selectedVideoPaths.length > 0) requireEnvironment('WHISPER_MODEL_PATH');
+      const requestedOutputPath = selectedVideoPaths.length === 0
+        ? undefined
+        : defaultOutputPath(selectedVideoPaths[0]!, ++outputSequence);
+      // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
+      const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
+      await mkdir(logsDirectory, { recursive: true });
+      const trace = createJsonlTrace(join(logsDirectory, 'agent-trace.jsonl'));
 
-    const result = await runDesktopAgentTask(
-      taskAgent,
-      prompt.trim(),
-      selectedVideoPaths,
-      requestedOutputPath,
-      async (traceEvent) => {
-        await trace.write(traceEvent);
-        sendToolActivity(traceEvent);
-      },
-    );
-    if (result.outputPath === undefined) {
-      return { responseText: result.responseText, traceId: trace.id };
+      const result = await runDesktopAgentTask(
+        taskAgent,
+        prompt.trim(),
+        selectedVideoPaths,
+        requestedOutputPath,
+        async (traceEvent) => {
+          await trace.write(traceEvent);
+          sendToolActivity(traceEvent);
+        },
+      );
+      if (result.outputPath === undefined) {
+        return { responseText: result.responseText, traceId: trace.id };
+      }
+
+      const outputFileName = basename(result.outputPath);
+      outputFilePaths.set(outputFileName, result.outputPath);
+      return {
+        responseText: result.responseText,
+        traceId: trace.id,
+        outputFileName,
+      };
+    } finally {
+      isTaskRunning = false;
     }
-
-    const outputFileName = basename(result.outputPath);
-    outputFilePaths.set(outputFileName, result.outputPath);
-    return {
-      responseText: result.responseText,
-      traceId: trace.id,
-      outputFileName,
-    };
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.openOutputFile, (_event, fileName: unknown) => {
@@ -106,21 +136,7 @@ function registerIpcHandlers(): void {
 }
 
 function createWindow(): void {
-  selectedVideoPaths = [];
-  outputSequence = 0;
-  outputFilePaths = new Map();
-  const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
-  const whisperCliPath = process.env.WHISPER_CLI_PATH;
-  const whisperModelPath = process.env.WHISPER_MODEL_PATH;
-  const visionBaseUrl = process.env.OPENAI_BASE_URL;
-  taskAgent = createVideoAgent({
-    deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
-    visionApiKey: process.env.OPENAI_API_KEY ?? '',
-    ...(whisperModelPath === undefined ? {} : { whisperModelPath }),
-    ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
-    ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
-    ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
-  });
+  resetAgentSession();
   mainWindow = new BrowserWindow({
     width: 1120,
     height: 760,

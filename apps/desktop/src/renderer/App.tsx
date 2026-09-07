@@ -102,6 +102,15 @@ export function App() {
     ));
   };
 
+  const startNewSession = async () => {
+    if (isProcessing) return;
+    await window.agentDesktop.newSession();
+    setSelectedVideos([]);
+    setPrompt('');
+    setMessages([]);
+    nextMessageId.current = 1;
+  };
+
   const sendTask = async () => {
     const taskPrompt = prompt.trim();
     if (!taskPrompt || isProcessing) return;
@@ -192,6 +201,17 @@ export function App() {
           </span>
           <span>视频剪辑</span>
         </div>
+        <button
+          className="sidebar-new-session"
+          type="button"
+          disabled={isProcessing}
+          onClick={() => void startNewSession()}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+          <span>新会话</span>
+        </button>
         <div className="sidebar-session" aria-current="page">
           <span>当前任务</span>
           {isProcessing && <small>进行中</small>}

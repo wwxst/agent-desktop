@@ -14,12 +14,14 @@ Timeline-aware Understanding      带时间轴的视频内容理解        已�
 Agent Execution Trace MVP         智能体全链路执行日志最小版本  运行诊断事件写入本地 JSONL；真实成功/失败链路已验证。
 Semantic Video Editing             语义视频剪辑              已完成单区间、多区间真实语义剪辑并合并 `main`。
 Video Agent Application Layer      视频智能体应用层            已完成并合并 `main`，由 CLI 与 Desktop 共同复用。
-Agent Desktop Shell                智能体桌面应用外壳          Commit 18 功能分支开发已完成，尚未合并 `main`。
+Agent Desktop Shell                智能体桌面应用外壳          已完成并合并 `main`。
+Multi-turn Agent Session           多轮智能体会话              Commit 20 已完成并合并 `main`。
+New Session                        新会话                      Commit 21 已在 `feature/new-session` 完成，尚未合并 `main`。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
 
-Commit 18 已在 `feature/agent-desktop-shell` 功能分支完成开发，尚未合并 `main`；Core 与 `agent-loop` 未修改；下一阶段尚未开始。
+Commit 21 在 `feature/new-session` 增加当前窗口的新会话入口，通过重建 Video Agent 和 InMemorySession 隔离旧上下文；Core 与 `agent-loop` 未修改，尚未合并 `main`。
 
 # Engineering Rules（工程规则）
 

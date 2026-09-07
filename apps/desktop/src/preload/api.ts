@@ -9,12 +9,15 @@ export interface IpcRendererPort {
   removeListener(channel: string, listener: IpcListener): unknown;
 }
 
-/** 只把当前桌面闭环需要的五个操作暴露给 Renderer。 */
+/** 只把当前桌面闭环需要的六个操作暴露给 Renderer。 */
 export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
   return {
     selectVideoFile: () => ipc.invoke(DESKTOP_CHANNELS.selectVideo) as ReturnType<DesktopApi['selectVideoFile']>,
     removeSelectedVideo: async (index) => {
       await ipc.invoke(DESKTOP_CHANNELS.removeVideo, index);
+    },
+    newSession: async () => {
+      await ipc.invoke(DESKTOP_CHANNELS.newSession);
     },
     runAgentTask: (prompt) => ipc.invoke(
       DESKTOP_CHANNELS.runAgentTask,
