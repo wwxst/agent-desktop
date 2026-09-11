@@ -23,7 +23,6 @@ function requireEnvironment(name: 'DEEPSEEK_API_KEY' | 'WHISPER_MODEL_PATH'): st
 /** 为当前窗口创建全新的 Agent / Session，并清空只属于旧会话的文件引用。 */
 function resetAgentSession(): void {
   selectedVideoPaths = [];
-  outputSequence = 0;
   outputFilePaths = new Map();
   const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
   const whisperCliPath = process.env.WHISPER_CLI_PATH;

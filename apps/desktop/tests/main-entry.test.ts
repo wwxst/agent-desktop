@@ -162,4 +162,42 @@ describe('desktop main session lifecycle', () => {
       expect.any(Function),
     );
   });
+
+  it('keeps default output paths unique across new sessions for the same video', async () => {
+    const selectVideo = mainMocks.handlers.get('desktop:select-video');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    const newSession = mainMocks.handlers.get('desktop:new-session');
+    expect(selectVideo).toBeTypeOf('function');
+    expect(runAgentTask).toBeTypeOf('function');
+    expect(newSession).toBeTypeOf('function');
+
+    await newSession!({});
+    mainMocks.showOpenDialog.mockResolvedValue({
+      canceled: false,
+      filePaths: ['D:\\videos\\video.mp4'],
+    });
+    const requestedOutputPaths: Array<string | undefined> = [];
+    mainMocks.runDesktopAgentTask.mockImplementation(async (
+      _agent: unknown,
+      _prompt: unknown,
+      _selectedVideoPaths: unknown,
+      requestedOutputPath: string | undefined,
+    ) => {
+      requestedOutputPaths.push(requestedOutputPath);
+      return {
+        responseText: '剪辑完成。',
+        turnId: `turn-output-${requestedOutputPaths.length}`,
+        outputPath: requestedOutputPath,
+      };
+    });
+
+    await selectVideo!({});
+    await runAgentTask!({}, '剪辑视频');
+    await newSession!({});
+    await selectVideo!({});
+    await runAgentTask!({}, '再次剪辑视频');
+
+    expect(requestedOutputPaths).toHaveLength(2);
+    expect(requestedOutputPaths[1]).not.toBe(requestedOutputPaths[0]);
+  });
 });
