@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
-import '../../../../packages/client/src/styles.css';
+import '@agent-desktop/client/styles.css';
 
 const root = document.querySelector<HTMLDivElement>('#root');
 
