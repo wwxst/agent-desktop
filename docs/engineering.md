@@ -276,6 +276,7 @@ Real verification         真实验证       只整理已有稳定入口；缺�
 Static / Architecture Gate       已实施       `pnpm check:architecture` 检查稳定的依赖与 import 边界
 Unit / Contract / Integration    已具备       现有 Vitest 测试覆盖 Runtime 和 Tool 的关键行为，`pnpm typecheck:tests` 检查测试类型
 Expected Output / Build Smoke    已具备       `pnpm desktop:build` 构建 Desktop 的 Main、Preload 和 Renderer；`pnpm desktop:dev` 启动带 Vite 热更新的本地开发窗口
+Web Browser E2E                  已具备       `pnpm client:web:test` 启动 Web Host，并在 Chromium 中验证共享 Client 的任务、会话、草稿与布局闭环
 Real E2E                         已有入口     复用 `pnpm deepseek-agent`、`pnpm ffmpeg-agent` 和 `pnpm desktop` 的真实执行方式
 ```
 
@@ -406,7 +407,7 @@ vitest           4.1.11    测试运行器
 @types/node      24.13.3   Node.js 类型声明
 ```
 
-根与 Core package 不引入 ESLint、Prettier、模型供应商 SDK、第三方 FFmpeg SDK、Tool schema library 或 Agent Framework。`apps/desktop` 是当前明确的应用消费者，只在该 package 使用 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4；这些应用依赖不得进入 Core。根 workspace 的 `allowBuilds` 只允许 `electron` 和 `esbuild`。
+根与 Core package 不引入 ESLint、Prettier、模型供应商 SDK、第三方 FFmpeg SDK、Tool schema library 或 Agent Framework。`apps/desktop` 是当前明确的应用消费者，只在该 package 使用 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4；`apps/web` 只在自身开发依赖中使用 Playwright Test（Playwright 浏览器测试运行器）1.63.0，以 Chromium 执行 Web Browser E2E（浏览器端到端测试）。这些应用依赖不得进入 Core。根 workspace 的 `allowBuilds` 只允许 `electron` 和 `esbuild`。
 
 ## 0.x Policy（0.x 策略）
 

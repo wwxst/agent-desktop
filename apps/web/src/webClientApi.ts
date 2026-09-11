@@ -31,7 +31,8 @@ export function createWebClientApi(): AgentClientApi {
         toolName: 'trim_video',
       };
       listeners.forEach((listener) => listener({ type: 'tool.started', ...base }));
-      await Promise.resolve();
+      // Web Host 保留短暂执行态，让真实浏览器能够观察完整的工具生命周期。
+      await new Promise((resolve) => setTimeout(resolve, 200));
       listeners.forEach((listener) => listener({ type: 'tool.completed', ...base, durationMs: 12 }));
       return {
         responseText: `开发测试宿主已模拟完成：${prompt}`,

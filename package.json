@@ -19,7 +19,8 @@
     "desktop:dev": "pnpm --filter @agent-desktop/desktop dev",
     "desktop": "pnpm --filter @agent-desktop/desktop start",
     "client:web": "pnpm --filter @agent-desktop/web dev",
-    "client:web:build": "pnpm --filter @agent-desktop/web build"
+    "client:web:build": "pnpm --filter @agent-desktop/web build",
+    "client:web:test": "pnpm --filter @agent-desktop/web test:browser"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
