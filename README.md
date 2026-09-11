@@ -28,6 +28,7 @@ Semantic Video Editing          语义视频剪辑             Agent 根据语�
 Video Agent Application Layer   视频智能体应用层         `@agent-desktop/video-agent` 统一组装正式视频 Agent，由 CLI 与 Desktop 共同复用。
 Agent Desktop Shell             智能体桌面应用外壳       单页 Electron 客户端提供选择一个或多个视频、输入任务、查看 Tool 活动、读取回复和打开输出文件的闭环。
 Multi-turn Agent Session        多轮智能体会话          同一 Desktop 窗口复用一个内存 Session，并保留各轮消息、Tool 活动、Trace 和产物。
+Runtime Session List            运行期会话列表          Desktop 在当前应用进程内保留多个独立会话，可新建、切换并继续各自上下文。
 ```
 
 # Current Engineering Foundation（当前工程基础）
@@ -81,13 +82,13 @@ pnpm ffmpeg-agent
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口持有一个 Video Agent（视频智能体）和一个内存 Session（会话），后续发送复用同一 Session 并在界面保留当前窗口的多轮历史。点击侧栏“新会话”会创建新的 Agent 和 InMemorySession，并清空当前界面、附件与文件引用；已生成的视频和日志文件不会删除。关闭应用后 Session 和界面历史消失，当前不提供重启恢复、设置、任务管理或播放器。
+Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口在当前应用进程内持有多个独立的 Video Agent（视频智能体）和 InMemorySession（内存会话）；侧栏可新建和切换会话，并分别恢复消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示。Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。关闭应用后全部会话和界面历史消失，当前不提供删除、搜索、重命名或重启恢复。
 
 ```text
 Layer                 中文名称         职责
-Renderer              渲染进程         收集文件和自然语言任务，按轮展示消息、Tool 活动与产物
+Renderer              渲染进程         保存运行期会话列表的界面历史，收集任务并展示消息、Tool 活动与产物
 Preload contextBridge 预加载安全桥     暴露受限的桌面 API
-Electron Main         Electron 主进程  持有窗口 Agent、Session 和文件状态并调用应用层
+Electron Main         Electron 主进程  按会话持有 Agent、Session 和文件状态并调用应用层
 createVideoAgent      组装视频智能体   创建正式视频 Agent
 runTurn               执行任务轮次     驱动 Model 与 Tool 执行
 ```

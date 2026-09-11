@@ -48,18 +48,22 @@ Video Agent Application
 
 `apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的单页桌面客户端。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交视频文件、提交自然语言剪辑任务、按轮展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
 
-每个 Desktop 窗口创建并持有一个 Video Agent（视频智能体），该 Agent 内只有一个 InMemorySession（内存会话）。同一窗口的后续 `runTurn` 复用该 Agent 和 Session；Agent Loop 仍只根据 Session 事件重建 Model Context（模型上下文）。Renderer 中的消息数组只保存可见历史，不参与模型请求构建。每轮 Tool Activity、Artifact（产物）和 Trace ID 都归属对应的 Agent 回复。用户点击“新会话”后，Main 重新调用 `createVideoAgent(...)` 替换当前 Agent 和 InMemorySession，并清空窗口持有的附件与输出文件引用；Renderer 同步清空可见历史和草稿。执行中的 Turn 不允许触发该替换，磁盘文件和 Trace 日志不受影响。关闭窗口后内存 Session 和 Renderer 历史消失，当前不做持久化或重启恢复。
+每个 Desktop 窗口在当前应用进程内维护一个最小 `Map<sessionId, DesktopSessionState>`。每个会话独立持有 Video Agent（视频智能体）、InMemorySession（内存会话）、待提交视频路径和输出文件映射；`activeSessionId` 决定后续文件选择、任务执行和产物打开操作的目标。默认输出序号仍属于应用进程，以避免不同会话为同一输入生成相同文件名。
+
+同一会话的后续 `runTurn` 复用对应 Agent 和 InMemorySession；Agent Loop 仍只根据 Session 事件重建 Model Context（模型上下文）。Renderer 为每个会话保存消息、草稿和附件等 UI History（界面历史），但不把这些消息重新拼接进模型请求。每轮 Tool Activity（工具活动）、Artifact（产物）和 Trace ID 都归属发起该轮任务的会话与 Agent 回复。
+
+用户点击“新会话”时，Main 创建新的 Agent 和 InMemorySession 并保留旧会话；点击侧栏会话时切换 `activeSessionId` 并恢复对应界面历史。执行中的 Turn 不允许新建或切换会话，当前仍只有一个前台任务。关闭窗口后全部内存会话和 Renderer 历史消失，当前不做磁盘持久化、删除、搜索、重命名或重启恢复。
 
 ```text
 Layer                 中文名称         职责
-Renderer              渲染进程         收集任务并展示当前会话，发起新会话后清空当前界面状态
+Renderer              渲染进程         保存运行期会话列表与各会话 UI 历史，收集任务并切换展示
 Preload contextBridge 预加载安全桥     通过 contextBridge 暴露受限桌面 API
-Electron Main         Electron 主进程  持有并按需重建窗口 Agent、Session 和文件引用
+Electron Main         Electron 主进程  按会话持有 Agent、Session、附件和产物文件引用
 createVideoAgent      组装视频智能体   创建 Model、Session、System Prompt 和视频 Tool
 runTurn               执行任务轮次     驱动一次 Turn 的 Model 与 Tool 执行
 ```
 
-Desktop 不把 Agent Core（智能体核心）逻辑放入 UI，也不修改 Core 或 Agent Loop；持久化历史、会话列表、设置、任务管理和播放器不在当前应用范围内。
+Desktop 不把 Agent Core（智能体核心）逻辑放入 UI，也不修改 Core、Agent Loop 或 Trace 协议；持久化历史、会话管理操作、设置、任务管理和播放器不在当前应用范围内。
 
 ## Core Concepts（核心概念）
 

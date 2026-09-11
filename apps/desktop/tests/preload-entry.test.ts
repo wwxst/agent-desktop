@@ -28,9 +28,11 @@ describe('desktop preload entry', () => {
     expect(electron.exposeInMainWorld).toHaveBeenCalledWith(
       'agentDesktop',
       expect.objectContaining({
+        getActiveSessionId: expect.any(Function),
         selectVideoFile: expect.any(Function),
         removeSelectedVideo: expect.any(Function),
         newSession: expect.any(Function),
+        switchSession: expect.any(Function),
         runAgentTask: expect.any(Function),
         onAgentEvent: expect.any(Function),
         openOutputFile: expect.any(Function),

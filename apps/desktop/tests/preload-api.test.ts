@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createDesktopApi } from '../src/preload/api.js';
 
 describe('createDesktopApi', () => {
-  it('exposes only the six desktop IPC operations', async () => {
+  it('exposes only the eight desktop IPC operations', async () => {
     const invocations: Array<{ channel: string; args: readonly unknown[] }> = [];
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const ipc = {
@@ -20,23 +20,29 @@ describe('createDesktopApi', () => {
 
     const api = createDesktopApi(ipc);
     expect(Object.keys(api).sort()).toEqual([
+      'getActiveSessionId',
       'newSession',
       'onAgentEvent',
       'openOutputFile',
       'removeSelectedVideo',
       'runAgentTask',
       'selectVideoFile',
+      'switchSession',
     ]);
 
+    await api.getActiveSessionId();
     await api.selectVideoFile();
     await api.removeSelectedVideo(1);
     await api.newSession();
+    await api.switchSession('session-2');
     await api.runAgentTask('保留核心内容');
     await api.openOutputFile('step1.mp4');
     expect(invocations).toEqual([
+      { channel: 'desktop:get-active-session-id', args: [] },
       { channel: 'desktop:select-video', args: [] },
       { channel: 'desktop:remove-video', args: [1] },
       { channel: 'desktop:new-session', args: [] },
+      { channel: 'desktop:switch-session', args: ['session-2'] },
       { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
       { channel: 'desktop:open-output-file', args: ['step1.mp4'] },
     ]);

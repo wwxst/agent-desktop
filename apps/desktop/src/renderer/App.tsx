@@ -35,6 +35,30 @@ type AssistantConversationMessage = AssistantMessageBase & (
 
 type ConversationMessage = UserConversationMessage | AssistantConversationMessage;
 
+interface DesktopConversation {
+  readonly id: string;
+  readonly title: string;
+  readonly messages: readonly ConversationMessage[];
+  readonly prompt: string;
+  readonly selectedVideos: readonly SelectedVideo[];
+}
+
+const INITIAL_RENDERER_SESSION_ID = 'initializing-session';
+
+function createConversation(id: string, number: number): DesktopConversation {
+  return {
+    id,
+    title: `会话 ${number}`,
+    messages: [],
+    prompt: '',
+    selectedVideos: [],
+  };
+}
+
+function conversationTitle(prompt: string): string {
+  return prompt.length > 18 ? `${prompt.slice(0, 18)}…` : prompt;
+}
+
 function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
   if (event.type === 'tool.started') {
     return {
@@ -53,22 +77,56 @@ function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
 }
 
 export function App() {
-  const [selectedVideos, setSelectedVideos] = useState<readonly SelectedVideo[]>([]);
-  const [prompt, setPrompt] = useState('');
-  const [messages, setMessages] = useState<readonly ConversationMessage[]>([]);
+  const [conversations, setConversations] = useState<readonly DesktopConversation[]>([
+    createConversation(INITIAL_RENDERER_SESSION_ID, 1),
+  ]);
+  const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
+  const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const activeSessionIdRef = useRef(INITIAL_RENDERER_SESSION_ID);
+  const nextSessionNumber = useRef(2);
   const nextMessageId = useRef(1);
   const conversationScroll = useRef<HTMLElement>(null);
 
+  const activeConversation = conversations.find((conversation) => (
+    conversation.id === activeSessionId
+  )) ?? conversations[0]!;
+
+  const updateConversation = (
+    sessionId: string,
+    update: (conversation: DesktopConversation) => DesktopConversation,
+  ) => {
+    setConversations((currentConversations) => currentConversations.map((conversation) => (
+      conversation.id === sessionId ? update(conversation) : conversation
+    )));
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    void window.agentDesktop.getActiveSessionId().then((sessionId) => {
+      if (!mounted || activeSessionIdRef.current !== INITIAL_RENDERER_SESSION_ID) return;
+      activeSessionIdRef.current = sessionId;
+      setActiveSessionId(sessionId);
+      setConversations((currentConversations) => currentConversations.map((conversation) => (
+        conversation.id === INITIAL_RENDERER_SESSION_ID
+          ? { ...conversation, id: sessionId }
+          : conversation
+      )));
+      setIsSessionReady(true);
+    });
+    return () => { mounted = false; };
+  }, []);
+
   useEffect(() => window.agentDesktop.onAgentEvent((event) => {
     const nextItem = toActivityItem(event);
-    // 发送按钮禁止并发，因此 Trace 工具事件只会属于唯一一个处理中 Agent 消息。
-    setMessages((currentMessages) => {
-      const activeIndex = currentMessages.findLastIndex(
+    const sessionId = activeSessionIdRef.current;
+    // 会话切换在执行期间禁用，因此 Trace 工具事件只会进入发起当前 Turn 的会话。
+    updateConversation(sessionId, (conversation) => {
+      const activeIndex = conversation.messages.findLastIndex(
         (message) => message.role === 'assistant' && message.status === 'processing',
       );
-      const activeMessage = currentMessages[activeIndex];
-      if (activeMessage?.role !== 'assistant') return currentMessages;
+      const activeMessage = conversation.messages[activeIndex];
+      if (activeMessage?.role !== 'assistant') return conversation;
 
       const existingIndex = activeMessage.tools.findIndex(
         (item) => item.toolCallId === nextItem.toolCallId,
@@ -78,108 +136,146 @@ export function App() {
         : activeMessage.tools.map((item, index) => (
             index === existingIndex ? nextItem : item
           ));
-
-      return currentMessages.map((message, index) => (
+      const messages = conversation.messages.map((message, index) => (
         index === activeIndex ? { ...activeMessage, tools } : message
       ));
+      return { ...conversation, messages };
     });
   }), []);
 
   useEffect(() => {
     const scrollContainer = conversationScroll.current;
     if (scrollContainer !== null) scrollContainer.scrollTop = scrollContainer.scrollHeight;
-  }, [messages]);
+  }, [activeSessionId, activeConversation.messages]);
 
   const selectVideo = async () => {
     const videos = await window.agentDesktop.selectVideoFile();
-    if (videos) setSelectedVideos(videos);
+    if (videos) {
+      updateConversation(activeSessionIdRef.current, (conversation) => ({
+        ...conversation,
+        selectedVideos: videos,
+      }));
+    }
   };
 
   const removeVideo = async (index: number) => {
     await window.agentDesktop.removeSelectedVideo(index);
-    setSelectedVideos((currentVideos) => (
-      currentVideos.filter((_video, currentIndex) => currentIndex !== index)
-    ));
+    updateConversation(activeSessionIdRef.current, (conversation) => ({
+      ...conversation,
+      selectedVideos: conversation.selectedVideos.filter((_, currentIndex) => currentIndex !== index),
+    }));
   };
 
   const startNewSession = async () => {
-    if (isProcessing) return;
-    await window.agentDesktop.newSession();
-    setSelectedVideos([]);
-    setPrompt('');
-    setMessages([]);
-    nextMessageId.current = 1;
+    if (!isSessionReady || isProcessing) return;
+    const sessionId = await window.agentDesktop.newSession();
+    const conversation = createConversation(sessionId, nextSessionNumber.current);
+    nextSessionNumber.current += 1;
+    setConversations((currentConversations) => [...currentConversations, conversation]);
+    activeSessionIdRef.current = sessionId;
+    setActiveSessionId(sessionId);
+  };
+
+  const switchSession = async (sessionId: string) => {
+    if (isProcessing || sessionId === activeSessionIdRef.current) return;
+    await window.agentDesktop.switchSession(sessionId);
+    activeSessionIdRef.current = sessionId;
+    setActiveSessionId(sessionId);
   };
 
   const sendTask = async () => {
-    const taskPrompt = prompt.trim();
+    const sessionId = activeSessionIdRef.current;
+    const conversation = conversations.find((item) => item.id === sessionId);
+    if (conversation === undefined) return;
+    const taskPrompt = conversation.prompt.trim();
     if (!taskPrompt || isProcessing) return;
 
     const assistantMessageId = nextMessageId.current + 1;
-    setMessages((currentMessages) => [
-      ...currentMessages,
-      {
-        id: nextMessageId.current,
-        role: 'user',
-        text: taskPrompt,
-        attachments: selectedVideos.map((video) => video.name),
-      },
-      {
-        id: assistantMessageId,
-        role: 'assistant',
-        status: 'processing',
-        tools: [],
-        toolsExpanded: true,
-      },
-    ]);
+    updateConversation(sessionId, (currentConversation) => ({
+      ...currentConversation,
+      title: currentConversation.messages.length === 0
+        ? conversationTitle(taskPrompt)
+        : currentConversation.title,
+      messages: [
+        ...currentConversation.messages,
+        {
+          id: nextMessageId.current,
+          role: 'user',
+          text: taskPrompt,
+          attachments: currentConversation.selectedVideos.map((video) => video.name),
+        },
+        {
+          id: assistantMessageId,
+          role: 'assistant',
+          status: 'processing',
+          tools: [],
+          toolsExpanded: true,
+        },
+      ],
+    }));
     nextMessageId.current += 2;
     setIsProcessing(true);
 
     try {
       const taskResult = await window.agentDesktop.runAgentTask(taskPrompt);
-      setMessages((currentMessages) => currentMessages.map((message) => (
-        message.role === 'assistant' && message.id === assistantMessageId
-          ? {
-              ...message,
-              status: 'completed',
-              result: taskResult,
-              toolsExpanded: false,
-            }
-          : message
-      )));
-      setPrompt('');
+      // 执行期间禁止切换会话，因此异步结果仍属于当前活动会话；这里也避开初始 ID 查询完成时的占位 ID 变化。
+      updateConversation(activeSessionIdRef.current, (currentConversation) => ({
+        ...currentConversation,
+        prompt: '',
+        messages: currentConversation.messages.map((message) => (
+          message.role === 'assistant' && message.id === assistantMessageId
+            ? {
+                ...message,
+                status: 'completed',
+                result: taskResult,
+                toolsExpanded: false,
+              }
+            : message
+        )),
+      }));
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '任务执行失败。';
-      setMessages((currentMessages) => currentMessages.map((message) => (
-        message.role === 'assistant' && message.id === assistantMessageId
-          ? {
-              ...message,
-              status: 'failed',
-              errorMessage,
-              toolsExpanded: false,
-            }
-          : message
-      )));
+      updateConversation(activeSessionIdRef.current, (currentConversation) => ({
+        ...currentConversation,
+        messages: currentConversation.messages.map((message) => (
+          message.role === 'assistant' && message.id === assistantMessageId
+            ? {
+                ...message,
+                status: 'failed',
+                errorMessage,
+                toolsExpanded: false,
+              }
+            : message
+        )),
+      }));
     } finally {
       setIsProcessing(false);
     }
   };
 
   const toggleTools = (messageId: number) => {
-    setMessages((currentMessages) => currentMessages.map((message) => (
-      message.role === 'assistant' && message.id === messageId
-        ? { ...message, toolsExpanded: !message.toolsExpanded }
-        : message
-    )));
+    const sessionId = activeSessionIdRef.current;
+    updateConversation(sessionId, (conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) => (
+        message.role === 'assistant' && message.id === messageId
+          ? { ...message, toolsExpanded: !message.toolsExpanded }
+          : message
+      )),
+    }));
   };
 
+  const { messages, prompt, selectedVideos } = activeConversation;
   const hasConversation = messages.length > 0;
   const composer = (
     <Composer
       selectedVideos={selectedVideos}
       prompt={prompt}
       isProcessing={isProcessing}
-      onPromptChange={setPrompt}
+      onPromptChange={(nextPrompt) => updateConversation(
+        activeSessionIdRef.current,
+        (conversation) => ({ ...conversation, prompt: nextPrompt }),
+      )}
       onSelectVideo={() => void selectVideo()}
       onRemoveVideo={(index) => void removeVideo(index)}
       onSend={() => void sendTask()}
@@ -204,7 +300,7 @@ export function App() {
         <button
           className="sidebar-new-session"
           type="button"
-          disabled={isProcessing}
+          disabled={!isSessionReady || isProcessing}
           onClick={() => void startNewSession()}
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
@@ -212,10 +308,26 @@ export function App() {
           </svg>
           <span>新会话</span>
         </button>
-        <div className="sidebar-session" aria-current="page">
-          <span>当前任务</span>
-          {isProcessing && <small>进行中</small>}
-        </div>
+        <div className="sidebar-section-label sidebar-sessions-label">会话</div>
+        <nav className="sidebar-session-list" aria-label="会话列表">
+          {conversations.map((conversation) => {
+            const active = conversation.id === activeSessionId;
+            return (
+              <button
+                key={conversation.id}
+                className={`sidebar-session${active ? ' active' : ''}`}
+                type="button"
+                title={conversation.title}
+                disabled={!isSessionReady || isProcessing}
+                {...active ? { 'aria-current': 'page' as const } : {}}
+                onClick={() => void switchSession(conversation.id)}
+              >
+                <span>{conversation.title}</span>
+                {active && isProcessing && <small>进行中</small>}
+              </button>
+            );
+          })}
+        </nav>
         <div className="sidebar-footer">
           <span className="sidebar-status-dot" aria-hidden="true" />
           <span>本地运行</span>
