@@ -23,6 +23,9 @@ importers:
       '@agent-desktop/agent-loop':
         specifier: workspace:*
         version: link:../../packages/agent-loop
+      '@agent-desktop/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@agent-desktop/execution-trace':
         specifier: workspace:*
         version: link:../../packages/execution-trace
@@ -60,6 +63,28 @@ importers:
       jsdom:
         specifier: 30.0.1
         version: 30.0.1
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@24.13.3)(esbuild@0.27.4)
+
+  apps/web:
+    dependencies:
+      '@agent-desktop/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: 19.2.7
+        version: 19.2.7(@types/react@19.2.18)
       vite:
         specifier: 8.2.2
         version: 8.2.2(@types/node@24.13.3)(esbuild@0.27.4)
@@ -171,6 +196,28 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../session
+
+  packages/client:
+    dependencies:
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@testing-library/react':
+        specifier: 16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.1)(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: 19.2.7
+        version: 19.2.7(@types/react@19.2.18)
+      jsdom:
+        specifier: 30.0.1
+        version: 30.0.1
 
   packages/execution-trace:
     dependencies:

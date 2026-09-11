@@ -46,7 +46,9 @@ Video Agent Application
 
 ### Desktop Application Boundary（桌面应用边界）
 
-`apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的单页桌面客户端。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交视频文件、提交自然语言剪辑任务、按轮展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
+`@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Tool Activity、Artifact Card 和样式实现。`apps/desktop` 通过 preload API 提供真实 Electron 宿主；`apps/web` 提供仅用于 UI 开发与自动化测试的 Dev API，不执行本地视频 Agent。
+
+`apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的桌面宿主。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交视频文件、提交自然语言剪辑任务、按轮展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
 
 每个 Desktop 窗口在当前应用进程内维护一个最小 `Map<sessionId, DesktopSessionState>`。每个会话独立持有 Video Agent（视频智能体）、InMemorySession（内存会话）、待提交视频路径和输出文件映射；`activeSessionId` 决定后续文件选择、任务执行和产物打开操作的目标。默认输出序号仍属于应用进程，以避免不同会话为同一输入生成相同文件名。
 

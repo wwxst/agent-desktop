@@ -33,7 +33,7 @@ Runtime Session List            运行期会话列表          Desktop 在当前
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`apps/desktop` 使用 Electron 44.0.0、React 19.2.8、Vite 8.2.2 和 esbuild 0.27.4 组装单页桌面客户端。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`packages/client` 提供 Web 与 Electron Desktop 共用的 Agent Client UI，`apps/web` 是 UI 开发与自动化测试宿主，`apps/desktop` 继续承载真实本地 Agent。
 
 # Run Agents（运行 Agent）
 
@@ -43,6 +43,8 @@ pnpm echo-agent       确定性示例入口     无需 API Key，不调用真实
 pnpm deepseek-agent   DeepSeek 命令行    需要 DEEPSEEK_API_KEY，调用真实 DeepSeek API
 pnpm ffmpeg-agent     视频命令行入口     需要 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；按任务使用本机媒体工具
 pnpm desktop          桌面应用入口       构建并启动 Electron 单页客户端，环境与媒体工具要求同视频命令行入口
+pnpm client:web       Web 开发入口        启动共享 Agent Client 的浏览器开发宿主
+pnpm client:web:build Web 构建            构建 Web 开发宿主
 ```
 
 运行 Echo Agent：

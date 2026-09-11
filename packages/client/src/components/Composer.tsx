@@ -1,5 +1,5 @@
 import type { FormEvent } from 'react';
-import type { SelectedVideo } from '../../shared/ipc.js';
+import type { SelectedVideo } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
 
 interface ComposerProps {

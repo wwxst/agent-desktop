@@ -1,4 +1,9 @@
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
+import type {
+  AgentClientApi,
+  AgentTaskResult,
+  SelectedVideo,
+} from '@agent-desktop/client';
 
 export const DESKTOP_CHANNELS = {
   getActiveSessionId: 'desktop:get-active-session-id',
@@ -16,23 +21,5 @@ export type ToolActivityEvent = Extract<
   { type: 'tool.started' | 'tool.completed' | 'tool.failed' }
 >;
 
-export interface SelectedVideo {
-  readonly name: string;
-}
-
-export interface AgentTaskResult {
-  readonly responseText: string;
-  readonly traceId: string;
-  readonly outputFileName?: string;
-}
-
-export interface DesktopApi {
-  getActiveSessionId(): Promise<string>;
-  selectVideoFile(): Promise<readonly SelectedVideo[] | null>;
-  removeSelectedVideo(index: number): Promise<void>;
-  newSession(): Promise<string>;
-  switchSession(sessionId: string): Promise<void>;
-  runAgentTask(prompt: string): Promise<AgentTaskResult>;
-  onAgentEvent(listener: (event: ToolActivityEvent) => void): () => void;
-  openOutputFile(fileName: string): Promise<void>;
-}
+export type { AgentTaskResult, SelectedVideo };
+export type DesktopApi = AgentClientApi;

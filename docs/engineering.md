@@ -18,7 +18,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 ## Package Manager（包管理器）
 
-项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*`、`examples/*` 和 `apps/*`；当前应用入口为 `apps/desktop`。
+项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*`、`examples/*` 和 `apps/*`；当前应用入口为 `apps/desktop` 与 `apps/web`，共享产品客户端为 `packages/client`。
 
 ## Language（开发语言）
 
@@ -117,13 +117,15 @@ apps/desktop/
 @agent-desktop/vision-openai           Vision 视觉工具包
 @agent-desktop/speech-whisper-cpp      whisper.cpp 本地语音时间轴工具包
 @agent-desktop/video-agent             视频智能体应用层包
+@agent-desktop/client                  Agent Client 共享客户端包
 @agent-desktop/desktop                 Electron 桌面应用包
+@agent-desktop/web                     Web 开发测试宿主包
 @agent-desktop/example-echo-agent      Echo Agent 示例
 @agent-desktop/example-deepseek-agent  DeepSeek Agent 示例
 @agent-desktop/example-ffmpeg-agent    FFmpeg Agent 示例
 ```
 
-六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。Agent Loop 只暴露最小 Trace callback（追踪回调）契约；`@agent-desktop/execution-trace` 只负责本地 JSONL 持久化，由 `ffmpeg-agent` 与 `apps/desktop` 两个真实入口消费，不属于 Agent Core。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；`@agent-desktop/video-agent` 是组装正式视频 Agent 的应用层包，不承担 CLI、UI 或持久化；`@agent-desktop/desktop` 是 Electron 应用入口；三个 example package 是可运行示例，同样不属于 Agent Core。
+六个 Core package 当前都是 private ESM package，只暴露 `.` 根入口，对应 `src/index.ts`。Agent Loop 只暴露最小 Trace callback（追踪回调）契约；`@agent-desktop/execution-trace` 只负责本地 JSONL 持久化，由 `ffmpeg-agent` 与 `apps/desktop` 两个真实入口消费，不属于 Agent Core。`@agent-desktop/model-deepseek` 是具体模型 Provider package，`@agent-desktop/video-ffmpeg` 是具体 FFmpeg Tool package，`@agent-desktop/vision-openai` 是具体视觉 Tool package，`@agent-desktop/speech-whisper-cpp` 是具体本地语音转录与段落时间轴 Tool package，四者也不属于 Agent Core；`@agent-desktop/video-agent` 是组装正式视频 Agent 的应用层包，不承担 CLI、UI 或持久化；`@agent-desktop/client` 是 Web 与 Desktop 共用的 Agent Client UI，不依赖 Electron 或 Node；`@agent-desktop/desktop` 是 Electron 应用宿主，`@agent-desktop/web` 是 UI 开发与自动化测试宿主；三个 example package 是可运行示例，同样不属于 Agent Core。
 
 ## Source Rules（源码规则）
 

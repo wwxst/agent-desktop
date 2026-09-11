@@ -20,6 +20,15 @@ const toolPackages = new Set([
   '@agent-desktop/speech-whisper-cpp',
 ]);
 const forbiddenCoreModules = new Set(['react', 'react-dom', 'electron']);
+const sharedClientPackage = '@agent-desktop/client';
+const forbiddenClientModules = new Set([
+  'electron',
+  'fs',
+  'node:fs',
+  'child_process',
+  'node:child_process',
+  'process',
+]);
 
 async function findFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -173,6 +182,10 @@ async function main() {
         addFinding(findings, packageName, `core source imports forbidden module ${specifier}`);
       }
 
+      if (packageName === sharedClientPackage && isNamedModule(specifier, forbiddenClientModules)) {
+        addFinding(findings, packageName, `shared client imports forbidden host module ${specifier}`);
+      }
+
       if (!packageName.startsWith('@agent-desktop/example-')
         && workspaceName?.startsWith('@agent-desktop/example-')) {
         addFinding(findings, packageName, `package source imports example package ${workspaceName}`);
@@ -191,6 +204,10 @@ async function main() {
           || providerPackages.has(dependency)
           || toolPackages.has(dependency))) {
         addFinding(findings, packageName, `core package declares forbidden dependency ${dependency}`);
+      }
+
+      if (packageName === sharedClientPackage && isNamedModule(dependency, forbiddenClientModules)) {
+        addFinding(findings, packageName, `shared client declares forbidden host dependency ${dependency}`);
       }
     }
 

@@ -11,6 +11,7 @@
   },
   "include": ["src"],
   "references": [
+    { "path": "../../packages/client" },
     { "path": "../../packages/agent-loop" },
     { "path": "../../packages/execution-trace" },
     { "path": "../../packages/model" },

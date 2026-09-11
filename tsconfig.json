@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/client" },
     { "path": "./packages/model" },
     { "path": "./packages/session" },
     { "path": "./packages/system-prompt" },
@@ -16,6 +17,7 @@
     { "path": "./examples/echo-agent" },
     { "path": "./examples/deepseek-agent" },
     { "path": "./examples/ffmpeg-agent" },
-    { "path": "./apps/desktop" }
+    { "path": "./apps/desktop" },
+    { "path": "./apps/web" }
   ]
 }

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@agent-desktop/agent-loop": "workspace:*",
+    "@agent-desktop/client": "workspace:*",
     "@agent-desktop/execution-trace": "workspace:*",
     "@agent-desktop/session": "workspace:*",
     "@agent-desktop/video-agent": "workspace:*",
