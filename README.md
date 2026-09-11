@@ -27,13 +27,13 @@ Agent Execution Trace           智能体全链路执行日志     独立 packag
 Semantic Video Editing          语义视频剪辑             Agent 根据语音时间轴和必要的视觉确认，自主裁剪并拼接语义片段；已完成真实单区间和多区间验证。
 Video Agent Application Layer   视频智能体应用层         `@agent-desktop/video-agent` 统一组装正式视频 Agent，由 CLI 与 Desktop 共同复用。
 Agent Desktop Shell             智能体桌面应用外壳       单页 Electron 客户端提供选择一个或多个视频、输入任务、查看 Tool 活动、读取回复和打开输出文件的闭环。
-Multi-turn Agent Session        多轮智能体会话          同一 Desktop 窗口复用一个内存 Session，并保留各轮消息、Tool 活动、Trace 和产物。
-Runtime Session List            运行期会话列表          Desktop 在当前应用进程内保留多个独立会话，可新建、切换并继续各自上下文。
+Multi-turn Agent Session        多轮智能体会话          Desktop 复用并持久化每个会话的 SessionEvent，重启后继续模型上下文。
+Runtime Session List            运行期会话列表          Desktop 保存多个独立会话，可新建、切换并在重启后恢复各自上下文。
 ```
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`packages/client` 提供 Web 与 Electron Desktop 共用的 Agent Client UI，`apps/web` 是 UI 开发与自动化测试宿主，`apps/desktop` 继续承载真实本地 Agent。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`packages/client` 提供 Web 与 Electron Desktop 共用的 Agent Client UI，`apps/web` 是 UI 开发与自动化测试宿主，`apps/desktop` 继续承载真实本地 Agent。Desktop 会话数据保存在本机 Electron `userData/session-state.json`，不上传且不包含 API Key；Web Dev Host 不做持久化。
 
 # Run Agents（运行 Agent）
 

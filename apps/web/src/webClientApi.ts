@@ -12,6 +12,8 @@ export function createWebClientApi(): AgentClientApi {
   const listeners = new Set<(event: ToolActivityEvent) => void>();
 
   return {
+    loadClientState: async () => null,
+    saveClientState: async () => undefined,
     getActiveSessionId: async () => activeSessionId,
     selectVideoFile: async (): Promise<readonly SelectedVideo[]> => ([{ name: 'web-test-video.mp4' }]),
     removeSelectedVideo: async () => undefined,

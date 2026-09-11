@@ -40,7 +40,12 @@ export interface Session {
 
 /** MVP 使用的内存 Session；数组只在内部持有，保持 append-only 语义。 */
 export class InMemorySession implements Session {
-  private readonly history: SessionEvent[] = [];
+  private readonly history: SessionEvent[];
+
+  /** 恢复时复制已有事件，调用方后续修改原数组不会改变 Session 历史。 */
+  constructor(initialEvents: readonly SessionEvent[] = []) {
+    this.history = [...initialEvents];
+  }
 
   // 新事实只追加到末尾，不重写既有事件。
   append(event: SessionEvent): void { this.history.push(event); }

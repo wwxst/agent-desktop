@@ -17,6 +17,19 @@ describe('InMemorySession', () => {
     expect(session.events()).toEqual([started, message]);
   });
 
+  it('restores seed events in order, isolates the input array, and continues appending', () => {
+    const started: SessionEvent = { type: 'turn.started', turnId };
+    const message: SessionEvent = { type: 'user.message', turnId, content: 'remember 731' };
+    const initialEvents: SessionEvent[] = [started, message];
+    const session = new InMemorySession(initialEvents);
+
+    initialEvents.pop();
+    const completed: SessionEvent = { type: 'turn.completed', turnId };
+    session.append(completed);
+
+    expect(session.events()).toEqual([started, message, completed]);
+  });
+
   it('represents successful and failed tool results as distinct unions', () => {
     const success: SessionEvent = {
       type: 'tool.result',

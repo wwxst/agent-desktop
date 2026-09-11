@@ -7,6 +7,8 @@ import type {
 
 export const DESKTOP_CHANNELS = {
   getActiveSessionId: 'desktop:get-active-session-id',
+  loadClientState: 'desktop:load-client-state',
+  saveClientState: 'desktop:save-client-state',
   selectVideo: 'desktop:select-video',
   removeVideo: 'desktop:remove-video',
   newSession: 'desktop:new-session',

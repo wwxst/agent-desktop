@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createDesktopApi } from '../src/preload/api.js';
 
 describe('createDesktopApi', () => {
-  it('exposes only the eight desktop IPC operations', async () => {
+  it('exposes the desktop IPC operations', async () => {
     const invocations: Array<{ channel: string; args: readonly unknown[] }> = [];
     const listeners = new Map<string, (...args: unknown[]) => void>();
     const ipc = {
@@ -21,16 +21,20 @@ describe('createDesktopApi', () => {
     const api = createDesktopApi(ipc);
     expect(Object.keys(api).sort()).toEqual([
       'getActiveSessionId',
+      'loadClientState',
       'newSession',
       'onAgentEvent',
       'openOutputFile',
       'removeSelectedVideo',
       'runAgentTask',
+      'saveClientState',
       'selectVideoFile',
       'switchSession',
     ]);
 
     await api.getActiveSessionId();
+    await api.loadClientState();
+    await api.saveClientState({ activeSessionId: 'session-a', conversations: [] });
     await api.selectVideoFile();
     await api.removeSelectedVideo(1);
     await api.newSession();
@@ -39,6 +43,8 @@ describe('createDesktopApi', () => {
     await api.openOutputFile('step1.mp4');
     expect(invocations).toEqual([
       { channel: 'desktop:get-active-session-id', args: [] },
+      { channel: 'desktop:load-client-state', args: [] },
+      { channel: 'desktop:save-client-state', args: [{ activeSessionId: 'session-a', conversations: [] }] },
       { channel: 'desktop:select-video', args: [] },
       { channel: 'desktop:remove-video', args: [1] },
       { channel: 'desktop:new-session', args: [] },

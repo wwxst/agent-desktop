@@ -12,6 +12,12 @@ export interface IpcRendererPort {
 /** 只把当前桌面闭环需要的八个操作暴露给 Renderer。 */
 export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
   return {
+    loadClientState: () => ipc.invoke(
+      DESKTOP_CHANNELS.loadClientState,
+    ) as ReturnType<DesktopApi['loadClientState']>,
+    saveClientState: async (state) => {
+      await ipc.invoke(DESKTOP_CHANNELS.saveClientState, state);
+    },
     getActiveSessionId: () => ipc.invoke(
       DESKTOP_CHANNELS.getActiveSessionId,
     ) as ReturnType<DesktopApi['getActiveSessionId']>,

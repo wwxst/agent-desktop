@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
-import { InMemorySession } from '@agent-desktop/session';
+import { InMemorySession, type Session } from '@agent-desktop/session';
 import { createVideoAgent } from '../src/index.js';
 
 describe('createVideoAgent', () => {
@@ -46,5 +46,24 @@ describe('createVideoAgent', () => {
     });
 
     expect(agent.tools.list().map((tool) => tool.name)).not.toContain('transcribe_audio');
+  });
+
+  it('uses an injected Session and keeps the default InMemorySession behavior', () => {
+    const injectedSession: Session = {
+      append: () => undefined,
+      events: () => [],
+    };
+    const restoredAgent = createVideoAgent({
+      deepSeekApiKey: 'test-deepseek-key',
+      visionApiKey: '',
+      session: injectedSession,
+    });
+    const newAgent = createVideoAgent({
+      deepSeekApiKey: 'test-deepseek-key',
+      visionApiKey: '',
+    });
+
+    expect(restoredAgent.session).toBe(injectedSession);
+    expect(newAgent.session).toBeInstanceOf(InMemorySession);
   });
 });

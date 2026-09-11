@@ -1,11 +1,6 @@
-export type ToolActivityStatus = 'running' | 'completed' | 'failed';
+import type { ToolActivityItem, ToolActivityStatus } from '../api.js';
 
-export interface ToolActivityItem {
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly status: ToolActivityStatus;
-  readonly durationMs?: number;
-}
+export type { ToolActivityItem } from '../api.js';
 
 interface ToolActivityProps {
   readonly items: readonly ToolActivityItem[];

@@ -29,6 +29,12 @@ const mainMocks = vi.hoisted(() => {
     showOpenDialog: vi.fn(),
     showItemInFolder: vi.fn(),
     mkdir: vi.fn(async () => undefined),
+    readFile: vi.fn(async () => {
+      const error = new Error('missing') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    }),
+    writeFile: vi.fn(async () => undefined),
     traceWrite: vi.fn(async () => undefined),
     ipcHandle: vi.fn((channel: string, handler: IpcHandler) => {
       handlers.set(channel, handler);
@@ -41,13 +47,18 @@ const mainMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('node:fs/promises', () => ({ mkdir: mainMocks.mkdir }));
+vi.mock('node:fs/promises', () => ({
+  mkdir: mainMocks.mkdir,
+  readFile: mainMocks.readFile,
+  writeFile: mainMocks.writeFile,
+}));
 
 vi.mock('electron', () => ({
   app: {
     whenReady: () => Promise.resolve(),
     on: mainMocks.appOn,
     getAppPath: () => 'E:\\repo\\apps\\desktop',
+    getPath: () => 'E:\\user-data',
     quit: vi.fn(),
   },
   BrowserWindow: class {

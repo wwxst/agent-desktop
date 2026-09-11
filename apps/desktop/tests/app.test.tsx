@@ -14,9 +14,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const persistenceMethods = {
+  loadClientState: async () => null,
+  saveClientState: async () => undefined,
+};
+
 describe('App', () => {
   it('shows a useful video-task empty state before the first task', () => {
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -50,6 +56,7 @@ describe('App', () => {
     let resolveInitialSession: ((sessionId: string) => void) | undefined;
     const newSession = vi.fn(async () => 'session-b');
     window.agentDesktop = {
+      ...persistenceMethods,
       getActiveSessionId: () => new Promise((resolve) => {
         resolveInitialSession = resolve;
       }),
@@ -77,6 +84,7 @@ describe('App', () => {
   it('removes one pending video from the Composer and Main selection', async () => {
     const removeSelectedVideo = vi.fn(async () => undefined);
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => ([
         { name: 'sintel-trailer.mp4' },
         { name: 'interview.mp4' },
@@ -109,6 +117,7 @@ describe('App', () => {
         { name: 'interview.mp4' },
       ]);
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -139,6 +148,7 @@ describe('App', () => {
     }));
     const openOutputFile = vi.fn(async () => undefined);
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => ([
         { name: 'sintel-trailer.mp4' },
         { name: 'interview.mp4' },
@@ -186,6 +196,7 @@ describe('App', () => {
     let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -235,6 +246,7 @@ describe('App', () => {
     let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => ([{ name: 'sintel-trailer.mp4' }]),
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -285,6 +297,7 @@ describe('App', () => {
       traceId: 'trace-text-only',
     }));
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -314,6 +327,7 @@ describe('App', () => {
       .mockResolvedValueOnce({ responseText: '已经记住。', traceId: 'trace-turn-1' })
       .mockResolvedValueOnce({ responseText: '你刚才让我记住的数字是 731。', traceId: 'trace-turn-2' });
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -349,6 +363,7 @@ describe('App', () => {
       resolveTask = resolve;
     }));
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -412,6 +427,7 @@ describe('App', () => {
       });
     const openOutputFile = vi.fn(async () => undefined);
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => [{ name: 'input.mp4' }],
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -446,6 +462,7 @@ describe('App', () => {
       resolveTask = resolve;
     }));
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',
@@ -479,6 +496,7 @@ describe('App', () => {
       }))
       .mockResolvedValueOnce({ responseText: '第二轮完成。', traceId: 'trace-new-2' });
     window.agentDesktop = {
+      ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
       selectVideoFile: async () => [{ name: 'input.mp4' }],
       removeSelectedVideo: async () => undefined,
@@ -555,6 +573,7 @@ describe('App', () => {
         resolveSessionB = resolve;
       }));
     window.agentDesktop = {
+      ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
       selectVideoFile,
       removeSelectedVideo: async () => undefined,
@@ -649,6 +668,7 @@ describe('App', () => {
     const newSession = vi.fn(async () => 'session-b');
     const switchSession = vi.fn(async () => undefined);
     window.agentDesktop = {
+      ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
       selectVideoFile: async () => null,
       removeSelectedVideo: async () => undefined,
@@ -684,6 +704,7 @@ describe('App', () => {
   it('keeps the prompt when the task fails', async () => {
     const prompt = '保留核心内容';
     window.agentDesktop = {
+      ...persistenceMethods,
       selectVideoFile: async () => ([{ name: 'sintel-trailer.mp4' }]),
       removeSelectedVideo: async () => undefined,
       getActiveSessionId: async () => 'session-a',

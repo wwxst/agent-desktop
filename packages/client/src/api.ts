@@ -8,6 +8,51 @@ export interface AgentTaskResult {
   readonly outputFileName?: string;
 }
 
+export type ToolActivityStatus = 'running' | 'completed' | 'failed';
+
+export interface ToolActivityItem {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly status: ToolActivityStatus;
+  readonly durationMs?: number;
+}
+
+export interface ClientUserMessage {
+  readonly id: number;
+  readonly role: 'user';
+  readonly text: string;
+  readonly attachments: readonly string[];
+}
+
+export interface ClientAssistantMessageBase {
+  readonly id: number;
+  readonly role: 'assistant';
+  readonly tools: readonly ToolActivityItem[];
+  readonly toolsExpanded: boolean;
+}
+
+export type ClientAssistantMessage = ClientAssistantMessageBase & (
+  | { readonly status: 'processing' }
+  | { readonly status: 'completed'; readonly result: AgentTaskResult }
+  | { readonly status: 'failed'; readonly errorMessage: string }
+);
+
+export type ClientConversationMessage = ClientUserMessage | ClientAssistantMessage;
+
+export interface ClientConversation {
+  readonly id: string;
+  readonly title: string;
+  readonly messages: readonly ClientConversationMessage[];
+  readonly prompt: string;
+  readonly selectedVideos: readonly SelectedVideo[];
+}
+
+/** Renderer 的可序列化展示状态，不参与 Agent 模型上下文重建。 */
+export interface ClientStateSnapshot {
+  readonly conversations: readonly ClientConversation[];
+  readonly activeSessionId: string;
+}
+
 export type ToolActivityEvent =
   | {
       readonly type: 'tool.started';
@@ -34,6 +79,8 @@ export type ToolActivityEvent =
     };
 
 export interface AgentClientApi {
+  loadClientState(): Promise<ClientStateSnapshot | null>;
+  saveClientState(state: ClientStateSnapshot): Promise<void>;
   getActiveSessionId(): Promise<string>;
   selectVideoFile(): Promise<readonly SelectedVideo[] | null>;
   removeSelectedVideo(index: number): Promise<void>;

@@ -4,13 +4,24 @@ import { basename, join, parse, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
+import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
 import { runDesktopAgentTask } from './agent-task.js';
 import { DESKTOP_CHANNELS, type AgentTaskResult, type ToolActivityEvent } from '../shared/ipc.js';
+import {
+  loadDesktopState,
+  parseClientState,
+  parseDesktopState,
+  saveDesktopState,
+  SESSION_STATE_FILE_NAME,
+  type PersistedDesktopState,
+} from './session-persistence.js';
+import type { ClientStateSnapshot } from '@agent-desktop/client';
 
 let mainWindow: BrowserWindow | null = null;
 let outputSequence = 0;
 let isTaskRunning = false;
+let clientState: ClientStateSnapshot | null = null;
 
 interface DesktopSessionState {
   readonly agent: ReturnType<typeof createVideoAgent>;
@@ -27,13 +38,15 @@ function requireEnvironment(name: 'DEEPSEEK_API_KEY' | 'WHISPER_MODEL_PATH'): st
   return value;
 }
 
-/** 创建当前运行期间独立的 Agent、Session、附件和产物状态。 */
-function createDesktopSession(): string {
+/** 创建独立的 Agent、Session、附件和产物状态；恢复时显式注入已有事件。 */
+function createDesktopSession(
+  id: string = randomUUID(),
+  initialEvents: readonly SessionEvent[] = [],
+): string {
   const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
   const whisperCliPath = process.env.WHISPER_CLI_PATH;
   const whisperModelPath = process.env.WHISPER_MODEL_PATH;
   const visionBaseUrl = process.env.OPENAI_BASE_URL;
-  const id = randomUUID();
   const session = {
     agent: createVideoAgent({
       deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
@@ -42,6 +55,7 @@ function createDesktopSession(): string {
       ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
       ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
       ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
+      session: new InMemorySession(initialEvents),
     }),
     selectedVideoPaths: [],
     outputFilePaths: new Map<string, string>(),
@@ -49,6 +63,45 @@ function createDesktopSession(): string {
   sessions.set(id, session);
   activeSessionId = id;
   return id;
+}
+
+function persistenceFilePath(): string {
+  return join(app.getPath('userData'), SESSION_STATE_FILE_NAME);
+}
+
+function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopState {
+  return {
+    activeSessionId,
+    outputSequence,
+    sessions: [...sessions].map(([id, session]) => ({
+      id,
+      selectedVideoPaths: session.selectedVideoPaths,
+      outputFilePaths: Object.fromEntries(session.outputFilePaths),
+      events: session.agent.session.events(),
+    })),
+    clientState: snapshot,
+  };
+}
+
+async function restoreDesktopState(): Promise<void> {
+  const persisted = await loadDesktopState(persistenceFilePath());
+  sessions.clear();
+  if (persisted === null) {
+    createDesktopSession();
+    return;
+  }
+
+  outputSequence = persisted.outputSequence;
+  clientState = persisted.clientState;
+  for (const savedSession of persisted.sessions) {
+    createDesktopSession(savedSession.id, savedSession.events);
+    const session = sessions.get(savedSession.id)!;
+    session.selectedVideoPaths.push(...savedSession.selectedVideoPaths);
+    for (const [fileName, outputPath] of Object.entries(savedSession.outputFilePaths)) {
+      session.outputFilePaths.set(fileName, outputPath);
+    }
+  }
+  activeSessionId = persisted.activeSessionId;
 }
 
 function activeSession(): DesktopSessionState {
@@ -74,6 +127,17 @@ function sendToolActivity(event: ExecutionTraceEvent): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle(DESKTOP_CHANNELS.loadClientState, () => clientState);
+
+  ipcMain.handle(DESKTOP_CHANNELS.saveClientState, async (_event, state: unknown) => {
+    if (isTaskRunning) throw new Error('Agent 正在执行，无法保存未完成的会话状态。');
+    const snapshot = parseClientState(state);
+    const persisted = parseDesktopState(currentPersistedState(snapshot));
+    // 复用磁盘读取的同一结构校验，保证 Renderer 会话与 Main 运行态一一对应。
+    await saveDesktopState(persistenceFilePath(), persisted);
+    clientState = snapshot;
+  });
+
   ipcMain.handle(DESKTOP_CHANNELS.getActiveSessionId, () => activeSessionId);
 
   ipcMain.handle(DESKTOP_CHANNELS.selectVideo, async () => {
@@ -123,7 +187,13 @@ function registerIpcHandlers(): void {
     try {
       const requestedOutputPath = session.selectedVideoPaths.length === 0
         ? undefined
-        : defaultOutputPath(session.selectedVideoPaths[0]!, ++outputSequence);
+        : defaultOutputPath(session.selectedVideoPaths[0]!, outputSequence + 1);
+      if (requestedOutputPath !== undefined) {
+        outputSequence += 1;
+        if (clientState !== null) {
+          await saveDesktopState(persistenceFilePath(), currentPersistedState(clientState));
+        }
+      }
       // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
       const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
       await mkdir(logsDirectory, { recursive: true });
@@ -164,8 +234,6 @@ function registerIpcHandlers(): void {
 }
 
 function createWindow(): void {
-  sessions.clear();
-  createDesktopSession();
   mainWindow = new BrowserWindow({
     width: 1120,
     height: 760,
@@ -191,7 +259,16 @@ function createWindow(): void {
   });
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  try {
+    await restoreDesktopState();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '未知错误。';
+    dialog.showErrorBox('无法恢复本地会话', message);
+    app.quit();
+    return;
+  }
+
   registerIpcHandlers();
   createWindow();
 

@@ -1,6 +1,6 @@
 import type { Agent } from '@agent-desktop/agent';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
-import { InMemorySession } from '@agent-desktop/session';
+import { InMemorySession, type Session } from '@agent-desktop/session';
 import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
@@ -27,6 +27,7 @@ export interface VideoAgentOptions {
   readonly whisperCliPath?: string;
   readonly visionApiKey: string;
   readonly visionBaseUrl?: string;
+  readonly session?: Session;
 }
 
 /**
@@ -88,7 +89,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     model: options.deepSeekBaseUrl === undefined
       ? new DeepSeekModel({ apiKey: options.deepSeekApiKey })
       : new DeepSeekModel({ apiKey: options.deepSeekApiKey, baseUrl: options.deepSeekBaseUrl }),
-    session: new InMemorySession(),
+    session: options.session ?? new InMemorySession(),
     tools,
     systemPrompt: new StaticSystemPrompt(VIDEO_AGENT_SYSTEM_PROMPT),
   };

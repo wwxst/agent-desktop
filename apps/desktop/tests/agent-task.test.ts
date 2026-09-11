@@ -131,4 +131,57 @@ describe('desktop agent task', () => {
     ]));
     expect(session.events().filter((event) => event.type === 'turn.started')).toHaveLength(2);
   });
+
+  it('reconstructs the next model request from restored Session events', async () => {
+    const restoredTurnId = 'turn-restored' as TurnId;
+    const restoredStepId = 'step-restored' as StepId;
+    const session = new InMemorySession([
+      { type: 'turn.started', turnId: restoredTurnId },
+      {
+        type: 'user.message',
+        turnId: restoredTurnId,
+        content: '请记住数字 731。',
+      },
+      { type: 'step.started', turnId: restoredTurnId, stepId: restoredStepId },
+      {
+        type: 'assistant.message',
+        turnId: restoredTurnId,
+        stepId: restoredStepId,
+        content: '已经记住。',
+        toolCalls: [],
+      },
+      { type: 'step.completed', turnId: restoredTurnId, stepId: restoredStepId },
+      { type: 'turn.completed', turnId: restoredTurnId },
+    ]);
+    let request: ModelRequest | undefined;
+    const agent = {
+      model: {
+        complete: async (nextRequest: ModelRequest): Promise<ModelResponse> => {
+          request = nextRequest;
+          return { text: '你之前让我记住的数字是 731。', toolCalls: [] };
+        },
+      },
+      session,
+      tools: {
+        register: () => undefined,
+        get: () => undefined,
+        list: () => [],
+      },
+      systemPrompt: { build: () => '测试 Agent' },
+    };
+
+    const result = await runDesktopAgentTask(
+      agent,
+      '我之前让你记住的数字是多少？',
+      [],
+      undefined,
+      () => undefined,
+    );
+
+    expect(result.responseText).toContain('731');
+    expect(request?.messages.slice(0, 2)).toEqual([
+      { role: 'user', content: '请记住数字 731。' },
+      { role: 'assistant', content: '已经记住。', toolCalls: [] },
+    ]);
+  });
 });

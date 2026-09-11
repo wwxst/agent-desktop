@@ -1,51 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import type {
   AgentClientApi,
-  AgentTaskResult,
-  SelectedVideo,
+  ClientConversation,
+  ClientConversationMessage,
+  ClientStateSnapshot,
   ToolActivityEvent,
+  ToolActivityItem,
 } from './api.js';
 import { ArtifactCard } from './components/ArtifactCard.js';
 import { AttachmentChip } from './components/AttachmentChip.js';
 import { Composer } from './components/Composer.js';
-import {
-  ToolActivity,
-  type ToolActivityItem,
-} from './components/ToolActivity.js';
-
-interface UserConversationMessage {
-  readonly id: number;
-  readonly role: 'user';
-  readonly text: string;
-  readonly attachments: readonly string[];
-}
-
-interface AssistantMessageBase {
-  readonly id: number;
-  readonly role: 'assistant';
-  readonly tools: readonly ToolActivityItem[];
-  readonly toolsExpanded: boolean;
-}
-
-type AssistantConversationMessage = AssistantMessageBase & (
-  | { readonly status: 'processing' }
-  | { readonly status: 'completed'; readonly result: AgentTaskResult }
-  | { readonly status: 'failed'; readonly errorMessage: string }
-);
-
-type ConversationMessage = UserConversationMessage | AssistantConversationMessage;
-
-interface DesktopConversation {
-  readonly id: string;
-  readonly title: string;
-  readonly messages: readonly ConversationMessage[];
-  readonly prompt: string;
-  readonly selectedVideos: readonly SelectedVideo[];
-}
+import { ToolActivity } from './components/ToolActivity.js';
 
 const INITIAL_RENDERER_SESSION_ID = 'initializing-session';
 
-function createConversation(id: string, number: number): DesktopConversation {
+function createConversation(id: string, number: number): ClientConversation {
   return {
     id,
     title: `会话 ${number}`,
@@ -81,7 +50,7 @@ interface AppProps {
 }
 
 export function App({ api }: AppProps) {
-  const [conversations, setConversations] = useState<readonly DesktopConversation[]>([
+  const [conversations, setConversations] = useState<readonly ClientConversation[]>([
     createConversation(INITIAL_RENDERER_SESSION_ID, 1),
   ]);
   const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
@@ -98,7 +67,7 @@ export function App({ api }: AppProps) {
 
   const updateConversation = (
     sessionId: string,
-    update: (conversation: DesktopConversation) => DesktopConversation,
+    update: (conversation: ClientConversation) => ClientConversation,
   ) => {
     setConversations((currentConversations) => currentConversations.map((conversation) => (
       conversation.id === sessionId ? update(conversation) : conversation
@@ -107,7 +76,26 @@ export function App({ api }: AppProps) {
 
   useEffect(() => {
     let mounted = true;
-    void api.getActiveSessionId().then((sessionId) => {
+    void (async () => {
+      // 同时发起宿主活动会话查询，避免加载持久化快照时重新引入初始 Session ID 竞态。
+      const activeSessionPromise = api.getActiveSessionId();
+      const savedState = await api.loadClientState();
+      if (!mounted || activeSessionIdRef.current !== INITIAL_RENDERER_SESSION_ID) return;
+
+      if (savedState !== null) {
+        const messageIds = savedState.conversations.flatMap((conversation) => (
+          conversation.messages.map((message) => message.id)
+        ));
+        activeSessionIdRef.current = savedState.activeSessionId;
+        nextSessionNumber.current = savedState.conversations.length + 1;
+        nextMessageId.current = Math.max(0, ...messageIds) + 1;
+        setConversations(savedState.conversations);
+        setActiveSessionId(savedState.activeSessionId);
+        setIsSessionReady(true);
+        return;
+      }
+
+      const sessionId = await activeSessionPromise;
       if (!mounted || activeSessionIdRef.current !== INITIAL_RENDERER_SESSION_ID) return;
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
@@ -117,9 +105,18 @@ export function App({ api }: AppProps) {
           : conversation
       )));
       setIsSessionReady(true);
-    });
+    })();
     return () => { mounted = false; };
   }, [api]);
+
+  useEffect(() => {
+    if (!isSessionReady || isProcessing) return;
+    const snapshot: ClientStateSnapshot = { conversations, activeSessionId };
+    const timeout = setTimeout(() => {
+      void api.saveClientState(snapshot);
+    }, 150);
+    return () => clearTimeout(timeout);
+  }, [activeSessionId, api, conversations, isProcessing, isSessionReady]);
 
   useEffect(() => api.onAgentEvent((event) => {
     const nextItem = toActivityItem(event);
@@ -140,7 +137,7 @@ export function App({ api }: AppProps) {
         : activeMessage.tools.map((item, index) => (
             index === existingIndex ? nextItem : item
           ));
-      const messages = conversation.messages.map((message, index) => (
+      const messages: readonly ClientConversationMessage[] = conversation.messages.map((message, index) => (
         index === activeIndex ? { ...activeMessage, tools } : message
       ));
       return { ...conversation, messages };
