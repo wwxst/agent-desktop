@@ -1,6 +1,7 @@
 import type {
   AgentClientApi,
   AgentTaskResult,
+  RuntimeSettings,
   SelectedVideo,
   ToolActivityEvent,
 } from '@agent-desktop/client';
@@ -11,8 +12,57 @@ export function createWebClientApi(): AgentClientApi {
   let nextSession = 2;
   const sessionIds = new Set([activeSessionId]);
   const listeners = new Set<(event: ToolActivityEvent) => void>();
+  let settings: RuntimeSettings = {
+    deepSeek: {
+      apiKey: { configured: false },
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-pro',
+    },
+    vision: {
+      apiKey: { configured: false },
+      baseUrl: 'https://api.openai.com/v1',
+    },
+    whisper: { modelPath: '', cliPath: '' },
+  };
 
   return {
+    loadRuntimeSettings: async () => settings,
+    saveRuntimeSettings: async (update) => {
+      settings = {
+        deepSeek: {
+          apiKey: update.deepSeekApiKey === undefined
+            ? settings.deepSeek.apiKey
+            : update.deepSeekApiKey === null || update.deepSeekApiKey.length === 0
+              ? { configured: false }
+              : { configured: true, source: 'saved' },
+          baseUrl: update.deepSeekBaseUrl === undefined
+            ? settings.deepSeek.baseUrl
+            : update.deepSeekBaseUrl ?? 'https://api.deepseek.com',
+          model: update.deepSeekModel === undefined
+            ? settings.deepSeek.model
+            : update.deepSeekModel ?? 'deepseek-v4-pro',
+        },
+        vision: {
+          apiKey: update.visionApiKey === undefined
+            ? settings.vision.apiKey
+            : update.visionApiKey === null || update.visionApiKey.length === 0
+              ? { configured: false }
+              : { configured: true, source: 'saved' },
+          baseUrl: update.visionBaseUrl === undefined
+            ? settings.vision.baseUrl
+            : update.visionBaseUrl ?? 'https://api.openai.com/v1',
+        },
+        whisper: {
+          modelPath: update.whisperModelPath === undefined
+            ? settings.whisper.modelPath
+            : update.whisperModelPath ?? '',
+          cliPath: update.whisperCliPath === undefined
+            ? settings.whisper.cliPath
+            : update.whisperCliPath ?? '',
+        },
+      };
+      return settings;
+    },
     loadClientState: async () => null,
     saveClientState: async () => undefined,
     getActiveSessionId: async () => activeSessionId,

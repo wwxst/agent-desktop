@@ -26,4 +26,18 @@ describe('Web Dev API', () => {
     expect(replacement).not.toBe(initial);
     expect(await api.getActiveSessionId()).toBe(replacement);
   });
+
+  it('keeps runtime settings in memory and returns only secret status', async () => {
+    const api = createWebClientApi();
+    const saved = await api.saveRuntimeSettings({
+      deepSeekApiKey: 'web-only-secret',
+      deepSeekModel: 'web-model',
+    });
+
+    expect(saved.deepSeek).toMatchObject({
+      apiKey: { configured: true, source: 'saved' },
+      model: 'web-model',
+    });
+    expect(JSON.stringify(await api.loadRuntimeSettings())).not.toContain('web-only-secret');
+  });
 });

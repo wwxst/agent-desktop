@@ -46,26 +46,28 @@ Video Agent Application
 
 ### Desktop Application Boundary（桌面应用边界）
 
-`@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Tool Activity、Artifact Card 和样式实现。`apps/desktop` 通过 preload API 提供真实 Electron 宿主；`apps/web` 提供仅用于 UI 开发与自动化测试的 Dev API，不执行本地视频 Agent。
+`@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Runtime Settings UI（运行时设置界面）、Tool Activity、Artifact Card 和样式实现。`apps/desktop` 通过 preload API 提供真实 Electron 宿主；`apps/web` 提供仅用于 UI 开发与自动化测试的内存 Dev API，不执行本地视频 Agent，也不使用浏览器存储。
 
 `apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的桌面宿主。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交视频文件、提交自然语言剪辑任务、按轮展示共享 Execution Trace（执行追踪）的 Tool Activity（工具活动）、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
 
-每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/session-state.json`。每个会话独立持有 Video Agent（视频智能体）、InMemorySession（内存会话）、待提交视频路径和输出文件映射；`activeSessionId` 决定后续文件选择、任务执行和产物打开操作的目标。输出序号随状态文件保存，以避免重启后不同任务为同一输入生成相同文件名。
+每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/session-state.json`。每个会话只长期持有 InMemorySession（内存会话）、待提交视频路径和输出文件映射；`activeSessionId` 决定后续文件选择、任务执行和产物打开操作的目标。输出序号随状态文件保存，以避免重启后不同任务为同一输入生成相同文件名。
 
-同一会话的后续 `runTurn` 复用对应 Agent 和 InMemorySession；Agent Loop 仍只根据 Session 事件重建 Model Context（模型上下文）。Renderer 为每个会话保存消息、草稿和附件等 UI History（界面历史），但不把这些消息重新拼接进模型请求。每轮 Tool Activity（工具活动）、Artifact（产物）和 Trace ID 都归属发起该轮任务的会话与 Agent 回复。
+每次用户 Turn（用户任务轮次）开始时，Electron Main 重新读取最新 Runtime Settings（运行时设置）并创建一个 Video Agent（视频智能体）；该 Agent 在完整 Turn 内保持不变，下一个 Turn 才重新创建。每次创建都注入会话原有的同一个 InMemorySession，因此 Agent Loop 仍只根据 Session 事件重建 Model Context（模型上下文）。Renderer 为每个会话保存消息、草稿和附件等 UI History（界面历史），但不把这些消息重新拼接进模型请求。每轮 Tool Activity（工具活动）、Artifact（产物）和 Trace ID 都归属发起该轮任务的会话与 Agent 回复。
 
-用户点击“新会话”时，Main 创建新的 Agent 和 InMemorySession 并保留旧会话；点击侧栏会话时切换 `activeSessionId` 并恢复对应界面历史。执行中的 Turn 不允许新建或切换会话，当前仍只有一个前台任务。应用重启时从状态文件恢复会话、SessionEvent、附件路径、产物路径和 Client Snapshot；Web Dev Host 返回空快照且不做持久化。当前不做云同步、删除、搜索、重命名、数据库或半成品任务恢复。
+用户点击“新会话”时，Main 只创建新的 InMemorySession 并保留旧会话；点击侧栏会话时切换 `activeSessionId` 并恢复对应界面历史。执行中的 Turn 不允许新建、切换会话或保存设置，当前仍只有一个前台任务。应用重启时从状态文件恢复会话、SessionEvent、附件路径、产物路径和 Client Snapshot；Web Dev Host 返回空快照且不做持久化。
+
+非敏感设置写入 `app.getPath('userData')/runtime-settings.json`。DeepSeek 与 Vision API Key（接口密钥）由 Electron `safeStorage` 加密后以密文写入 `runtime-secrets.json`；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；缺少 Vision Key 或 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。FFmpeg 继续只使用系统 PATH。
 
 ```text
 Layer                 中文名称         职责
-Renderer              渲染进程         保存运行期会话列表与各会话 UI 历史，收集任务并切换展示
+Renderer              渲染进程         保存运行期会话列表与各会话 UI 历史，收集任务和脱敏设置并切换展示
 Preload contextBridge 预加载安全桥     通过 contextBridge 暴露受限桌面 API
-Electron Main         Electron 主进程  按会话持有 Agent、Session、附件和产物文件引用
-createVideoAgent      组装视频智能体   创建 Model、Session、System Prompt 和视频 Tool
+Electron Main         Electron 主进程  按会话持有 Session、附件和产物，并负责设置与密钥持久化
+createVideoAgent      组装视频智能体   每个 Turn 创建 Model、System Prompt 和当前可用视频 Tool
 runTurn               执行任务轮次     驱动一次 Turn 的 Model 与 Tool 执行
 ```
 
-Desktop 不把 Agent Core（智能体核心）逻辑放入 UI，也不修改 Core、Agent Loop 或 Trace 协议；持久化历史、会话管理操作、设置、任务管理和播放器不在当前应用范围内。
+Desktop 不把 Agent Core（智能体核心）逻辑放入 UI，也不修改 Core、Agent Loop 或 Trace 协议；当前不实现云同步、设置同步、Provider Registry（提供商注册表）、任务管理、播放器、数据库或半成品任务恢复。
 
 ## Core Concepts（核心概念）
 

@@ -15,6 +15,16 @@ afterEach(() => {
 });
 
 const persistenceMethods = {
+  loadRuntimeSettings: async () => ({
+    deepSeek: { apiKey: { configured: false }, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
+    vision: { apiKey: { configured: false }, baseUrl: 'https://api.openai.com/v1' },
+    whisper: { modelPath: '', cliPath: '' },
+  }),
+  saveRuntimeSettings: async () => ({
+    deepSeek: { apiKey: { configured: false }, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
+    vision: { apiKey: { configured: false }, baseUrl: 'https://api.openai.com/v1' },
+    whisper: { modelPath: '', cliPath: '' },
+  }),
   loadClientState: async () => null,
   saveClientState: async () => undefined,
   deleteSession: async () => 'session-a',

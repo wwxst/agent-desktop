@@ -349,9 +349,10 @@ Result           结果        是否通过以及可核对的证据
 ```text
 pnpm deepseek-agent   DeepSeek 真实模型链路       需要 DEEPSEEK_API_KEY，交互式输入任务
 pnpm ffmpeg-agent     完整视频 Agent 链路         入口启动需 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；执行对应 Tool 需 ffmpeg、ffprobe、whisper-cli，视觉调用时另需 OPENAI_API_KEY
+pnpm desktop           Desktop 真实桌面链路         启动不要求预先配置 Key；Settings 保存后每个 Turn 读取本机设置、环境变量和 Provider 默认值，执行视频 Tool 仍需对应本机二进制或模型
 ```
 
-当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 入口中组合验证。入口启动时缺少其必需环境变量会以非零状态退出；外部二进制、模型或 Vision Key 在 Tool 执行边界暴露失败。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。
+当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 启动时缺少其必需环境变量会以非零状态退出；Desktop 允许无 Key 启动，缺少 DeepSeek Key 只在发送任务时明确失败。外部二进制、模型或 Vision Key 在 Tool 执行边界暴露失败。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。
 
 无法执行真实验证时，必须明确说明原因、未验证范围和风险，不得将 Real Verification 标记为通过。
 

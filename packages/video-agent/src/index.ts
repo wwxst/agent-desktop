@@ -23,9 +23,10 @@ import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 export interface VideoAgentOptions {
   readonly deepSeekApiKey: string;
   readonly deepSeekBaseUrl?: string;
+  readonly deepSeekModel?: string;
   readonly whisperModelPath?: string;
   readonly whisperCliPath?: string;
-  readonly visionApiKey: string;
+  readonly visionApiKey?: string;
   readonly visionBaseUrl?: string;
   readonly session?: Session;
 }
@@ -65,11 +66,13 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new ExtractVideoFramesTool());
   tools.register(new ExtractVideoRangeFramesTool());
   tools.register(new ExtractAudioTool());
-  tools.register(new AnalyzeImagesTool(
-    options.visionBaseUrl === undefined
-      ? { apiKey: options.visionApiKey }
-      : { apiKey: options.visionApiKey, baseUrl: options.visionBaseUrl },
-  ));
+  if (options.visionApiKey !== undefined && options.visionApiKey.length > 0) {
+    tools.register(new AnalyzeImagesTool(
+      options.visionBaseUrl === undefined
+        ? { apiKey: options.visionApiKey }
+        : { apiKey: options.visionApiKey, baseUrl: options.visionBaseUrl },
+    ));
+  }
   if (options.whisperModelPath !== undefined) {
     tools.register(new TranscribeAudioTool(
       options.whisperCliPath === undefined
@@ -85,10 +88,14 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new CropVideoTool());
   tools.register(new SetSpeedTool());
 
+  const modelOptions = {
+    apiKey: options.deepSeekApiKey,
+    ...(options.deepSeekBaseUrl === undefined ? {} : { baseUrl: options.deepSeekBaseUrl }),
+    ...(options.deepSeekModel === undefined ? {} : { model: options.deepSeekModel }),
+  };
+
   return {
-    model: options.deepSeekBaseUrl === undefined
-      ? new DeepSeekModel({ apiKey: options.deepSeekApiKey })
-      : new DeepSeekModel({ apiKey: options.deepSeekApiKey, baseUrl: options.deepSeekBaseUrl }),
+    model: new DeepSeekModel(modelOptions),
     session: options.session ?? new InMemorySession(),
     tools,
     systemPrompt: new StaticSystemPrompt(VIDEO_AGENT_SYSTEM_PROMPT),

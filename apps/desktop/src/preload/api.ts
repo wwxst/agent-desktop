@@ -9,9 +9,36 @@ export interface IpcRendererPort {
   removeListener(channel: string, listener: IpcListener): unknown;
 }
 
+async function invokeAgentTask(
+  ipc: IpcRendererPort,
+  prompt: string,
+): ReturnType<DesktopApi['runAgentTask']> {
+  try {
+    return await ipc.invoke(DESKTOP_CHANNELS.runAgentTask, prompt) as Awaited<
+      ReturnType<DesktopApi['runAgentTask']>
+    >;
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    // Electron 会给 Main 的业务错误增加固定 IPC 前缀；Renderer 只展示原始任务错误。
+    const marker = ': Error: ';
+    const markerIndex = error.message.indexOf(marker);
+    if (error.message.startsWith('Error invoking remote method') && markerIndex !== -1) {
+      throw new Error(error.message.slice(markerIndex + marker.length));
+    }
+    throw error;
+  }
+}
+
 /** 只把当前桌面闭环需要的八个操作暴露给 Renderer。 */
 export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
   return {
+    loadRuntimeSettings: () => ipc.invoke(
+      DESKTOP_CHANNELS.loadRuntimeSettings,
+    ) as ReturnType<DesktopApi['loadRuntimeSettings']>,
+    saveRuntimeSettings: (update) => ipc.invoke(
+      DESKTOP_CHANNELS.saveRuntimeSettings,
+      update,
+    ) as ReturnType<DesktopApi['saveRuntimeSettings']>,
     loadClientState: () => ipc.invoke(
       DESKTOP_CHANNELS.loadClientState,
     ) as ReturnType<DesktopApi['loadClientState']>,
@@ -35,10 +62,7 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       DESKTOP_CHANNELS.deleteSession,
       sessionId,
     ) as ReturnType<DesktopApi['deleteSession']>,
-    runAgentTask: (prompt) => ipc.invoke(
-      DESKTOP_CHANNELS.runAgentTask,
-      prompt,
-    ) as ReturnType<DesktopApi['runAgentTask']>,
+    runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
     onAgentEvent: (listener) => {
       const receive: IpcListener = (_event, payload) => listener(payload as ToolActivityEvent);
       ipc.on(DESKTOP_CHANNELS.agentEvent, receive);

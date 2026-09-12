@@ -6,6 +6,16 @@ import { App } from '../src/index.js';
 import type { AgentClientApi, ClientStateSnapshot } from '../src/index.js';
 
 const api: AgentClientApi = {
+  loadRuntimeSettings: async () => ({
+    deepSeek: { apiKey: { configured: false }, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
+    vision: { apiKey: { configured: false }, baseUrl: 'https://api.openai.com/v1' },
+    whisper: { modelPath: '', cliPath: '' },
+  }),
+  saveRuntimeSettings: async () => ({
+    deepSeek: { apiKey: { configured: false }, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
+    vision: { apiKey: { configured: false }, baseUrl: 'https://api.openai.com/v1' },
+    whisper: { modelPath: '', cliPath: '' },
+  }),
   loadClientState: async () => null,
   saveClientState: async () => undefined,
   getActiveSessionId: async () => 'session-a',
@@ -26,6 +36,43 @@ describe('shared App', () => {
     render(<App api={api} />);
     expect(await screen.findByText('Agent Desktop')).toBeTruthy();
     expect(screen.getByRole('button', { name: '新会话' })).toBeTruthy();
+  });
+
+  it('loads and saves runtime settings without receiving or echoing saved API keys', async () => {
+    const saveRuntimeSettings = vi.fn(async () => ({
+      deepSeek: {
+        apiKey: { configured: true as const, source: 'saved' as const },
+        baseUrl: 'https://deepseek.saved.test',
+        model: 'runtime-model',
+      },
+      vision: {
+        apiKey: { configured: true as const, source: 'environment' as const },
+        baseUrl: 'https://vision.saved.test/v1',
+      },
+      whisper: { modelPath: 'D:\\models\\whisper.bin', cliPath: 'whisper-cli.exe' },
+    }));
+    render(<App api={{ ...api, saveRuntimeSettings }} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+    const deepSeekKey = (await screen.findAllByLabelText('API Key', { selector: 'input' }))[0]!;
+    expect((deepSeekKey as HTMLInputElement).value).toBe('');
+    expect(screen.getAllByText('未配置')).toHaveLength(2);
+    expect(screen.getByText('使用系统 PATH')).toBeTruthy();
+
+    fireEvent.change(deepSeekKey, { target: { value: 'renderer-only-new-key' } });
+    fireEvent.change(screen.getByLabelText('Model', { exact: true }), { target: { value: 'runtime-model' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+
+    await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({
+      deepSeekApiKey: 'renderer-only-new-key',
+      deepSeekModel: 'runtime-model',
+    })));
+    await screen.findByText('设置已保存，将从下一次任务开始生效。');
+    expect((deepSeekKey as HTMLInputElement).value).toBe('');
+    expect(screen.queryByDisplayValue('renderer-only-new-key')).toBeNull();
+    expect(screen.getAllByText('已配置')).toHaveLength(2);
+    expect(screen.getByText('来源：本机设置')).toBeTruthy();
+    expect(screen.getByText('来源：环境变量')).toBeTruthy();
   });
 
   it('restores the persisted UI snapshot without rebuilding model context in the Client', async () => {

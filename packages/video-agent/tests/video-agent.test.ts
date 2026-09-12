@@ -46,6 +46,26 @@ describe('createVideoAgent', () => {
     });
 
     expect(agent.tools.list().map((tool) => tool.name)).not.toContain('transcribe_audio');
+    expect(agent.tools.list().map((tool) => tool.name)).not.toContain('analyze_images');
+  });
+
+  it('passes the configured model override to DeepSeek', async () => {
+    const requests: unknown[] = [];
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async (_input, init) => {
+      requests.push(JSON.parse(init?.body as string) as unknown);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
+    };
+    try {
+      const agent = createVideoAgent({
+        deepSeekApiKey: 'test-key',
+        deepSeekModel: 'runtime-model',
+      });
+      await agent.model.complete({ systemPrompt: 'test', messages: [], tools: [] });
+      expect(requests).toEqual([expect.objectContaining({ model: 'runtime-model' })]);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
   });
 
   it('uses an injected Session and keeps the default InMemorySession behavior', () => {

@@ -17,12 +17,13 @@ Video Agent Application Layer      视频智能体应用层            已完成
 Agent Desktop Shell                智能体桌面应用外壳          已完成并合并 `main`。
 Multi-turn Agent Session           多轮智能体会话              Commit 20 已完成并合并 `main`。
 New Session                        新会话                      Commit 21 已完成并合并 `main`。
-Session List & Basic History       会话列表与基础历史          Commit 22 正在 `feature/session-list` 开发。
+Session List & Basic History       会话列表与基础历史          已完成并合并 `main`。
+Runtime Settings                  运行时设置                  Commit 26 正在 `feature/runtime-settings` 开发。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
 
-Commit 21 已合并 `main`，Desktop 可通过新会话入口重建 Video Agent 和 InMemorySession。Commit 22 正在功能分支中增加当前应用运行期间的多会话列表与切换；Core、`agent-loop` 和 Trace 协议均未修改。
+Desktop 已支持多会话列表、切换与本地恢复。Commit 26 在功能分支中增加运行时设置，并把 Video Agent 调整为每个 Turn 根据最新设置创建、复用原 InMemorySession；Core、`agent-loop` 和 Trace 协议均未修改。
 
 # Engineering Rules（工程规则）
 

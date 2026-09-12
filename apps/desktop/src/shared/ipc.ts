@@ -6,6 +6,8 @@ import type {
 } from '@agent-desktop/client';
 
 export const DESKTOP_CHANNELS = {
+  loadRuntimeSettings: 'desktop:load-runtime-settings',
+  saveRuntimeSettings: 'desktop:save-runtime-settings',
   getActiveSessionId: 'desktop:get-active-session-id',
   loadClientState: 'desktop:load-client-state',
   saveClientState: 'desktop:save-client-state',

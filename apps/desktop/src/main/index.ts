@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { basename, join, parse, resolve } from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
@@ -17,6 +17,14 @@ import {
   type PersistedDesktopState,
 } from './session-persistence.js';
 import type { ClientStateSnapshot } from '@agent-desktop/client';
+import {
+  loadRuntimeConfiguration,
+  loadRuntimeSettings,
+  parseRuntimeSettingsUpdate,
+  RUNTIME_SECRETS_FILE_NAME,
+  RUNTIME_SETTINGS_FILE_NAME,
+  saveRuntimeSettings,
+} from './runtime-settings.js';
 
 let mainWindow: BrowserWindow | null = null;
 let outputSequence = 0;
@@ -24,7 +32,7 @@ let isTaskRunning = false;
 let clientState: ClientStateSnapshot | null = null;
 
 interface DesktopSessionState {
-  readonly agent: ReturnType<typeof createVideoAgent>;
+  readonly session: InMemorySession;
   readonly selectedVideoPaths: string[];
   readonly outputFilePaths: Map<string, string>;
 }
@@ -32,31 +40,13 @@ interface DesktopSessionState {
 const sessions = new Map<string, DesktopSessionState>();
 let activeSessionId = '';
 
-function requireEnvironment(name: 'DEEPSEEK_API_KEY' | 'WHISPER_MODEL_PATH'): string {
-  const value = process.env[name];
-  if (value === undefined || value.length === 0) throw new Error(`缺少 ${name} 环境变量。`);
-  return value;
-}
-
-/** 创建独立的 Agent、Session、附件和产物状态；恢复时显式注入已有事件。 */
+/** 创建独立的 Session、附件和产物状态；Agent 只在用户 Turn 开始时创建。 */
 function createDesktopSession(
   id: string = randomUUID(),
   initialEvents: readonly SessionEvent[] = [],
 ): string {
-  const deepSeekBaseUrl = process.env.DEEPSEEK_BASE_URL;
-  const whisperCliPath = process.env.WHISPER_CLI_PATH;
-  const whisperModelPath = process.env.WHISPER_MODEL_PATH;
-  const visionBaseUrl = process.env.OPENAI_BASE_URL;
   const session = {
-    agent: createVideoAgent({
-      deepSeekApiKey: requireEnvironment('DEEPSEEK_API_KEY'),
-      visionApiKey: process.env.OPENAI_API_KEY ?? '',
-      ...(whisperModelPath === undefined ? {} : { whisperModelPath }),
-      ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
-      ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
-      ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
-      session: new InMemorySession(initialEvents),
-    }),
+    session: new InMemorySession(initialEvents),
     selectedVideoPaths: [],
     outputFilePaths: new Map<string, string>(),
   } satisfies DesktopSessionState;
@@ -69,6 +59,14 @@ function persistenceFilePath(): string {
   return join(app.getPath('userData'), SESSION_STATE_FILE_NAME);
 }
 
+function runtimeSettingsFilePath(): string {
+  return join(app.getPath('userData'), RUNTIME_SETTINGS_FILE_NAME);
+}
+
+function runtimeSecretsFilePath(): string {
+  return join(app.getPath('userData'), RUNTIME_SECRETS_FILE_NAME);
+}
+
 function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopState {
   return {
     activeSessionId,
@@ -77,7 +75,7 @@ function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopS
       id,
       selectedVideoPaths: session.selectedVideoPaths,
       outputFilePaths: Object.fromEntries(session.outputFilePaths),
-      events: session.agent.session.events(),
+      events: session.session.events(),
     })),
     clientState: snapshot,
   };
@@ -127,6 +125,23 @@ function sendToolActivity(event: ExecutionTraceEvent): void {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle(DESKTOP_CHANNELS.loadRuntimeSettings, () => loadRuntimeSettings(
+    runtimeSettingsFilePath(),
+    runtimeSecretsFilePath(),
+    safeStorage,
+  ));
+
+  ipcMain.handle(DESKTOP_CHANNELS.saveRuntimeSettings, async (_event, update: unknown) => {
+    if (isTaskRunning) throw new Error('Agent 正在执行，无法保存设置。');
+    await saveRuntimeSettings(
+      runtimeSettingsFilePath(),
+      runtimeSecretsFilePath(),
+      parseRuntimeSettingsUpdate(update),
+      safeStorage,
+    );
+    return loadRuntimeSettings(runtimeSettingsFilePath(), runtimeSecretsFilePath(), safeStorage);
+  });
+
   ipcMain.handle(DESKTOP_CHANNELS.loadClientState, () => clientState);
 
   ipcMain.handle(DESKTOP_CHANNELS.saveClientState, async (_event, state: unknown) => {
@@ -198,9 +213,28 @@ function registerIpcHandlers(): void {
       throw new Error('请输入剪辑需求。');
     }
 
-    const session = activeSession();
     isTaskRunning = true;
     try {
+      const session = activeSession();
+      const settings = await loadRuntimeConfiguration(
+        runtimeSettingsFilePath(),
+        runtimeSecretsFilePath(),
+        safeStorage,
+      );
+      if (settings.deepSeekApiKey === undefined) {
+        throw new Error('请先在设置中配置 DeepSeek API Key。');
+      }
+      // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
+      const agent = createVideoAgent({
+        deepSeekApiKey: settings.deepSeekApiKey,
+        ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
+        ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
+        ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
+        ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
+        ...(settings.whisperModelPath === undefined ? {} : { whisperModelPath: settings.whisperModelPath }),
+        ...(settings.whisperCliPath === undefined ? {} : { whisperCliPath: settings.whisperCliPath }),
+        session: session.session,
+      });
       const requestedOutputPath = session.selectedVideoPaths.length === 0
         ? undefined
         : defaultOutputPath(session.selectedVideoPaths[0]!, outputSequence + 1);
@@ -216,7 +250,7 @@ function registerIpcHandlers(): void {
       const trace = createJsonlTrace(join(logsDirectory, 'agent-trace.jsonl'));
 
       const result = await runDesktopAgentTask(
-        session.agent,
+        agent,
         prompt.trim(),
         session.selectedVideoPaths,
         requestedOutputPath,

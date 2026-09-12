@@ -17,13 +17,14 @@ const mainMocks = vi.hoisted(() => {
   return {
     handlers,
     agents,
-    createVideoAgent: vi.fn(() => {
-      const events: unknown[] = [];
+    createVideoAgent: vi.fn((options: {
+      session: {
+        append(event: unknown): void;
+        events(): readonly unknown[];
+      };
+    }) => {
       const agent = {
-        session: {
-          append: (event: unknown) => events.push(event),
-          events: () => events,
-        },
+        session: options.session,
       };
       agents.push(agent);
       return agent;
@@ -79,6 +80,11 @@ vi.mock('electron', () => ({
   },
   dialog: { showOpenDialog: mainMocks.showOpenDialog },
   ipcMain: { handle: mainMocks.ipcHandle },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`encrypted:${value}`),
+    decryptString: (value: Buffer) => value.toString().replace(/^encrypted:/, ''),
+  },
   shell: { showItemInFolder: mainMocks.showItemInFolder },
 }));
 
@@ -99,10 +105,12 @@ describe('desktop main session lifecycle', () => {
   const previousWhisperModelPath = process.env.WHISPER_MODEL_PATH;
 
   beforeAll(async () => {
-    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+    delete process.env.DEEPSEEK_API_KEY;
     process.env.WHISPER_MODEL_PATH = 'D:\\models\\whisper.bin';
     await import('../src/main/index.js');
-    await vi.waitFor(() => expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+    expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
   });
 
   afterAll(() => {
@@ -110,6 +118,21 @@ describe('desktop main session lifecycle', () => {
     else process.env.DEEPSEEK_API_KEY = previousDeepSeekApiKey;
     if (previousWhisperModelPath === undefined) delete process.env.WHISPER_MODEL_PATH;
     else process.env.WHISPER_MODEL_PATH = previousWhisperModelPath;
+  });
+
+  it('starts without a DeepSeek key and reports the missing key only when a task is sent', async () => {
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    expect(runAgentTask).toBeTypeOf('function');
+    const configuredKey = process.env.DEEPSEEK_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    try {
+      await expect(runAgentTask!({}, '测试任务')).rejects.toThrow(
+        '请先在设置中配置 DeepSeek API Key。',
+      );
+      expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
+    } finally {
+      if (configuredKey !== undefined) process.env.DEEPSEEK_API_KEY = configuredKey;
+    }
   });
 
   it('keeps independent Agent, Session, attachment, and output state for each desktop session', async () => {
@@ -120,12 +143,14 @@ describe('desktop main session lifecycle', () => {
     const newSession = mainMocks.handlers.get('desktop:new-session');
     const switchSession = mainMocks.handlers.get('desktop:switch-session');
     const deleteSession = mainMocks.handlers.get('desktop:delete-session');
+    const saveRuntimeSettings = mainMocks.handlers.get('desktop:save-runtime-settings');
     expect(getActiveSessionId).toBeTypeOf('function');
     expect(selectVideo).toBeTypeOf('function');
     expect(runAgentTask).toBeTypeOf('function');
     expect(openOutputFile).toBeTypeOf('function');
     expect(newSession).toBeTypeOf('function');
     expect(switchSession).toBeTypeOf('function');
+    expect(saveRuntimeSettings).toBeTypeOf('function');
     const firstSessionId = await getActiveSessionId!({});
 
     mainMocks.showOpenDialog.mockResolvedValue({
@@ -149,6 +174,9 @@ describe('desktop main session lifecycle', () => {
 
     expect(() => newSession!({})).toThrow('Agent 正在执行');
     expect(() => switchSession!({}, 'missing-session')).toThrow('Agent 正在执行');
+    await expect(saveRuntimeSettings!({}, { deepSeekModel: 'next-model' })).rejects.toThrow(
+      'Agent 正在执行，无法保存设置。',
+    );
     expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
 
     resolveRunningTask?.({
@@ -165,11 +193,7 @@ describe('desktop main session lifecycle', () => {
     const secondSessionId = await newSession!({});
 
     expect(secondSessionId).not.toBe(firstSessionId);
-    expect(mainMocks.createVideoAgent).toHaveBeenCalledTimes(2);
-    const secondAgent = mainMocks.agents[1]!;
-    expect(secondAgent).not.toBe(firstAgent);
-    expect(secondAgent.session).not.toBe(firstAgent.session);
-    expect(secondAgent.session.events()).toEqual([]);
+    expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
     expect(() => openOutputFile!({}, 'first-output.mp4')).toThrow('找不到对应的输出文件');
 
     mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
@@ -178,6 +202,9 @@ describe('desktop main session lifecycle', () => {
       outputPath: undefined,
     });
     await runAgentTask!({}, '记住数字 952');
+    const secondAgent = mainMocks.agents[1]!;
+    expect(secondAgent).not.toBe(firstAgent);
+    expect(secondAgent.session).not.toBe(firstAgent.session);
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
       secondAgent,
       '记住数字 952',
@@ -194,8 +221,9 @@ describe('desktop main session lifecycle', () => {
       outputPath: undefined,
     });
     await runAgentTask!({}, '我刚才让你记住什么数字？');
+    const followUpAgent = mainMocks.agents[2]!;
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
-      firstAgent,
+      followUpAgent,
       '我刚才让你记住什么数字？',
       ['D:\\videos\\input.mp4'],
       expect.stringContaining('input-edited-'),
@@ -203,6 +231,8 @@ describe('desktop main session lifecycle', () => {
     );
     openOutputFile!({}, 'first-output.mp4');
     expect(mainMocks.showItemInFolder).toHaveBeenLastCalledWith('D:\\videos\\first-output.mp4');
+    expect(followUpAgent).not.toBe(firstAgent);
+    expect(followUpAgent.session).toBe(firstAgent.session);
     expect(firstAgent.session.events()).not.toContainEqual({ type: 'user.message', content: '记住数字 952' });
 
     await switchSession!({}, secondSessionId);
@@ -300,14 +330,22 @@ describe('desktop main session lifecycle', () => {
     const newSession = mainMocks.handlers.get('desktop:new-session');
     const switchSession = mainMocks.handlers.get('desktop:switch-session');
     const deleteSession = mainMocks.handlers.get('desktop:delete-session');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
     expect(getActiveSessionId).toBeTypeOf('function');
     expect(newSession).toBeTypeOf('function');
     expect(switchSession).toBeTypeOf('function');
     expect(deleteSession).toBeTypeOf('function');
+    expect(runAgentTask).toBeTypeOf('function');
 
     const baseSessionId = await getActiveSessionId!({});
     const firstExtraSessionId = await newSession!({});
     const secondExtraSessionId = await newSession!({});
+    mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
+      responseText: '已记住。',
+      turnId: 'turn-delete-session',
+      outputPath: undefined,
+    });
+    await runAgentTask!({}, '只属于被删除会话');
     const secondExtraAgent = mainMocks.agents.at(-1)!;
     secondExtraAgent.session.append({ type: 'user.message', content: '只属于被删除会话' });
 
@@ -327,19 +365,18 @@ describe('desktop main session lifecycle', () => {
     const selectVideo = mainMocks.handlers.get('desktop:select-video');
     const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
     const deleteSession = mainMocks.handlers.get('desktop:delete-session');
+    const newSession = mainMocks.handlers.get('desktop:new-session');
     expect(getActiveSessionId).toBeTypeOf('function');
     expect(selectVideo).toBeTypeOf('function');
     expect(runAgentTask).toBeTypeOf('function');
     expect(deleteSession).toBeTypeOf('function');
+    expect(newSession).toBeTypeOf('function');
 
     const directory = mkdtempSync(join(tmpdir(), 'agent-desktop-delete-'));
     try {
       const inputPath = join(directory, 'input.mp4');
       const requestedOutputPaths: string[] = [];
-      const agentCountBeforeReset = mainMocks.createVideoAgent.mock.calls.length;
-      while (mainMocks.createVideoAgent.mock.calls.length === agentCountBeforeReset) {
-        deleteSession!({}, await getActiveSessionId!({}));
-      }
+      await newSession!({});
       mainMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [inputPath] });
       mainMocks.runDesktopAgentTask.mockImplementation(async (
         _agent: unknown,
@@ -365,6 +402,7 @@ describe('desktop main session lifecycle', () => {
       expect(replacementSessionId).not.toBe(deletedSessionId);
       expect(existsSync(requestedOutputPaths[0]!)).toBe(true);
 
+      await newSession!({});
       await selectVideo!({});
       await runAgentTask!({}, '生成第二个视频');
       const outputSequence = (path: string) => {

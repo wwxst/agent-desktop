@@ -11,6 +11,7 @@ import { ArtifactCard } from './components/ArtifactCard.js';
 import { AttachmentChip } from './components/AttachmentChip.js';
 import { Composer } from './components/Composer.js';
 import { ToolActivity } from './components/ToolActivity.js';
+import { RuntimeSettingsPanel } from './components/RuntimeSettingsPanel.js';
 
 const INITIAL_RENDERER_SESSION_ID = 'initializing-session';
 
@@ -57,6 +58,7 @@ export function App({ api }: AppProps) {
   const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeView, setActiveView] = useState<'conversation' | 'settings'>('conversation');
   const [openSessionMenuId, setOpenSessionMenuId] = useState<string | null>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -180,6 +182,7 @@ export function App({ api }: AppProps) {
     setConversations((currentConversations) => [...currentConversations, conversation]);
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
+    setActiveView('conversation');
   };
 
   const beginRename = (conversation: ClientConversation) => {
@@ -224,10 +227,15 @@ export function App({ api }: AppProps) {
   };
 
   const switchSession = async (sessionId: string) => {
-    if (isProcessing || sessionId === activeSessionIdRef.current) return;
+    if (isProcessing) return;
+    if (sessionId === activeSessionIdRef.current) {
+      setActiveView('conversation');
+      return;
+    }
     await api.switchSession(sessionId);
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
+    setActiveView('conversation');
   };
 
   const sendTask = async () => {
@@ -432,6 +440,18 @@ export function App({ api }: AppProps) {
             );
           })}
         </nav>
+        <button
+          className={`sidebar-settings${activeView === 'settings' ? ' active' : ''}`}
+          type="button"
+          aria-current={activeView === 'settings' ? 'page' : undefined}
+          onClick={() => setActiveView('settings')}
+        >
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+            <circle cx="8" cy="8" r="2.25" />
+            <path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.58 3.58l1.06 1.06M11.36 11.36l1.06 1.06M12.42 3.58l-1.06 1.06M4.64 11.36l-1.06 1.06" />
+          </svg>
+          <span>设置</span>
+        </button>
         <div className="sidebar-footer">
           <span className="sidebar-status-dot" aria-hidden="true" />
           <span>本地运行</span>
@@ -439,6 +459,9 @@ export function App({ api }: AppProps) {
       </aside>
 
       <div className="app-main">
+      {activeView === 'settings' ? (
+        <RuntimeSettingsPanel api={api} isProcessing={isProcessing} />
+      ) : (
       <main
         ref={conversationScroll}
         className={`conversation-scroll${hasConversation ? '' : ' conversation-scroll-empty'}`}
@@ -527,6 +550,7 @@ export function App({ api }: AppProps) {
           <div className="composer-wrap">{composer}</div>
         </section>
         </main>
+      )}
       </div>
     </div>
   );

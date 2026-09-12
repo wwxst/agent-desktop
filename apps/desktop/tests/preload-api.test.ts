@@ -23,17 +23,21 @@ describe('createDesktopApi', () => {
       'deleteSession',
       'getActiveSessionId',
       'loadClientState',
+      'loadRuntimeSettings',
       'newSession',
       'onAgentEvent',
       'openOutputFile',
       'removeSelectedVideo',
       'runAgentTask',
       'saveClientState',
+      'saveRuntimeSettings',
       'selectVideoFile',
       'switchSession',
     ]);
 
     await api.getActiveSessionId();
+    await api.loadRuntimeSettings();
+    await api.saveRuntimeSettings({ deepSeekModel: 'test-model' });
     await api.loadClientState();
     await api.saveClientState({ activeSessionId: 'session-a', conversations: [] });
     await api.selectVideoFile();
@@ -45,6 +49,8 @@ describe('createDesktopApi', () => {
     await api.openOutputFile('step1.mp4');
     expect(invocations).toEqual([
       { channel: 'desktop:get-active-session-id', args: [] },
+      { channel: 'desktop:load-runtime-settings', args: [] },
+      { channel: 'desktop:save-runtime-settings', args: [{ deepSeekModel: 'test-model' }] },
       { channel: 'desktop:load-client-state', args: [] },
       { channel: 'desktop:save-client-state', args: [{ activeSessionId: 'session-a', conversations: [] }] },
       { channel: 'desktop:select-video', args: [] },
@@ -63,5 +69,21 @@ describe('createDesktopApi', () => {
 
     unsubscribe();
     expect(listeners.has('desktop:agent-event')).toBe(false);
+  });
+
+  it('removes the Electron IPC prefix from task errors shown by the Renderer', async () => {
+    const ipc = {
+      invoke: async () => {
+        throw new Error(
+          "Error invoking remote method 'desktop:run-agent-task': Error: 请先在设置中配置 DeepSeek API Key。",
+        );
+      },
+      on: () => undefined,
+      removeListener: () => undefined,
+    };
+
+    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toEqual(
+      new Error('请先在设置中配置 DeepSeek API Key。'),
+    );
   });
 });

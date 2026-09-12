@@ -55,6 +55,41 @@ export interface ClientStateSnapshot {
   readonly activeSessionId: string;
 }
 
+export type RuntimeSecretSource = 'saved' | 'environment';
+
+export interface RuntimeSecretStatus {
+  readonly configured: boolean;
+  readonly source?: RuntimeSecretSource;
+}
+
+/** Renderer 只接收脱敏状态和非敏感配置，不接收 API Key。 */
+export interface RuntimeSettings {
+  readonly deepSeek: {
+    readonly apiKey: RuntimeSecretStatus;
+    readonly baseUrl: string;
+    readonly model: string;
+  };
+  readonly vision: {
+    readonly apiKey: RuntimeSecretStatus;
+    readonly baseUrl: string;
+  };
+  readonly whisper: {
+    readonly modelPath: string;
+    readonly cliPath: string;
+  };
+}
+
+/** undefined 表示不修改，null 表示清除本机保存值并回退到环境变量或 Provider 默认值。 */
+export interface RuntimeSettingsUpdate {
+  readonly deepSeekApiKey?: string | null;
+  readonly deepSeekBaseUrl?: string | null;
+  readonly deepSeekModel?: string | null;
+  readonly visionApiKey?: string | null;
+  readonly visionBaseUrl?: string | null;
+  readonly whisperModelPath?: string | null;
+  readonly whisperCliPath?: string | null;
+}
+
 export type ToolActivityEvent =
   | {
       readonly type: 'tool.started';
@@ -81,6 +116,8 @@ export type ToolActivityEvent =
     };
 
 export interface AgentClientApi {
+  loadRuntimeSettings(): Promise<RuntimeSettings>;
+  saveRuntimeSettings(update: RuntimeSettingsUpdate): Promise<RuntimeSettings>;
   loadClientState(): Promise<ClientStateSnapshot | null>;
   saveClientState(state: ClientStateSnapshot): Promise<void>;
   getActiveSessionId(): Promise<string>;
