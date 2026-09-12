@@ -7,13 +7,13 @@ import type { AgentClientApi, ClientStateSnapshot } from '../src/index.js';
 
 const api: AgentClientApi = {
   loadRuntimeSettings: async () => ({
-    deepSeek: { apiKey: { configured: false }, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
-    vision: { apiKey: { configured: false }, baseUrl: 'https://api.openai.com/v1' },
+    deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
+    vision: { apiKey: { configured: false }, baseUrl: '' },
     whisper: { modelPath: '', cliPath: '' },
   }),
   saveRuntimeSettings: async () => ({
-    deepSeek: { apiKey: { configured: false }, baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' },
-    vision: { apiKey: { configured: false }, baseUrl: 'https://api.openai.com/v1' },
+    deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
+    vision: { apiKey: { configured: false }, baseUrl: '' },
     whisper: { modelPath: '', cliPath: '' },
   }),
   loadClientState: async () => null,

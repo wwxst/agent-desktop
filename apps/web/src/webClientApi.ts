@@ -15,12 +15,12 @@ export function createWebClientApi(): AgentClientApi {
   let settings: RuntimeSettings = {
     deepSeek: {
       apiKey: { configured: false },
-      baseUrl: 'https://api.deepseek.com',
-      model: 'deepseek-v4-pro',
+      baseUrl: '',
+      model: '',
     },
     vision: {
       apiKey: { configured: false },
-      baseUrl: 'https://api.openai.com/v1',
+      baseUrl: '',
     },
     whisper: { modelPath: '', cliPath: '' },
   };
@@ -37,10 +37,10 @@ export function createWebClientApi(): AgentClientApi {
               : { configured: true, source: 'saved' },
           baseUrl: update.deepSeekBaseUrl === undefined
             ? settings.deepSeek.baseUrl
-            : update.deepSeekBaseUrl ?? 'https://api.deepseek.com',
+            : update.deepSeekBaseUrl ?? '',
           model: update.deepSeekModel === undefined
             ? settings.deepSeek.model
-            : update.deepSeekModel ?? 'deepseek-v4-pro',
+            : update.deepSeekModel ?? '',
         },
         vision: {
           apiKey: update.visionApiKey === undefined
@@ -50,7 +50,7 @@ export function createWebClientApi(): AgentClientApi {
               : { configured: true, source: 'saved' },
           baseUrl: update.visionBaseUrl === undefined
             ? settings.vision.baseUrl
-            : update.visionBaseUrl ?? 'https://api.openai.com/v1',
+            : update.visionBaseUrl ?? '',
         },
         whisper: {
           modelPath: update.whisperModelPath === undefined

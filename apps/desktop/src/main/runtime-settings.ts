@@ -4,10 +4,6 @@ import type { RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/clie
 export const RUNTIME_SETTINGS_FILE_NAME = 'runtime-settings.json';
 export const RUNTIME_SECRETS_FILE_NAME = 'runtime-secrets.json';
 
-const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com';
-const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-pro';
-const VISION_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
-
 interface PersistedRuntimeSettings {
   readonly deepSeekBaseUrl?: string;
   readonly deepSeekModel?: string;
@@ -194,22 +190,17 @@ export async function loadRuntimeSettings(
   return {
     deepSeek: {
       apiKey: secretStatus(secrets.deepSeekApiKey, deepSeekEnvironmentKey),
-      baseUrl: saved.deepSeekBaseUrl
-        ?? environmentValue(environment, 'DEEPSEEK_BASE_URL')
-        ?? DEEPSEEK_DEFAULT_BASE_URL,
-      model: saved.deepSeekModel
-        ?? environmentValue(environment, 'DEEPSEEK_MODEL')
-        ?? DEEPSEEK_DEFAULT_MODEL,
+      // 普通字段只返回 Desktop 明确保存的 override；environment/default 仅在 Main 组装 Agent 时生效。
+      baseUrl: saved.deepSeekBaseUrl ?? '',
+      model: saved.deepSeekModel ?? '',
     },
     vision: {
       apiKey: secretStatus(secrets.visionApiKey, visionEnvironmentKey),
-      baseUrl: saved.visionBaseUrl
-        ?? environmentValue(environment, 'OPENAI_BASE_URL')
-        ?? VISION_DEFAULT_BASE_URL,
+      baseUrl: saved.visionBaseUrl ?? '',
     },
     whisper: {
-      modelPath: saved.whisperModelPath ?? environmentValue(environment, 'WHISPER_MODEL_PATH') ?? '',
-      cliPath: saved.whisperCliPath ?? environmentValue(environment, 'WHISPER_CLI_PATH') ?? '',
+      modelPath: saved.whisperModelPath ?? '',
+      cliPath: saved.whisperCliPath ?? '',
     },
   };
 }

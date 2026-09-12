@@ -32,6 +32,61 @@ afterEach(async () => {
 });
 
 describe('desktop runtime settings', () => {
+  it('leaves ordinary Settings fields empty when no saved override exists', async () => {
+    const file = await paths();
+    const environment = {
+      DEEPSEEK_BASE_URL: 'https://environment.deepseek.test',
+      DEEPSEEK_MODEL: 'environment-model',
+      OPENAI_BASE_URL: 'https://environment.openai.test/v1',
+      WHISPER_MODEL_PATH: 'D:\\environment\\whisper.bin',
+      WHISPER_CLI_PATH: 'whisper-cli.exe',
+    };
+
+    await expect(loadRuntimeSettings(file.settings, file.secrets, storage, environment)).resolves.toEqual({
+      deepSeek: {
+        apiKey: { configured: false },
+        baseUrl: '',
+        model: '',
+      },
+      vision: {
+        apiKey: { configured: false },
+        baseUrl: '',
+      },
+      whisper: {
+        modelPath: '',
+        cliPath: '',
+      },
+    });
+  });
+
+  it('uses environment ordinary values for runtime configuration without saving them as overrides', async () => {
+    const file = await paths();
+    const environment = {
+      DEEPSEEK_API_KEY: 'environment-key',
+      DEEPSEEK_BASE_URL: 'https://environment.deepseek.test',
+      DEEPSEEK_MODEL: 'environment-model',
+      OPENAI_BASE_URL: 'https://environment.openai.test/v1',
+    };
+
+    await expect(loadRuntimeConfiguration(file.settings, file.secrets, storage, environment)).resolves.toMatchObject({
+      deepSeekApiKey: 'environment-key',
+      deepSeekBaseUrl: 'https://environment.deepseek.test',
+      deepSeekModel: 'environment-model',
+      visionBaseUrl: 'https://environment.openai.test/v1',
+    });
+    await expect(loadRuntimeSettings(file.settings, file.secrets, storage, environment)).resolves.toMatchObject({
+      deepSeek: { baseUrl: '', model: '' },
+      vision: { baseUrl: '' },
+    });
+  });
+
+  it('does not persist Provider defaults when saving only an API Key', async () => {
+    const file = await paths();
+    await saveRuntimeSettings(file.settings, file.secrets, { deepSeekApiKey: 'saved-key' }, storage);
+
+    await expect(readFile(file.settings, 'utf8')).resolves.toBe('{}\n');
+  });
+
   it('uses saved values before environment values and decrypts secrets only for Main', async () => {
     const file = await paths();
     await saveRuntimeSettings(file.settings, file.secrets, {

@@ -128,8 +128,8 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
               onClick={() => void clearSecret('deepSeekApiKey')}
             >清除本机 Key</button>
           </div>
-          <label><span>Base URL</span><input value={deepSeekBaseUrl} disabled={disabled} onChange={(event) => setDeepSeekBaseUrl(event.target.value)} /></label>
-          <label><span>Model</span><input value={deepSeekModel} disabled={disabled} onChange={(event) => setDeepSeekModel(event.target.value)} /></label>
+          <label><span>Base URL</span><input placeholder="留空使用环境变量或 Provider 默认值" value={deepSeekBaseUrl} disabled={disabled} onChange={(event) => setDeepSeekBaseUrl(event.target.value)} /></label>
+          <label><span>Model</span><input placeholder="留空使用环境变量或 Provider 默认值" value={deepSeekModel} disabled={disabled} onChange={(event) => setDeepSeekModel(event.target.value)} /></label>
         </section>
 
         <section className="settings-section" aria-labelledby="settings-vision">
@@ -153,7 +153,7 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
               onClick={() => void clearSecret('visionApiKey')}
             >清除本机 Key</button>
           </div>
-          <label><span>Base URL</span><input value={visionBaseUrl} disabled={disabled} onChange={(event) => setVisionBaseUrl(event.target.value)} /></label>
+          <label><span>Base URL</span><input placeholder="留空使用环境变量或 Provider 默认值" value={visionBaseUrl} disabled={disabled} onChange={(event) => setVisionBaseUrl(event.target.value)} /></label>
         </section>
 
         <section className="settings-section" aria-labelledby="settings-whisper">
