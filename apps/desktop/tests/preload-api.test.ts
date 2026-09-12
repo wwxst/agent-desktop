@@ -20,6 +20,7 @@ describe('createDesktopApi', () => {
 
     const api = createDesktopApi(ipc);
     expect(Object.keys(api).sort()).toEqual([
+      'deleteSession',
       'getActiveSessionId',
       'loadClientState',
       'newSession',
@@ -39,6 +40,7 @@ describe('createDesktopApi', () => {
     await api.removeSelectedVideo(1);
     await api.newSession();
     await api.switchSession('session-2');
+    await api.deleteSession('session-2');
     await api.runAgentTask('保留核心内容');
     await api.openOutputFile('step1.mp4');
     expect(invocations).toEqual([
@@ -49,6 +51,7 @@ describe('createDesktopApi', () => {
       { channel: 'desktop:remove-video', args: [1] },
       { channel: 'desktop:new-session', args: [] },
       { channel: 'desktop:switch-session', args: ['session-2'] },
+      { channel: 'desktop:delete-session', args: ['session-2'] },
       { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
       { channel: 'desktop:open-output-file', args: ['step1.mp4'] },
     ]);

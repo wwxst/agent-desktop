@@ -33,12 +33,12 @@ test('runs the shared client task and preserves session state', async ({ page })
   await expect(artifact).toContainText('web-dev-artifact.mp4');
 
   const sessionList = page.getByRole('navigation', { name: '会话列表' });
-  const firstSession = sessionList.getByRole('button', { name: '测试 Web Agent' });
+  const firstSession = sessionList.getByRole('button', { name: '测试 Web Agent', exact: true });
   await expect(firstSession).toHaveAttribute('aria-current', 'page');
   await newSessionButton.click();
 
-  await expect(sessionList.getByRole('button')).toHaveCount(2);
-  const secondSession = sessionList.getByRole('button', { name: '会话 2' });
+  await expect(sessionList.locator('.sidebar-session')).toHaveCount(2);
+  const secondSession = sessionList.getByRole('button', { name: '会话 2', exact: true });
   await expect(secondSession).toHaveAttribute('aria-current', 'page');
 
   await firstSession.click();
@@ -53,5 +53,28 @@ test('runs the shared client task and preserves session state', async ({ page })
   await expect(composer).toHaveValue('');
   await firstSession.click();
   await expect(composer).toHaveValue('Session A 未发送草稿');
+  await expectNoHorizontalOverflow(page);
+
+  await firstSession.click();
+  await page.getByRole('button', { name: '会话操作：测试 Web Agent' }).click();
+  await page.getByRole('button', { name: '重命名' }).click();
+  const titleInput = page.getByRole('textbox', { name: '会话标题' });
+  await titleInput.fill('重命名测试');
+  await titleInput.press('Enter');
+  await expect(sessionList.getByRole('button', { name: '重命名测试', exact: true })).toHaveAttribute('aria-current', 'page');
+
+  await secondSession.click();
+  await page.getByRole('button', { name: '会话操作：会话 2' }).click();
+  await page.getByRole('button', { name: '删除' }).click();
+  await page.getByRole('button', { name: '删除会话' }).click();
+  await expect(sessionList.locator('.sidebar-session', { hasText: '会话 2' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '重命名测试', exact: true }).click();
+  await expect(page.getByText('开发测试宿主已模拟完成：测试 Web Agent')).toBeVisible();
+  await page.getByRole('button', { name: '会话操作：重命名测试' }).click();
+  await page.getByRole('button', { name: '删除' }).click();
+  await page.getByRole('button', { name: '删除会话' }).click();
+  await expect(sessionList.locator('.sidebar-session')).toHaveCount(1);
+  await expect(sessionList.getByRole('button', { name: '会话 3', exact: true })).toHaveAttribute('aria-current', 'page');
   await expectNoHorizontalOverflow(page);
 });

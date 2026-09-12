@@ -31,6 +31,10 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     switchSession: async (sessionId) => {
       await ipc.invoke(DESKTOP_CHANNELS.switchSession, sessionId);
     },
+    deleteSession: (sessionId) => ipc.invoke(
+      DESKTOP_CHANNELS.deleteSession,
+      sessionId,
+    ) as ReturnType<DesktopApi['deleteSession']>,
     runAgentTask: (prompt) => ipc.invoke(
       DESKTOP_CHANNELS.runAgentTask,
       prompt,

@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 type IpcHandler = (...args: unknown[]) => unknown;
@@ -116,6 +119,7 @@ describe('desktop main session lifecycle', () => {
     const openOutputFile = mainMocks.handlers.get('desktop:open-output-file');
     const newSession = mainMocks.handlers.get('desktop:new-session');
     const switchSession = mainMocks.handlers.get('desktop:switch-session');
+    const deleteSession = mainMocks.handlers.get('desktop:delete-session');
     expect(getActiveSessionId).toBeTypeOf('function');
     expect(selectVideo).toBeTypeOf('function');
     expect(runAgentTask).toBeTypeOf('function');
@@ -140,6 +144,8 @@ describe('desktop main session lifecycle', () => {
     }));
     const runningTask = runAgentTask!({}, '记住数字 731');
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask).toHaveBeenCalledOnce());
+
+    expect(() => deleteSession!({}, firstSessionId)).toThrow('Agent 正在执行');
 
     expect(() => newSession!({})).toThrow('Agent 正在执行');
     expect(() => switchSession!({}, 'missing-session')).toThrow('Agent 正在执行');
@@ -273,6 +279,104 @@ describe('desktop main session lifecycle', () => {
     } finally {
       if (configuredWhisperModelPath === undefined) delete process.env.WHISPER_MODEL_PATH;
       else process.env.WHISPER_MODEL_PATH = configuredWhisperModelPath;
+    }
+  });
+
+  it('deletes the only runtime session and returns the exact replacement id without deleting files', async () => {
+    const getActiveSessionId = mainMocks.handlers.get('desktop:get-active-session-id');
+    const deleteSession = mainMocks.handlers.get('desktop:delete-session');
+    expect(getActiveSessionId).toBeTypeOf('function');
+    expect(deleteSession).toBeTypeOf('function');
+
+    const onlySessionId = await getActiveSessionId!({});
+    const replacementId = deleteSession!({}, onlySessionId);
+    expect(replacementId).not.toBe(onlySessionId);
+    expect(await getActiveSessionId!({})).toBe(replacementId);
+    expect(() => deleteSession!({}, onlySessionId)).toThrow('找不到对应的会话');
+  });
+
+  it('deletes runtime sessions without deleting artifact files and returns the Host active id', async () => {
+    const getActiveSessionId = mainMocks.handlers.get('desktop:get-active-session-id');
+    const newSession = mainMocks.handlers.get('desktop:new-session');
+    const switchSession = mainMocks.handlers.get('desktop:switch-session');
+    const deleteSession = mainMocks.handlers.get('desktop:delete-session');
+    expect(getActiveSessionId).toBeTypeOf('function');
+    expect(newSession).toBeTypeOf('function');
+    expect(switchSession).toBeTypeOf('function');
+    expect(deleteSession).toBeTypeOf('function');
+
+    const baseSessionId = await getActiveSessionId!({});
+    const firstExtraSessionId = await newSession!({});
+    const secondExtraSessionId = await newSession!({});
+    const secondExtraAgent = mainMocks.agents.at(-1)!;
+    secondExtraAgent.session.append({ type: 'user.message', content: '只属于被删除会话' });
+
+    await switchSession!({}, baseSessionId);
+    expect(deleteSession!({}, firstExtraSessionId)).toBe(baseSessionId);
+    expect(deleteSession!({}, secondExtraSessionId)).toBe(baseSessionId);
+    expect(secondExtraAgent.session.events()).toContainEqual({
+      type: 'user.message',
+      content: '只属于被删除会话',
+    });
+
+    expect(await getActiveSessionId!({})).toBe(baseSessionId);
+  });
+
+  it('keeps artifact files and continues output sequence after deleting the last session', async () => {
+    const getActiveSessionId = mainMocks.handlers.get('desktop:get-active-session-id');
+    const selectVideo = mainMocks.handlers.get('desktop:select-video');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    const deleteSession = mainMocks.handlers.get('desktop:delete-session');
+    expect(getActiveSessionId).toBeTypeOf('function');
+    expect(selectVideo).toBeTypeOf('function');
+    expect(runAgentTask).toBeTypeOf('function');
+    expect(deleteSession).toBeTypeOf('function');
+
+    const directory = mkdtempSync(join(tmpdir(), 'agent-desktop-delete-'));
+    try {
+      const inputPath = join(directory, 'input.mp4');
+      const requestedOutputPaths: string[] = [];
+      const agentCountBeforeReset = mainMocks.createVideoAgent.mock.calls.length;
+      while (mainMocks.createVideoAgent.mock.calls.length === agentCountBeforeReset) {
+        deleteSession!({}, await getActiveSessionId!({}));
+      }
+      mainMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [inputPath] });
+      mainMocks.runDesktopAgentTask.mockImplementation(async (
+        _agent: unknown,
+        _prompt: unknown,
+        _selectedVideoPaths: unknown,
+        requestedOutputPath: string | undefined,
+      ) => {
+        const outputPath = requestedOutputPath!;
+        requestedOutputPaths.push(outputPath);
+        writeFileSync(outputPath, 'artifact');
+        return {
+          responseText: '剪辑完成。',
+          turnId: `turn-delete-${requestedOutputPaths.length}`,
+          outputPath,
+        };
+      });
+
+      await selectVideo!({});
+      await runAgentTask!({}, '生成第一个视频');
+      const deletedSessionId = await getActiveSessionId!({});
+      const replacementSessionId = deleteSession!({}, deletedSessionId);
+
+      expect(replacementSessionId).not.toBe(deletedSessionId);
+      expect(existsSync(requestedOutputPaths[0]!)).toBe(true);
+
+      await selectVideo!({});
+      await runAgentTask!({}, '生成第二个视频');
+      const outputSequence = (path: string) => {
+        const match = /-edited(?:-(\d+))?\.mp4$/.exec(path);
+        return match?.[1] === undefined ? 1 : Number(match[1]);
+      };
+      expect(outputSequence(requestedOutputPaths[1]!)).toBe(
+        outputSequence(requestedOutputPaths[0]!) + 1,
+      );
+      expect(existsSync(requestedOutputPaths[1]!)).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

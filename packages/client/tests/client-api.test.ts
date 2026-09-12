@@ -11,12 +11,14 @@ describe('AgentClientApi', () => {
       removeSelectedVideo: async () => undefined,
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
+      deleteSession: async () => 'session-a',
       runAgentTask: async () => ({ responseText: 'ok', traceId: 'trace-a' }),
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
     };
 
     expect(Object.keys(api).sort()).toEqual([
+      'deleteSession',
       'getActiveSessionId',
       'loadClientState',
       'newSession',

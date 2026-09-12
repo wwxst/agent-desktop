@@ -33,6 +33,7 @@ describe('desktop preload entry', () => {
         removeSelectedVideo: expect.any(Function),
         newSession: expect.any(Function),
         switchSession: expect.any(Function),
+        deleteSession: expect.any(Function),
         runAgentTask: expect.any(Function),
         onAgentEvent: expect.any(Function),
         openOutputFile: expect.any(Function),

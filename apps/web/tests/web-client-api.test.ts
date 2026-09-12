@@ -16,4 +16,14 @@ describe('Web Dev API', () => {
     expect(result.responseText).toContain('测试任务');
     expect(result.outputFileName).toBe('web-dev-artifact.mp4');
   });
+
+  it('deletes the last session and returns the exact replacement session id', async () => {
+    const api = createWebClientApi();
+    const initial = await api.getActiveSessionId();
+
+    const replacement = await api.deleteSession(initial);
+
+    expect(replacement).not.toBe(initial);
+    expect(await api.getActiveSessionId()).toBe(replacement);
+  });
 });

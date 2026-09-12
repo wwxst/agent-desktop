@@ -44,6 +44,7 @@ function clientState(): ClientStateSnapshot {
       {
         id: 'session-a',
         title: '记住 731',
+        titleManuallyRenamed: true,
         prompt: 'Session A 未发送草稿',
         selectedVideos: [{ name: 'input-a.mp4' }],
         messages: [
@@ -75,6 +76,7 @@ function clientState(): ClientStateSnapshot {
       {
         id: 'session-b',
         title: '记住 952',
+        titleManuallyRenamed: false,
         prompt: '',
         selectedVideos: [],
         messages: [{
@@ -143,6 +145,7 @@ describe('desktop session persistence', () => {
     });
     expect(restored?.clientState.conversations[0]).toMatchObject({
       title: '记住 731',
+      titleManuallyRenamed: true,
       prompt: 'Session A 未发送草稿',
       selectedVideos: [{ name: 'input-a.mp4' }],
     });
@@ -150,6 +153,43 @@ describe('desktop session persistence', () => {
       tools: [{ status: 'completed' }],
       result: { outputFileName: 'input-a-edited.mp4', traceId: 'trace-a' },
     });
+  });
+
+  it('loads Commit 24 snapshots without titleManuallyRenamed as false', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const legacyState = {
+      ...state,
+      clientState: {
+        ...state.clientState,
+        conversations: state.clientState.conversations.map(({ titleManuallyRenamed: _ignored, ...conversation }) => conversation),
+      },
+    };
+
+    await writeFile(filePath, JSON.stringify(legacyState), 'utf8');
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.clientState.conversations[0]?.titleManuallyRenamed).toBe(false);
+    expect(restored?.clientState.conversations[1]?.titleManuallyRenamed).toBe(false);
+  });
+
+  it('rejects a non-boolean titleManuallyRenamed value', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      clientState: {
+        ...state.clientState,
+        conversations: [{
+          ...state.clientState.conversations[0],
+          titleManuallyRenamed: 'yes',
+        }, state.clientState.conversations[1]],
+      },
+    }), 'utf8');
+
+    await expect(loadDesktopState(filePath)).rejects.toThrow(
+      'clientState.conversations[0].titleManuallyRenamed',
+    );
   });
 
   it('fails explicitly for corrupt JSON and invalid structure', async () => {

@@ -13,6 +13,7 @@ export const DESKTOP_CHANNELS = {
   removeVideo: 'desktop:remove-video',
   newSession: 'desktop:new-session',
   switchSession: 'desktop:switch-session',
+  deleteSession: 'desktop:delete-session',
   runAgentTask: 'desktop:run-agent-task',
   agentEvent: 'desktop:agent-event',
   openOutputFile: 'desktop:open-output-file',

@@ -42,6 +42,8 @@ export type ClientConversationMessage = ClientUserMessage | ClientAssistantMessa
 export interface ClientConversation {
   readonly id: string;
   readonly title: string;
+  /** 手动重命名后锁定自动标题；旧快照缺失时由 Host 解析为 false。 */
+  readonly titleManuallyRenamed: boolean;
   readonly messages: readonly ClientConversationMessage[];
   readonly prompt: string;
   readonly selectedVideos: readonly SelectedVideo[];
@@ -86,6 +88,7 @@ export interface AgentClientApi {
   removeSelectedVideo(index: number): Promise<void>;
   newSession(): Promise<string>;
   switchSession(sessionId: string): Promise<void>;
+  deleteSession(sessionId: string): Promise<string>;
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
   onAgentEvent(listener: (event: ToolActivityEvent) => void): () => void;
   openOutputFile(fileName: string): Promise<void>;

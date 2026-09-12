@@ -200,6 +200,11 @@ function readClientConversation(value: unknown, field: string): ClientConversati
   return {
     id: readString(value.id, `${field}.id`),
     title: readString(value.title, `${field}.title`),
+    titleManuallyRenamed: value.titleManuallyRenamed === undefined
+      ? false
+      : typeof value.titleManuallyRenamed === 'boolean'
+        ? value.titleManuallyRenamed
+        : invalid(`${field}.titleManuallyRenamed`),
     messages: value.messages.map((item, index) => readClientMessage(item, `${field}.messages[${index}]`)),
     prompt: readString(value.prompt, `${field}.prompt`),
     selectedVideos: value.selectedVideos.map((item, index) => {

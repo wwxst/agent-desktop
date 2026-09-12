@@ -9,6 +9,7 @@ import type {
 export function createWebClientApi(): AgentClientApi {
   let activeSessionId = 'web-session-1';
   let nextSession = 2;
+  const sessionIds = new Set([activeSessionId]);
   const listeners = new Set<(event: ToolActivityEvent) => void>();
 
   return {
@@ -20,10 +21,24 @@ export function createWebClientApi(): AgentClientApi {
     newSession: async () => {
       activeSessionId = `web-session-${nextSession}`;
       nextSession += 1;
+      sessionIds.add(activeSessionId);
       return activeSessionId;
     },
     switchSession: async (sessionId) => {
+      if (!sessionIds.has(sessionId)) throw new Error('找不到对应的会话。');
       activeSessionId = sessionId;
+    },
+    deleteSession: async (sessionId) => {
+      if (!sessionIds.has(sessionId)) throw new Error('找不到对应的会话。');
+      sessionIds.delete(sessionId);
+      if (sessionIds.size > 0) {
+        if (sessionId === activeSessionId) activeSessionId = sessionIds.values().next().value!;
+        return activeSessionId;
+      }
+      activeSessionId = `web-session-${nextSession}`;
+      nextSession += 1;
+      sessionIds.add(activeSessionId);
+      return activeSessionId;
     },
     runAgentTask: async (prompt): Promise<AgentTaskResult> => {
       const base = {

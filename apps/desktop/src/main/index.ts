@@ -177,6 +177,22 @@ function registerIpcHandlers(): void {
     activeSessionId = sessionId;
   });
 
+  ipcMain.handle(DESKTOP_CHANNELS.deleteSession, (_event, sessionId: unknown): string => {
+    if (isTaskRunning) throw new Error('Agent 正在执行，无法删除会话。');
+    if (typeof sessionId !== 'string' || !sessions.has(sessionId)) {
+      throw new Error('找不到对应的会话。');
+    }
+
+    const wasActive = sessionId === activeSessionId;
+    sessions.delete(sessionId);
+    if (sessions.size === 0) {
+      // 最后一个会话由 Host 创建唯一的新 Runtime，并把 exact ID 返回给 Client。
+      return createDesktopSession();
+    }
+    if (wasActive) activeSessionId = sessions.keys().next().value!;
+    return activeSessionId;
+  });
+
   ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, async (_event, prompt: unknown): Promise<AgentTaskResult> => {
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       throw new Error('请输入剪辑需求。');

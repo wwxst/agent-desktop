@@ -17,6 +17,7 @@ afterEach(() => {
 const persistenceMethods = {
   loadClientState: async () => null,
   saveClientState: async () => undefined,
+  deleteSession: async () => 'session-a',
 };
 
 describe('App', () => {

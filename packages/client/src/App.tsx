@@ -18,6 +18,7 @@ function createConversation(id: string, number: number): ClientConversation {
   return {
     id,
     title: `会话 ${number}`,
+    titleManuallyRenamed: false,
     messages: [],
     prompt: '',
     selectedVideos: [],
@@ -56,6 +57,10 @@ export function App({ api }: AppProps) {
   const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [openSessionMenuId, setOpenSessionMenuId] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<string | null>(null);
   const activeSessionIdRef = useRef(INITIAL_RENDERER_SESSION_ID);
   const nextSessionNumber = useRef(2);
   const nextMessageId = useRef(1);
@@ -177,6 +182,47 @@ export function App({ api }: AppProps) {
     setActiveSessionId(sessionId);
   };
 
+  const beginRename = (conversation: ClientConversation) => {
+    if (isProcessing) return;
+    setOpenSessionMenuId(null);
+    setConfirmDeleteSessionId(null);
+    setEditingSessionId(conversation.id);
+    setEditingTitle(conversation.title);
+  };
+
+  const finishRename = (sessionId: string, save: boolean) => {
+    if (editingSessionId !== sessionId) return;
+    const title = editingTitle.trim();
+    if (save && title.length > 0) {
+      updateConversation(sessionId, (conversation) => ({
+        ...conversation,
+        title,
+        titleManuallyRenamed: true,
+      }));
+    }
+    setEditingSessionId(null);
+    setEditingTitle('');
+  };
+
+  const deleteSession = async (sessionId: string) => {
+    if (!isSessionReady || isProcessing) return;
+    const currentConversation = conversations.find((conversation) => conversation.id === sessionId);
+    if (currentConversation === undefined) return;
+
+    const nextActiveSessionId = await api.deleteSession(sessionId);
+    const remaining = conversations.filter((conversation) => conversation.id !== sessionId);
+    if (remaining.length === 0) {
+      remaining.push(createConversation(nextActiveSessionId, nextSessionNumber.current));
+      nextSessionNumber.current += 1;
+    }
+    setConversations(remaining);
+    activeSessionIdRef.current = nextActiveSessionId;
+    setActiveSessionId(nextActiveSessionId);
+    setOpenSessionMenuId(null);
+    setConfirmDeleteSessionId(null);
+    setEditingSessionId(null);
+  };
+
   const switchSession = async (sessionId: string) => {
     if (isProcessing || sessionId === activeSessionIdRef.current) return;
     await api.switchSession(sessionId);
@@ -194,7 +240,7 @@ export function App({ api }: AppProps) {
     const assistantMessageId = nextMessageId.current + 1;
     updateConversation(sessionId, (currentConversation) => ({
       ...currentConversation,
-      title: currentConversation.messages.length === 0
+      title: !currentConversation.titleManuallyRenamed && currentConversation.messages.length === 0
         ? conversationTitle(taskPrompt)
         : currentConversation.title,
       messages: [
@@ -215,6 +261,11 @@ export function App({ api }: AppProps) {
       ],
     }));
     nextMessageId.current += 2;
+    // 进入执行态时关闭已有会话操作，保证重命名和删除在整个 Turn 期间不可触发。
+    setOpenSessionMenuId(null);
+    setConfirmDeleteSessionId(null);
+    setEditingSessionId(null);
+    setEditingTitle('');
     setIsProcessing(true);
 
     try {
@@ -313,19 +364,71 @@ export function App({ api }: AppProps) {
         <nav className="sidebar-session-list" aria-label="会话列表">
           {conversations.map((conversation) => {
             const active = conversation.id === activeSessionId;
+            const editing = editingSessionId === conversation.id;
+            const menuOpen = openSessionMenuId === conversation.id;
+            const confirmingDelete = confirmDeleteSessionId === conversation.id;
             return (
-              <button
+              <div
                 key={conversation.id}
-                className={`sidebar-session${active ? ' active' : ''}`}
-                type="button"
-                title={conversation.title}
-                disabled={!isSessionReady || isProcessing}
-                {...active ? { 'aria-current': 'page' as const } : {}}
-                onClick={() => void switchSession(conversation.id)}
+                className={`sidebar-session-row${active ? ' active' : ''}`}
               >
-                <span>{conversation.title}</span>
-                {active && isProcessing && <small>进行中</small>}
-              </button>
+                {editing ? (
+                  <input
+                    className="sidebar-session-title-input"
+                    aria-label="会话标题"
+                    value={editingTitle}
+                    autoFocus
+                    onChange={(event) => setEditingTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') finishRename(conversation.id, true);
+                      if (event.key === 'Escape') finishRename(conversation.id, false);
+                    }}
+                    onBlur={() => finishRename(conversation.id, true)}
+                  />
+                ) : (
+                  <button
+                    className={`sidebar-session${active ? ' active' : ''}`}
+                    type="button"
+                    title={conversation.title}
+                    disabled={!isSessionReady || isProcessing}
+                    {...active ? { 'aria-current': 'page' as const } : {}}
+                    onClick={() => void switchSession(conversation.id)}
+                  >
+                    <span>{conversation.title}</span>
+                    {active && isProcessing && <small>进行中</small>}
+                  </button>
+                )}
+                <button
+                  className="sidebar-session-menu-button"
+                  type="button"
+                  aria-label={`会话操作：${conversation.title}`}
+                  title="会话操作"
+                  disabled={!isSessionReady || isProcessing || editing}
+                  onClick={() => {
+                    setOpenSessionMenuId(menuOpen ? null : conversation.id);
+                    setConfirmDeleteSessionId(null);
+                  }}
+                >
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+                    <circle cx="3" cy="8" r="1" /><circle cx="8" cy="8" r="1" /><circle cx="13" cy="8" r="1" />
+                  </svg>
+                </button>
+                {menuOpen && !confirmingDelete && (
+                  <div className="sidebar-session-menu" aria-label={`会话菜单：${conversation.title}`}>
+                    <button type="button" onClick={() => beginRename(conversation)}>重命名</button>
+                    <button type="button" onClick={() => setConfirmDeleteSessionId(conversation.id)}>删除</button>
+                  </div>
+                )}
+                {confirmingDelete && (
+                  <div className="sidebar-session-confirm" aria-label="删除会话确认">
+                    <p>删除会话将清除聊天记录和会话上下文，但不会删除已经生成的视频文件。</p>
+                    <div>
+                      <button type="button" onClick={() => void deleteSession(conversation.id)}>删除会话</button>
+                      <button type="button" onClick={() => setConfirmDeleteSessionId(null)}>取消</button>
+                    </div>
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
