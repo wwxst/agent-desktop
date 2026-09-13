@@ -60,6 +60,56 @@ function createTestTrace(events: ExecutionTraceEvent[]): ExecutionTrace {
 }
 
 describe('runTurn', () => {
+  it('excludes a cancelled incomplete Tool Calling step from the next Turn model context', async () => {
+    const callId = 'cancel-pending-tool' as ToolCallId;
+    const controller = new AbortController();
+    const traceEvents: ExecutionTraceEvent[] = [];
+    let toolStartedResolve!: () => void;
+    const toolStarted = new Promise<void>((resolve) => {
+      toolStartedResolve = resolve;
+    });
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'pending', input: {} }] },
+      { text: 'continued', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'pending', description: 'Waits until cancelled.', inputSchema: {},
+      execute: async (_input, signal) => new Promise((_resolve, reject) => {
+        expect(signal).toBe(controller.signal);
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+        }, { once: true });
+        toolStartedResolve();
+      }),
+    });
+    const session = new InMemorySession();
+    const agent = createTestAgent(model, session, tools);
+
+    const cancelledTurn = runTurn(agent, 'cancel during tool', createTestTrace(traceEvents), controller.signal);
+    await toolStarted;
+    controller.abort();
+
+    await expect(cancelledTurn).rejects.toMatchObject({ name: 'AbortError' });
+    expect(traceEvents.at(-1)?.type).toBe('turn.cancelled');
+    expect(eventTypes(session)).toEqual([
+      'turn.started',
+      'user.message',
+      'step.started',
+      'assistant.message',
+      'tool.called',
+    ]);
+
+    const result = await runTurn(agent, 'continue');
+
+    expect(result.response).toEqual({ text: 'continued', toolCalls: [] });
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1]?.messages).toEqual([
+      { role: 'user', content: 'cancel during tool' },
+      { role: 'user', content: 'continue' },
+    ]);
+  });
+
   it('cancels before the next model step and preserves completed tool results', async () => {
     const callId = 'cancel-tool' as ToolCallId;
     const controller = new AbortController();

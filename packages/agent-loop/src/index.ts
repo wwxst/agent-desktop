@@ -55,6 +55,12 @@ function formatToolResultForModel(result: ToolResult): string {
  */
 function buildModelMessages(events: readonly SessionEvent[]): ModelMessage[] {
   const messages: ModelMessage[] = [];
+  // 只有完成的 Step 才形成完整的 assistant -> tool 模型协议链。
+  const completedStepIds = new Set(
+    events
+      .filter((event): event is Extract<SessionEvent, { type: 'step.completed' }> => event.type === 'step.completed')
+      .map((event) => event.stepId),
+  );
 
   for (const event of events) {
     // 只投影模型需要看到的三类事实，生命周期事件留在 Session 中供审计。
@@ -63,12 +69,15 @@ function buildModelMessages(events: readonly SessionEvent[]): ModelMessage[] {
         messages.push({ role: 'user', content: event.content });
         break;
       case 'assistant.message':
+        // 取消或失败的 Step 仍保留在 Session，但不能把不完整 Tool Calling 链发送给下一次模型调用。
+        if (!completedStepIds.has(event.stepId)) break;
         // exactOptionalPropertyTypes 下，缺少 content 与显式 content: undefined 不等价。
         messages.push(event.content === undefined
           ? { role: 'assistant', toolCalls: event.toolCalls }
           : { role: 'assistant', content: event.content, toolCalls: event.toolCalls });
         break;
       case 'tool.result':
+        if (!completedStepIds.has(event.stepId)) break;
         // ToolCallId 保留调用与结果的关联，格式化只依赖已写入 Session 的结果。
         messages.push({
           role: 'tool',
