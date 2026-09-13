@@ -20,6 +20,7 @@ describe('createDesktopApi', () => {
 
     const api = createDesktopApi(ipc);
     expect(Object.keys(api).sort()).toEqual([
+      'cancelTask',
       'deleteSession',
       'getActiveSessionId',
       'loadClientState',
@@ -46,6 +47,7 @@ describe('createDesktopApi', () => {
     await api.switchSession('session-2');
     await api.deleteSession('session-2');
     await api.runAgentTask('保留核心内容');
+    await api.cancelTask();
     await api.openOutputFile('step1.mp4');
     expect(invocations).toEqual([
       { channel: 'desktop:get-active-session-id', args: [] },
@@ -59,6 +61,7 @@ describe('createDesktopApi', () => {
       { channel: 'desktop:switch-session', args: ['session-2'] },
       { channel: 'desktop:delete-session', args: ['session-2'] },
       { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
+      { channel: 'desktop:cancel-task', args: [] },
       { channel: 'desktop:open-output-file', args: ['step1.mp4'] },
     ]);
 
@@ -85,5 +88,19 @@ describe('createDesktopApi', () => {
     await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toEqual(
       new Error('请先在设置中配置 DeepSeek API Key。'),
     );
+  });
+
+  it('preserves cancellation as AbortError across the IPC boundary', async () => {
+    const ipc = {
+      invoke: async () => {
+        throw new Error("Error invoking remote method 'desktop:run-agent-task': AbortError: This operation was aborted");
+      },
+      on: () => undefined,
+      removeListener: () => undefined,
+    };
+
+    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toMatchObject({
+      name: 'AbortError', message: 'This operation was aborted',
+    });
   });
 });

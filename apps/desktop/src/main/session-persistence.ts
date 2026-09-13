@@ -130,7 +130,7 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
 function readToolActivity(value: unknown, field: string): ToolActivityItem {
   if (!isRecord(value)) invalid(field);
   const status = readString(value.status, `${field}.status`);
-  if (status !== 'completed' && status !== 'failed') invalid(`${field}.status`);
+  if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') invalid(`${field}.status`);
   const durationMs = value.durationMs;
   if (durationMs !== undefined
     && (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0)) {
@@ -190,6 +190,7 @@ function readClientMessage(value: unknown, field: string): ClientConversationMes
       errorMessage: readString(value.errorMessage, `${field}.errorMessage`),
     };
   }
+  if (status === 'cancelled') return { ...base, status };
   return invalid(`${field}.status`);
 }
 

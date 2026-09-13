@@ -23,11 +23,13 @@ describe('AgentClientApi', () => {
       switchSession: async () => undefined,
       deleteSession: async () => 'session-a',
       runAgentTask: async () => ({ responseText: 'ok', traceId: 'trace-a' }),
+      cancelTask: async () => undefined,
       onAgentEvent: () => () => undefined,
       openOutputFile: async () => undefined,
     };
 
     expect(Object.keys(api).sort()).toEqual([
+      'cancelTask',
       'deleteSession',
       'getActiveSessionId',
       'loadClientState',

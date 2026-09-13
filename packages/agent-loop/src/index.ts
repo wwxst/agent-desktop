@@ -20,6 +20,7 @@ export type ExecutionTraceEvent =
   | { readonly type: 'tool.completed'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string; readonly durationMs: number }
   | { readonly type: 'tool.failed'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string; readonly durationMs: number; readonly errorName?: string }
   | { readonly type: 'turn.completed'; readonly turnId: TurnId; readonly durationMs: number; readonly stepCount: number }
+  | { readonly type: 'turn.cancelled'; readonly turnId: TurnId; readonly durationMs: number; readonly stepCount: number }
   | { readonly type: 'turn.failed'; readonly turnId: TurnId; readonly durationMs: number; readonly errorName: string; readonly errorMessage: string };
 
 /** Agent Loop 产生事件，具体持久化方式由当前生产入口提供。 */
@@ -89,6 +90,12 @@ function buildToolDefinitions(agent: Agent): ModelToolDefinition[] {
   return agent.tools.list().map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) {
+    throw new DOMException('The operation was aborted', 'AbortError');
+  }
+}
+
 /** 执行单个 Tool Call，并保证调用事件与结果事件使用同一个 ToolCallId。 */
 async function executeToolCall(
   agent: Agent,
@@ -96,7 +103,9 @@ async function executeToolCall(
   stepId: StepId,
   toolCall: ToolCall,
   trace?: ExecutionTrace,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
   // 查找和执行前先记录调用，即使工具不存在或抛错也保留完整起点。
   agent.session.append({
     type: 'tool.called',
@@ -125,8 +134,9 @@ async function executeToolCall(
     result = { status: 'error', message: `Tool not found: ${toolCall.name}` };
   } else {
     try {
-      result = await tool.execute(toolCall.input);
+      result = await tool.execute(toolCall.input, signal);
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       // Tool 的 Error 失败按既有契约回写结果；其他抛出值不是合法 Tool 错误，直接暴露程序错误。
       if (!(error instanceof Error)) throw error;
       errorName = error.name;
@@ -173,10 +183,17 @@ async function executeToolCall(
     toolCallId: toolCall.id,
     result,
   });
+  // Tool 已完成的结果先保留在 Session；取消只阻止后续 Model/Tool，不回滚已完成工作。
+  throwIfAborted(signal);
 }
 
 /** 从用户输入开始运行一个完整 Turn，直到模型返回零个 Tool Call。 */
-export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrace): Promise<RunTurnResult> {
+export async function runTurn(
+  agent: Agent,
+  input: string,
+  trace?: ExecutionTrace,
+  signal?: AbortSignal,
+): Promise<RunTurnResult> {
   const turnId = createTurnId();
   let stepCount = 0;
   const turnStartedAt = Date.now();
@@ -189,6 +206,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
     agent.session.append({ type: 'user.message', turnId, content: input });
 
     while (true) {
+      throwIfAborted(signal);
       // 一次 Model.complete 调用严格对应一个新 Step。
       const stepId = createStepId();
       stepCount += 1;
@@ -212,10 +230,12 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
           systemPrompt: agent.systemPrompt.build(),
           messages,
           tools,
+          ...(signal === undefined ? {} : { signal }),
         });
       } catch (error) {
         // 非 Error 抛出值继续直接传播，不为 Trace 制造默认错误文本。
         if (!(error instanceof Error)) throw error;
+        if (error.name === 'AbortError') throw error;
         await trace?.({
           type: 'model.failed',
           turnId,
@@ -243,7 +263,7 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
 
       // 多个工具调用按响应顺序串行执行，保证事件顺序确定且同属当前 Step。
       for (const toolCall of response.toolCalls) {
-        await executeToolCall(agent, turnId, stepId, toolCall, trace);
+        await executeToolCall(agent, turnId, stepId, toolCall, trace, signal);
       }
 
       // 所有工具结果写入后才完成 Step，下一次模型调用才能看到完整结果。
@@ -262,6 +282,15 @@ export async function runTurn(agent: Agent, input: string, trace?: ExecutionTrac
       }
     }
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      await trace?.({
+        type: 'turn.cancelled',
+        turnId,
+        durationMs: Date.now() - turnStartedAt,
+        stepCount,
+      });
+      throw error;
+    }
     // runTurn 的 Error 异常记录后仍按原语义向上传播。
     if (!(error instanceof Error)) throw error;
     await trace?.({

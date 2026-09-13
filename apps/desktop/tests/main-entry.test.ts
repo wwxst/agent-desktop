@@ -211,6 +211,7 @@ describe('desktop main session lifecycle', () => {
       [],
       undefined,
       expect.any(Function),
+      expect.any(AbortSignal),
     );
     secondAgent.session.append({ type: 'user.message', content: '记住数字 952' });
 
@@ -228,6 +229,7 @@ describe('desktop main session lifecycle', () => {
       ['D:\\videos\\input.mp4'],
       expect.stringContaining('input-edited-'),
       expect.any(Function),
+      expect.any(AbortSignal),
     );
     openOutputFile!({}, 'first-output.mp4');
     expect(mainMocks.showItemInFolder).toHaveBeenLastCalledWith('D:\\videos\\first-output.mp4');
@@ -416,5 +418,44 @@ describe('desktop main session lifecycle', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('cancels only the active task and clears the controller for the next task', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    const cancelTask = mainMocks.handlers.get('desktop:cancel-task');
+    expect(cancelTask).toBeTypeOf('function');
+    await newSession!({});
+
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
+      _agent: unknown,
+      _prompt: unknown,
+      _selectedVideoPaths: unknown,
+      _outputPath: unknown,
+      _trace: unknown,
+      signal: AbortSignal,
+    ) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve({
+        responseText: '停止', turnId: 'turn-cancelled', outputPath: undefined,
+      }), { once: true });
+    }));
+
+    const priorCalls = mainMocks.runDesktopAgentTask.mock.calls.length;
+    const running = runAgentTask!({}, '长任务');
+    await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorCalls + 1));
+    expect(cancelTask!({})).toBeUndefined();
+    await expect(running).resolves.toMatchObject({ responseText: '停止' });
+    expect(() => cancelTask!({})).toThrow('当前没有正在执行的任务');
+    const cancelledAgent = mainMocks.agents.at(-1)!;
+    cancelledAgent.session.append({ type: 'user.message', content: '取消前上下文' });
+
+    mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
+      responseText: '下一条完成', turnId: 'turn-after-cancel', outputPath: undefined,
+    });
+    await expect(runAgentTask!({}, '下一条')).resolves.toMatchObject({ responseText: '下一条完成' });
+    expect(mainMocks.agents.at(-1)!.session).toBe(cancelledAgent.session);
+    expect(cancelledAgent.session.events()).toContainEqual({
+      type: 'user.message', content: '取消前上下文',
+    });
   });
 });

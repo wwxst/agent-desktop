@@ -35,6 +35,8 @@ export interface ModelRequest {
   readonly systemPrompt: string;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ModelToolDefinition[];
+  /** 当前 Turn 的唯一取消信号；Provider 将其传给真实请求。 */
+  readonly signal?: AbortSignal;
 }
 
 /** 完整模型响应；文本和工具调用允许同时出现，Agent Loop 必须完整记录两者。 */

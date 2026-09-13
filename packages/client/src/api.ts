@@ -8,7 +8,7 @@ export interface AgentTaskResult {
   readonly outputFileName?: string;
 }
 
-export type ToolActivityStatus = 'running' | 'completed' | 'failed';
+export type ToolActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface ToolActivityItem {
   readonly toolCallId: string;
@@ -34,6 +34,7 @@ export interface ClientAssistantMessageBase {
 export type ClientAssistantMessage = ClientAssistantMessageBase & (
   | { readonly status: 'processing' }
   | { readonly status: 'completed'; readonly result: AgentTaskResult }
+  | { readonly status: 'cancelled' }
   | { readonly status: 'failed'; readonly errorMessage: string }
 );
 
@@ -127,6 +128,7 @@ export interface AgentClientApi {
   switchSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<string>;
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
+  cancelTask(): Promise<void>;
   onAgentEvent(listener: (event: ToolActivityEvent) => void): () => void;
   openOutputFile(fileName: string): Promise<void>;
 }

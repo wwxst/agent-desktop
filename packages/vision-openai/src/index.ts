@@ -53,6 +53,7 @@ function isAnalyzeImageInput(value: unknown): value is AnalyzeImageInput {
 function errorResult(error: unknown): ToolResult {
   // 只把标准 Error 转为 Tool 失败；非 Error 抛出值属于程序错误，继续向上暴露。
   if (!(error instanceof Error)) throw error;
+  if (error.name === 'AbortError') throw error;
 
   return {
     status: 'error',
@@ -139,7 +140,7 @@ export class AnalyzeImagesTool implements Tool {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   }
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || !Array.isArray(input.images)
       || (input.images.length < 1 || input.images.length > 6)) {
@@ -189,6 +190,7 @@ export class AnalyzeImagesTool implements Tool {
             },
           },
         }),
+        ...(signal === undefined ? {} : { signal }),
       });
 
       if (!response.ok) {

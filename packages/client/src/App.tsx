@@ -294,22 +294,45 @@ export function App({ api }: AppProps) {
         )),
       }));
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '任务执行失败。';
+      const cancelled = (error instanceof Error || error instanceof DOMException)
+        && (error.name === 'AbortError'
+          || error.message === 'This operation was aborted'
+          || error.message === 'The operation was aborted');
       updateConversation(activeSessionIdRef.current, (currentConversation) => ({
         ...currentConversation,
         messages: currentConversation.messages.map((message) => (
           message.role === 'assistant' && message.id === assistantMessageId
-            ? {
-                ...message,
-                status: 'failed',
-                errorMessage,
-                toolsExpanded: false,
-              }
+            ? cancelled
+              ? {
+                  ...message,
+                  status: 'cancelled',
+                  tools: message.tools.map((tool) => (
+                    tool.status === 'running' ? { ...tool, status: 'cancelled' as const } : tool
+                  )),
+                  toolsExpanded: false,
+                }
+              : {
+                  ...message,
+                  status: 'failed',
+                  errorMessage: error instanceof Error ? error.message : '任务执行失败。',
+                  toolsExpanded: false,
+                }
             : message
         )),
       }));
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const cancelTask = async () => {
+    if (!isProcessing) return;
+    try {
+      await api.cancelTask();
+    } catch (error) {
+      // Turn 恰好先完成时，旧 Stop 点击不应影响已经可开始的下一轮。
+      if (error instanceof Error && error.message.includes('当前没有正在执行的任务')) return;
+      throw error;
     }
   };
 
@@ -339,6 +362,7 @@ export function App({ api }: AppProps) {
       onSelectVideo={() => void selectVideo()}
       onRemoveVideo={(index) => void removeVideo(index)}
       onSend={() => void sendTask()}
+      onCancel={() => void cancelTask()}
     />
   );
 
@@ -497,7 +521,14 @@ export function App({ api }: AppProps) {
                 />
               )}
 
-              {message.status === 'failed' ? (
+              {message.status === 'cancelled' ? (
+                <>
+                  <div className="agent-heading">
+                    <span className="agent-mark" aria-hidden="true">■</span>
+                    <strong>已停止</strong>
+                  </div>
+                </>
+              ) : message.status === 'failed' ? (
                 <>
                   <div className="agent-heading error-heading">
                     <span className="agent-mark error-mark" aria-hidden="true">!</span>

@@ -177,6 +177,7 @@ export class DeepSeekModel implements Model {
         // 第一版关闭 thinking，保持 Tool Call 往返与 MVP 行为一致。
         thinking: { type: 'disabled' },
       }),
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
 
     // HTTP 状态属于 Provider 边界；直接抛出清晰错误并交给现有调用链传播。

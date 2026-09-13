@@ -25,6 +25,7 @@ const api: AgentClientApi = {
   switchSession: async () => undefined,
   deleteSession: async () => 'session-a',
   runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-a' }),
+  cancelTask: async () => undefined,
   onAgentEvent: () => () => undefined,
   openOutputFile: async () => undefined,
 };
@@ -32,6 +33,28 @@ const api: AgentClientApi = {
 afterEach(() => cleanup());
 
 describe('shared App', () => {
+  it('changes Send to Stop, shows cancelled, and can send again', async () => {
+    let rejectRunning: ((reason: Error) => void) | undefined;
+    const runAgentTask = vi.fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRunning = reject; }))
+      .mockResolvedValueOnce({ responseText: '继续正常', traceId: 'trace-next' });
+    const cancelTask = vi.fn(async () => {
+      rejectRunning?.(new DOMException('The operation was aborted', 'AbortError'));
+    });
+    render(<App api={{ ...api, runAgentTask, cancelTask }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '长任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(await screen.findByRole('button', { name: '停止' }));
+
+    await waitFor(() => expect(cancelTask).toHaveBeenCalledOnce());
+    expect(await screen.findByText('已停止')).toBeTruthy();
+    fireEvent.change(input, { target: { value: '下一条' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText('继续正常')).toBeTruthy();
+    expect(runAgentTask).toHaveBeenCalledTimes(2);
+  });
+
   it('renders with explicitly supplied host capabilities', async () => {
     render(<App api={api} />);
     expect(await screen.findByText('Agent Desktop')).toBeTruthy();

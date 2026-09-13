@@ -25,6 +25,16 @@ afterEach(() => {
 });
 
 describe('DeepSeekModel', () => {
+  it('passes the Turn AbortSignal to fetch', async () => {
+    const fetchMock = mockJsonResponse({ choices: [{ message: { content: 'ok' } }] });
+    const controller = new AbortController();
+    const model = new DeepSeekModel({ apiKey: 'test-key' });
+
+    await model.complete({ systemPrompt: 'test', messages: [], tools: [], signal: controller.signal });
+
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
+  });
+
   it('maps a Core request and plain text response', async () => {
     const fetchMock = mockJsonResponse({
       choices: [{ message: { role: 'assistant', content: 'Hello from DeepSeek.' } }],

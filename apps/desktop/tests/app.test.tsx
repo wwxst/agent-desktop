@@ -28,6 +28,7 @@ const persistenceMethods = {
   loadClientState: async () => null,
   saveClientState: async () => undefined,
   deleteSession: async () => 'session-a',
+  cancelTask: async () => undefined,
 };
 
 describe('App', () => {
@@ -490,7 +491,7 @@ describe('App', () => {
     const sendButton = screen.getByRole('button', { name: '发送' });
     fireEvent.click(sendButton);
 
-    expect(sendButton).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '停止' })).toHaveProperty('disabled', false);
     fireEvent.click(sendButton);
     expect(runAgentTask).toHaveBeenCalledOnce();
 

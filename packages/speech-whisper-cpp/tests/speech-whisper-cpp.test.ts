@@ -1,6 +1,6 @@
 import { access, writeFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
-import { TranscribeAudioTool, type CommandExecutor } from '../src/index.js';
+import { executeFileCommand, TranscribeAudioTool, type CommandExecutor } from '../src/index.js';
 
 function getOutputBase(args: readonly string[]): string {
   const outputFlagIndex = args.indexOf('-of');
@@ -18,6 +18,13 @@ async function writeWhisperOutput(args: readonly string[], contents: string): Pr
 }
 
 describe('whisper.cpp speech tools', () => {
+  it('aborts a running whisper child process', async () => {
+    const controller = new AbortController();
+    const running = executeFileCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], controller.signal);
+    controller.abort();
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('uses the transcribe_audio WAV contract and required model path', () => {
     const tool = new TranscribeAudioTool({ modelPath: 'models/ggml-small.bin' });
 

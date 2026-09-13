@@ -64,11 +64,13 @@ export async function runDesktopAgentTask(
   inputPaths: readonly string[],
   outputPath: string | undefined,
   trace: ExecutionTrace,
+  signal?: AbortSignal,
 ) {
   const result = await runTurn(
     agent,
     buildAgentPrompt(prompt, inputPaths, outputPath),
     trace,
+    signal,
   );
   if (result.response.text === undefined) {
     throw new Error('Agent 未返回最终文本回复。');

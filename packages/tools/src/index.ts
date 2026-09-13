@@ -8,7 +8,7 @@ export type { ModelToolDefinition };
  * Tool 只能返回执行结果，不能反向控制 Agent Loop 的生命周期。
  */
 export interface Tool extends ModelToolDefinition {
-  execute(input: unknown): Promise<ToolResult>;
+  execute(input: unknown, signal?: AbortSignal): Promise<ToolResult>;
 }
 
 /** 工具注册表只负责注册、查找和枚举，不承担工具执行或循环调度。 */

@@ -86,6 +86,16 @@ function clientState(): ClientStateSnapshot {
           errorMessage: '测试失败信息',
           tools: [],
           toolsExpanded: false,
+        }, {
+          id: 4,
+          role: 'assistant',
+          status: 'cancelled',
+          tools: [{
+            toolCallId: 'call-cancelled',
+            toolName: 'trim_video',
+            status: 'cancelled',
+          }],
+          toolsExpanded: false,
         }],
       },
     ],

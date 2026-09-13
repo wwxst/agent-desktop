@@ -29,12 +29,14 @@ const STATUS_LABELS: Readonly<Record<ToolActivityStatus, string>> = {
   running: '执行中',
   completed: '已完成',
   failed: '失败',
+  cancelled: '已停止',
 };
 
 const STATUS_SYMBOLS: Readonly<Record<ToolActivityStatus, string>> = {
   running: '●',
   completed: '✓',
   failed: '×',
+  cancelled: '■',
 };
 
 /** 将 Trace 中的技术工具名压缩为面向用户的执行过程。 */

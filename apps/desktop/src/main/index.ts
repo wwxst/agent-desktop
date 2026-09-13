@@ -29,6 +29,7 @@ import {
 let mainWindow: BrowserWindow | null = null;
 let outputSequence = 0;
 let isTaskRunning = false;
+let activeTask: { readonly sessionId: string; readonly controller: AbortController } | undefined;
 let clientState: ClientStateSnapshot | null = null;
 
 interface DesktopSessionState {
@@ -212,7 +213,11 @@ function registerIpcHandlers(): void {
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       throw new Error('请输入剪辑需求。');
     }
+    if (activeTask !== undefined) throw new Error('已有任务正在执行。');
 
+    const sessionId = activeSessionId;
+    const controller = new AbortController();
+    activeTask = { sessionId, controller };
     isTaskRunning = true;
     try {
       const session = activeSession();
@@ -258,6 +263,7 @@ function registerIpcHandlers(): void {
           await trace.write(traceEvent);
           sendToolActivity(traceEvent);
         },
+        controller.signal,
       );
       if (result.outputPath === undefined) {
         return { responseText: result.responseText, traceId: trace.id };
@@ -272,7 +278,13 @@ function registerIpcHandlers(): void {
       };
     } finally {
       isTaskRunning = false;
+      if (activeTask?.controller === controller) activeTask = undefined;
     }
+  });
+
+  ipcMain.handle(DESKTOP_CHANNELS.cancelTask, () => {
+    if (activeTask === undefined) throw new Error('当前没有正在执行的任务。');
+    activeTask.controller.abort();
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.openOutputFile, (_event, fileName: unknown) => {

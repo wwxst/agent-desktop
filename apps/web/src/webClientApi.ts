@@ -24,6 +24,7 @@ export function createWebClientApi(): AgentClientApi {
     },
     whisper: { modelPath: '', cliPath: '' },
   };
+  let activeTaskController: AbortController | undefined;
 
   return {
     loadRuntimeSettings: async () => settings,
@@ -91,6 +92,9 @@ export function createWebClientApi(): AgentClientApi {
       return activeSessionId;
     },
     runAgentTask: async (prompt): Promise<AgentTaskResult> => {
+      if (activeTaskController !== undefined) throw new Error('已有任务正在执行。');
+      const controller = new AbortController();
+      activeTaskController = controller;
       const base = {
         turnId: `web-turn-${Date.now()}`,
         stepId: 'web-step-1',
@@ -99,13 +103,27 @@ export function createWebClientApi(): AgentClientApi {
       };
       listeners.forEach((listener) => listener({ type: 'tool.started', ...base }));
       // Web Host 保留短暂执行态，让真实浏览器能够观察完整的工具生命周期。
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 200);
+          controller.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('The operation was aborted', 'AbortError')); }, { once: true });
+        });
+      } catch (error) {
+        if (activeTaskController === controller) activeTaskController = undefined;
+        throw error;
+      }
       listeners.forEach((listener) => listener({ type: 'tool.completed', ...base, durationMs: 12 }));
-      return {
+      const result = {
         responseText: `开发测试宿主已模拟完成：${prompt}`,
         traceId: `web-trace-${Date.now()}`,
         outputFileName: 'web-dev-artifact.mp4',
       };
+      if (activeTaskController === controller) activeTaskController = undefined;
+      return result;
+    },
+    cancelTask: async () => {
+      if (activeTaskController === undefined) throw new Error('当前没有正在执行的任务。');
+      activeTaskController.abort();
     },
     onAgentEvent: (listener) => {
       listeners.add(listener);

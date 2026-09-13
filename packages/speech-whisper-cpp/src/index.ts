@@ -20,6 +20,7 @@ export interface CommandOutput {
 export type CommandExecutor = (
   command: string,
   args: readonly string[],
+  signal?: AbortSignal,
 ) => Promise<CommandOutput>;
 
 interface TranscriptSegment {
@@ -34,14 +35,19 @@ interface TranscriptionResult {
 }
 
 /** 直接执行 whisper-cli，绕过 shell 并保留可注入的最小进程测试接缝。 */
-export const executeFileCommand: CommandExecutor = (command, args) => (
+export const executeFileCommand: CommandExecutor = (command, args, signal) => (
   new Promise((resolve, reject) => {
-    execFile(command, [...args], { windowsHide: true }, (error, stdout, stderr) => {
+    const child = execFile(command, [...args], { windowsHide: true }, (error, stdout, stderr) => {
       if (error === null) {
         resolve({ stdout, stderr });
         return;
       }
 
+      if (signal?.aborted === true) {
+        const abortError = new DOMException('The operation was aborted', 'AbortError');
+        reject(abortError);
+        return;
+      }
       if (error.code === 'ENOENT') {
         reject(new Error(`${command} not found in PATH`));
         return;
@@ -51,6 +57,10 @@ export const executeFileCommand: CommandExecutor = (command, args) => (
       const detail = stderrLines.slice(-8).join('\n') || error.message;
       reject(new Error(`${command} failed: ${detail}`));
     });
+    if (signal !== undefined) {
+      if (signal.aborted) child.kill();
+      else signal.addEventListener('abort', () => child.kill(), { once: true });
+    }
   })
 );
 
@@ -108,6 +118,7 @@ function parseWhisperJson(contents: string): TranscriptionResult {
 function errorResult(error: unknown): ToolResult {
   // whisper-cli 是真实进程边界；标准 Error 转成 Tool 失败，程序错误继续向上暴露。
   if (!(error instanceof Error)) throw error;
+  if (error.name === 'AbortError') throw error;
   return { status: 'error', message: error.message };
 }
 
@@ -136,7 +147,7 @@ export class TranscribeAudioTool implements Tool {
     this.executeCommand = executeCommand;
   }
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.audioPath !== 'string') {
       return { status: 'error', message: 'transcribe_audio requires audioPath to be a string' };
     }
@@ -161,7 +172,7 @@ export class TranscribeAudioTool implements Tool {
           '-oj',
           '-of',
           outputBase,
-        ]);
+        ], ...(signal === undefined ? [] : [signal]));
         const json = await readFile(`${outputBase}.json`, 'utf8');
         return { status: 'success', output: parseWhisperJson(json) };
       } finally {

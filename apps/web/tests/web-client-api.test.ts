@@ -17,6 +17,17 @@ describe('Web Dev API', () => {
     expect(result.outputFileName).toBe('web-dev-artifact.mp4');
   });
 
+  it('cancels a simulated turn and allows the next turn to run', async () => {
+    const api = createWebClientApi();
+    const running = api.runAgentTask('长任务');
+    await api.cancelTask!();
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(api.runAgentTask('下一条')).resolves.toMatchObject({
+      responseText: expect.stringContaining('下一条'),
+    });
+    await expect(api.cancelTask!()).rejects.toThrow('当前没有正在执行的任务');
+  });
+
   it('deletes the last session and returns the exact replacement session id', async () => {
     const api = createWebClientApi();
     const initial = await api.getActiveSessionId();

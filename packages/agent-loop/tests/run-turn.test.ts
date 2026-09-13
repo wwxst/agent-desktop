@@ -60,6 +60,59 @@ function createTestTrace(events: ExecutionTraceEvent[]): ExecutionTrace {
 }
 
 describe('runTurn', () => {
+  it('cancels before the next model step and preserves completed tool results', async () => {
+    const callId = 'cancel-tool' as ToolCallId;
+    const controller = new AbortController();
+    let toolCalls = 0;
+    let modelCalls = 0;
+    const model: Model = {
+      complete: async () => {
+        modelCalls += 1;
+        return modelCalls === 1
+          ? { toolCalls: [{ id: callId, name: 'clip', input: {} }] }
+          : { text: 'must not run', toolCalls: [] };
+      },
+    };
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'clip', description: 'clip', inputSchema: {},
+      execute: async (_input, signal) => {
+        toolCalls += 1;
+        controller.abort();
+        expect(signal?.aborted).toBe(true);
+        return { status: 'success', output: 'artifact.mp4' };
+      },
+    });
+    const session = new InMemorySession();
+
+    await expect(runTurn(createTestAgent(model, session, tools), 'cancel', undefined, controller.signal))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(toolCalls).toBe(1);
+    expect(modelCalls).toBe(1);
+    expect(session.events()).toContainEqual(expect.objectContaining({
+      type: 'tool.result',
+      result: { status: 'success', output: 'artifact.mp4' },
+    }));
+  });
+
+  it('passes AbortSignal to the model and reports cancellation distinctly', async () => {
+    const controller = new AbortController();
+    const traceEvents: ExecutionTraceEvent[] = [];
+    const model: Model = {
+      complete: async (request) => {
+        expect(request.signal).toBe(controller.signal);
+        controller.abort();
+        throw new DOMException('The operation was aborted', 'AbortError');
+      },
+    };
+
+    await expect(runTurn(createTestAgent(model), 'cancel', createTestTrace(traceEvents), controller.signal))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      'turn.started', 'model.started', 'turn.cancelled',
+    ]);
+  });
+
   it('completes a text-only turn in one step', async () => {
     const model = new ScriptedModel([{ text: 'hello back', toolCalls: [] }]);
     const session = new InMemorySession();

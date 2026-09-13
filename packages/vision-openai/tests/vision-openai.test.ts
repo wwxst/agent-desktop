@@ -21,6 +21,27 @@ afterEach(() => {
 });
 
 describe('AnalyzeImagesTool', () => {
+  it('passes the Turn AbortSignal to fetch', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-signal-'));
+    try {
+      const imagePath = join(directory, 'frame.jpg');
+      await writeFile(imagePath, Buffer.from([0xff, 0xd8]));
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+        output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(analysis) }] }],
+      }), { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const controller = new AbortController();
+
+      await new AnalyzeImagesTool({ apiKey: 'test-key' }).execute({
+        images: [{ path: imagePath, timestamp: 1.5 }],
+      }, controller.signal);
+
+      expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('builds a Responses Vision request and parses structured JSON output', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-test-'));
     try {

@@ -18,12 +18,13 @@ Agent Desktop Shell                智能体桌面应用外壳          已完�
 Multi-turn Agent Session           多轮智能体会话              Commit 20 已完成并合并 `main`。
 New Session                        新会话                      Commit 21 已完成并合并 `main`。
 Session List & Basic History       会话列表与基础历史          已完成并合并 `main`。
-Runtime Settings                  运行时设置                  Commit 26 正在 `feature/runtime-settings` 开发。
+Runtime Settings                  运行时设置                  Commit 26 已完成并合并 `main`。
+Turn Cancellation                 任务取消                    Commit 27 正在 `feature/turn-cancellation` 开发。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
 
-Desktop 已支持多会话列表、切换与本地恢复。Commit 26 在功能分支中增加运行时设置，并把 Video Agent 调整为每个 Turn 根据最新设置创建、复用原 InMemorySession；Core、`agent-loop` 和 Trace 协议均未修改。
+Desktop 已支持多会话列表、切换、本地恢复和运行时设置。Commit 27 通过单个 AbortSignal（取消信号）取消当前 Turn，并保持原 InMemorySession 与已完成产物。
 
 # Engineering Rules（工程规则）
 

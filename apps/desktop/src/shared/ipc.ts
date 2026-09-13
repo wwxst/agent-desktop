@@ -17,6 +17,7 @@ export const DESKTOP_CHANNELS = {
   switchSession: 'desktop:switch-session',
   deleteSession: 'desktop:delete-session',
   runAgentTask: 'desktop:run-agent-task',
+  cancelTask: 'desktop:cancel-task',
   agentEvent: 'desktop:agent-event',
   openOutputFile: 'desktop:open-output-file',
 } as const;

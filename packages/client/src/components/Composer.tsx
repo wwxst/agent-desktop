@@ -10,6 +10,7 @@ interface ComposerProps {
   readonly onSelectVideo: () => void;
   readonly onRemoveVideo: (index: number) => void;
   readonly onSend: () => void;
+  readonly onCancel: () => void;
 }
 
 /** Composer 集中承载视频附件、自然语言输入和发送动作。 */
@@ -21,6 +22,7 @@ export function Composer({
   onSelectVideo,
   onRemoveVideo,
   onSend,
+  onCancel,
 }: ComposerProps) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -69,16 +71,23 @@ export function Composer({
           <button
             className="icon-button send-button"
             type="submit"
-            aria-label="发送"
-            title="发送"
-            disabled={isProcessing || !prompt.trim()}
+            aria-label={isProcessing ? '停止' : '发送'}
+            title={isProcessing ? '停止' : '发送'}
+            disabled={!isProcessing && !prompt.trim()}
+            onClick={isProcessing ? (event) => { event.preventDefault(); onCancel(); } : undefined}
           >
-            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false">
-              <path
-                d="M8.3125.980183c.35517.073166.66797.224837.9502.452147.2245.18064.4678.425457.7168.67481L14.707 6.83468l-1.414 1.414L9 3.95577v11.08593H7V3.95577L2.707 8.24868l-1.414-1.414L6.0205 2.10714c.2492-.24921.4925-.49402.71699-.67481C7.0212 1.20402 7.33399 1.05335 7.6875.980183c.2103-.043177.4161-.025025.625.0Z"
-                fill="currentColor"
-              />
-            </svg>
+            {isProcessing ? (
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                <rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false">
+                <path
+                  d="M8.3125.980183c.35517.073166.66797.224837.9502.452147.2245.18064.4678.425457.7168.67481L14.707 6.83468l-1.414 1.414L9 3.95577v11.08593H7V3.95577L2.707 8.24868l-1.414-1.414L6.0205 2.10714c.2492-.24921.4925-.49402.71699-.67481C7.0212 1.20402 7.33399 1.05335 7.6875.980183c.2103-.043177.4161-.025025.625.0Z"
+                  fill="currentColor"
+                />
+              </svg>
+            )}
           </button>
         </div>
       </div>

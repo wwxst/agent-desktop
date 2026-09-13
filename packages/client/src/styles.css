@@ -952,6 +952,10 @@ input:focus-visible {
   color: var(--danger);
 }
 
+.state-cancelled {
+  color: var(--text-muted);
+}
+
 .artifact-card {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;

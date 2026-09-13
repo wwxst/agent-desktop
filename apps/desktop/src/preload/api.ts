@@ -20,10 +20,12 @@ async function invokeAgentTask(
   } catch (error) {
     if (!(error instanceof Error)) throw error;
     // Electron 会给 Main 的业务错误增加固定 IPC 前缀；Renderer 只展示原始任务错误。
-    const marker = ': Error: ';
-    const markerIndex = error.message.indexOf(marker);
-    if (error.message.startsWith('Error invoking remote method') && markerIndex !== -1) {
-      throw new Error(error.message.slice(markerIndex + marker.length));
+    const remoteError = /^Error invoking remote method '.+?': (Error|AbortError): (.+)$/.exec(error.message);
+    if (remoteError !== null) {
+      const [, errorName, message] = remoteError;
+      const normalized = new Error(message);
+      if (errorName === 'AbortError') normalized.name = 'AbortError';
+      throw normalized;
     }
     throw error;
   }
@@ -63,6 +65,7 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       sessionId,
     ) as ReturnType<DesktopApi['deleteSession']>,
     runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
+    cancelTask: async () => { await ipc.invoke(DESKTOP_CHANNELS.cancelTask); },
     onAgentEvent: (listener) => {
       const receive: IpcListener = (_event, payload) => listener(payload as ToolActivityEvent);
       ipc.on(DESKTOP_CHANNELS.agentEvent, receive);

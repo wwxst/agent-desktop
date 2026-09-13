@@ -22,6 +22,13 @@ const unusedExecutor: CommandExecutor = vi.fn(async () => ({ stdout: '', stderr:
 const escapedFilterQuote = "'" + '\\'.repeat(3) + "''";
 
 describe('FFmpeg video tools', () => {
+  it('aborts a running child process', async () => {
+    const controller = new AbortController();
+    const running = executeFileCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], controller.signal);
+    controller.abort();
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('executes a program with a direct argument array', async () => {
     const output = await executeFileCommand(process.execPath, [
       '-e',

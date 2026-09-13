@@ -18,20 +18,26 @@ export interface CommandOutput {
 export type CommandExecutor = (
   command: string,
   args: readonly string[],
+  signal?: AbortSignal,
 ) => Promise<CommandOutput>;
 
 /**
  * execFile 直接接收可执行文件和参数数组，不经过 shell 解析。
  * 这样路径中的空格或控制字符只会作为 FFmpeg 参数，不会变成额外命令。
  */
-export const executeFileCommand: CommandExecutor = (command, args) => (
+export const executeFileCommand: CommandExecutor = (command, args, signal) => (
   new Promise((resolve, reject) => {
-    execFile(command, [...args], { windowsHide: true }, (error, stdout, stderr) => {
+    const child = execFile(command, [...args], { windowsHide: true }, (error, stdout, stderr) => {
       if (error === null) {
         resolve({ stdout, stderr });
         return;
       }
 
+      if (signal?.aborted === true) {
+        const abortError = new DOMException('The operation was aborted', 'AbortError');
+        reject(abortError);
+        return;
+      }
       if (error.code === 'ENOENT') {
         reject(new Error(`${command} not found in PATH`));
         return;
@@ -42,6 +48,10 @@ export const executeFileCommand: CommandExecutor = (command, args) => (
       const detail = stderrLines.slice(-8).join('\n') || error.message;
       reject(new Error(`${command} failed: ${detail}`));
     });
+    if (signal !== undefined) {
+      if (signal.aborted) child.kill();
+      else signal.addEventListener('abort', () => child.kill(), { once: true });
+    }
   })
 );
 
@@ -61,6 +71,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function errorResult(error: unknown): ToolResult {
   // 只把标准 Error 转为 Tool 失败；非 Error 抛出值属于程序错误，继续向上暴露。
   if (!(error instanceof Error)) throw error;
+  if (error.name === 'AbortError') throw error;
 
   return {
     status: 'error',
@@ -102,7 +113,7 @@ export class ExtractAudioTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -133,7 +144,7 @@ export class ExtractAudioTool implements Tool {
         '-c:a',
         'pcm_s16le',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return { status: 'success', output: `Audio created: ${input.outputPath}` };
     } catch (error) {
       return errorResult(error);
@@ -195,7 +206,7 @@ function parseMediaInfo(stdout: string): MediaInfo {
 }
 
 /** 抽帧只需要 duration；复用统一的 ffprobe JSON 解析，避免复制协议字段读取逻辑。 */
-async function probeDuration(executeCommand: CommandExecutor, inputPath: string): Promise<number> {
+async function probeDuration(executeCommand: CommandExecutor, inputPath: string, signal?: AbortSignal): Promise<number> {
   const { stdout } = await executeCommand('ffprobe', [
     '-v',
     'error',
@@ -204,7 +215,7 @@ async function probeDuration(executeCommand: CommandExecutor, inputPath: string)
     '-show_format',
     '-show_streams',
     inputPath,
-  ]);
+  ], ...(signal === undefined ? [] : [signal]));
   const duration = parseMediaInfo(stdout).duration;
   if (duration === null || duration <= 0) {
     throw new Error('extract_video_frames requires a positive media duration');
@@ -225,7 +236,7 @@ export class ProbeMediaTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.inputPath !== 'string') {
       return { status: 'error', message: 'probe_media requires inputPath to be a string' };
     }
@@ -240,7 +251,7 @@ export class ProbeMediaTool implements Tool {
         '-show_format',
         '-show_streams',
         input.inputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return { status: 'success', output: parseMediaInfo(stdout) };
     } catch (error) {
       return errorResult(error);
@@ -267,6 +278,7 @@ async function extractFramesAtTimestamps(
   videoPath: string,
   outputDir: string,
   timestamps: readonly number[],
+  signal?: AbortSignal,
 ): Promise<ExtractedVideoFrame[]> {
   await mkdir(outputDir, { recursive: true });
   const frames: ExtractedVideoFrame[] = [];
@@ -289,7 +301,7 @@ async function extractFramesAtTimestamps(
       '-q:v',
       '2',
       framePath,
-    ]);
+    ], ...(signal === undefined ? [] : [signal]));
     frames.push({ timestamp, path: framePath });
   }
 
@@ -315,7 +327,7 @@ export class ExtractVideoFramesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputDir !== 'string') {
@@ -326,7 +338,7 @@ export class ExtractVideoFramesTool implements Tool {
     }
 
     try {
-      const duration = await probeDuration(this.executeCommand, input.videoPath);
+      const duration = await probeDuration(this.executeCommand, input.videoPath, signal);
       // 使用 1/7 到 6/7 的时间点，避开容易出现黑屏或片尾的首尾帧。
       const timestamps = [1, 2, 3, 4, 5, 6].map((index) => (duration * index) / 7);
       const frames = await extractFramesAtTimestamps(
@@ -334,6 +346,7 @@ export class ExtractVideoFramesTool implements Tool {
         input.videoPath,
         input.outputDir,
         timestamps,
+        signal,
       );
 
       return { status: 'success', output: { duration, frames } satisfies ExtractVideoFramesOutput };
@@ -370,7 +383,7 @@ export class ExtractVideoRangeFramesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputDir !== 'string') {
@@ -406,6 +419,7 @@ export class ExtractVideoRangeFramesTool implements Tool {
         input.videoPath,
         input.outputDir,
         timestamps,
+        signal,
       );
 
       return {
@@ -440,7 +454,7 @@ export class TrimVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -484,7 +498,7 @@ export class TrimVideoTool implements Tool {
         '-c:a',
         'aac',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -508,7 +522,7 @@ export class ConcatVideosTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || !Array.isArray(input.inputPaths)
       || input.inputPaths.length === 0
@@ -550,7 +564,7 @@ export class ConcatVideosTool implements Tool {
         '-c:a',
         'aac',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -579,7 +593,7 @@ export class AddAudioTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.audioPath !== 'string'
@@ -613,7 +627,7 @@ export class AddAudioTool implements Tool {
         'aac',
         '-shortest',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -638,7 +652,7 @@ export class AddSubtitlesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.subtitlePath !== 'string'
@@ -672,7 +686,7 @@ export class AddSubtitlesTool implements Tool {
         '-c:a',
         'copy',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return videoCreated(input.outputPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -702,7 +716,7 @@ export class ResizeVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -743,7 +757,7 @@ export class ResizeVideoTool implements Tool {
         '-c:a',
         'copy',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -771,7 +785,7 @@ export class CropVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -818,7 +832,7 @@ export class CropVideoTool implements Tool {
         '-c:a',
         'copy',
         input.outputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -843,7 +857,7 @@ export class SetSpeedTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -875,7 +889,7 @@ export class SetSpeedTool implements Tool {
         '-of',
         'csv=p=0',
         input.inputPath,
-      ]);
+      ], ...(signal === undefined ? [] : [signal]));
       const hasAudio = audioProbe.stdout.trim().length > 0;
 
       if (hasAudio) {
@@ -898,7 +912,7 @@ export class SetSpeedTool implements Tool {
           '-c:a',
           'aac',
           input.outputPath,
-        ]);
+        ], ...(signal === undefined ? [] : [signal]));
       } else {
         // 无音轨时只改变视频时间戳，并显式禁止输出音频。
         await this.executeCommand('ffmpeg', [
@@ -916,7 +930,7 @@ export class SetSpeedTool implements Tool {
           '-c:v',
           'libx264',
           input.outputPath,
-        ]);
+        ], ...(signal === undefined ? [] : [signal]));
       }
 
       return videoCreated(input.outputPath);
