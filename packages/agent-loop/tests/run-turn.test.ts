@@ -182,6 +182,80 @@ describe('runTurn', () => {
     ]);
   });
 
+  it('forwards text deltas while Session keeps only the complete assistant message', async () => {
+    const model: Model = {
+      complete: async (request) => {
+        request.onTextDelta?.('你');
+        request.onTextDelta?.('好');
+        return { text: '你好', toolCalls: [] };
+      },
+    };
+    const session = new InMemorySession();
+    const deltas: string[] = [];
+
+    const result = await runTurn(
+      createTestAgent(model, session),
+      'hello',
+      undefined,
+      undefined,
+      (delta) => deltas.push(delta),
+    );
+
+    expect(deltas).toEqual(['你', '好']);
+    expect(result.response).toEqual({ text: '你好', toolCalls: [] });
+    // 增量只用于实时展示；Session 只保留一次完整 assistant 事实。
+    expect(session.events().filter((event) => event.type === 'assistant.message')).toEqual([
+      expect.objectContaining({ content: '你好', toolCalls: [] }),
+    ]);
+    expect(session.events().some((event) => (
+      event.type === 'assistant.message' && event.content === '你'
+    ))).toBe(false);
+  });
+
+  it('forwards the same text delta callback to every model request in a turn', async () => {
+    const callId = 'delta-call' as ToolCallId;
+    const requests: ModelRequest[] = [];
+    const model: Model = {
+      complete: async (request) => {
+        requests.push(request);
+        request.onTextDelta?.('step');
+        return requests.length === 1
+          ? { text: 'calling', toolCalls: [{ id: callId, name: 'echo', input: 'x' }] }
+          : { text: 'final', toolCalls: [] };
+      },
+    };
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'echo',
+      description: 'Returns its input.',
+      inputSchema: {},
+      execute: async () => ({ status: 'success', output: 'ok' }),
+    });
+    const deltas: string[] = [];
+    const onTextDelta = (delta: string) => deltas.push(delta);
+
+    await runTurn(
+      createTestAgent(model, new InMemorySession(), tools),
+      'use echo',
+      undefined,
+      undefined,
+      onTextDelta,
+    );
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.onTextDelta).toBe(onTextDelta);
+    expect(requests[1]?.onTextDelta).toBe(onTextDelta);
+    expect(deltas).toEqual(['step', 'step']);
+  });
+
+  it('omits the text delta callback when the caller does not provide one', async () => {
+    const model = new ScriptedModel([{ text: 'done', toolCalls: [] }]);
+
+    await runTurn(createTestAgent(model), 'hello');
+
+    expect(model.requests[0]).not.toHaveProperty('onTextDelta');
+  });
+
   it('executes one tool call and rebuilds the next request from Session events', async () => {
     const callId = 'call-1' as ToolCallId;
     const model = new ScriptedModel([

@@ -1,5 +1,6 @@
 export type {
   AgentClientApi,
+  AgentRuntimeEvent,
   AgentTaskResult,
   ClientAssistantMessage,
   ClientConversation,

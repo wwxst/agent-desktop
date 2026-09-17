@@ -202,6 +202,7 @@ export async function runTurn(
   input: string,
   trace?: ExecutionTrace,
   signal?: AbortSignal,
+  onTextDelta?: (delta: string) => void,
 ): Promise<RunTurnResult> {
   const turnId = createTurnId();
   let stepCount = 0;
@@ -240,6 +241,8 @@ export async function runTurn(
           messages,
           tools,
           ...(signal === undefined ? {} : { signal }),
+          // 文本增量只向上转发给实时展示，不会写入 Session。
+          ...(onTextDelta === undefined ? {} : { onTextDelta }),
         });
       } catch (error) {
         // 非 Error 抛出值继续直接传播，不为 Trace 制造默认错误文本。

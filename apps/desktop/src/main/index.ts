@@ -7,7 +7,7 @@ import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
 import { runDesktopAgentTask } from './agent-task.js';
-import { DESKTOP_CHANNELS, type AgentTaskResult, type ToolActivityEvent } from '../shared/ipc.js';
+import { DESKTOP_CHANNELS, type AgentRuntimeEvent, type AgentTaskResult } from '../shared/ipc.js';
 import {
   loadDesktopState,
   parseClientState,
@@ -113,16 +113,22 @@ function defaultOutputPath(inputPath: string, sequence: number): string {
   return join(input.dir, `${input.name}${suffix}${input.ext || '.mp4'}`);
 }
 
+/** 沿现有 desktop:agent-event 通道把运行期事件推给 Renderer。 */
+function sendAgentEvent(event: AgentRuntimeEvent): void {
+  if (mainWindow?.isDestroyed() === false) {
+    mainWindow.webContents.send(DESKTOP_CHANNELS.agentEvent, event);
+  }
+}
+
 function sendToolActivity(event: ExecutionTraceEvent): void {
+  // 只有 Tool Activity 三类 Trace 事件进入界面，其余 Trace 事件留在本地 JSONL。
   if (event.type !== 'tool.started'
     && event.type !== 'tool.completed'
     && event.type !== 'tool.failed') {
     return;
   }
 
-  if (mainWindow?.isDestroyed() === false) {
-    mainWindow.webContents.send(DESKTOP_CHANNELS.agentEvent, event satisfies ToolActivityEvent);
-  }
+  sendAgentEvent(event);
 }
 
 function registerIpcHandlers(): void {
@@ -264,6 +270,8 @@ function registerIpcHandlers(): void {
           sendToolActivity(traceEvent);
         },
         controller.signal,
+        // 把 Model 文本增量实时推给 Renderer；它不进入 Session，也不影响最终结果。
+        (delta) => sendAgentEvent({ type: 'text.delta', delta }),
       );
       if (result.outputPath === undefined) {
         return { responseText: result.responseText, traceId: trace.id };

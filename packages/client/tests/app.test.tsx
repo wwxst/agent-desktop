@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/index.js';
-import type { AgentClientApi, ClientStateSnapshot } from '../src/index.js';
+import type { AgentClientApi, AgentRuntimeEvent, AgentTaskResult, ClientStateSnapshot } from '../src/index.js';
 
 const api: AgentClientApi = {
   loadRuntimeSettings: async () => ({
@@ -270,5 +270,152 @@ describe('shared App', () => {
     expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
     expect(screen.getByRole('button', { name: '新会话' })).toHaveProperty('disabled', true);
     await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-processing' }));
+  });
+
+  it('streams assistant text during a turn and replaces it with the final reply', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
+      resolveTask = resolve;
+    }));
+
+    render(<App api={{
+      ...api,
+      runAgentTask,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '流式任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(screen.getByText('正在处理视频')).toBeTruthy();
+
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '正在' }));
+    expect(screen.getByText('正在')).toBeTruthy();
+    expect(screen.queryByText('正在处理视频')).toBeNull();
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '生成结果' }));
+    expect(screen.getByText('正在生成结果')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '最终回复', traceId: 'trace-stream' }));
+    expect(await screen.findByText('最终回复')).toBeTruthy();
+    expect(screen.queryByText('正在生成结果')).toBeNull();
+  });
+
+  it('clears streamed text when the turn is cancelled', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let rejectRunning: ((reason: Error) => void) | undefined;
+    const cancelTask = vi.fn(async () => {
+      rejectRunning?.(new DOMException('The operation was aborted', 'AbortError'));
+    });
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise((_resolve, reject) => { rejectRunning = reject; }),
+      cancelTask,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '长任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '半截输出' }));
+    expect(screen.getByText('半截输出')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '停止' }));
+
+    expect(await screen.findByText('已停止')).toBeTruthy();
+    expect(screen.queryByText('半截输出')).toBeNull();
+  });
+
+  it('clears streamed text when the turn fails', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let rejectRunning: ((reason: Error) => void) | undefined;
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise((_resolve, reject) => { rejectRunning = reject; }),
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '会失败的任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '半截输出' }));
+    expect(screen.getByText('半截输出')).toBeTruthy();
+
+    await act(async () => rejectRunning?.(new Error('处理失败。')));
+
+    expect(await screen.findByText('任务失败')).toBeTruthy();
+    expect(screen.queryByText('半截输出')).toBeNull();
+  });
+
+  it('applies streamed text only to the assistant reply that is processing', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveFirst: ((result: AgentTaskResult) => void) | undefined;
+    let resolveSecond: ((result: AgentTaskResult) => void) | undefined;
+    const runAgentTask = vi.fn()
+      .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => { resolveFirst = resolve; }))
+      .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => { resolveSecond = resolve; }));
+
+    render(<App api={{
+      ...api,
+      runAgentTask,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '第一轮' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '第一轮增量' }));
+    await act(async () => resolveFirst?.({ responseText: '第一轮完成', traceId: 'trace-1' }));
+    expect(await screen.findByText('第一轮完成')).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: '第二轮' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '第二轮增量' }));
+
+    expect(screen.getByText('第二轮增量')).toBeTruthy();
+    // 已完成的上一轮回复不能被新增量污染。
+    expect(screen.getByText('第一轮完成')).toBeTruthy();
+    expect(screen.queryByText('第一轮增量')).toBeNull();
+    await act(async () => resolveSecond?.({ responseText: '第二轮完成', traceId: 'trace-2' }));
+  });
+
+  it('never persists temporary streamed text in the saved snapshot', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    let savedState: ClientStateSnapshot | undefined;
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      saveClientState: async (state) => { savedState = state; },
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '流式快照任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '临时流式片段' }));
+    expect(screen.getByText('临时流式片段')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '最终回复', traceId: 'trace-snapshot' }));
+    await screen.findByText('最终回复');
+
+    await waitFor(() => expect(savedState?.conversations[0]?.messages.at(-1)).toMatchObject({
+      status: 'completed',
+      result: { responseText: '最终回复' },
+    }));
+    expect(JSON.stringify(savedState)).not.toContain('临时流式片段');
   });
 });

@@ -31,8 +31,13 @@ export interface ClientAssistantMessageBase {
   readonly toolsExpanded: boolean;
 }
 
+/**
+ * streamedText（实时文本）只存在于 processing 分支，完成、取消、失败三个分支没有该字段，
+ * 终态转换会一并丢弃它。App 在 processing 期间不保存快照，Main 的持久化解析也不接受 processing 状态，
+ * 因此临时流式文本不会被写入磁盘。
+ */
 export type ClientAssistantMessage = ClientAssistantMessageBase & (
-  | { readonly status: 'processing' }
+  | { readonly status: 'processing'; readonly streamedText: string }
   | { readonly status: 'completed'; readonly result: AgentTaskResult }
   | { readonly status: 'cancelled' }
   | { readonly status: 'failed'; readonly errorMessage: string }
@@ -116,6 +121,15 @@ export type ToolActivityEvent =
       readonly durationMs: number;
     };
 
+/** Host 在 Turn 执行期间推送的 assistant 文本增量，只用于实时展示。 */
+export interface AgentTextDeltaEvent {
+  readonly type: 'text.delta';
+  readonly delta: string;
+}
+
+/** Host 在 Turn 执行期间推送给 Client 的运行期事件：Tool 活动或实时文本增量。 */
+export type AgentRuntimeEvent = ToolActivityEvent | AgentTextDeltaEvent;
+
 export interface AgentClientApi {
   loadRuntimeSettings(): Promise<RuntimeSettings>;
   saveRuntimeSettings(update: RuntimeSettingsUpdate): Promise<RuntimeSettings>;
@@ -129,6 +143,6 @@ export interface AgentClientApi {
   deleteSession(sessionId: string): Promise<string>;
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
   cancelTask(): Promise<void>;
-  onAgentEvent(listener: (event: ToolActivityEvent) => void): () => void;
+  onAgentEvent(listener: (event: AgentRuntimeEvent) => void): () => void;
   openOutputFile(fileName: string): Promise<void>;
 }

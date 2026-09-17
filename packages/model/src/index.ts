@@ -28,7 +28,7 @@ export type ModelMessage =
   | { readonly role: 'tool'; readonly toolCallId: ToolCallId; readonly content: string };
 
 /**
- * 完整、非流式的模型请求。
+ * 模型请求。
  * systemPrompt 保持独立字段，避免再通过 system role 建立第二个系统提示词入口。
  */
 export interface ModelRequest {
@@ -37,6 +37,11 @@ export interface ModelRequest {
   readonly tools: readonly ModelToolDefinition[];
   /** 当前 Turn 的唯一取消信号；Provider 将其传给真实请求。 */
   readonly signal?: AbortSignal;
+  /**
+   * 文本增量回调，只用于实时展示。
+   * Provider 仍返回完整 ModelResponse，Session 只记录完整 assistant 事实。
+   */
+  readonly onTextDelta?: (delta: string) => void;
 }
 
 /** 完整模型响应；文本和工具调用允许同时出现，Agent Loop 必须完整记录两者。 */

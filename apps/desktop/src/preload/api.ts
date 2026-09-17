@@ -1,4 +1,4 @@
-import type { DesktopApi, ToolActivityEvent } from '../shared/ipc.js';
+import type { AgentRuntimeEvent, DesktopApi } from '../shared/ipc.js';
 import { DESKTOP_CHANNELS } from '../shared/ipc.js';
 
 type IpcListener = (event: unknown, payload: unknown) => void;
@@ -67,7 +67,7 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
     cancelTask: async () => { await ipc.invoke(DESKTOP_CHANNELS.cancelTask); },
     onAgentEvent: (listener) => {
-      const receive: IpcListener = (_event, payload) => listener(payload as ToolActivityEvent);
+      const receive: IpcListener = (_event, payload) => listener(payload as AgentRuntimeEvent);
       ipc.on(DESKTOP_CHANNELS.agentEvent, receive);
       return () => ipc.removeListener(DESKTOP_CHANNELS.agentEvent, receive);
     },

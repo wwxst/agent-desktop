@@ -19,12 +19,15 @@ Multi-turn Agent Session           多轮智能体会话              Commit 20 
 New Session                        新会话                      Commit 21 已完成并合并 `main`。
 Session List & Basic History       会话列表与基础历史          已完成并合并 `main`。
 Runtime Settings                  运行时设置                  Commit 26 已完成并合并 `main`。
-Turn Cancellation                 任务取消                    Commit 27 正在 `feature/turn-cancellation` 开发。
+Turn Cancellation                 任务取消                    Commit 27 已完成并合并 `main`。
+DeepSeek Streaming                DeepSeek 流式输出           Commit 28 正在 `feature/deepseek-streaming` 开发。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
 
 Desktop 已支持多会话列表、切换、本地恢复和运行时设置。Commit 27 通过单个 AbortSignal（取消信号）取消当前 Turn，并保持原 InMemorySession 与已完成产物。
+
+Commit 28 让 DeepSeek Provider 改用 SSE 流式响应，Model 文本增量经 Agent Loop 与现有 `desktop:agent-event` 通道实时到达 Shared Client；增量只用于展示，Session 仍然只保存完整 assistant 回复。
 
 # Engineering Rules（工程规则）
 

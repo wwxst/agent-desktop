@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type {
   AgentClientApi,
+  AgentRuntimeEvent,
+  ClientAssistantMessage,
+  ClientAssistantMessageBase,
   ClientConversation,
   ClientConversationMessage,
   ClientStateSnapshot,
@@ -28,6 +31,19 @@ function createConversation(id: string, number: number): ClientConversation {
 
 function conversationTitle(prompt: string): string {
   return prompt.length > 18 ? `${prompt.slice(0, 18)}…` : prompt;
+}
+
+/**
+ * 把 Assistant 消息投影回不含临时字段的基础结构。
+ * 完成、取消和失败分支在类型上都没有 streamedText，这里负责在状态切换时丢弃它。
+ */
+function dropStreamedText(message: ClientAssistantMessage): ClientAssistantMessageBase {
+  return {
+    id: message.id,
+    role: message.role,
+    tools: message.tools,
+    toolsExpanded: message.toolsExpanded,
+  };
 }
 
 function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
@@ -125,17 +141,29 @@ export function App({ api }: AppProps) {
     return () => clearTimeout(timeout);
   }, [activeSessionId, api, conversations, isProcessing, isSessionReady]);
 
-  useEffect(() => api.onAgentEvent((event) => {
-    const nextItem = toActivityItem(event);
+  useEffect(() => api.onAgentEvent((event: AgentRuntimeEvent) => {
     const sessionId = activeSessionIdRef.current;
-    // 会话切换在执行期间禁用，因此 Trace 工具事件只会进入发起当前 Turn 的会话。
+    // 会话切换在执行期间禁用，因此运行期事件只会进入发起当前 Turn 的会话。
     updateConversation(sessionId, (conversation) => {
       const activeIndex = conversation.messages.findLastIndex(
         (message) => message.role === 'assistant' && message.status === 'processing',
       );
       const activeMessage = conversation.messages[activeIndex];
-      if (activeMessage?.role !== 'assistant') return conversation;
+      if (activeMessage?.role !== 'assistant' || activeMessage.status !== 'processing') {
+        return conversation;
+      }
 
+      // 文本增量只更新当前正在处理的 Assistant 消息，完成时由完整回复覆盖。
+      if (event.type === 'text.delta') {
+        const messages: readonly ClientConversationMessage[] = conversation.messages.map((message, index) => (
+          index === activeIndex
+            ? { ...activeMessage, streamedText: activeMessage.streamedText + event.delta }
+            : message
+        ));
+        return { ...conversation, messages };
+      }
+
+      const nextItem = toActivityItem(event);
       const existingIndex = activeMessage.tools.findIndex(
         (item) => item.toolCallId === nextItem.toolCallId,
       );
@@ -263,6 +291,7 @@ export function App({ api }: AppProps) {
           id: assistantMessageId,
           role: 'assistant',
           status: 'processing',
+          streamedText: '',
           tools: [],
           toolsExpanded: true,
         },
@@ -285,7 +314,7 @@ export function App({ api }: AppProps) {
         messages: currentConversation.messages.map((message) => (
           message.role === 'assistant' && message.id === assistantMessageId
             ? {
-                ...message,
+                ...dropStreamedText(message),
                 status: 'completed',
                 result: taskResult,
                 toolsExpanded: false,
@@ -304,7 +333,7 @@ export function App({ api }: AppProps) {
           message.role === 'assistant' && message.id === assistantMessageId
             ? cancelled
               ? {
-                  ...message,
+                  ...dropStreamedText(message),
                   status: 'cancelled',
                   tools: message.tools.map((tool) => (
                     tool.status === 'running' ? { ...tool, status: 'cancelled' as const } : tool
@@ -312,7 +341,7 @@ export function App({ api }: AppProps) {
                   toolsExpanded: false,
                 }
               : {
-                  ...message,
+                  ...dropStreamedText(message),
                   status: 'failed',
                   errorMessage: error instanceof Error ? error.message : '任务执行失败。',
                   toolsExpanded: false,
@@ -543,10 +572,16 @@ export function App({ api }: AppProps) {
                     <strong>Agent</strong>
                   </div>
                   {message.status === 'processing' ? (
-                    <div className="message-content processing-line">
-                      <i aria-hidden="true" />
-                      <p>正在处理视频</p>
-                    </div>
+                    message.streamedText.length > 0 ? (
+                      <div className="message-content">
+                        <p className="agent-response">{message.streamedText}</p>
+                      </div>
+                    ) : (
+                      <div className="message-content processing-line">
+                        <i aria-hidden="true" />
+                        <p>正在处理视频</p>
+                      </div>
+                    )
                   ) : (
                     <div className="message-content">
                       <p className="agent-response">{message.result.responseText}</p>

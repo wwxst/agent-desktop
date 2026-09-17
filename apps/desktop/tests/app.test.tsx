@@ -4,9 +4,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/renderer/App.js';
 import type {
+  AgentRuntimeEvent,
   AgentTaskResult,
   DesktopApi,
-  ToolActivityEvent,
 } from '../src/shared/ipc.js';
 
 afterEach(() => {
@@ -205,7 +205,7 @@ describe('App', () => {
   });
 
   it('updates Tool activity from the shared trace event', async () => {
-    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
       ...persistenceMethods,
@@ -255,7 +255,7 @@ describe('App', () => {
   });
 
   it('collapses completed Tool activity and lets the user expand it', async () => {
-    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
       ...persistenceMethods,
@@ -369,7 +369,7 @@ describe('App', () => {
   });
 
   it('keeps Tool activity with the Agent reply from its own turn', async () => {
-    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
       resolveTask = resolve;
@@ -499,7 +499,7 @@ describe('App', () => {
   });
 
   it('starts a new empty session while keeping the previous conversation in the list', async () => {
-    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveFirstTask: ((result: AgentTaskResult) => void) | undefined;
     const newSession = vi.fn(async () => 'session-b');
     const runAgentTask = vi.fn()
@@ -569,7 +569,7 @@ describe('App', () => {
   });
 
   it('switches isolated UI history, draft, attachments, tools, traces, and artifacts', async () => {
-    let receiveEvent: ((event: ToolActivityEvent) => void) | undefined;
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveSessionA: ((result: AgentTaskResult) => void) | undefined;
     let resolveSessionB: ((result: AgentTaskResult) => void) | undefined;
     const switchSession = vi.fn(async () => undefined);
@@ -739,5 +739,40 @@ describe('App', () => {
 
     expect(await screen.findByText('处理失败。')).toBeTruthy();
     expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe(prompt);
+  });
+
+  it('shows live assistant text pushed over the desktop agent event channel', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    window.agentDesktop = {
+      ...persistenceMethods,
+      selectVideoFile: async () => null,
+      removeSelectedVideo: async () => undefined,
+      getActiveSessionId: async () => 'session-a',
+      newSession: async () => 'session-b',
+      switchSession: async () => undefined,
+      runAgentTask: () => new Promise((resolve) => {
+        resolveTask = resolve;
+      }),
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+      openOutputFile: async () => undefined,
+    } satisfies DesktopApi;
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('剪辑需求'), {
+      target: { value: '流式任务' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(screen.getByText('正在处理视频')).toBeTruthy();
+
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '实时文本' }));
+    expect(screen.getByText('实时文本')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '最终回复', traceId: 'trace-live' }));
+    expect(await screen.findByText('最终回复')).toBeTruthy();
+    expect(screen.queryByText('实时文本')).toBeNull();
   });
 });

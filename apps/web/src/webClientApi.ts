@@ -1,9 +1,9 @@
 import type {
   AgentClientApi,
+  AgentRuntimeEvent,
   AgentTaskResult,
   RuntimeSettings,
   SelectedVideo,
-  ToolActivityEvent,
 } from '@agent-desktop/client';
 
 /** Web Host 仅用于 UI 开发和自动化测试，不连接真实 Agent Runtime。 */
@@ -11,7 +11,7 @@ export function createWebClientApi(): AgentClientApi {
   let activeSessionId = 'web-session-1';
   let nextSession = 2;
   const sessionIds = new Set([activeSessionId]);
-  const listeners = new Set<(event: ToolActivityEvent) => void>();
+  const listeners = new Set<(event: AgentRuntimeEvent) => void>();
   let settings: RuntimeSettings = {
     deepSeek: {
       apiKey: { configured: false },
@@ -102,10 +102,13 @@ export function createWebClientApi(): AgentClientApi {
         toolName: 'trim_video',
       };
       listeners.forEach((listener) => listener({ type: 'tool.started', ...base }));
+      // 模拟 Host 的实时文本增量，让共享 Client 的流式展示在浏览器宿主中也可验证。
+      listeners.forEach((listener) => listener({ type: 'text.delta', delta: '开发测试宿主正在' }));
+      listeners.forEach((listener) => listener({ type: 'text.delta', delta: '生成结果…' }));
       // Web Host 保留短暂执行态，让真实浏览器能够观察完整的工具生命周期。
       try {
         await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(resolve, 200);
+          const timer = setTimeout(resolve, 400);
           controller.signal.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('The operation was aborted', 'AbortError')); }, { once: true });
         });
       } catch (error) {

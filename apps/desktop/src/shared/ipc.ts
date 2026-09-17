@@ -1,6 +1,7 @@
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import type {
   AgentClientApi,
+  AgentRuntimeEvent,
   AgentTaskResult,
   SelectedVideo,
 } from '@agent-desktop/client';
@@ -22,10 +23,11 @@ export const DESKTOP_CHANNELS = {
   openOutputFile: 'desktop:open-output-file',
 } as const;
 
+/** Execution Trace 中属于 Tool Activity 的事件子集，Main 只把这三类投影为工具活动。 */
 export type ToolActivityEvent = Extract<
   ExecutionTraceEvent,
   { type: 'tool.started' | 'tool.completed' | 'tool.failed' }
 >;
 
-export type { AgentTaskResult, SelectedVideo };
+export type { AgentRuntimeEvent, AgentTaskResult, SelectedVideo };
 export type DesktopApi = AgentClientApi;

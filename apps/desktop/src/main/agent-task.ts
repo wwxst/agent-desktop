@@ -65,12 +65,15 @@ export async function runDesktopAgentTask(
   outputPath: string | undefined,
   trace: ExecutionTrace,
   signal?: AbortSignal,
+  onTextDelta?: (delta: string) => void,
 ) {
   const result = await runTurn(
     agent,
     buildAgentPrompt(prompt, inputPaths, outputPath),
     trace,
     signal,
+    // 文本增量只用于实时展示，不改变 Session 事实和返回值。
+    onTextDelta,
   );
   if (result.response.text === undefined) {
     throw new Error('Agent 未返回最终文本回复。');

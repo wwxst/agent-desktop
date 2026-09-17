@@ -212,6 +212,7 @@ describe('desktop main session lifecycle', () => {
       undefined,
       expect.any(Function),
       expect.any(AbortSignal),
+      expect.any(Function),
     );
     secondAgent.session.append({ type: 'user.message', content: '记住数字 952' });
 
@@ -230,6 +231,7 @@ describe('desktop main session lifecycle', () => {
       expect.stringContaining('input-edited-'),
       expect.any(Function),
       expect.any(AbortSignal),
+      expect.any(Function),
     );
     openOutputFile!({}, 'first-output.mp4');
     expect(mainMocks.showItemInFolder).toHaveBeenLastCalledWith('D:\\videos\\first-output.mp4');
@@ -418,6 +420,39 @@ describe('desktop main session lifecycle', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('forwards Model text deltas to the Renderer as agent events', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    expect(runAgentTask).toBeTypeOf('function');
+    await newSession!({});
+
+    mainMocks.webContentsSend.mockClear();
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
+      _agent: unknown,
+      _prompt: unknown,
+      _selectedVideoPaths: unknown,
+      _outputPath: unknown,
+      _trace: unknown,
+      _signal: unknown,
+      onTextDelta: (delta: string) => void,
+    ) => {
+      onTextDelta('实时');
+      onTextDelta('增量');
+      return { responseText: '完成', turnId: 'turn-delta', outputPath: undefined };
+    });
+
+    await expect(runAgentTask!({}, '流式任务')).resolves.toMatchObject({ responseText: '完成' });
+
+    expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
+      type: 'text.delta',
+      delta: '实时',
+    });
+    expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
+      type: 'text.delta',
+      delta: '增量',
+    });
   });
 
   it('cancels only the active task and clears the controller for the next task', async () => {

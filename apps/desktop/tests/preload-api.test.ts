@@ -68,7 +68,11 @@ describe('createDesktopApi', () => {
     const events: unknown[] = [];
     const unsubscribe = api.onAgentEvent((event) => events.push(event));
     listeners.get('desktop:agent-event')?.({}, { type: 'tool.started', toolName: 'probe_media' });
-    expect(events).toEqual([{ type: 'tool.started', toolName: 'probe_media' }]);
+    listeners.get('desktop:agent-event')?.({}, { type: 'text.delta', delta: '实时增量' });
+    expect(events).toEqual([
+      { type: 'tool.started', toolName: 'probe_media' },
+      { type: 'text.delta', delta: '实时增量' },
+    ]);
 
     unsubscribe();
     expect(listeners.has('desktop:agent-event')).toBe(false);
