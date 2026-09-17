@@ -6,7 +6,7 @@ import type {
   ClientStateSnapshot,
   ToolActivityItem,
 } from '@agent-desktop/client';
-import { recoverSessionEvents, type SessionEvent } from '@agent-desktop/session';
+import type { SessionEvent } from '@agent-desktop/session';
 
 export const SESSION_STATE_FILE_NAME = 'session-state.json';
 
@@ -286,16 +286,8 @@ export async function loadDesktopState(filePath: string): Promise<PersistedDeskt
   } catch (error) {
     throw new Error(`无法解析本地会话：${filePath}`, { cause: error });
   }
-  const parsed = parseDesktopState(value);
-  // 磁盘文件是真实外部边界；恢复时只还原完整事实，排除被取消或失败 Turn 的运行时残留。
-  // 过滤只作用于读入结果，不改写磁盘上已经追加的历史。
-  return {
-    ...parsed,
-    sessions: parsed.sessions.map((session) => ({
-      ...session,
-      events: recoverSessionEvents(session.events),
-    })),
-  };
+  // 磁盘历史是 append-only 事实：恢复原样读入全部事件，未完成 Step 只在重建 Model Context 时由 Session 的权威规则排除。
+  return parseDesktopState(value);
 }
 
 export async function saveDesktopState(

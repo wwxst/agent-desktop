@@ -3,10 +3,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ClientStateSnapshot } from '@agent-desktop/client';
-import type { ToolCallId } from '@agent-desktop/model';
-import type { SessionEvent, StepId, TurnId } from '@agent-desktop/session';
+import { runTurn } from '@agent-desktop/agent-loop';
+import type { Model, ModelRequest, ToolCallId } from '@agent-desktop/model';
+import { InMemorySession, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import {
   loadDesktopState,
+  parseDesktopState,
   saveDesktopState,
   type PersistedDesktopState,
 } from '../src/main/session-persistence.js';
@@ -166,12 +168,13 @@ describe('desktop session persistence', () => {
     });
   });
 
-  it('drops an incomplete Step and dangling Tool Call when restoring a Session', async () => {
+  it('keeps cancelled Turn runtime residue on disk and out of the next Turn model context', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     const cancelledTurnId = 'turn-cancelled' as TurnId;
     const cancelledStepId = 'step-cancelled' as StepId;
     const cancelledCallId = 'call-cancelled' as ToolCallId;
+    // 磁盘上保留被取消 Turn 的未完成 Step：assistant.message 与 dangling Tool Call 都是 append-only 事实。
     const cancelledEvents: readonly SessionEvent[] = [
       { type: 'turn.started', turnId: cancelledTurnId },
       { type: 'user.message', turnId: cancelledTurnId, content: '被取消的剪辑任务' },
@@ -192,26 +195,60 @@ describe('desktop session persistence', () => {
         input: { start: 0 },
       },
     ];
+    const diskEvents = [...sessionEvents('731'), ...cancelledEvents];
     await writeFile(filePath, JSON.stringify({
       ...state,
-      sessions: [
-        { ...state.sessions[0]!, events: [...sessionEvents('731'), ...cancelledEvents] },
-        state.sessions[1]!,
-      ],
+      sessions: [{ ...state.sessions[0]!, events: diskEvents }, state.sessions[1]!],
     }), 'utf8');
     const sourceBeforeLoad = await readFile(filePath, 'utf8');
 
     const restored = await loadDesktopState(filePath);
 
-    expect(restored?.sessions[0]?.events).toEqual([
-      ...sessionEvents('731'),
-      // 未完成 Turn 的用户输入是真实记录，未完成 Step 的运行时残留不恢复。
-      { type: 'turn.started', turnId: cancelledTurnId },
-      { type: 'user.message', turnId: cancelledTurnId, content: '被取消的剪辑任务' },
-    ]);
+    // 磁盘历史是 append-only 事实：load 只还原，不删除未完成 Step。
+    expect(restored?.sessions[0]?.events).toEqual(diskEvents);
     expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
-    // 恢复只读取磁盘事实，不改写已经追加的历史。
+    // 读取只读取磁盘事实，不改写已经追加的历史。
     expect(await readFile(filePath, 'utf8')).toBe(sourceBeforeLoad);
+
+    // 模拟 restoreDesktopState：磁盘事件原样注入 InMemorySession。
+    const session = new InMemorySession(restored!.sessions[0]!.events);
+    // 模拟 currentPersistedState 与 saveClientState：把当前 Session 事件整体写回状态文件。
+    await saveDesktopState(filePath, parseDesktopState({
+      ...restored!,
+      sessions: restored!.sessions.map((savedSession) => (savedSession.id === 'session-a'
+        ? { ...savedSession, events: session.events() }
+        : savedSession)),
+    }));
+
+    // 重启后的首次保存必须完整保留磁盘上已经追加的事件。
+    const saved = JSON.parse(await readFile(filePath, 'utf8')) as PersistedDesktopState;
+    expect(saved.sessions[0]?.events).toEqual(diskEvents);
+
+    // 在同一个 Session 上发起新 Turn，模型上下文仍然只由 Session 事件重建。
+    const requests: ModelRequest[] = [];
+    const model: Model = {
+      complete: async (request) => {
+        requests.push(request);
+        return { text: '继续完成。', toolCalls: [] };
+      },
+    };
+    const agent: Parameters<typeof runTurn>[0] = {
+      model,
+      session,
+      tools: { register: () => undefined, get: () => undefined, list: () => [] },
+      systemPrompt: { build: () => 'Base instructions.' },
+    };
+    await runTurn(agent, '继续剪辑');
+
+    // 未完成 Step 的 assistant.message 与 dangling Tool Call 不进入新的 Model Context。
+    expect(requests[0]?.messages).toEqual([
+      { role: 'user', content: '请记住数字 731。' },
+      { role: 'assistant', content: '已经记住。', toolCalls: [] },
+      { role: 'user', content: '被取消的剪辑任务' },
+      { role: 'user', content: '继续剪辑' },
+    ]);
+    // 新 Turn 只在完整历史之后追加事实。
+    expect(session.events().slice(0, diskEvents.length)).toEqual(diskEvents);
   });
 
   it('loads Commit 24 snapshots without titleManuallyRenamed as false', async () => {

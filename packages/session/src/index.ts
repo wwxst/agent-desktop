@@ -58,7 +58,8 @@ export class InMemorySession implements Session {
  * 只挑选完整事实：Turn 级事件、用户输入，以及已完成 Step 的全部事件。
  * Step 是否完整只由是否存在 step.completed 决定，这里是该规则的唯一权威实现。
  * 被取消或失败 Turn 中未完成 Step 的 assistant.message、tool.called 与 tool.result 都是运行时残留，
- * 恢复 Session 与重建 Model Context 都必须整体排除，避免 dangling Tool Call 进入模型请求。
+ * 重建 Model Context 时必须整体排除，避免 dangling Tool Call 进入模型请求；
+ * Session 历史本身仍然原样保留，未完成 Step 的事实不会被删除。
  */
 export function recoverSessionEvents(events: readonly SessionEvent[]): SessionEvent[] {
   const completedStepIds = new Set(
