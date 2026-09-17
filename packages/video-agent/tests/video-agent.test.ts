@@ -54,8 +54,12 @@ describe('createVideoAgent', () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async (_input, init) => {
       requests.push(JSON.parse(init?.body as string) as unknown);
-      // DeepSeek Provider 始终请求 SSE 流；这里返回最小合法流以读取模型覆盖配置。
-      return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n');
+      // DeepSeek Provider 始终请求 SSE 流；这里返回最小合法流（含终止 finish_reason）以读取模型覆盖配置。
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      );
     };
     try {
       const agent = createVideoAgent({

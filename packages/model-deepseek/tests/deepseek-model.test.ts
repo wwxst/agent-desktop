@@ -58,9 +58,13 @@ function requestBody(fetchMock: ReturnType<typeof vi.fn>): Record<string, unknow
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
-/** 单个 choices.delta 分片的 SSE 事件负载。 */
-function deltaEvent(delta: unknown): string {
-  return JSON.stringify({ choices: [{ delta }] });
+/**
+ * 单个 SSE choice 分片的负载。
+ * 真实协议里 delta（增量）与 finish_reason（终止原因）是同级字段，
+ * 终止分片只带 finish_reason；finish_reason 为 undefined 时 JSON 会省略该键。
+ */
+function choiceEvent(delta: unknown, finishReason?: string): string {
+  return JSON.stringify({ choices: [{ delta, finish_reason: finishReason }] });
 }
 
 afterEach(() => {
@@ -69,7 +73,7 @@ afterEach(() => {
 
 describe('DeepSeekModel', () => {
   it('passes the Turn AbortSignal to fetch', async () => {
-    const fetchMock = stubResponse(streamResponse([sseBody([deltaEvent({ content: 'ok' }), '[DONE]'])]));
+    const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'ok' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const controller = new AbortController();
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
@@ -80,7 +84,7 @@ describe('DeepSeekModel', () => {
 
   it('requests an SSE stream and maps a Core request and plain text response', async () => {
     const fetchMock = stubResponse(streamResponse([
-      sseBody([deltaEvent({ role: 'assistant', content: 'Hello from DeepSeek.' }), '[DONE]']),
+      sseBody([choiceEvent({ role: 'assistant', content: 'Hello from DeepSeek.' }), choiceEvent({}, 'stop'), '[DONE]']),
     ]));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
@@ -112,10 +116,11 @@ describe('DeepSeekModel', () => {
   it('accumulates text across deltas and reports each increment without changing the result', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({ content: '你' }),
-        deltaEvent({ content: '好' }),
-        deltaEvent({ content: '' }),
-        deltaEvent({ finish_reason: 'stop' }),
+        choiceEvent({ content: '你' }),
+        choiceEvent({ content: '好' }),
+        choiceEvent({ content: '' }),
+        // 终止分片只带 finish_reason，且与 delta 同级。
+        choiceEvent({}, 'stop'),
         '[DONE]',
       ]),
     ]));
@@ -133,7 +138,7 @@ describe('DeepSeekModel', () => {
   });
 
   it('omits text when the stream only carries empty content deltas', async () => {
-    stubResponse(streamResponse([sseBody([deltaEvent({ content: '' }), '[DONE]'])]));
+    stubResponse(streamResponse([sseBody([choiceEvent({ content: '' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const deltas: string[] = [];
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
@@ -145,7 +150,7 @@ describe('DeepSeekModel', () => {
 
   it('parses SSE events terminated with CRLF line endings', async () => {
     stubResponse(streamResponse([
-      `data: ${deltaEvent({ content: 'crlf' })}\r\n\r\ndata: [DONE]\r\n\r\n`,
+      `data: ${choiceEvent({ content: 'crlf' })}\r\n\r\ndata: ${choiceEvent({}, 'stop')}\r\n\r\ndata: [DONE]\r\n\r\n`,
     ]));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
@@ -154,7 +159,7 @@ describe('DeepSeekModel', () => {
 
   it('decodes a multi-byte UTF-8 character split across chunks', async () => {
     const encoder = new TextEncoder();
-    const payload = sseBody([deltaEvent({ content: '中文内容' }), '[DONE]']);
+    const payload = sseBody([choiceEvent({ content: '中文内容' }), choiceEvent({}, 'stop'), '[DONE]']);
     const bytes = encoder.encode(payload);
     // 0xE4 是 '中' 的三字节序列首字节；在这里切开必然落在字符内部。
     const splitAt = bytes.indexOf(0xe4) + 1;
@@ -170,14 +175,14 @@ describe('DeepSeekModel', () => {
   });
 
   it('finishes as soon as [DONE] arrives without waiting for the body to close', async () => {
-    stubResponse(openResponse(sseBody([deltaEvent({ content: 'done early' }), '[DONE]'])));
+    stubResponse(openResponse(sseBody([choiceEvent({ content: 'done early' }), choiceEvent({}, 'stop'), '[DONE]'])));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).resolves.toEqual({ text: 'done early', toolCalls: [] });
   });
 
   it('fails when the stream ends before [DONE]', async () => {
-    stubResponse(streamResponse([sseBody([deltaEvent({ content: 'truncated' })])]));
+    stubResponse(streamResponse([sseBody([choiceEvent({ content: 'truncated' })])]));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
@@ -194,10 +199,91 @@ describe('DeepSeekModel', () => {
     );
   });
 
+  it('completes when the stream terminates with finish_reason stop', async () => {
+    stubResponse(streamResponse([
+      sseBody([choiceEvent({ content: '完整回复' }), choiceEvent({}, 'stop'), '[DONE]']),
+    ]));
+    const model = new DeepSeekModel({ apiKey: 'test-key' });
+
+    await expect(model.complete(baseRequest)).resolves.toEqual({ text: '完整回复', toolCalls: [] });
+  });
+
+  it('fails when the stream ends without a terminating finish_reason', async () => {
+    stubResponse(streamResponse([
+      sseBody([choiceEvent({ content: '没有终止原因' }), '[DONE]']),
+    ]));
+    const model = new DeepSeekModel({ apiKey: 'test-key' });
+
+    await expect(model.complete(baseRequest)).rejects.toThrow(
+      'DeepSeek API stream ended without a terminating finish_reason',
+    );
+  });
+
+  it('does not accept a finish_reason nested inside delta as the choice terminator', async () => {
+    stubResponse(streamResponse([
+      // 旧实现把 finish_reason 当成 delta 的字段读取；协议要求它与 delta 同级。
+      sseBody([choiceEvent({ content: '嵌套终止原因', finish_reason: 'stop' }), '[DONE]']),
+    ]));
+    const model = new DeepSeekModel({ apiKey: 'test-key' });
+
+    await expect(model.complete(baseRequest)).rejects.toThrow(
+      'DeepSeek API stream ended without a terminating finish_reason',
+    );
+  });
+
+  it.each(['length', 'content_filter', 'insufficient_system_resource'])(
+    'fails when the server terminates the stream with finish_reason %s',
+    async (finishReason) => {
+      stubResponse(streamResponse([
+        sseBody([choiceEvent({ content: '部分文本' }), choiceEvent({}, finishReason), '[DONE]']),
+      ]));
+      const model = new DeepSeekModel({ apiKey: 'test-key' });
+      const deltas: string[] = [];
+
+      // 增量已经上报给展示层，但 Provider 必须拒绝，不能把部分文本当成完整 Model Response 返回。
+      await expect(model.complete({ ...baseRequest, onTextDelta: (delta) => deltas.push(delta) }))
+        .rejects.toThrow(`DeepSeek API stream terminated with finish_reason ${finishReason}`);
+      expect(deltas).toEqual(['部分文本']);
+    },
+  );
+
+  it('reports a server-side aborted termination as a plain Error instead of an AbortError', async () => {
+    stubResponse(streamResponse([
+      sseBody([choiceEvent({ content: '部分文本' }), choiceEvent({}, 'aborted'), '[DONE]']),
+    ]));
+    const model = new DeepSeekModel({ apiKey: 'test-key' });
+
+    // 服务端 finish_reason=aborted 属于协议级失败，不是客户端取消，必须用普通 Error 与 AbortError 区分。
+    await expect(model.complete(baseRequest)).rejects.toMatchObject({
+      name: 'Error',
+      message: 'DeepSeek API stream terminated with finish_reason aborted',
+    });
+  });
+
+  it.each(['length', 'aborted'])(
+    'keeps the first non-successful finish_reason %s even when a later stop follows',
+    async (finishReason) => {
+      stubResponse(streamResponse([
+        sseBody([
+          choiceEvent({ content: '部分文本' }),
+          choiceEvent({}, finishReason),
+          choiceEvent({}, 'stop'),
+          '[DONE]',
+        ]),
+      ]));
+      const model = new DeepSeekModel({ apiKey: 'test-key' });
+
+      // 先出现的失败终止原因不能被后面的 stop 覆盖，否则截断会被当成部分成功返回。
+      await expect(model.complete(baseRequest)).rejects.toThrow(
+        `DeepSeek API stream terminated with finish_reason ${finishReason}`,
+      );
+    },
+  );
+
   it('parses streamed Tool Call fragments into Core Tool Calls', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({
+        choiceEvent({
           tool_calls: [{
             index: 0,
             id: 'call-1',
@@ -205,7 +291,8 @@ describe('DeepSeekModel', () => {
             function: { name: 'echo', arguments: '{"text":' },
           }],
         }),
-        deltaEvent({ tool_calls: [{ index: 0, function: { arguments: '"hello"}' } }] }),
+        choiceEvent({ tool_calls: [{ index: 0, function: { arguments: '"hello"}' } }] }),
+        choiceEvent({}, 'tool_calls'),
         '[DONE]',
       ]),
     ]));
@@ -225,18 +312,19 @@ describe('DeepSeekModel', () => {
   it('orders streamed Tool Calls by index and concatenates arguments in arrival order', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({
+        choiceEvent({
           tool_calls: [
             { index: 1, id: 'call-b', function: { name: 'second', arguments: '{"b":' } },
             { index: 0, id: 'call-a', function: { name: 'first', arguments: '{"a":' } },
           ],
         }),
-        deltaEvent({
+        choiceEvent({
           tool_calls: [
             { index: 1, function: { arguments: '2}' } },
             { index: 0, function: { arguments: '1}' } },
           ],
         }),
+        choiceEvent({}, 'tool_calls'),
         '[DONE]',
       ]),
     ]));
@@ -253,14 +341,15 @@ describe('DeepSeekModel', () => {
   it('keeps Tool Call identity when later fragments repeat it as empty', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({
+        choiceEvent({
           tool_calls: [{
             index: 0,
             id: 'call-keep',
             function: { name: 'echo', arguments: '{' },
           }],
         }),
-        deltaEvent({ tool_calls: [{ index: 0, id: '', function: { name: '', arguments: '}' } }] }),
+        choiceEvent({ tool_calls: [{ index: 0, id: '', function: { name: '', arguments: '}' } }] }),
+        choiceEvent({}, 'tool_calls'),
         '[DONE]',
       ]),
     ]));
@@ -278,7 +367,7 @@ describe('DeepSeekModel', () => {
   it('fails for a streamed Tool Call fragment without a valid index', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({ tool_calls: [{ id: 'call-1', function: { name: 'echo', arguments: '{}' } }] }),
+        choiceEvent({ tool_calls: [{ id: 'call-1', function: { name: 'echo', arguments: '{}' } }] }),
         '[DONE]',
       ]),
     ]));
@@ -292,7 +381,7 @@ describe('DeepSeekModel', () => {
   it('fails for a negative streamed Tool Call index', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({
+        choiceEvent({
           tool_calls: [{ index: -1, id: 'call-1', function: { name: 'echo', arguments: '{}' } }],
         }),
         '[DONE]',
@@ -308,7 +397,9 @@ describe('DeepSeekModel', () => {
   it('fails when a streamed Tool Call is missing its id', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({ tool_calls: [{ index: 0, function: { name: 'echo', arguments: '{}' } }] }),
+        choiceEvent({ tool_calls: [{ index: 0, function: { name: 'echo', arguments: '{}' } }] }),
+        // 终止原因合法，才能走到 Tool Call 身份校验这一步。
+        choiceEvent({}, 'tool_calls'),
         '[DONE]',
       ]),
     ]));
@@ -322,7 +413,8 @@ describe('DeepSeekModel', () => {
   it('fails when a streamed Tool Call is missing its name', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({ tool_calls: [{ index: 0, id: 'call-1', function: { arguments: '{}' } }] }),
+        choiceEvent({ tool_calls: [{ index: 0, id: 'call-1', function: { arguments: '{}' } }] }),
+        choiceEvent({}, 'tool_calls'),
         '[DONE]',
       ]),
     ]));
@@ -336,13 +428,14 @@ describe('DeepSeekModel', () => {
   it('throws a clear error for invalid streamed Tool Call arguments JSON', async () => {
     stubResponse(streamResponse([
       sseBody([
-        deltaEvent({
+        choiceEvent({
           tool_calls: [{
             index: 0,
             id: 'call-1',
             function: { name: 'echo', arguments: '{invalid' },
           }],
         }),
+        choiceEvent({}, 'tool_calls'),
         '[DONE]',
       ]),
     ]));
@@ -366,7 +459,7 @@ describe('DeepSeekModel', () => {
 
   it('still rejects after [DONE] when the Turn was cancelled', async () => {
     stubResponse(streamResponse([
-      sseBody([deltaEvent({ content: 'partial' }), '[DONE]']),
+      sseBody([choiceEvent({ content: 'partial' }), choiceEvent({}, 'stop'), '[DONE]']),
     ]));
     const controller = new AbortController();
     const model = new DeepSeekModel({ apiKey: 'test-key' });
@@ -381,7 +474,7 @@ describe('DeepSeekModel', () => {
 
   it('maps Core Tool Definitions and honors model and baseUrl overrides', async () => {
     const fetchMock = stubResponse(streamResponse([
-      sseBody([deltaEvent({ content: 'done' }), '[DONE]']),
+      sseBody([choiceEvent({ content: 'done' }), choiceEvent({}, 'stop'), '[DONE]']),
     ]));
     const model = new DeepSeekModel({
       apiKey: 'test-key',
@@ -413,7 +506,7 @@ describe('DeepSeekModel', () => {
   });
 
   it('maps assistant Tool Call history to DeepSeek messages', async () => {
-    const fetchMock = stubResponse(streamResponse([sseBody([deltaEvent({ content: 'done' }), '[DONE]'])]));
+    const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'done' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
     await model.complete({
@@ -444,7 +537,7 @@ describe('DeepSeekModel', () => {
   });
 
   it('maps Core Tool Result history to a DeepSeek tool message', async () => {
-    const fetchMock = stubResponse(streamResponse([sseBody([deltaEvent({ content: 'done' }), '[DONE]'])]));
+    const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'done' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
     await model.complete({

@@ -174,14 +174,33 @@ function readSseEvent(rawEvent: string): SseEvent | undefined {
 }
 
 /**
- * 只读取当前实现必需的 choices[0].delta。
- * 最后一个分片只带 finish_reason 与 usage，delta 可能为空或缺失，返回 undefined 让调用方跳过。
+ * choices[0] 中当前实现需要的两个同级字段。
+ * delta（增量）与 finish_reason（终止原因）在协议里同级；
+ * 终止分片只带 finish_reason，delta 可能为空对象或缺失，因此 delta 允许为 undefined。
  */
-function readStreamDelta(payload: unknown): DeepSeekStreamDelta | undefined {
+interface DeepSeekStreamChoice {
+  readonly delta: DeepSeekStreamDelta | undefined;
+  readonly finishReason: string | undefined;
+}
+
+/**
+ * 读取当前实现必需的 choices[0]。
+ * finish_reason 必须从 choice 这一层读取：它与 delta 同级，
+ * 把它当成 delta 的字段会丢掉真实的终止语义。
+ * 没有 choices 或首个 choice 不是对象时返回 undefined，让调用方跳过该事件。
+ */
+function readStreamChoice(payload: unknown): DeepSeekStreamChoice | undefined {
   if (!isRecord(payload) || !Array.isArray(payload.choices)) return undefined;
   const firstChoice: unknown = payload.choices[0];
-  if (!isRecord(firstChoice) || !isRecord(firstChoice.delta)) return undefined;
-  return firstChoice.delta as DeepSeekStreamDelta;
+  if (!isRecord(firstChoice)) return undefined;
+
+  const finishReason = firstChoice.finish_reason;
+  return {
+    // delta 缺失或不是对象时视为没有增量，而不是把损坏的形状当成空增量继续处理。
+    delta: isRecord(firstChoice.delta) ? (firstChoice.delta as DeepSeekStreamDelta) : undefined,
+    // finish_reason 为 null 表示该分片不是终止分片；空字符串同样不携带终止语义。
+    finishReason: typeof finishReason === 'string' && finishReason.length > 0 ? finishReason : undefined,
+  };
 }
 
 /**
@@ -236,9 +255,19 @@ function mapToolArguments(toolName: string, argsJson: string): unknown {
 }
 
 /**
+ * 只有这两个 finish_reason 表示模型正常结束。
+ * length（达到长度上限）、content_filter（内容过滤）、insufficient_system_resource（系统资源不足）
+ * 与 aborted（服务端中断）都说明响应不完整，不能当成成功结果返回。
+ */
+function isSuccessfulFinishReason(finishReason: string): boolean {
+  return finishReason === 'stop' || finishReason === 'tool_calls';
+}
+
+/**
  * 读取 SSE 流并拼装完整 Model Response。
  * 文本增量只通过 onTextDelta 实时上报；返回值始终是完整响应，
  * 因此 Session 仍然只记录完整 assistant 事实，不记录任何 token。
+ * 只有收到 [DONE] 且终止原因是 stop 或 tool_calls 时，才认为响应完整。
  */
 async function readStreamedResponse(
   body: ReadableStream<Uint8Array>,
@@ -250,6 +279,7 @@ async function readStreamedResponse(
   let text = '';
   let receivedChoicesChunk = false;
   let receivedDone = false;
+  let receivedFinishReason: string | undefined;
   let buffer = '';
 
   while (!receivedDone) {
@@ -272,18 +302,31 @@ async function readStreamedResponse(
         break;
       }
 
-      const delta = readStreamDelta(event.value);
-      if (delta === undefined) continue;
+      const choice = readStreamChoice(event.value);
+      if (choice === undefined) continue;
       receivedChoicesChunk = true;
 
-      // 空字符串增量没有展示价值，也不能进入返回值。
-      if (typeof delta.content === 'string' && delta.content.length > 0) {
-        text += delta.content;
-        onTextDelta?.(delta.content);
+      // 终止分片只带 finish_reason，delta 可能为空，因此两者都要读取，不能提前跳过。
+      const delta = choice.delta;
+      if (delta !== undefined) {
+        // 空字符串增量没有展示价值，也不能进入返回值。
+        if (typeof delta.content === 'string' && delta.content.length > 0) {
+          text += delta.content;
+          onTextDelta?.(delta.content);
+        }
+
+        for (const toolCallDelta of delta.tool_calls ?? []) {
+          appendToolCallDelta(streamedToolCalls, toolCallDelta);
+        }
       }
 
-      for (const toolCallDelta of delta.tool_calls ?? []) {
-        appendToolCallDelta(streamedToolCalls, toolCallDelta);
+      // 只有 stop 与 tool_calls 代表完整响应；length、content_filter、insufficient_system_resource、
+      // aborted 都意味着文本或 Tool Call 可能被截断，必须立即失败，且不能被后面的分片覆盖。
+      if (choice.finishReason !== undefined) {
+        if (!isSuccessfulFinishReason(choice.finishReason)) {
+          throw new Error(`DeepSeek API stream terminated with finish_reason ${choice.finishReason}`);
+        }
+        receivedFinishReason = choice.finishReason;
       }
     }
 
@@ -297,6 +340,10 @@ async function readStreamedResponse(
   // 200 响应里没有任何 choices 分片说明响应不符合协议，不能伪装成空成功结果。
   if (!receivedChoicesChunk) {
     throw new Error('DeepSeek API stream ended without a choices chunk');
+  }
+  // [DONE] 前没有终止原因，说明服务端没有给出结束语义，无法判断响应是否完整。
+  if (receivedFinishReason === undefined) {
+    throw new Error('DeepSeek API stream ended without a terminating finish_reason');
   }
 
   const toolCalls: ToolCall[] = [...streamedToolCalls]
