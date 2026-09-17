@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/index.js';
 import type { AgentClientApi, AgentRuntimeEvent, AgentTaskResult, ClientStateSnapshot } from '../src/index.js';
 
@@ -30,9 +30,46 @@ const api: AgentClientApi = {
   openOutputFile: async () => undefined,
 };
 
+// jsdom 不实现布局滚动与顶层浮层；命中区域和关闭行为由真实浏览器测试验证。
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  HTMLElement.prototype.showPopover = function () { this.style.display = 'block'; };
+});
+
 afterEach(() => cleanup());
 
 describe('shared App', () => {
+  it('sends with Enter but leaves Shift+Enter and IME confirmation to the editor', async () => {
+    const runAgentTask = vi.fn(api.runAgentTask);
+    render(<App api={{ ...api, runAgentTask }} />);
+    await waitFor(() => expect((screen.getByRole('button', { name: '新会话' }) as HTMLButtonElement).disabled).toBe(false));
+    const input = screen.getByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '保留精彩片段' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(runAgentTask).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('保留精彩片段'));
+  });
+
+  it('shows a settings load failure instead of an endless loading label', async () => {
+    render(<App api={{ ...api, loadRuntimeSettings: async () => { throw new Error('设置文件无法读取'); } }} />);
+    fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '设置文件无法读取');
+    expect(screen.queryByText('正在加载设置…')).toBeNull();
+  });
+
+  it('keeps the composer draft when settings opens and closes', async () => {
+    render(<App api={api} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '尚未发送的草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(await screen.findByRole('button', { name: '关闭设置' }));
+    expect(screen.getByLabelText('剪辑需求')).toBe(input);
+    expect(input).toHaveProperty('value', '尚未发送的草稿');
+  });
+
   it('changes Send to Stop, shows cancelled, and can send again', async () => {
     let rejectRunning: ((reason: Error) => void) | undefined;
     const runAgentTask = vi.fn()
@@ -59,6 +96,7 @@ describe('shared App', () => {
     render(<App api={api} />);
     expect(await screen.findByText('Agent Desktop')).toBeTruthy();
     expect(screen.getByRole('button', { name: '新会话' })).toBeTruthy();
+    expect(screen.queryByText('本地运行')).toBeNull();
   });
 
   it('loads and saves runtime settings without receiving or echoing saved API keys', async () => {
@@ -77,13 +115,17 @@ describe('shared App', () => {
     render(<App api={{ ...api, saveRuntimeSettings }} />);
 
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
-    const deepSeekKey = (await screen.findAllByLabelText('API Key', { selector: 'input' }))[0]!;
+    const deepSeekKey = (await screen.findAllByLabelText('接口密钥', { selector: 'input' }))[0]!;
     expect((deepSeekKey as HTMLInputElement).value).toBe('');
     expect(screen.getAllByText('未配置')).toHaveLength(2);
-    expect(screen.getByText('使用系统 PATH')).toBeTruthy();
+    expect(screen.getByText('通过系统环境变量查找视频处理程序')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '对话模型' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '视觉模型' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '语音识别' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '视频处理' })).toBeTruthy();
 
     fireEvent.change(deepSeekKey, { target: { value: 'renderer-only-new-key' } });
-    fireEvent.change(screen.getByLabelText('Model', { exact: true }), { target: { value: 'runtime-model' } });
+    fireEvent.change(screen.getByLabelText('模型名称', { exact: true }), { target: { value: 'runtime-model' } });
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
 
     await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({

@@ -32,13 +32,6 @@ const STATUS_LABELS: Readonly<Record<ToolActivityStatus, string>> = {
   cancelled: '已停止',
 };
 
-const STATUS_SYMBOLS: Readonly<Record<ToolActivityStatus, string>> = {
-  running: '●',
-  completed: '✓',
-  failed: '×',
-  cancelled: '■',
-};
-
 /** 将 Trace 中的技术工具名压缩为面向用户的执行过程。 */
 export function ToolActivity({
   items,
@@ -64,7 +57,7 @@ export function ToolActivity({
           onClick={onToggle}
         >
           <span>{expanded ? '收起工具执行过程' : `已执行 ${items.length} 个工具`}</span>
-          <span aria-hidden="true">{expanded ? '▴' : '▾'}</span>
+          <svg className="tool-chevron" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
         </button>
       )}
       {showsDetails && (
@@ -72,7 +65,12 @@ export function ToolActivity({
           {items.map((item) => (
             <li key={item.toolCallId} className="tool-row">
               <span className={`tool-state state-${item.status}`} aria-hidden="true">
-                {STATUS_SYMBOLS[item.status]}
+                <svg viewBox="0 0 16 16" width="16" height="16">
+                  {item.status === 'running' ? <circle className="tool-spinner" cx="8" cy="8" r="5" />
+                    : item.status === 'completed' ? <path d="m3 8 3 3 7-7" />
+                      : item.status === 'failed' ? <path d="m4 4 8 8M12 4l-8 8" />
+                        : <rect x="4" y="4" width="8" height="8" rx="1" />}
+                </svg>
               </span>
               <div className="tool-copy">
                 <strong>{TOOL_LABELS[item.toolName] ?? '执行工具'}</strong>

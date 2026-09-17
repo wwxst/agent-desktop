@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type {
   AgentClientApi,
   AgentRuntimeEvent,
@@ -82,7 +83,11 @@ export function App({ api }: AppProps) {
   const activeSessionIdRef = useRef(INITIAL_RENDERER_SESSION_ID);
   const nextSessionNumber = useRef(2);
   const nextMessageId = useRef(1);
-  const conversationScroll = useRef<HTMLElement>(null);
+  const conversationScroll = useRef<HTMLDivElement>(null);
+  const activeSessionButton = useRef<HTMLButtonElement>(null);
+  const sessionMenu = useRef<HTMLDivElement>(null);
+  const sessionMenuTrigger = useRef<HTMLButtonElement>(null);
+  const settingsButton = useRef<HTMLButtonElement>(null);
 
   const activeConversation = conversations.find((conversation) => (
     conversation.id === activeSessionId
@@ -182,7 +187,18 @@ export function App({ api }: AppProps) {
   useEffect(() => {
     const scrollContainer = conversationScroll.current;
     if (scrollContainer !== null) scrollContainer.scrollTop = scrollContainer.scrollHeight;
-  }, [activeSessionId, activeConversation.messages]);
+  }, [activeSessionId, activeConversation.messages, activeView]);
+
+  useEffect(() => {
+    activeSessionButton.current?.scrollIntoView({ block: 'nearest' });
+  }, [activeSessionId]);
+
+  useLayoutEffect(() => {
+    if (openSessionMenuId !== null) {
+      // 原生浮层进入顶层，避免被会话列表裁切；source 同时提供定位锚点和焦点返回目标。
+      sessionMenu.current!.showPopover({ source: sessionMenuTrigger.current! });
+    }
+  }, [openSessionMenuId]);
 
   const selectVideo = async () => {
     const videos = await api.selectVideoFile();
@@ -215,7 +231,6 @@ export function App({ api }: AppProps) {
 
   const beginRename = (conversation: ClientConversation) => {
     if (isProcessing) return;
-    setOpenSessionMenuId(null);
     setConfirmDeleteSessionId(null);
     setEditingSessionId(conversation.id);
     setEditingTitle(conversation.title);
@@ -233,6 +248,7 @@ export function App({ api }: AppProps) {
     }
     setEditingSessionId(null);
     setEditingTitle('');
+    setOpenSessionMenuId(null);
   };
 
   const deleteSession = async (sessionId: string) => {
@@ -401,6 +417,19 @@ export function App({ api }: AppProps) {
         <div className="sidebar-brand">
           <strong>Agent Desktop</strong>
         </div>
+        <button
+          className="sidebar-new-session"
+          type="button"
+          aria-label="新会话"
+          title="新会话"
+          disabled={!isSessionReady || isProcessing}
+          onClick={() => void startNewSession()}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+            <path d="M8 3v10M3 8h10" />
+          </svg>
+          <span>新会话</span>
+        </button>
         <div className="sidebar-section-label">工作区</div>
         <div className="sidebar-workspace" aria-label="当前工作区">
           <span className="sidebar-folder" aria-hidden="true">
@@ -410,62 +439,47 @@ export function App({ api }: AppProps) {
           </span>
           <span>视频剪辑</span>
         </div>
-        <button
-          className="sidebar-new-session"
-          type="button"
-          disabled={!isSessionReady || isProcessing}
-          onClick={() => void startNewSession()}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          <span>新会话</span>
-        </button>
-        <div className="sidebar-section-label sidebar-sessions-label">会话</div>
+        <div className="sidebar-section-label sidebar-sessions-label">
+          <span>会话</span>
+          <button className="sidebar-search" type="button" disabled aria-label="搜索会话（待接入）" title="搜索会话待接入">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
+            <span>搜索待接入</span>
+          </button>
+        </div>
         <nav className="sidebar-session-list" aria-label="会话列表">
           {conversations.map((conversation) => {
             const active = conversation.id === activeSessionId;
+            const selected = active && activeView === 'conversation';
             const editing = editingSessionId === conversation.id;
             const menuOpen = openSessionMenuId === conversation.id;
             const confirmingDelete = confirmDeleteSessionId === conversation.id;
             return (
               <div
                 key={conversation.id}
-                className={`sidebar-session-row${active ? ' active' : ''}`}
+                className={`sidebar-session-row${selected ? ' active' : ''}`}
               >
-                {editing ? (
-                  <input
-                    className="sidebar-session-title-input"
-                    aria-label="会话标题"
-                    value={editingTitle}
-                    autoFocus
-                    onChange={(event) => setEditingTitle(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') finishRename(conversation.id, true);
-                      if (event.key === 'Escape') finishRename(conversation.id, false);
-                    }}
-                    onBlur={() => finishRename(conversation.id, true)}
-                  />
-                ) : (
-                  <button
-                    className={`sidebar-session${active ? ' active' : ''}`}
-                    type="button"
-                    title={conversation.title}
-                    disabled={!isSessionReady || isProcessing}
-                    {...active ? { 'aria-current': 'page' as const } : {}}
-                    onClick={() => void switchSession(conversation.id)}
-                  >
-                    <span>{conversation.title}</span>
-                    {active && isProcessing && <small>进行中</small>}
-                  </button>
-                )}
+                <button
+                  ref={active ? activeSessionButton : undefined}
+                  className="sidebar-session"
+                  type="button"
+                  aria-label={conversation.title}
+                  title={conversation.title}
+                  disabled={!isSessionReady || isProcessing}
+                  {...selected ? { 'aria-current': 'page' as const } : {}}
+                  onClick={() => void switchSession(conversation.id)}
+                >
+                  <span>{conversation.title}</span>
+                  {active && isProcessing && <small>进行中</small>}
+                </button>
                 <button
                   className="sidebar-session-menu-button"
                   type="button"
                   aria-label={`会话操作：${conversation.title}`}
                   title="会话操作"
-                  disabled={!isSessionReady || isProcessing || editing}
-                  onClick={() => {
+                  aria-expanded={menuOpen}
+                  disabled={!isSessionReady || isProcessing}
+                  onClick={(event) => {
+                    sessionMenuTrigger.current = event.currentTarget;
                     setOpenSessionMenuId(menuOpen ? null : conversation.id);
                     setConfirmDeleteSessionId(null);
                   }}
@@ -474,19 +488,52 @@ export function App({ api }: AppProps) {
                     <circle cx="3" cy="8" r="1" /><circle cx="8" cy="8" r="1" /><circle cx="13" cy="8" r="1" />
                   </svg>
                 </button>
-                {menuOpen && !confirmingDelete && (
-                  <div className="sidebar-session-menu" aria-label={`会话菜单：${conversation.title}`}>
-                    <button type="button" onClick={() => beginRename(conversation)}>重命名</button>
-                    <button type="button" onClick={() => setConfirmDeleteSessionId(conversation.id)}>删除</button>
-                  </div>
-                )}
-                {confirmingDelete && (
-                  <div className="sidebar-session-confirm" aria-label="删除会话确认">
-                    <p>删除会话将清除聊天记录和会话上下文，但不会删除已经生成的视频文件。</p>
-                    <div>
-                      <button type="button" onClick={() => void deleteSession(conversation.id)}>删除会话</button>
-                      <button type="button" onClick={() => setConfirmDeleteSessionId(null)}>取消</button>
-                    </div>
+                {menuOpen && (
+                  <div
+                    ref={sessionMenu}
+                    popover="auto"
+                    className={`sidebar-session-menu${confirmingDelete || editing ? ' sidebar-session-editor' : ''}`}
+                    aria-label={confirmingDelete ? '删除会话确认' : `会话菜单：${conversation.title}`}
+                    onToggle={(event) => {
+                      if (event.newState === 'closed') {
+                        setOpenSessionMenuId(null);
+                        setConfirmDeleteSessionId(null);
+                        setEditingSessionId(null);
+                      }
+                    }}
+                  >
+                    {editing ? (
+                      <input
+                        className="sidebar-session-title-input"
+                        aria-label="会话标题"
+                        value={editingTitle}
+                        autoFocus
+                        onFocus={(event) => event.currentTarget.select()}
+                        onChange={(event) => setEditingTitle(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === 'Escape') {
+                            event.preventDefault();
+                            // 先卸载编辑框再返回焦点，避免 Escape 又触发旧 onBlur 保存。
+                            flushSync(() => finishRename(conversation.id, event.key === 'Enter'));
+                            sessionMenuTrigger.current?.focus();
+                          }
+                        }}
+                        onBlur={() => finishRename(conversation.id, true)}
+                      />
+                    ) : confirmingDelete ? (
+                      <>
+                        <p>删除会话将清除聊天记录和会话上下文，但不会删除已经生成的视频文件。</p>
+                        <div className="sidebar-session-confirm-actions">
+                          <button type="button" onClick={() => void deleteSession(conversation.id)}>删除会话</button>
+                          <button type="button" onClick={() => setConfirmDeleteSessionId(null)}>取消</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" autoFocus onClick={() => beginRename(conversation)}>重命名</button>
+                        <button type="button" onClick={() => setConfirmDeleteSessionId(conversation.id)}>删除</button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -494,8 +541,11 @@ export function App({ api }: AppProps) {
           })}
         </nav>
         <button
+          ref={settingsButton}
           className={`sidebar-settings${activeView === 'settings' ? ' active' : ''}`}
           type="button"
+          aria-label="设置"
+          title="设置"
           aria-current={activeView === 'settings' ? 'page' : undefined}
           onClick={() => setActiveView('settings')}
         >
@@ -505,21 +555,21 @@ export function App({ api }: AppProps) {
           </svg>
           <span>设置</span>
         </button>
-        <div className="sidebar-footer">
-          <span className="sidebar-status-dot" aria-hidden="true" />
-          <span>本地运行</span>
-        </div>
       </aside>
 
       <div className="app-main">
-      {activeView === 'settings' ? (
-        <RuntimeSettingsPanel api={api} isProcessing={isProcessing} />
-      ) : (
+      {activeView === 'settings' && (
+        <RuntimeSettingsPanel api={api} isProcessing={isProcessing} onClose={() => {
+          // 卸载模态框后再还原键盘焦点，避免焦点仍被原生模态层圈定。
+          flushSync(() => setActiveView('conversation'));
+          settingsButton.current!.focus();
+        }} />
+      )}
       <main
-        ref={conversationScroll}
         className={`conversation-scroll${hasConversation ? '' : ' conversation-scroll-empty'}`}
         aria-label="对话工作区"
       >
+        <div className="conversation-history" ref={conversationScroll}>
         <div className="conversation-feed" aria-live="polite">
           {messages.map((message) => message.role === 'user' ? (
             <article key={message.id} className="message-block user-message" aria-label="你的任务">
@@ -553,14 +603,14 @@ export function App({ api }: AppProps) {
               {message.status === 'cancelled' ? (
                 <>
                   <div className="agent-heading">
-                    <span className="agent-mark" aria-hidden="true">■</span>
+                    <span className="agent-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1" /></svg></span>
                     <strong>已停止</strong>
                   </div>
                 </>
               ) : message.status === 'failed' ? (
                 <>
                   <div className="agent-heading error-heading">
-                    <span className="agent-mark error-mark" aria-hidden="true">!</span>
+                    <span className="agent-mark error-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M8 4.5v4M8 11v.5" /></svg></span>
                     <strong>任务失败</strong>
                   </div>
                   <div className="message-content"><p>{message.errorMessage}</p></div>
@@ -568,7 +618,7 @@ export function App({ api }: AppProps) {
               ) : (
                 <>
                   <div className="agent-heading">
-                    <span className="agent-mark" aria-hidden="true">▶</span>
+                    <span className="agent-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m5 3 7 5-7 5Z" /></svg></span>
                     <strong>Agent</strong>
                   </div>
                   {message.status === 'processing' ? (
@@ -601,6 +651,7 @@ export function App({ api }: AppProps) {
             </article>
           ))}
         </div>
+        </div>
 
         <section
           className={`composer-seat ${hasConversation ? 'composer-dock' : 'composer-hero'}`}
@@ -608,15 +659,13 @@ export function App({ api }: AppProps) {
         >
           {!hasConversation && (
             <div className="empty-state">
-              <span className="empty-state-mark" aria-hidden="true">▶</span>
-              <h2>开始一个视频任务</h2>
+              <h2><svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><rect x="3" y="6" width="26" height="20" rx="5" /><path d="m13 11 8 5-8 5Z" /></svg>开始一个视频任务</h2>
               <p>选择视频，或者直接告诉 Agent 你想做什么。</p>
             </div>
           )}
           <div className="composer-wrap">{composer}</div>
         </section>
         </main>
-      )}
       </div>
     </div>
   );

@@ -51,6 +51,12 @@ export function Composer({
         placeholder="告诉 Agent 你想做什么…"
         rows={1}
         onChange={(event) => onPromptChange(event.target.value)}
+        onKeyDown={(event) => {
+          // 输入法确认和 Shift+Enter 留给文本框，只有普通 Enter 提交真实任务。
+          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (!isProcessing && prompt.trim()) onSend();
+        }}
       />
 
       <div className="composer-toolbar">

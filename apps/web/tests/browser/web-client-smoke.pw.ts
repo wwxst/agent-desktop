@@ -25,17 +25,17 @@ test('runs the shared client task and preserves session state', async ({ page })
   const secretInputs = page.locator('input[type="password"]');
   await expect(secretInputs).toHaveCount(2);
   await secretInputs.first().fill('web-deepseek-secret');
-  await page.getByLabel('Model', { exact: true }).fill('web-runtime-model');
+  await page.getByLabel('模型名称', { exact: true }).fill('web-runtime-model');
   await page.getByRole('button', { name: '保存设置' }).click();
   await expect(page.getByText('设置已保存，将从下一次任务开始生效。')).toBeVisible();
   await expect(secretInputs.first()).toHaveValue('');
   await expect(page.getByText('来源：本机设置').first()).toBeVisible();
-  await expect(page.getByText('使用系统 PATH')).toBeVisible();
+  await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await page.setViewportSize({ width: 800, height: 600 });
   await expectNoHorizontalOverflow(page);
 
-  await page.getByRole('button', { name: '会话 1', exact: true }).click();
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
   await expect(page.getByRole('main', { name: '对话工作区' })).toBeVisible();
 
   await composer.fill('取消 Web Agent');

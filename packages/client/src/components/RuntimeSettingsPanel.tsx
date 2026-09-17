@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AgentClientApi, RuntimeSecretStatus, RuntimeSettings } from '../api.js';
 
 interface RuntimeSettingsPanelProps {
   readonly api: AgentClientApi;
   readonly isProcessing: boolean;
+  readonly onClose: () => void;
 }
 
 function sourceLabel(status: RuntimeSecretStatus): string | null {
@@ -22,7 +23,9 @@ function SecretStatus({ status }: { readonly status: RuntimeSecretStatus }) {
   );
 }
 
-export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanelProps) {
+export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSettingsPanelProps) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [section, setSection] = useState('deepseek');
   const [settings, setSettings] = useState<RuntimeSettings | null>(null);
   const [deepSeekApiKey, setDeepSeekApiKey] = useState('');
   const [visionApiKey, setVisionApiKey] = useState('');
@@ -33,6 +36,12 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
   const [whisperCliPath, setWhisperCliPath] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    // 原生模态框负责焦点圈定、Escape 关闭和背景不可交互，避免自建焦点管理。
+    dialog.current!.showModal();
+  }, []);
 
   const applySettings = (next: RuntimeSettings) => {
     setSettings(next);
@@ -48,7 +57,10 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
     void api.loadRuntimeSettings().then((next) => {
       if (mounted) applySettings(next);
     }).catch((error: unknown) => {
-      if (mounted) setMessage(error instanceof Error ? error.message : '无法加载设置。');
+      if (mounted) {
+        setHasError(true);
+        setMessage(error instanceof Error ? error.message : '无法加载设置。');
+      }
     });
     return () => { mounted = false; };
   }, [api]);
@@ -57,6 +69,7 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
     if (isProcessing || isSaving) return;
     setIsSaving(true);
     setMessage(null);
+    setHasError(false);
     try {
       const next = await api.saveRuntimeSettings({
         ...(deepSeekApiKey.length === 0 ? {} : { deepSeekApiKey }),
@@ -73,6 +86,7 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
       setVisionApiKey('');
       setMessage('设置已保存，将从下一次任务开始生效。');
     } catch (error) {
+      setHasError(true);
       setMessage(error instanceof Error ? error.message : '无法保存设置。');
     } finally {
       setIsSaving(false);
@@ -83,95 +97,118 @@ export function RuntimeSettingsPanel({ api, isProcessing }: RuntimeSettingsPanel
     if (isProcessing || isSaving) return;
     setIsSaving(true);
     setMessage(null);
+    setHasError(false);
     try {
       const next = await api.saveRuntimeSettings({ [name]: null });
       applySettings(next);
-      setMessage('已清除本机保存的 API Key。');
+      setMessage('已清除本机保存的接口密钥。');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '无法清除 API Key。');
+      setHasError(true);
+      setMessage(error instanceof Error ? error.message : '无法清除接口密钥。');
     } finally {
       setIsSaving(false);
     }
   };
 
-  if (settings === null) {
-    return <main className="settings-page" aria-label="设置"><p>正在加载设置…</p></main>;
-  }
-
   const disabled = isProcessing || isSaving;
   return (
-    <main className="settings-page" aria-label="设置">
-      <div className="settings-content">
-        <header className="settings-header">
-          <h1>设置</h1>
-          <p>运行时设置会在下一次任务开始时生效。</p>
-        </header>
+    <dialog ref={dialog} className="settings-dialog" aria-label="运行时设置" onCancel={onClose} onClose={onClose}
+      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <nav className="settings-nav" aria-label="设置分区">
+        <h1>设置</h1>
+        {['deepseek', 'vision', 'whisper', 'ffmpeg'].map((id) => (
+          <button key={id} type="button" aria-current={section === id ? 'location' : undefined}
+            disabled={settings === null} onClick={() => {
+              setSection(id);
+              document.getElementById(`settings-${id}`)!.scrollIntoView({ block: 'start' });
+            }}>
+            {{ deepseek: '对话模型', vision: '视觉模型', whisper: '语音识别', ffmpeg: '视频处理' }[id]}
+          </button>
+        ))}
+      </nav>
+      <div className="settings-body">
+        <div className="settings-topbar">
+          <button type="button" className="icon-button settings-close" aria-label="关闭设置" onClick={onClose} autoFocus>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+          </button>
+        </div>
+        <main className="settings-page" aria-label="设置">
+          {settings === null ? (
+            <p role={hasError ? 'alert' : 'status'} className={hasError ? 'settings-error' : undefined}>{message ?? '正在加载设置…'}</p>
+          ) : (
+            <div className="settings-content">
+              <header className="settings-header">
+                <p>运行时设置会在下一次任务开始时生效。</p>
+              </header>
 
-        <section className="settings-section" aria-labelledby="settings-deepseek">
-          <h2 id="settings-deepseek">DeepSeek</h2>
-          <label>
-            <span>API Key</span>
-            <input
-              type="password"
-              value={deepSeekApiKey}
-              disabled={disabled}
-              autoComplete="off"
-              placeholder="输入新 Key（不会回显已保存 Key）"
-              onChange={(event) => setDeepSeekApiKey(event.target.value)}
-            />
-          </label>
-          <div className="settings-secret-row">
-            <SecretStatus status={settings.deepSeek.apiKey} />
-            <button
-              type="button"
-              disabled={disabled || settings.deepSeek.apiKey.source !== 'saved'}
-              onClick={() => void clearSecret('deepSeekApiKey')}
-            >清除本机 Key</button>
-          </div>
-          <label><span>Base URL</span><input placeholder="留空使用环境变量或 Provider 默认值" value={deepSeekBaseUrl} disabled={disabled} onChange={(event) => setDeepSeekBaseUrl(event.target.value)} /></label>
-          <label><span>Model</span><input placeholder="留空使用环境变量或 Provider 默认值" value={deepSeekModel} disabled={disabled} onChange={(event) => setDeepSeekModel(event.target.value)} /></label>
-        </section>
+              <section className="settings-section" aria-labelledby="settings-deepseek">
+                <h2 id="settings-deepseek">对话模型</h2>
+                <label>
+                  <span>接口密钥</span>
+                  <input
+                    type="password"
+                    value={deepSeekApiKey}
+                    disabled={disabled}
+                    autoComplete="off"
+                    placeholder="输入新密钥（不会回显已保存密钥）"
+                    onChange={(event) => setDeepSeekApiKey(event.target.value)}
+                  />
+                </label>
+                <div className="settings-secret-row">
+                  <SecretStatus status={settings.deepSeek.apiKey} />
+                  <button
+                    type="button"
+                    disabled={disabled || settings.deepSeek.apiKey.source !== 'saved'}
+                    onClick={() => void clearSecret('deepSeekApiKey')}
+                  >清除本机密钥</button>
+                </div>
+                <label><span>服务地址</span><input placeholder="留空时使用环境变量或服务默认值" value={deepSeekBaseUrl} disabled={disabled} onChange={(event) => setDeepSeekBaseUrl(event.target.value)} /></label>
+                <label><span>模型名称</span><input placeholder="留空时使用环境变量或服务默认值" value={deepSeekModel} disabled={disabled} onChange={(event) => setDeepSeekModel(event.target.value)} /></label>
+              </section>
 
-        <section className="settings-section" aria-labelledby="settings-vision">
-          <h2 id="settings-vision">Vision</h2>
-          <label>
-            <span>API Key</span>
-            <input
-              type="password"
-              value={visionApiKey}
-              disabled={disabled}
-              autoComplete="off"
-              placeholder="输入新 Key（不会回显已保存 Key）"
-              onChange={(event) => setVisionApiKey(event.target.value)}
-            />
-          </label>
-          <div className="settings-secret-row">
-            <SecretStatus status={settings.vision.apiKey} />
-            <button
-              type="button"
-              disabled={disabled || settings.vision.apiKey.source !== 'saved'}
-              onClick={() => void clearSecret('visionApiKey')}
-            >清除本机 Key</button>
-          </div>
-          <label><span>Base URL</span><input placeholder="留空使用环境变量或 Provider 默认值" value={visionBaseUrl} disabled={disabled} onChange={(event) => setVisionBaseUrl(event.target.value)} /></label>
-        </section>
+              <section className="settings-section" aria-labelledby="settings-vision">
+                <h2 id="settings-vision">视觉模型</h2>
+                <label>
+                  <span>接口密钥</span>
+                  <input
+                    type="password"
+                    value={visionApiKey}
+                    disabled={disabled}
+                    autoComplete="off"
+                    placeholder="输入新密钥（不会回显已保存密钥）"
+                    onChange={(event) => setVisionApiKey(event.target.value)}
+                  />
+                </label>
+                <div className="settings-secret-row">
+                  <SecretStatus status={settings.vision.apiKey} />
+                  <button
+                    type="button"
+                    disabled={disabled || settings.vision.apiKey.source !== 'saved'}
+                    onClick={() => void clearSecret('visionApiKey')}
+                  >清除本机密钥</button>
+                </div>
+                <label><span>服务地址</span><input placeholder="留空时使用环境变量或服务默认值" value={visionBaseUrl} disabled={disabled} onChange={(event) => setVisionBaseUrl(event.target.value)} /></label>
+              </section>
 
-        <section className="settings-section" aria-labelledby="settings-whisper">
-          <h2 id="settings-whisper">Whisper</h2>
-          <label><span>Model Path</span><input value={whisperModelPath} disabled={disabled} onChange={(event) => setWhisperModelPath(event.target.value)} /></label>
-          <label><span>CLI Path</span><input value={whisperCliPath} disabled={disabled} onChange={(event) => setWhisperCliPath(event.target.value)} /></label>
-        </section>
+              <section className="settings-section" aria-labelledby="settings-whisper">
+                <h2 id="settings-whisper">语音识别</h2>
+                <label><span>模型文件路径</span><input value={whisperModelPath} disabled={disabled} onChange={(event) => setWhisperModelPath(event.target.value)} /></label>
+                <label><span>命令行路径</span><input value={whisperCliPath} disabled={disabled} onChange={(event) => setWhisperCliPath(event.target.value)} /></label>
+              </section>
 
-        <section className="settings-section" aria-labelledby="settings-ffmpeg">
-          <h2 id="settings-ffmpeg">FFmpeg</h2>
-          <p className="settings-readonly">使用系统 PATH</p>
-        </section>
+              <section className="settings-section" aria-labelledby="settings-ffmpeg">
+                <h2 id="settings-ffmpeg">视频处理</h2>
+                <p className="settings-readonly">通过系统环境变量查找视频处理程序</p>
+              </section>
 
-        {message !== null && <p className="settings-message" role="status">{message}</p>}
-        <button className="settings-save" type="button" disabled={disabled} onClick={() => void save()}>
-          {isSaving ? '正在保存…' : '保存设置'}
-        </button>
+              {message !== null && <p className={`settings-message${hasError ? ' settings-error' : ''}`} role={hasError ? 'alert' : 'status'}>{message}</p>}
+              <button className="settings-save" type="button" disabled={disabled} onClick={() => void save()}>
+                {isSaving ? '正在保存…' : '保存设置'}
+              </button>
+            </div>
+          )}
+        </main>
       </div>
-    </main>
+    </dialog>
   );
 }

@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/renderer/App.js';
 import type {
   AgentRuntimeEvent,
   AgentTaskResult,
   DesktopApi,
 } from '../src/shared/ipc.js';
+
+// jsdom 不计算滚动布局，实际可见性由共享客户端浏览器验收覆盖。
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+});
 
 afterEach(() => {
   document.body.innerHTML = '';
@@ -198,7 +204,8 @@ describe('App', () => {
     expect(screen.getAllByLabelText('视频附件：sintel-trailer.mp4')).toHaveLength(2);
     expect(screen.getAllByLabelText('视频附件：interview.mp4')).toHaveLength(2);
     expect(screen.getByText('sintel-trailer-edited.mp4')).toBeTruthy();
-    expect(screen.getByText('视频 · 已完成')).toBeTruthy();
+    expect(screen.getByText('视频 · 已完成 · 预览待接入')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '预览' }) as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
     expect(openOutputFile).toHaveBeenCalledWith('sintel-trailer-edited.mp4');
