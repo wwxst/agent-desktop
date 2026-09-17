@@ -53,3 +53,26 @@ export class InMemorySession implements Session {
   // readonly 约束调用方只能读取，Session 对外不提供修改或删除历史的方法。
   events(): readonly SessionEvent[] { return this.history; }
 }
+
+/**
+ * 只挑选完整事实：Turn 级事件、用户输入，以及已完成 Step 的全部事件。
+ * Step 是否完整只由是否存在 step.completed 决定，这里是该规则的唯一权威实现。
+ * 被取消或失败 Turn 中未完成 Step 的 assistant.message、tool.called 与 tool.result 都是运行时残留，
+ * 恢复 Session 与重建 Model Context 都必须整体排除，避免 dangling Tool Call 进入模型请求。
+ */
+export function recoverSessionEvents(events: readonly SessionEvent[]): SessionEvent[] {
+  const completedStepIds = new Set(
+    events
+      .filter((event): event is StepCompletedEvent => event.type === 'step.completed')
+      .map((event) => event.stepId),
+  );
+
+  return events.filter((event) => {
+    // Turn 级事件没有 stepId，保留它们不改变任何 Step 的完成状态。
+    if (event.type === 'turn.started' || event.type === 'user.message' || event.type === 'turn.completed') {
+      return true;
+    }
+    // 其余事件都属于某个 Step；未完成 Step 的全部事件一起排除，Tool Calling 链不会残缺。
+    return completedStepIds.has(event.stepId);
+  });
+}

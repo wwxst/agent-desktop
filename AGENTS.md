@@ -20,7 +20,8 @@ New Session                        新会话                      Commit 21 已�
 Session List & Basic History       会话列表与基础历史          已完成并合并 `main`。
 Runtime Settings                  运行时设置                  Commit 26 已完成并合并 `main`。
 Turn Cancellation                 任务取消                    Commit 27 已完成并合并 `main`。
-DeepSeek Streaming                DeepSeek 流式输出           Commit 28 正在 `feature/deepseek-streaming` 开发。
+DeepSeek Streaming                DeepSeek 流式输出           Commit 28 已完成并合并 `main`。
+Conversation Recovery             会话恢复                    Commit 29 正在 `feature/conversation-recovery` 开发。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。

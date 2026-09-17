@@ -231,7 +231,7 @@ turn.completed       轮次完成    Turn 已完成
 
 模型真正看到过的历史信息，应当能够根据 Session 中保存的事实重新构建，而不是依赖只存在于内存中的隐藏状态。
 
-Agent Loop 只把已存在 `step.completed` 的 Step 中的 `assistant.message` 与 `tool.result` 投影到 Model Context（模型上下文）。取消或失败的未完成 Step 仍作为 append-only Session（只追加会话）事实保留，但其中不完整的 Tool Calling（工具调用）链不会发送给后续 Model 请求。
+Agent Loop 只把已存在 `step.completed` 的 Step 中的 `assistant.message` 与 `tool.result` 投影到 Model Context（模型上下文）。取消或失败的未完成 Step 仍作为 append-only Session（只追加会话）事实保留，但其中不完整的 Tool Calling（工具调用）链不会发送给后续 Model 请求。从状态文件恢复 Session 时，未完成 Step 及其 dangling Tool Call（悬空工具调用）等运行时残留被排除，恢复后的 Session 事件本身不包含它们；恢复只读取磁盘事实，不改写已追加的历史。
 
 ### Session Invariants（Session 不变量）
 

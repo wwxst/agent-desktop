@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ClientStateSnapshot } from '@agent-desktop/client';
+import type { ToolCallId } from '@agent-desktop/model';
 import type { SessionEvent, StepId, TurnId } from '@agent-desktop/session';
 import {
   loadDesktopState,
@@ -163,6 +164,54 @@ describe('desktop session persistence', () => {
       tools: [{ status: 'completed' }],
       result: { outputFileName: 'input-a-edited.mp4', traceId: 'trace-a' },
     });
+  });
+
+  it('drops an incomplete Step and dangling Tool Call when restoring a Session', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const cancelledTurnId = 'turn-cancelled' as TurnId;
+    const cancelledStepId = 'step-cancelled' as StepId;
+    const cancelledCallId = 'call-cancelled' as ToolCallId;
+    const cancelledEvents: readonly SessionEvent[] = [
+      { type: 'turn.started', turnId: cancelledTurnId },
+      { type: 'user.message', turnId: cancelledTurnId, content: '被取消的剪辑任务' },
+      { type: 'step.started', turnId: cancelledTurnId, stepId: cancelledStepId },
+      {
+        type: 'assistant.message',
+        turnId: cancelledTurnId,
+        stepId: cancelledStepId,
+        content: '正在裁剪。',
+        toolCalls: [{ id: cancelledCallId, name: 'trim_video', input: { start: 0 } }],
+      },
+      {
+        type: 'tool.called',
+        turnId: cancelledTurnId,
+        stepId: cancelledStepId,
+        toolCallId: cancelledCallId,
+        name: 'trim_video',
+        input: { start: 0 },
+      },
+    ];
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      sessions: [
+        { ...state.sessions[0]!, events: [...sessionEvents('731'), ...cancelledEvents] },
+        state.sessions[1]!,
+      ],
+    }), 'utf8');
+    const sourceBeforeLoad = await readFile(filePath, 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.sessions[0]?.events).toEqual([
+      ...sessionEvents('731'),
+      // 未完成 Turn 的用户输入是真实记录，未完成 Step 的运行时残留不恢复。
+      { type: 'turn.started', turnId: cancelledTurnId },
+      { type: 'user.message', turnId: cancelledTurnId, content: '被取消的剪辑任务' },
+    ]);
+    expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
+    // 恢复只读取磁盘事实，不改写已经追加的历史。
+    expect(await readFile(filePath, 'utf8')).toBe(sourceBeforeLoad);
   });
 
   it('loads Commit 24 snapshots without titleManuallyRenamed as false', async () => {

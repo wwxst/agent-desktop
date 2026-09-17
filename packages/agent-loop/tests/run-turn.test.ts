@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Agent } from '@agent-desktop/agent';
 import type { Model, ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, type SessionEvent, type TurnId } from '@agent-desktop/session';
+import { InMemorySession, recoverSessionEvents, type SessionEvent, type TurnId } from '@agent-desktop/session';
 import {
   runTurn,
   type ExecutionTrace,
@@ -660,5 +660,113 @@ describe('runTurn', () => {
       errorName: 'TypeError',
       errorMessage: 'model unavailable',
     });
+  });
+
+  it('continues a recovered Session without cancelled runtime residue in the model context', async () => {
+    const completedCallId = 'recovered-call' as ToolCallId;
+    const cancelledCallId = 'cancelled-call' as ToolCallId;
+    const controller = new AbortController();
+    const deltas: string[] = [];
+    let cancelledToolStartedResolve!: () => void;
+    const cancelledToolStarted = new Promise<void>((resolve) => {
+      cancelledToolStartedResolve = resolve;
+    });
+
+    const requests: ModelRequest[] = [];
+    const model: Model = {
+      complete: async (request) => {
+        requests.push(request);
+        switch (requests.length) {
+          case 1:
+            return {
+              text: '先裁剪。',
+              toolCalls: [{ id: completedCallId, name: 'clip', input: { start: 0 } }],
+            };
+          case 2:
+            return { text: '裁剪完成。', toolCalls: [] };
+          case 3:
+            // 取消发生在 Tool 执行期间，此前已经产生过流式文本增量。
+            request.onTextDelta?.('正在');
+            request.onTextDelta?.('裁剪');
+            return {
+              text: '正在裁剪。',
+              toolCalls: [{ id: cancelledCallId, name: 'pending', input: {} }],
+            };
+          default:
+            return { text: '继续完成。', toolCalls: [] };
+        }
+      },
+    };
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'clip',
+      description: 'Clips a video.',
+      inputSchema: {},
+      execute: async () => ({ status: 'success', output: 'clip.mp4' }),
+    });
+    tools.register({
+      name: 'pending',
+      description: 'Waits until cancelled.',
+      inputSchema: {},
+      execute: async (_input, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+        }, { once: true });
+        cancelledToolStartedResolve();
+      }),
+    });
+
+    const session = new InMemorySession();
+    const agent = createTestAgent(model, session, tools);
+    await runTurn(agent, '把视频裁掉前 3 秒', undefined, undefined, (delta) => deltas.push(delta));
+
+    const cancelledTurn = runTurn(agent, '再裁一次', undefined, controller.signal, (delta) => deltas.push(delta));
+    await cancelledToolStarted;
+    controller.abort();
+    await expect(cancelledTurn).rejects.toMatchObject({ name: 'AbortError' });
+    expect(deltas).toEqual(['正在', '裁剪']);
+
+    // 真实外部边界：Session 历史经 JSON 序列化落盘后再读回。
+    const persisted = JSON.parse(JSON.stringify(session.events())) as SessionEvent[];
+    const recoveredEvents = recoverSessionEvents(persisted);
+
+    expect(recoveredEvents.map((event) => event.type)).toEqual([
+      'turn.started',
+      'user.message',
+      'step.started',
+      'assistant.message',
+      'tool.called',
+      'tool.result',
+      'step.completed',
+      'step.started',
+      'assistant.message',
+      'step.completed',
+      'turn.completed',
+      'turn.started',
+      'user.message',
+    ]);
+    // 流式增量、未完成 Step 与 dangling Tool Call 都不是可恢复事实。
+    expect(JSON.stringify(recoveredEvents)).not.toContain('正在裁剪');
+    expect(recoveredEvents.some((event) => (
+      event.type === 'tool.called' && event.toolCallId === cancelledCallId
+    ))).toBe(false);
+
+    const continuationModel = new ScriptedModel([{ text: '继续完成。', toolCalls: [] }]);
+    const recoveredSession = new InMemorySession(recoveredEvents);
+    const result = await runTurn(createTestAgent(continuationModel, recoveredSession, tools), '继续');
+
+    expect(result.response.text).toBe('继续完成。');
+    // 恢复后仍能继续执行：旧完成事实保留，新事实只追加。
+    expect(recoveredSession.events().slice(0, recoveredEvents.length)).toEqual(recoveredEvents);
+    expect(recoveredSession.events().length).toBeGreaterThan(recoveredEvents.length);
+    // 未完成 Step 的残留不会进入新的 Model Context。
+    expect(continuationModel.requests[0]?.messages).toEqual([
+      { role: 'user', content: '把视频裁掉前 3 秒' },
+      { role: 'assistant', content: '先裁剪。', toolCalls: [{ id: completedCallId, name: 'clip', input: { start: 0 } }] },
+      { role: 'tool', toolCallId: completedCallId, content: 'clip.mp4' },
+      { role: 'assistant', content: '裁剪完成。', toolCalls: [] },
+      { role: 'user', content: '再裁一次' },
+      { role: 'user', content: '继续' },
+    ]);
   });
 });
