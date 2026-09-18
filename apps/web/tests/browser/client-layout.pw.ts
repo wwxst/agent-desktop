@@ -100,7 +100,15 @@ test('fits long attachments, expanded tools, failures and settings across window
     await route.fulfill({ contentType: 'text/javascript', body: `
       import { createWebClientApi as createHost } from '/webClientApi.ts?layout-fixture';
       export function createWebClientApi() {
-        return { ...createHost(), loadClientState: async () => (${JSON.stringify(snapshot)}) };
+        return {
+          ...createHost(),
+          loadClientState: async () => (${JSON.stringify(snapshot)}),
+          loadRuntimeSettings: async () => ({
+            deepSeek: {apiKey: {configured: true, source: 'environment'}, baseUrl: '', model: ''},
+            vision: {apiKey: {configured: true, source: 'environment'}, baseUrl: ''},
+            whisper: {modelPath: '', cliPath: ''},
+          }),
+        };
       }
     ` });
   });
@@ -121,6 +129,10 @@ test('fits long attachments, expanded tools, failures and settings across window
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`content-${width}x${height}.png`) });
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeAttached();
+    const secretInputs = page.getByLabel('接口密钥', { exact: true });
+    await expect(secretInputs).toHaveCount(2);
+    await expect(secretInputs.first()).toHaveValue('********');
+    await expect(secretInputs.nth(1)).toHaveValue('********');
     await page.getByLabel('服务地址', { exact: true }).first().fill('https://example.test/' + 'a'.repeat(250));
     await expectNoHorizontalScroll(page);
     await page.getByRole('button', { name: '保存设置', exact: true }).scrollIntoViewIfNeeded();

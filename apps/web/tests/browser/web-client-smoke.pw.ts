@@ -22,13 +22,26 @@ test('runs the shared client task and preserves session state', async ({ page })
 
   await page.getByRole('button', { name: '设置' }).click();
   await expect(page.getByRole('main', { name: '设置' })).toBeVisible();
-  const secretInputs = page.locator('input[type="password"]');
+  const secretInputs = page.getByLabel('接口密钥', { exact: true });
   await expect(secretInputs).toHaveCount(2);
+  await expect(secretInputs.first()).toHaveAttribute('type', 'text');
+  await secretInputs.first().focus();
+  await expect(secretInputs.first()).toHaveAttribute('type', 'password');
   await secretInputs.first().fill('web-deepseek-secret');
   await page.getByLabel('模型名称', { exact: true }).fill('web-runtime-model');
   await page.getByRole('button', { name: '保存设置' }).click();
   await expect(page.getByText('设置已保存，将从下一次任务开始生效。')).toBeVisible();
+  await expect(secretInputs.first()).toHaveValue('********');
+  await expect(secretInputs.first()).toHaveAttribute('type', 'text');
+  await secretInputs.first().focus();
   await expect(secretInputs.first()).toHaveValue('');
+  await secretInputs.first().fill('pending-secret');
+  await page.getByLabel('模型名称', { exact: true }).focus();
+  await secretInputs.first().focus();
+  await expect(secretInputs.first()).toHaveValue('pending-secret');
+  await secretInputs.first().fill('');
+  await page.getByLabel('模型名称', { exact: true }).focus();
+  await expect(secretInputs.first()).toHaveValue('********');
   await expect(page.getByText('来源：本机设置').first()).toBeVisible();
   await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeVisible();
   await expectNoHorizontalOverflow(page);

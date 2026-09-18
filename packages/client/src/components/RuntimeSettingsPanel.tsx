@@ -7,6 +7,8 @@ interface RuntimeSettingsPanelProps {
   readonly onClose: () => void;
 }
 
+const MASKED_SECRET = '********';
+
 function sourceLabel(status: RuntimeSecretStatus): string | null {
   if (status.source === 'saved') return '本机设置';
   if (status.source === 'environment') return '环境变量';
@@ -27,8 +29,9 @@ export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSett
   const dialog = useRef<HTMLDialogElement>(null);
   const [section, setSection] = useState('deepseek');
   const [settings, setSettings] = useState<RuntimeSettings | null>(null);
-  const [deepSeekApiKey, setDeepSeekApiKey] = useState('');
-  const [visionApiKey, setVisionApiKey] = useState('');
+  // null 表示沿用 Host 返回的脱敏显示；string 只保存用户本次输入的新密钥。
+  const [deepSeekApiKey, setDeepSeekApiKey] = useState<string | null>(null);
+  const [visionApiKey, setVisionApiKey] = useState<string | null>(null);
   const [deepSeekBaseUrl, setDeepSeekBaseUrl] = useState('');
   const [deepSeekModel, setDeepSeekModel] = useState('');
   const [visionBaseUrl, setVisionBaseUrl] = useState('');
@@ -72,18 +75,18 @@ export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSett
     setHasError(false);
     try {
       const next = await api.saveRuntimeSettings({
-        ...(deepSeekApiKey.length === 0 ? {} : { deepSeekApiKey }),
+        ...(deepSeekApiKey === null || deepSeekApiKey.length === 0 ? {} : { deepSeekApiKey }),
         deepSeekBaseUrl: deepSeekBaseUrl.length === 0 ? null : deepSeekBaseUrl,
         deepSeekModel: deepSeekModel.length === 0 ? null : deepSeekModel,
-        ...(visionApiKey.length === 0 ? {} : { visionApiKey }),
+        ...(visionApiKey === null || visionApiKey.length === 0 ? {} : { visionApiKey }),
         visionBaseUrl: visionBaseUrl.length === 0 ? null : visionBaseUrl,
         whisperModelPath: whisperModelPath.length === 0 ? null : whisperModelPath,
         whisperCliPath: whisperCliPath.length === 0 ? null : whisperCliPath,
       });
       applySettings(next);
-      // Key 只在当前输入控件中短暂存在，保存后立即清空，永不从 Host 回显。
-      setDeepSeekApiKey('');
-      setVisionApiKey('');
+      // 新 Key 只在当前输入控件中短暂存在，保存后立即丢弃并恢复 Host 的星号掩码。
+      setDeepSeekApiKey(null);
+      setVisionApiKey(null);
       setMessage('设置已保存，将从下一次任务开始生效。');
     } catch (error) {
       setHasError(true);
@@ -101,6 +104,8 @@ export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSett
     try {
       const next = await api.saveRuntimeSettings({ [name]: null });
       applySettings(next);
+      if (name === 'deepSeekApiKey') setDeepSeekApiKey(null);
+      else setVisionApiKey(null);
       setMessage('已清除本机保存的接口密钥。');
     } catch (error) {
       setHasError(true);
@@ -146,11 +151,13 @@ export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSett
                 <label>
                   <span>接口密钥</span>
                   <input
-                    type="password"
-                    value={deepSeekApiKey}
+                    type={deepSeekApiKey === null ? 'text' : 'password'}
+                    value={deepSeekApiKey ?? (settings.deepSeek.apiKey.configured ? MASKED_SECRET : '')}
                     disabled={disabled}
                     autoComplete="off"
-                    placeholder="输入新密钥（不会回显已保存密钥）"
+                    placeholder="输入新密钥"
+                    onFocus={() => { if (deepSeekApiKey === null) setDeepSeekApiKey(''); }}
+                    onBlur={() => { if (deepSeekApiKey === '') setDeepSeekApiKey(null); }}
                     onChange={(event) => setDeepSeekApiKey(event.target.value)}
                   />
                 </label>
@@ -171,11 +178,13 @@ export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSett
                 <label>
                   <span>接口密钥</span>
                   <input
-                    type="password"
-                    value={visionApiKey}
+                    type={visionApiKey === null ? 'text' : 'password'}
+                    value={visionApiKey ?? (settings.vision.apiKey.configured ? MASKED_SECRET : '')}
                     disabled={disabled}
                     autoComplete="off"
-                    placeholder="输入新密钥（不会回显已保存密钥）"
+                    placeholder="输入新密钥"
+                    onFocus={() => { if (visionApiKey === null) setVisionApiKey(''); }}
+                    onBlur={() => { if (visionApiKey === '') setVisionApiKey(null); }}
                     onChange={(event) => setVisionApiKey(event.target.value)}
                   />
                 </label>

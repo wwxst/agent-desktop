@@ -430,15 +430,6 @@ export function App({ api }: AppProps) {
           </svg>
           <span>新会话</span>
         </button>
-        <div className="sidebar-section-label">工作区</div>
-        <div className="sidebar-workspace" aria-label="当前工作区">
-          <span className="sidebar-folder" aria-hidden="true">
-            <svg viewBox="0 0 20 20" width="16" height="16" focusable="false">
-              <path d="M3.5 5.25h4l1.55 1.8h7.45v7.7a1.5 1.5 0 0 1-1.5 1.5h-11.5a1.5 1.5 0 0 1-1.5-1.5v-8a1.5 1.5 0 0 1 1.5-1.5Z" />
-            </svg>
-          </span>
-          <span>视频剪辑</span>
-        </div>
         <div className="sidebar-section-label sidebar-sessions-label">
           <span>会话</span>
           <button className="sidebar-search" type="button" disabled aria-label="搜索会话（待接入）" title="搜索会话待接入">
@@ -550,8 +541,9 @@ export function App({ api }: AppProps) {
           onClick={() => setActiveView('settings')}
         >
           <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
-            <circle cx="8" cy="8" r="2.25" />
-            <path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.58 3.58l1.06 1.06M11.36 11.36l1.06 1.06M12.42 3.58l-1.06 1.06M4.64 11.36l-1.06 1.06" />
+            {/* 齿轮轮廓：8 齿，齿顶半径 7.2、齿根半径 5.0，中心为 2.2 半径的轴孔。 */}
+            <path d="M15.11 6.87A7.2 7.2 0 0 1 15.11 9.13L12.86 9.17A5 5 0 0 1 12.26 10.61L13.82 12.23A7.2 7.2 0 0 1 12.23 13.82L10.61 12.26A5 5 0 0 1 9.17 12.86L9.13 15.11A7.2 7.2 0 0 1 6.87 15.11L6.83 12.86A5 5 0 0 1 5.39 12.26L3.77 13.82A7.2 7.2 0 0 1 2.18 12.23L3.74 10.61A5 5 0 0 1 3.14 9.17L0.89 9.13A7.2 7.2 0 0 1 0.89 6.87L3.14 6.83A5 5 0 0 1 3.74 5.39L2.18 3.77A7.2 7.2 0 0 1 3.77 2.18L5.39 3.74A5 5 0 0 1 6.83 3.14L6.87 0.89A7.2 7.2 0 0 1 9.13 0.89L9.17 3.14A5 5 0 0 1 10.61 3.74L12.23 2.18A7.2 7.2 0 0 1 13.82 3.77L12.26 5.39A5 5 0 0 1 12.86 6.83Z" />
+            <circle cx="8" cy="8" r="2.2" />
           </svg>
           <span>设置</span>
         </button>

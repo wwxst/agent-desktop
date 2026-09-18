@@ -54,7 +54,7 @@ describe('App', () => {
     render(<App />);
 
     expect(screen.getByRole('complementary', { name: '工作区导航' })).toBeTruthy();
-    expect(screen.getByText('视频剪辑')).toBeTruthy();
+    expect(screen.queryByText('视频剪辑')).toBeNull();
     expect(screen.getByRole('button', { name: '会话 1' })).toBeTruthy();
     expect(screen.getByText('Agent Desktop')).toBeTruthy();
     expect(screen.queryByText('视频智能剪辑')).toBeNull();

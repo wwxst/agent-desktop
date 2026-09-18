@@ -100,7 +100,7 @@ describe('shared App', () => {
   });
 
   it('loads and saves runtime settings without receiving or echoing saved API keys', async () => {
-    const saveRuntimeSettings = vi.fn(async () => ({
+    const saveRuntimeSettings = vi.fn(async (_update: Parameters<AgentClientApi['saveRuntimeSettings']>[0]) => ({
       deepSeek: {
         apiKey: { configured: true as const, source: 'saved' as const },
         baseUrl: 'https://deepseek.saved.test',
@@ -133,11 +133,18 @@ describe('shared App', () => {
       deepSeekModel: 'runtime-model',
     })));
     await screen.findByText('设置已保存，将从下一次任务开始生效。');
-    expect((deepSeekKey as HTMLInputElement).value).toBe('');
+    expect((deepSeekKey as HTMLInputElement).value).toBe('********');
+    const visionKey = screen.getAllByLabelText('接口密钥', { selector: 'input' })[1]!;
+    expect((visionKey as HTMLInputElement).value).toBe('********');
     expect(screen.queryByDisplayValue('renderer-only-new-key')).toBeNull();
     expect(screen.getAllByText('已配置')).toHaveLength(2);
     expect(screen.getByText('来源：本机设置')).toBeTruthy();
     expect(screen.getByText('来源：环境变量')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+    await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledTimes(2));
+    expect(saveRuntimeSettings.mock.calls[1]![0]).not.toHaveProperty('deepSeekApiKey');
+    expect(saveRuntimeSettings.mock.calls[1]![0]).not.toHaveProperty('visionApiKey');
   });
 
   it('restores the persisted UI snapshot without rebuilding model context in the Client', async () => {
