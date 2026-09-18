@@ -31,7 +31,7 @@
 
 ### Video Agent Application Layer（视频智能体应用层）
 
-`@agent-desktop/video-agent` 负责组装当前正式视频 Agent 的 Model、InMemorySession、System Prompt 和视频相关 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace 持久化。`examples/ffmpeg-agent` 与 `apps/desktop` 负责各自的配置和入口交互，并共同调用 `createVideoAgent(...)`。
+`@agent-desktop/video-agent` 负责组装当前正式视频 Agent 的 Model、InMemorySession、System Prompt 和视频相关 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace 持久化。视频处理规则提示词集中在 `src/system-prompt.ts`，是这些规则的唯一出处，CLI 与 Desktop 都不重复维护。`examples/ffmpeg-agent` 与 `apps/desktop` 负责各自的配置和入口交互，并共同调用 `createVideoAgent(...)`。
 
 ```text
 Video Agent Application
