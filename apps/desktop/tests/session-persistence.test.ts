@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -49,7 +49,7 @@ function clientState(): ClientStateSnapshot {
         title: '记住 731',
         titleManuallyRenamed: true,
         prompt: 'Session A 未发送草稿',
-        selectedVideos: [{ name: 'input-a.mp4' }],
+        attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
         messages: [
           {
             id: 1,
@@ -61,9 +61,10 @@ function clientState(): ClientStateSnapshot {
             id: 2,
             role: 'assistant',
             status: 'completed',
-            toolsExpanded: false,
-            tools: [{
-              toolCallId: 'call-a',
+            activityExpanded: false,
+            activity: [{
+              id: 'call-a',
+              kind: 'tool',
               toolName: 'trim_video',
               status: 'completed',
               durationMs: 12,
@@ -71,7 +72,7 @@ function clientState(): ClientStateSnapshot {
             result: {
               responseText: '已经记住。',
               traceId: 'trace-a',
-              outputFileName: 'input-a-edited.mp4',
+              outputFiles: [{ path: 'D:/videos/input-a-edited.mp4', fileName: 'input-a-edited.mp4' }],
             },
           },
         ],
@@ -81,24 +82,29 @@ function clientState(): ClientStateSnapshot {
         title: '记住 952',
         titleManuallyRenamed: false,
         prompt: '',
-        selectedVideos: [],
+        attachments: [],
         messages: [{
           id: 3,
           role: 'assistant',
           status: 'failed',
           errorMessage: '测试失败信息',
-          tools: [],
-          toolsExpanded: false,
+          activity: [],
+          activityExpanded: false,
+          // 整轮失败仍可能已有成功的产物，终态必须保留它们。
+          outputFiles: [{ path: 'D:/videos/failed-part.mp4', fileName: 'failed-part.mp4' }],
         }, {
           id: 4,
           role: 'assistant',
           status: 'cancelled',
-          tools: [{
-            toolCallId: 'call-cancelled',
+          activity: [{
+            id: 'call-cancelled',
+            kind: 'tool',
             toolName: 'trim_video',
             status: 'cancelled',
           }],
-          toolsExpanded: false,
+          activityExpanded: false,
+          // 取消前已成功的产物仍然随终态持久化。
+          outputFiles: [{ path: 'D:/videos/cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
         }],
       },
     ],
@@ -112,16 +118,12 @@ function persistedState(): PersistedDesktopState {
     sessions: [
       {
         id: 'session-a',
-        selectedVideoPaths: ['D:\\videos\\input-a.mp4'],
-        outputFilePaths: {
-          'input-a-edited.mp4': 'D:\\videos\\input-a-edited.mp4',
-        },
+        attachments: [{ path: 'D:\\videos\\input-a.mp4', role: 'video' }],
         events: sessionEvents('731'),
       },
       {
         id: 'session-b',
-        selectedVideoPaths: [],
-        outputFilePaths: {},
+        attachments: [],
         events: sessionEvents('952'),
       },
     ],
@@ -153,19 +155,63 @@ describe('desktop session persistence', () => {
     expect(restored?.outputSequence).toBe(7);
     expect(restored?.sessions[0]?.events).toEqual(sessionEvents('731'));
     expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
-    expect(restored?.sessions[0]?.outputFilePaths).toEqual({
-      'input-a-edited.mp4': 'D:\\videos\\input-a-edited.mp4',
-    });
     expect(restored?.clientState.conversations[0]).toMatchObject({
       title: '记住 731',
       titleManuallyRenamed: true,
       prompt: 'Session A 未发送草稿',
-      selectedVideos: [{ name: 'input-a.mp4' }],
+      attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
     });
     expect(restored?.clientState.conversations[0]?.messages[1]).toMatchObject({
-      tools: [{ status: 'completed' }],
-      result: { outputFileName: 'input-a-edited.mp4', traceId: 'trace-a' },
+      activity: [{ status: 'completed' }],
+      result: { outputFiles: [{ path: 'D:/videos/input-a-edited.mp4', fileName: 'input-a-edited.mp4' }], traceId: 'trace-a' },
     });
+  });
+
+  it('keeps already-succeeded files on failed and cancelled replies across a restart', async () => {
+    const filePath = await temporaryStatePath();
+    await saveDesktopState(filePath, persistedState());
+    const restored = await loadDesktopState(filePath);
+
+    // 失败与取消的回复也要保住产物关联：重启后仍能定位已完成的工作。
+    expect(restored?.clientState.conversations[1]?.messages[0]).toMatchObject({
+      status: 'failed',
+      errorMessage: '测试失败信息',
+      outputFiles: [{ path: 'D:/videos/failed-part.mp4', fileName: 'failed-part.mp4' }],
+    });
+    expect(restored?.clientState.conversations[1]?.messages[1]).toMatchObject({
+      status: 'cancelled',
+      outputFiles: [{ path: 'D:/videos/cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
+    });
+  });
+
+  it('reads a failed or cancelled reply without artifacts as having none', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const [failedMessage, cancelledMessage] = state.clientState.conversations[1]!.messages;
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      // 旧快照没有 outputFiles：不能凭空造出产物。
+      clientState: {
+        ...state.clientState,
+        conversations: [
+          state.clientState.conversations[0],
+          {
+            ...state.clientState.conversations[1],
+            messages: [
+              { ...failedMessage, outputFiles: undefined },
+              { ...cancelledMessage, outputFiles: undefined },
+            ],
+          },
+        ],
+      },
+    }), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+    const failed = restored?.clientState.conversations[1]?.messages[0];
+    const cancelled = restored?.clientState.conversations[1]?.messages[1];
+    expect(failed?.role === 'assistant' && failed.status === 'failed' && failed.outputFiles).toBeUndefined();
+    expect(cancelled?.role === 'assistant' && cancelled.status === 'cancelled' && cancelled.outputFiles)
+      .toBeUndefined();
   });
 
   it('keeps cancelled Turn runtime residue on disk and out of the next Turn model context', async () => {
@@ -251,6 +297,65 @@ describe('desktop session persistence', () => {
     expect(session.events().slice(0, diskEvents.length)).toEqual(diskEvents);
   });
 
+  it('replaces the state file through a temporary file and leaves no temporary file behind', async () => {
+    const filePath = await temporaryStatePath();
+    await saveDesktopState(filePath, persistedState());
+
+    expect(await readFile(filePath, 'utf8')).toContain('session-a');
+    await expect(readFile(`${filePath}.tmp`, 'utf8')).rejects.toThrow();
+  });
+
+  it('keeps the previous history when the state write fails', async () => {
+    const filePath = await temporaryStatePath();
+    await saveDesktopState(filePath, persistedState());
+    const before = await readFile(filePath, 'utf8');
+
+    // 用目录占住临时文件路径，让本次写入真实失败。
+    await mkdir(`${filePath}.tmp`);
+    await expect(saveDesktopState(filePath, { ...persistedState(), outputSequence: 99 }))
+      .rejects.toThrow();
+
+    // 写入失败不能清空或改写已有历史。
+    expect(await readFile(filePath, 'utf8')).toBe(before);
+  });
+
+  it('keeps same-named artifacts of one reply apart after a restart', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const artifacts = [
+      { path: 'D:/videos/first/final.mp4', fileName: 'final.mp4' },
+      { path: 'D:/videos/second/final.mp4', fileName: 'final.mp4' },
+    ];
+    await saveDesktopState(filePath, {
+      ...state,
+      clientState: {
+        ...state.clientState,
+        conversations: state.clientState.conversations.map((conversation) => (
+          conversation.id === 'session-a'
+            ? {
+              ...conversation,
+              messages: conversation.messages.map((message) => (
+                message.role === 'assistant' && message.status === 'completed'
+                  ? { ...message, result: { ...message.result, outputFiles: artifacts } }
+                  : message
+              )),
+            }
+            : conversation
+        )),
+      },
+    });
+
+    const restored = await loadDesktopState(filePath);
+    const reply = restored?.clientState.conversations[0]?.messages.find(
+      (message) => message.role === 'assistant',
+    );
+
+    // 产物身份是真实路径：同名文件位于不同目录时恢复后仍能分别定位。
+    expect(reply?.role === 'assistant' && reply.status === 'completed'
+      ? reply.result.outputFiles
+      : undefined).toEqual(artifacts);
+  });
+
   it('loads Commit 24 snapshots without titleManuallyRenamed as false', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
@@ -311,14 +416,233 @@ describe('desktop session persistence', () => {
             id: 99,
             role: 'assistant',
             status: 'processing',
-            tools: [],
-            toolsExpanded: true,
+            activity: [],
+            activityExpanded: true,
           }],
         }, state.clientState.conversations[1]],
       },
     }), 'utf8');
 
     await expect(loadDesktopState(filePath)).rejects.toThrow('clientState.conversations[0].messages[0].status');
+  });
+
+  it('keeps each attachment role and file reference across a restart', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    // Commit 37 的真实形状：同一个会话里既有主视频也有外加音轨，角色必须按附件分别保留。
+    const storedSessions = [
+      {
+        ...state.sessions[0]!,
+        attachments: [
+          { path: 'D:\\videos\\input-a.mp4', role: 'video' },
+          { path: 'D:\\audio\\背景音乐.mp3', role: 'audio' },
+        ],
+      },
+      state.sessions[1]!,
+    ];
+    const storedConversations = [
+      {
+        ...state.clientState.conversations[0]!,
+        attachments: [
+          { path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' },
+          { path: 'D:\\audio\\背景音乐.mp3', name: '背景音乐.mp3', role: 'audio' },
+        ],
+      },
+      state.clientState.conversations[1]!,
+    ];
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      sessions: storedSessions,
+      clientState: { ...state.clientState, conversations: storedConversations },
+    }), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+
+    // 角色是提示词用途的唯一依据，重启后必须还是 audio，不能被折回默认的视频。
+    expect(restored?.sessions[0]?.attachments).toEqual([
+      { path: 'D:\\videos\\input-a.mp4', role: 'video' },
+      { path: 'D:\\audio\\背景音乐.mp3', role: 'audio' },
+    ]);
+    expect(restored?.sessions[1]?.attachments).toEqual([]);
+    // Renderer 视图同样保留身份路径与角色：中文与空格路径不能被改写。
+    expect(restored?.clientState.conversations[0]?.attachments).toEqual([
+      { path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' },
+      { path: 'D:\\audio\\背景音乐.mp3', name: '背景音乐.mp3', role: 'audio' },
+    ]);
+    // 已提交消息里的角色随消息一起恢复，否则历史里的音轨会被重新标成视频。
+    expect(restored?.clientState.conversations[0]?.messages[0]).toMatchObject({
+      attachments: ['input-a.mp4'],
+    });
+
+    // 保存再加载一轮：序列化与解析是幂等的，不会在第二次启动时丢掉角色。
+    await saveDesktopState(filePath, restored!);
+    const secondStart = await loadDesktopState(filePath);
+    expect(secondStart?.sessions[0]?.attachments).toEqual(restored?.sessions[0]?.attachments);
+    expect(secondStart?.clientState.conversations[0]?.attachments)
+      .toEqual(restored?.clientState.conversations[0]?.attachments);
+  });
+
+  it('keeps the attachment roles recorded on a submitted user message', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const conversation = state.clientState.conversations[0]!;
+    const [firstMessage, ...remainingMessages] = conversation.messages;
+    if (firstMessage?.role !== 'user') throw new Error('测试夹具的第一条消息必须是用户消息。');
+
+    await saveDesktopState(filePath, {
+      ...state,
+      clientState: {
+        ...state.clientState,
+        conversations: [{
+          ...conversation,
+          messages: [{
+            ...firstMessage,
+            attachments: ['input-a.mp4', '背景音乐.mp3'],
+            attachmentRoles: ['video', 'audio'],
+          }, ...remainingMessages],
+        }, state.clientState.conversations[1]!],
+      },
+    });
+
+    const restored = await loadDesktopState(filePath);
+    expect(restored?.clientState.conversations[0]?.messages[0]).toMatchObject({
+      role: 'user',
+      attachments: ['input-a.mp4', '背景音乐.mp3'],
+      attachmentRoles: ['video', 'audio'],
+    });
+  });
+
+  it('keeps the remaining attachment role after one attachment is removed', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    // 移除视频后只剩音轨：这是「单独音频附件」的真实磁盘形状，不能被换算成别的角色。
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      sessions: [{
+        ...state.sessions[0]!,
+        attachments: [{ path: 'D:\\audio\\背景音乐.mp3', role: 'audio' }],
+      }, state.sessions[1]!],
+      clientState: {
+        ...state.clientState,
+        // 会话列表必须与 clientState 一一对应，activeSessionId 也仍指向 session-b。
+        conversations: [{
+          ...state.clientState.conversations[0]!,
+          attachments: [{ path: 'D:\\audio\\背景音乐.mp3', name: '背景音乐.mp3', role: 'audio' }],
+        }, state.clientState.conversations[1]!],
+      },
+    }), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.sessions[0]?.attachments).toEqual([{ path: 'D:\\audio\\背景音乐.mp3', role: 'audio' }]);
+    expect(restored?.clientState.conversations[0]?.attachments)
+      .toEqual([{ path: 'D:\\audio\\背景音乐.mp3', name: '背景音乐.mp3', role: 'audio' }]);
+  });
+
+  it('converts the legacy video-only attachment list to the video role', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    // Commit 37 之前的真实格式：会话只存一组视频路径，没有角色字段；换算后必须是 video。
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      sessions: [
+        { id: 'session-a', selectedVideoPaths: ['D:\\videos\\input-a.mp4'], events: sessionEvents('731') },
+        { id: 'session-b', selectedVideoPaths: [], events: sessionEvents('952') },
+      ],
+      clientState: {
+        ...state.clientState,
+        conversations: [{
+          ...state.clientState.conversations[0]!,
+          selectedVideos: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4' }],
+        }, state.clientState.conversations[1]!],
+      },
+    }), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.sessions[0]?.attachments).toEqual([{ path: 'D:\\videos\\input-a.mp4', role: 'video' }]);
+    expect(restored?.clientState.conversations[0]?.attachments)
+      .toEqual([{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }]);
+  });
+
+  it('restores artifact cards from the legacy per-file name table', async () => {
+    const filePath = await temporaryStatePath();
+    // Commit 35 之前的真实格式：产物路径存在会话的 outputFilePaths 表里，消息只记 outputFileName。
+    const [userMessage, replyMessage] = clientState().conversations[0]!.messages;
+    await writeFile(filePath, JSON.stringify({
+      activeSessionId: 'session-a',
+      outputSequence: 3,
+      sessions: [{
+        id: 'session-a',
+        attachments: [{ path: 'D:\\videos\\input-a.mp4', role: 'video' }],
+        outputFilePaths: { 'input-a-edited.mp4': 'D:/videos/input-a-edited.mp4' },
+        events: sessionEvents('731'),
+      }],
+      clientState: {
+        activeSessionId: 'session-a',
+        conversations: [{
+          id: 'session-a',
+          title: '记住 731',
+          titleManuallyRenamed: true,
+          prompt: '',
+          attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
+          messages: [
+            userMessage,
+            {
+              ...replyMessage,
+              result: { responseText: '已经记住。', traceId: 'trace-a', outputFileName: 'input-a-edited.mp4' },
+            },
+          ],
+        }],
+      },
+    }), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+    expect(restored?.clientState.conversations[0]?.messages[1]).toMatchObject({
+      status: 'completed',
+      result: {
+        responseText: '已经记住。',
+        traceId: 'trace-a',
+        outputFiles: [{ path: 'D:/videos/input-a-edited.mp4', fileName: 'input-a-edited.mp4' }],
+      },
+    });
+  });
+
+  it('keeps a legacy reply without a matching path as a reply with no artifact', async () => {
+    const filePath = await temporaryStatePath();
+    const [userMessage, replyMessage] = clientState().conversations[0]!.messages;
+    await writeFile(filePath, JSON.stringify({
+      activeSessionId: 'session-a',
+      outputSequence: 3,
+      sessions: [{
+        id: 'session-a',
+        attachments: [],
+        // 产物表里没有这个名字：宁可少一张卡，也不编造路径。
+        outputFilePaths: {},
+        events: sessionEvents('731'),
+      }],
+      clientState: {
+        activeSessionId: 'session-a',
+        conversations: [{
+          id: 'session-a',
+          title: '记住 731',
+          titleManuallyRenamed: false,
+          prompt: '',
+          attachments: [],
+          messages: [
+            userMessage,
+            {
+              ...replyMessage,
+              result: { responseText: '已经记住。', traceId: 'trace-a', outputFileName: 'missing.mp4' },
+            },
+          ],
+        }],
+      },
+    }), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+    const reply = restored?.clientState.conversations[0]?.messages[1];
+    expect(reply?.role === 'assistant' && reply.status === 'completed' && reply.result.outputFiles).toBeUndefined();
   });
 
   it('serializes only explicit session state and never reads API keys from the environment', async () => {

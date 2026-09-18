@@ -1,7 +1,7 @@
 import type { Tool } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -93,6 +93,41 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+/**
+ * 用户可见输出一律拒绝覆盖。
+ * -n 让 FFmpeg 在目标已存在时立即失败：既不进入交互式等待，也不改写已有文件内容；
+ * 覆盖冲突作为真实 Tool 错误交回模型，由模型决定改用其他输出路径。
+ */
+const REFUSE_OVERWRITE = '-n';
+
+/** 目标不存在时返回 false；ENOENT 之外的读取失败直接暴露，不当作「可以写入」。 */
+async function outputExists(outputPath: string): Promise<boolean> {
+  try {
+    await stat(outputPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+/**
+ * 写入用户可见文件的唯一入口：目标已存在时明确失败，交给模型改用其他路径。
+ * 本机 FFmpeg 9.0 在 -n 拒绝覆盖时退出码仍为 0，只靠 -n 会被误报成功；
+ * -n 仍保留在参数里，作为真正写入边界上不覆盖已有文件的兜底。
+ */
+async function executeOutputCommand(
+  executeCommand: CommandExecutor,
+  outputPath: string,
+  args: readonly string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (await outputExists(outputPath)) {
+    throw new Error(`Output file already exists and will not be overwritten: ${outputPath}`);
+  }
+  await executeCommand('ffmpeg', args, ...(signal === undefined ? [] : [signal]));
+}
+
 function videoCreated(outputPath: string): ToolResult {
   return { status: 'success', output: `Video created: ${outputPath}` };
 }
@@ -129,8 +164,8 @@ export class ExtractAudioTool implements Tool {
 
     try {
       // 只保留本地 Whisper 需要的标准音频：去掉视频、转单声道并统一为 16 kHz 16-bit PCM WAV。
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -144,7 +179,7 @@ export class ExtractAudioTool implements Tool {
         '-c:a',
         'pcm_s16le',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return { status: 'success', output: `Audio created: ${input.outputPath}` };
     } catch (error) {
       return errorResult(error);
@@ -285,8 +320,8 @@ async function extractFramesAtTimestamps(
 
   for (const [index, timestamp] of timestamps.entries()) {
     const framePath = join(outputDir, `frame-${String(index + 1).padStart(3, '0')}.jpg`);
-    await executeCommand('ffmpeg', [
-      '-y',
+    await executeOutputCommand(executeCommand, framePath, [
+      REFUSE_OVERWRITE,
       '-hide_banner',
       '-loglevel',
       'error',
@@ -301,7 +336,7 @@ async function extractFramesAtTimestamps(
       '-q:v',
       '2',
       framePath,
-    ], ...(signal === undefined ? [] : [signal]));
+    ], signal);
     frames.push({ timestamp, path: framePath });
   }
 
@@ -478,8 +513,8 @@ export class TrimVideoTool implements Tool {
 
     try {
       // -ss 放在输入之后进行准确裁剪；重新编码避免 stream copy 的关键帧偏差。
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -498,7 +533,7 @@ export class TrimVideoTool implements Tool {
         '-c:a',
         'aac',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -548,8 +583,8 @@ export class ConcatVideosTool implements Tool {
 
       await writeFile(concatListPath, concatList, 'utf8');
       // concat demuxer 保留输入顺序；编码条件不兼容时让 FFmpeg 明确失败。
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -564,7 +599,7 @@ export class ConcatVideosTool implements Tool {
         '-c:a',
         'aac',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -606,8 +641,8 @@ export class AddAudioTool implements Tool {
 
     try {
       // apad 补齐较短音频，-shortest 再以视频流结束点限制最终时长。
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -627,7 +662,7 @@ export class AddAudioTool implements Tool {
         'aac',
         '-shortest',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -668,8 +703,8 @@ export class AddSubtitlesTool implements Tool {
     }
 
     try {
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -686,7 +721,7 @@ export class AddSubtitlesTool implements Tool {
         '-c:a',
         'copy',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return videoCreated(input.outputPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -739,8 +774,8 @@ export class ResizeVideoTool implements Tool {
     }
 
     try {
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -757,7 +792,7 @@ export class ResizeVideoTool implements Tool {
         '-c:a',
         'copy',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -814,8 +849,8 @@ export class CropVideoTool implements Tool {
     }
 
     try {
-      await this.executeCommand('ffmpeg', [
-        '-y',
+      await executeOutputCommand(this.executeCommand, input.outputPath, [
+        REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
@@ -832,7 +867,7 @@ export class CropVideoTool implements Tool {
         '-c:a',
         'copy',
         input.outputPath,
-      ], ...(signal === undefined ? [] : [signal]));
+      ], signal);
       return videoCreated(input.outputPath);
     } catch (error) {
       return errorResult(error);
@@ -894,8 +929,8 @@ export class SetSpeedTool implements Tool {
 
       if (hasAudio) {
         // setpts 控制视频帧时间戳，atempo 控制音频节奏；同一倍率保持音视频同步。
-        await this.executeCommand('ffmpeg', [
-          '-y',
+        await executeOutputCommand(this.executeCommand, input.outputPath, [
+          REFUSE_OVERWRITE,
           '-hide_banner',
           '-loglevel',
           'error',
@@ -912,11 +947,11 @@ export class SetSpeedTool implements Tool {
           '-c:a',
           'aac',
           input.outputPath,
-        ], ...(signal === undefined ? [] : [signal]));
+        ], signal);
       } else {
         // 无音轨时只改变视频时间戳，并显式禁止输出音频。
-        await this.executeCommand('ffmpeg', [
-          '-y',
+        await executeOutputCommand(this.executeCommand, input.outputPath, [
+          REFUSE_OVERWRITE,
           '-hide_banner',
           '-loglevel',
           'error',
@@ -930,7 +965,7 @@ export class SetSpeedTool implements Tool {
           '-c:v',
           'libx264',
           input.outputPath,
-        ], ...(signal === undefined ? [] : [signal]));
+        ], signal);
       }
 
       return videoCreated(input.outputPath);

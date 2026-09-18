@@ -33,22 +33,23 @@ const persistenceMethods = {
   }),
   loadClientState: async () => null,
   saveClientState: async () => undefined,
+  onPrepareClose: () => () => undefined,
   deleteSession: async () => 'session-a',
   cancelTask: async () => undefined,
+  revealFile: async () => undefined,
 };
 
 describe('App', () => {
   it('shows a useful video-task empty state before the first task', () => {
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-empty' }),
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -78,13 +79,12 @@ describe('App', () => {
       getActiveSessionId: () => new Promise((resolve) => {
         resolveInitialSession = resolve;
       }),
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       newSession,
       switchSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-initializing' }),
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -100,54 +100,54 @@ describe('App', () => {
   });
 
   it('removes one pending video from the Composer and Main selection', async () => {
-    const removeSelectedVideo = vi.fn(async () => undefined);
+    const removeAttachment = vi.fn(async () => undefined);
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => ([
-        { name: 'sintel-trailer.mp4' },
-        { name: 'interview.mp4' },
+      selectAttachmentFiles: async () => ([
+        { path: 'D:\\videos\\sintel-trailer.mp4', name: 'sintel-trailer.mp4', role: 'video' },
+        { path: 'D:\\videos\\interview.mp4', name: 'interview.mp4', role: 'video' },
       ]),
-      removeSelectedVideo,
+      removeAttachment,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-remove' }),
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByLabelText('视频附件：sintel-trailer.mp4')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '移除视频 sintel-trailer.mp4' }));
 
-    await waitFor(() => expect(removeSelectedVideo).toHaveBeenCalledWith(0));
+    await waitFor(() => expect(removeAttachment).toHaveBeenCalledWith(0));
     expect(screen.queryByLabelText('视频附件：sintel-trailer.mp4')).toBeNull();
     expect(screen.getByLabelText('视频附件：interview.mp4')).toBeTruthy();
   });
 
   it('keeps existing videos when another selection is added', async () => {
-    const selectVideoFile = vi.fn()
-      .mockResolvedValueOnce([{ name: 'sintel-trailer.mp4' }])
+    const selectAttachmentFiles = vi.fn()
       .mockResolvedValueOnce([
-        { name: 'sintel-trailer.mp4' },
-        { name: 'interview.mp4' },
+        { path: 'D:\\videos\\sintel-trailer.mp4', name: 'sintel-trailer.mp4', role: 'video' },
+      ])
+      .mockResolvedValueOnce([
+        { path: 'D:\\videos\\sintel-trailer.mp4', name: 'sintel-trailer.mp4', role: 'video' },
+        { path: 'D:\\videos\\interview.mp4', name: 'interview.mp4', role: 'video' },
       ]);
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-add' }),
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
-    const selectButton = screen.getByRole('button', { name: '选择视频' });
+    const selectButton = screen.getByRole('button', { name: '选择输入文件' });
     fireEvent.click(selectButton);
     expect(await screen.findByLabelText('视频附件：sintel-trailer.mp4')).toBeTruthy();
 
@@ -155,33 +155,33 @@ describe('App', () => {
 
     expect(await screen.findByLabelText('视频附件：interview.mp4')).toBeTruthy();
     expect(screen.getByLabelText('视频附件：sintel-trailer.mp4')).toBeTruthy();
-    expect(selectVideoFile).toHaveBeenCalledTimes(2);
+    expect(selectAttachmentFiles).toHaveBeenCalledTimes(2);
   });
 
   it('selects multiple videos, sends the task, and displays the final result', async () => {
     const runAgentTask = vi.fn(async () => ({
       responseText: '剪辑已经完成。',
-      outputFileName: 'sintel-trailer-edited.mp4',
+      outputFiles: [{ path: 'D:/videos/sintel-trailer-edited.mp4', fileName: 'sintel-trailer-edited.mp4' }],
       traceId: 'trace-1',
     }));
-    const openOutputFile = vi.fn(async () => undefined);
+    const revealFile = vi.fn(async () => undefined);
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => ([
-        { name: 'sintel-trailer.mp4' },
-        { name: 'interview.mp4' },
+      selectAttachmentFiles: async () => ([
+        { path: 'D:\\videos\\sintel-trailer.mp4', name: 'sintel-trailer.mp4', role: 'video' },
+        { path: 'D:\\videos\\interview.mp4', name: 'interview.mp4', role: 'video' },
       ]),
-      removeSelectedVideo: async () => undefined,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
-      openOutputFile,
+      revealFile,
     } satisfies DesktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByText('sintel-trailer.mp4')).toBeTruthy();
     expect(screen.getByText('interview.mp4')).toBeTruthy();
 
@@ -204,20 +204,20 @@ describe('App', () => {
     expect(screen.getAllByLabelText('视频附件：sintel-trailer.mp4')).toHaveLength(2);
     expect(screen.getAllByLabelText('视频附件：interview.mp4')).toHaveLength(2);
     expect(screen.getByText('sintel-trailer-edited.mp4')).toBeTruthy();
-    expect(screen.getByText('视频 · 已完成 · 预览待接入')).toBeTruthy();
-    expect((screen.getByRole('button', { name: '预览' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('视频 · 已完成')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '预览' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
-    expect(openOutputFile).toHaveBeenCalledWith('sintel-trailer-edited.mp4');
+    expect(revealFile).toHaveBeenCalledWith('D:/videos/sintel-trailer-edited.mp4');
   });
 
-  it('updates Tool activity from the shared trace event', async () => {
+  it('updates the activity timeline from the shared activity event', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
@@ -228,7 +228,6 @@ describe('App', () => {
         receiveEvent = listener;
         return () => undefined;
       },
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -237,23 +236,16 @@ describe('App', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
-      type: 'tool.started',
-      turnId: 'turn-1' as never,
-      stepId: 'step-1' as never,
-      toolCallId: 'call-1' as never,
-      toolName: 'probe_media',
+      type: 'activity',
+      item: { id: 'call-1', kind: 'tool', status: 'running', toolName: 'probe_media' },
     }));
     expect(screen.getByText('读取视频信息')).toBeTruthy();
     expect(screen.getByText('probe_media')).toBeTruthy();
     expect(screen.getByText('执行中')).toBeTruthy();
 
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-1' as never,
-      stepId: 'step-1' as never,
-      toolCallId: 'call-1' as never,
-      toolName: 'probe_media',
-      durationMs: 24,
+      type: 'activity',
+      item: { id: 'call-1', kind: 'tool', status: 'completed', toolName: 'probe_media', durationMs: 24 },
     }));
     expect(screen.getByText('已完成')).toBeTruthy();
     expect(screen.getByText('24 ms')).toBeTruthy();
@@ -261,13 +253,15 @@ describe('App', () => {
     await act(async () => resolveTask?.({ responseText: 'done', traceId: 'trace-2' }));
   });
 
-  it('collapses completed Tool activity and lets the user expand it', async () => {
+  it('collapses completed activity and lets the user expand it', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => ([{ name: 'sintel-trailer.mp4' }]),
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => ([
+        { path: 'D:\\videos\\sintel-trailer.mp4', name: 'sintel-trailer.mp4', role: 'video' },
+      ]),
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
@@ -278,11 +272,10 @@ describe('App', () => {
         receiveEvent = listener;
         return () => undefined;
       },
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByText('sintel-trailer.mp4')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('剪辑需求'), {
       target: { value: '保留核心内容' },
@@ -290,12 +283,8 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-1' as never,
-      stepId: 'step-1' as never,
-      toolCallId: 'call-1' as never,
-      toolName: 'probe_media',
-      durationMs: 24,
+      type: 'activity',
+      item: { id: 'call-1', kind: 'tool', status: 'completed', toolName: 'probe_media', durationMs: 24 },
     }));
     expect(screen.getByText('probe_media')).toBeTruthy();
 
@@ -303,7 +292,7 @@ describe('App', () => {
       responseText: '完成。',
       traceId: 'trace-3',
     }));
-    const summary = await screen.findByRole('button', { name: '已执行 1 个工具' });
+    const summary = await screen.findByRole('button', { name: '展开执行过程，共 1 项' });
     expect(screen.queryByText('probe_media')).toBeNull();
 
     fireEvent.click(summary);
@@ -317,14 +306,13 @@ describe('App', () => {
     }));
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -347,14 +335,13 @@ describe('App', () => {
       .mockResolvedValueOnce({ responseText: '你刚才让我记住的数字是 731。', traceId: 'trace-turn-2' });
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -373,7 +360,7 @@ describe('App', () => {
     expect(screen.getByText('我刚才让你记住的数字是多少？')).toBeTruthy();
   });
 
-  it('keeps Tool activity with the Agent reply from its own turn', async () => {
+  it('keeps activity with the Agent reply from its own turn', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
@@ -381,8 +368,8 @@ describe('App', () => {
     }));
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
@@ -391,7 +378,6 @@ describe('App', () => {
         receiveEvent = listener;
         return () => undefined;
       },
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -399,29 +385,21 @@ describe('App', () => {
     fireEvent.change(composerInput, { target: { value: '第一轮' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-1' as never,
-      stepId: 'step-1' as never,
-      toolCallId: 'call-a' as never,
-      toolName: 'tool_a',
-      durationMs: 10,
+      type: 'activity',
+      item: { id: 'call-a', kind: 'tool', status: 'completed', toolName: 'tool_a', durationMs: 10 },
     }));
     await act(async () => resolveTask?.({ responseText: '第一轮完成', traceId: 'trace-a' }));
 
     fireEvent.change(composerInput, { target: { value: '第二轮' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-2' as never,
-      stepId: 'step-2' as never,
-      toolCallId: 'call-b' as never,
-      toolName: 'tool_b',
-      durationMs: 20,
+      type: 'activity',
+      item: { id: 'call-b', kind: 'tool', status: 'completed', toolName: 'tool_b', durationMs: 20 },
     }));
     await act(async () => resolveTask?.({ responseText: '第二轮完成', traceId: 'trace-b' }));
 
     const agentReplies = screen.getAllByLabelText('Agent 回复');
-    const toolSummaries = screen.getAllByRole('button', { name: '已执行 1 个工具' });
+    const toolSummaries = screen.getAllByRole('button', { name: '展开执行过程，共 1 项' });
     fireEvent.click(toolSummaries[0]!);
     fireEvent.click(toolSummaries[1]!);
     expect(within(agentReplies[0]!).getByText('tool_a')).toBeTruthy();
@@ -434,29 +412,31 @@ describe('App', () => {
     const runAgentTask = vi.fn()
       .mockResolvedValueOnce({
         responseText: '第一轮完成。',
-        outputFileName: 'step1.mp4',
+        outputFiles: [{ path: 'D:/videos/step1.mp4', fileName: 'step1.mp4' }],
         traceId: 'trace-artifact-1',
       })
       .mockResolvedValueOnce({
         responseText: '第二轮完成。',
-        outputFileName: 'step2.mp4',
+        outputFiles: [{ path: 'D:/videos/step2.mp4', fileName: 'step2.mp4' }],
         traceId: 'trace-artifact-2',
       });
-    const openOutputFile = vi.fn(async () => undefined);
+    const revealFile = vi.fn(async () => undefined);
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => [{ name: 'input.mp4' }],
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => [
+        { path: 'D:\\videos\\input.mp4', name: 'input.mp4', role: 'video' },
+      ],
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
-      openOutputFile,
+      revealFile,
     } satisfies DesktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByText('input.mp4')).toBeTruthy();
     const composerInput = screen.getByLabelText('剪辑需求');
     fireEvent.change(composerInput, { target: { value: '第一次处理' } });
@@ -469,8 +449,8 @@ describe('App', () => {
     const openButtons = screen.getAllByRole('button', { name: '打开文件' });
     fireEvent.click(openButtons[0]!);
     fireEvent.click(openButtons[1]!);
-    expect(openOutputFile).toHaveBeenNthCalledWith(1, 'step1.mp4');
-    expect(openOutputFile).toHaveBeenNthCalledWith(2, 'step2.mp4');
+    expect(revealFile).toHaveBeenNthCalledWith(1, 'D:/videos/step1.mp4');
+    expect(revealFile).toHaveBeenNthCalledWith(2, 'D:/videos/step2.mp4');
   });
 
   it('does not start another task while the current turn is running', async () => {
@@ -480,14 +460,13 @@ describe('App', () => {
     }));
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask,
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -515,8 +494,10 @@ describe('App', () => {
     window.agentDesktop = {
       ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
-      selectVideoFile: async () => [{ name: 'input.mp4' }],
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => [
+        { path: 'D:\\videos\\input.mp4', name: 'input.mp4', role: 'video' },
+      ],
+      removeAttachment: async () => undefined,
       newSession,
       switchSession: async () => undefined,
       runAgentTask,
@@ -524,31 +505,26 @@ describe('App', () => {
         receiveEvent = listener;
         return () => undefined;
       },
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByLabelText('视频附件：input.mp4')).toBeTruthy();
     const composerInput = screen.getByLabelText('剪辑需求');
 
     fireEvent.change(composerInput, { target: { value: '第一轮任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-new-1' as never,
-      stepId: 'step-new-1' as never,
-      toolCallId: 'call-new-1' as never,
-      toolName: 'trim_video',
-      durationMs: 18,
+      type: 'activity',
+      item: { id: 'call-new-1', kind: 'tool', status: 'completed', toolName: 'trim_video', durationMs: 18 },
     }));
     await act(async () => resolveFirstTask?.({
       responseText: '第一轮完成。',
-      outputFileName: 'first-output.mp4',
+      outputFiles: [{ path: 'D:/videos/first-output.mp4', fileName: 'first-output.mp4' }],
       traceId: 'trace-new-1',
     }));
     expect(await screen.findByText('first-output.mp4')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '已执行 1 个工具' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '展开执行过程，共 1 项' })).toBeTruthy();
 
     fireEvent.change(composerInput, { target: { value: '第二轮任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -564,22 +540,26 @@ describe('App', () => {
     expect(within(conversationWorkspace).queryByText('第二轮任务')).toBeNull();
     expect(within(conversationWorkspace).queryByText('第一轮完成。')).toBeNull();
     expect(within(conversationWorkspace).queryByText('第二轮完成。')).toBeNull();
-    expect(within(conversationWorkspace).queryByRole('button', { name: '已执行 1 个工具' })).toBeNull();
+    expect(within(conversationWorkspace).queryByRole('button', { name: '展开执行过程，共 1 项' })).toBeNull();
     expect(within(conversationWorkspace).queryByText('first-output.mp4')).toBeNull();
     expect(within(conversationWorkspace).queryByLabelText('视频附件：input.mp4')).toBeNull();
     expect((composerInput as HTMLTextAreaElement).value).toBe('');
     expect(screen.getByRole('region', { name: '开始视频任务' })).toBeTruthy();
   });
 
-  it('switches isolated UI history, draft, attachments, tools, traces, and artifacts', async () => {
+  it('switches isolated UI history, draft, attachments, activity, traces, and artifacts', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveSessionA: ((result: AgentTaskResult) => void) | undefined;
     let resolveSessionB: ((result: AgentTaskResult) => void) | undefined;
     const switchSession = vi.fn(async () => undefined);
-    const openOutputFile = vi.fn(async () => undefined);
-    const selectVideoFile = vi.fn()
-      .mockResolvedValueOnce([{ name: 'video-a.mp4' }])
-      .mockResolvedValueOnce([{ name: 'video-b.mp4' }]);
+    const revealFile = vi.fn(async () => undefined);
+    const selectAttachmentFiles = vi.fn()
+      .mockResolvedValueOnce([
+        { path: 'D:\\videos\\video-a.mp4', name: 'video-a.mp4', role: 'video' },
+      ])
+      .mockResolvedValueOnce([
+        { path: 'D:\\videos\\video-b.mp4', name: 'video-b.mp4', role: 'video' },
+      ]);
     const runAgentTask = vi.fn()
       .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => {
         resolveSessionA = resolve;
@@ -590,8 +570,8 @@ describe('App', () => {
     window.agentDesktop = {
       ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
-      selectVideoFile,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles,
+      removeAttachment: async () => undefined,
       newSession: async () => 'session-b',
       switchSession,
       runAgentTask,
@@ -599,26 +579,22 @@ describe('App', () => {
         receiveEvent = listener;
         return () => undefined;
       },
-      openOutputFile,
+      revealFile,
     } satisfies DesktopApi;
 
     render(<App />);
     expect((await screen.findByRole('button', { name: '会话 1' })).getAttribute('aria-current')).toBe('page');
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByLabelText('视频附件：video-a.mp4')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '用户 A' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-a' as never,
-      stepId: 'step-a' as never,
-      toolCallId: 'call-a' as never,
-      toolName: 'tool_a',
-      durationMs: 10,
+      type: 'activity',
+      item: { id: 'call-a', kind: 'tool', status: 'completed', toolName: 'tool_a', durationMs: 10 },
     }));
     await act(async () => resolveSessionA?.({
       responseText: 'assistant A',
-      outputFileName: 'a.mp4',
+      outputFiles: [{ path: 'D:/videos/a.mp4', fileName: 'a.mp4' }],
       traceId: 'trace-a',
     }));
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: 'draft A' } });
@@ -630,21 +606,17 @@ describe('App', () => {
     expect(screen.queryByLabelText('视频附件：video-a.mp4')).toBeNull();
     expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('');
 
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByLabelText('视频附件：video-b.mp4')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '用户 B' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     act(() => receiveEvent?.({
-      type: 'tool.completed',
-      turnId: 'turn-b' as never,
-      stepId: 'step-b' as never,
-      toolCallId: 'call-b' as never,
-      toolName: 'tool_b',
-      durationMs: 20,
+      type: 'activity',
+      item: { id: 'call-b', kind: 'tool', status: 'completed', toolName: 'tool_b', durationMs: 20 },
     }));
     await act(async () => resolveSessionB?.({
       responseText: 'assistant B',
-      outputFileName: 'b.mp4',
+      outputFiles: [{ path: 'D:/videos/b.mp4', fileName: 'b.mp4' }],
       traceId: 'trace-b',
     }));
 
@@ -655,12 +627,12 @@ describe('App', () => {
     expect(screen.getAllByLabelText('视频附件：video-a.mp4')).toHaveLength(2);
     expect(screen.queryByLabelText('视频附件：video-b.mp4')).toBeNull();
     expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('draft A');
-    fireEvent.click(screen.getByRole('button', { name: '已执行 1 个工具' }));
+    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，共 1 项' }));
     expect(screen.getByText('tool_a')).toBeTruthy();
     expect(screen.queryByText('tool_b')).toBeNull();
     expect(screen.getByText('a.mp4')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
-    expect(openOutputFile).toHaveBeenLastCalledWith('a.mp4');
+    expect(revealFile).toHaveBeenLastCalledWith('D:/videos/a.mp4');
 
     fireEvent.click(screen.getByRole('button', { name: '用户 B' }));
     await waitFor(() => expect(switchSession).toHaveBeenLastCalledWith('session-b'));
@@ -668,12 +640,12 @@ describe('App', () => {
     expect(screen.queryByText('assistant A')).toBeNull();
     expect(screen.getAllByLabelText('视频附件：video-b.mp4')).toHaveLength(2);
     expect(screen.queryByLabelText('视频附件：video-a.mp4')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '已执行 1 个工具' }));
+    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，共 1 项' }));
     expect(screen.getByText('tool_b')).toBeTruthy();
     expect(screen.queryByText('tool_a')).toBeNull();
     expect(screen.getByText('b.mp4')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
-    expect(openOutputFile).toHaveBeenLastCalledWith('b.mp4');
+    expect(revealFile).toHaveBeenLastCalledWith('D:/videos/b.mp4');
   });
 
   it('disables new session while the Agent is processing', async () => {
@@ -683,15 +655,14 @@ describe('App', () => {
     window.agentDesktop = {
       ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       newSession,
       switchSession,
       runAgentTask: () => new Promise((resolve) => {
         resolveTask = resolve;
       }),
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
@@ -718,8 +689,10 @@ describe('App', () => {
     const prompt = '保留核心内容';
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => ([{ name: 'sintel-trailer.mp4' }]),
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => ([
+        { path: 'D:\\videos\\sintel-trailer.mp4', name: 'sintel-trailer.mp4', role: 'video' },
+      ]),
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
@@ -727,11 +700,10 @@ describe('App', () => {
         throw new Error('处理失败。');
       },
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: '选择视频' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByText('sintel-trailer.mp4')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('剪辑需求'), {
       target: { value: prompt },
@@ -747,8 +719,8 @@ describe('App', () => {
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     window.agentDesktop = {
       ...persistenceMethods,
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
@@ -759,7 +731,6 @@ describe('App', () => {
         receiveEvent = listener;
         return () => undefined;
       },
-      openOutputFile: async () => undefined,
     } satisfies DesktopApi;
 
     render(<App />);

@@ -1,6 +1,11 @@
 export type {
+  AgentActivityEvent,
+  AgentActivityFile,
+  AgentActivityItem,
+  AgentActivityStatus,
   AgentClientApi,
   AgentRuntimeEvent,
+  AgentTaskOutputFile,
   AgentTaskResult,
   ClientAssistantMessage,
   ClientConversation,
@@ -11,9 +16,7 @@ export type {
   RuntimeSecretStatus,
   RuntimeSettings,
   RuntimeSettingsUpdate,
-  SelectedVideo,
-  ToolActivityEvent,
-  ToolActivityItem,
-  ToolActivityStatus,
+  Attachment,
+  AttachmentRole,
 } from './api.js';
 export { App } from './App.js';

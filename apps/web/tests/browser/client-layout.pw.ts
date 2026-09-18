@@ -74,24 +74,24 @@ test('keeps session actions reachable at the end of a long list', async ({ page 
   await expect(sessions.locator('[aria-current="page"]')).toHaveCount(0);
 });
 
-test('fits long attachments, expanded tools, failures and settings across window sizes', async ({ page }, testInfo) => {
+test('fits long attachments, expanded activity, failures and settings across window sizes', async ({ page }, testInfo) => {
   const names = Array.from({ length: 8 }, (_, index) => `${index}-${'长视频文件名'.repeat(20)}.mp4`);
   const snapshot: ClientStateSnapshot = {
     activeSessionId: 'web-session-1',
     conversations: [{
       id: 'web-session-1', title: '复杂内容验收', titleManuallyRenamed: true,
-      prompt: '多行草稿\n'.repeat(12), selectedVideos: names.map((name) => ({ name })),
+      prompt: '多行草稿\n'.repeat(12), attachments: names.map((name) => ({ path: `E:/videos/${name}`, name, role: 'video' })),
       messages: [
         { id: 1, role: 'user', text: '检查长文件名和多工具结果', attachments: names },
         {
-          id: 2, role: 'assistant', status: 'completed', toolsExpanded: true,
-          tools: Array.from({ length: 8 }, (_, index) => ({
-            toolCallId: `tool-${index}`, toolName: 'extract_video_range_frames',
+          id: 2, role: 'assistant', status: 'completed', activityExpanded: true,
+          activity: Array.from({ length: 8 }, (_, index) => ({
+            id: `tool-${index}`, kind: 'tool', toolName: 'extract_video_range_frames',
             status: 'completed', durationMs: 12345,
           })),
-          result: { responseText: '已完成', traceId: 'trace-'.repeat(40), outputFileName: names[0]! },
+          result: { responseText: '已完成', traceId: 'trace-'.repeat(40), outputFiles: [{ path: `E:/videos/${names[0]!}`, fileName: names[0]! }] },
         },
-        { id: 3, role: 'assistant', status: 'failed', tools: [], toolsExpanded: false, errorMessage: '失败路径_'.repeat(100) },
+        { id: 3, role: 'assistant', status: 'failed', activity: [], activityExpanded: false, errorMessage: '失败路径_'.repeat(100) },
       ],
     }],
   };
@@ -117,7 +117,7 @@ test('fits long attachments, expanded tools, failures and settings across window
   for (const [width, height] of [[1100, 750], [1120, 760], [1280, 720], [800, 600], [760, 600], [560, 600], [400, 500]]) {
     await page.setViewportSize({ width: width!, height: height! });
     await expectNoHorizontalScroll(page);
-    const pending = page.getByLabel('已选择的视频');
+    const pending = page.getByLabel('已选择的输入附件');
     expect(await pending.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
     await expectContained(page.getByRole('button', { name: '发送', exact: true }), page.locator('body'));
     const attachment = pending.getByLabel(`视频附件：${names[0]}`, { exact: true });
@@ -125,7 +125,7 @@ test('fits long attachments, expanded tools, failures and settings across window
     const before = await name.boundingBox();
     await attachment.hover();
     expect(await name.boundingBox()).toEqual(before);
-    await page.getByRole('region', { name: '工具执行过程' }).scrollIntoViewIfNeeded();
+    await page.getByRole('region', { name: '执行过程' }).scrollIntoViewIfNeeded();
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`content-${width}x${height}.png`) });
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeAttached();
@@ -146,7 +146,7 @@ test('fits long attachments, expanded tools, failures and settings across window
 test('keeps a tall empty composer reachable in a short window', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 560, height: 320 });
   await page.goto('/');
-  await page.getByRole('button', { name: '选择视频', exact: true }).click();
+  await page.getByRole('button', { name: '选择输入文件', exact: true }).click();
   await page.getByRole('textbox', { name: '剪辑需求' }).fill('多行草稿\n'.repeat(15));
   const workspace = page.getByRole('main', { name: '对话工作区' });
   await workspace.evaluate((element) => { element.scrollTop = 0; });

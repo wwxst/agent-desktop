@@ -15,18 +15,18 @@ test('renders processing, cancellation, completion and failure without losing th
           ...createHost(),
           onAgentEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
           async runAgentTask(prompt) {
-            const event = {turnId: 'alignment', stepId: 'step-1', toolCallId: 'tool-1', toolName: 'trim_video'};
-            listeners.forEach(fn => fn({type: 'tool.started', ...event}));
+            const item = {id: 'tool-1', kind: 'tool', toolName: 'trim_video', status: 'running'};
+            listeners.forEach(fn => fn({type: 'activity', item}));
             if (prompt === '测试处理中') {
               listeners.forEach(fn => fn({type: 'text.delta', delta: '测试状态：正在分析视频中的对白与精彩片段。'}));
               return new Promise((resolve, reject) => { rejectTask = reject; });
             }
             if (prompt === '测试失败') {
-              listeners.forEach(fn => fn({type: 'tool.failed', ...event, durationMs: 120}));
+              listeners.forEach(fn => fn({type: 'activity', item: {...item, status: 'failed', durationMs: 120}}));
               throw new Error('测试状态：视频文件无法读取，请重新选择文件后重试。');
             }
-            listeners.forEach(fn => fn({type: 'tool.completed', ...event, durationMs: 860}));
-            return {responseText: '测试状态：已整理精彩片段，保留人物对白。', traceId: 'alignment-fixture', outputFileName: '精彩片段-测试产物.mp4'};
+            listeners.forEach(fn => fn({type: 'activity', item: {...item, status: 'completed', durationMs: 860}}));
+            return {responseText: '测试状态：已整理精彩片段，保留人物对白。', traceId: 'alignment-fixture', outputFiles: [{ path: 'E:/videos/精彩片段-测试产物.mp4', fileName: '精彩片段-测试产物.mp4' }]};
           },
           async cancelTask() { rejectTask(new DOMException('任务已停止', 'AbortError')); },
         };
@@ -37,9 +37,9 @@ test('renders processing, cancellation, completion and failure without losing th
   const input = page.getByRole('textbox', { name: '剪辑需求' });
   await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
-  await expect(page.locator('.sidebar-search')).toBeDisabled();
+  await expect(page.locator('.sidebar-search')).toHaveCount(0);
   await page.screenshot({ animations: 'disabled', path: info.outputPath('empty.png') });
-  await page.getByRole('button', { name: '选择视频', exact: true }).click();
+  await page.getByRole('button', { name: '选择输入文件', exact: true }).click();
   await input.fill('测试处理中');
   await page.screenshot({ animations: 'disabled', path: info.outputPath('attachment.png') });
   const originalInput = await input.elementHandle();
@@ -60,7 +60,7 @@ test('renders processing, cancellation, completion and failure without losing th
   await input.fill('测试成功');
   await input.press('Enter');
   await expect(page.getByRole('region', { name: '结果产物' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '预览', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '预览', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '打开文件', exact: true })).toBeEnabled();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('success.png') });
   await input.fill('测试失败');
@@ -68,7 +68,7 @@ test('renders processing, cancellation, completion and failure without losing th
   await expect(page.getByRole('alert')).toContainText('视频文件无法读取');
   await expect(input).toHaveValue('测试失败');
   await expect(input).toBeEditable();
-  await page.getByRole('alert').getByRole('button', { name: '已执行 1 个工具' }).click();
+  await page.getByRole('alert').getByRole('button', { name: '展开执行过程，共 1 项' }).click();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('failure.png') });
   expect(await originalInput!.evaluate(element => element.isConnected)).toBe(true);
 });

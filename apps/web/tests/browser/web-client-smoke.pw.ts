@@ -62,12 +62,12 @@ test('runs the shared client task and preserves session state', async ({ page })
   await composer.fill('测试 Web Agent');
   await page.getByRole('button', { name: '发送' }).click();
 
-  const toolActivity = page.getByRole('region', { name: '工具执行过程' }).last();
-  await expect(toolActivity.getByText('执行中', { exact: true })).toBeVisible();
+  const activity = page.getByRole('region', { name: '执行过程' }).last();
   await expect(page.getByText('开发测试宿主已模拟完成：测试 Web Agent')).toBeVisible();
-  await toolActivity.getByRole('button', { name: '已执行 1 个工具' }).click();
-  await expect(toolActivity.getByText('已完成', { exact: true })).toBeVisible();
-  await expect(toolActivity.getByText('trim_video', { exact: true })).toBeVisible();
+  await activity.getByRole('button', { name: '展开执行过程，共 3 项' }).click();
+  await expect(activity.getByText('已完成', { exact: true }).first()).toBeVisible();
+  await expect(activity.getByText('trim_video', { exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: '定位文件：E:/videos/web-dev-artifact.mp4' })).toBeVisible();
 
   const artifact = page.getByRole('region', { name: '结果产物' });
   await expect(artifact).toContainText('web-dev-artifact.mp4');

@@ -1,21 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type {
+  AgentActivityItem,
   AgentClientApi,
   AgentRuntimeEvent,
+  AgentTaskOutputFile,
   ClientAssistantMessage,
   ClientAssistantMessageBase,
   ClientConversation,
   ClientConversationMessage,
   ClientStateSnapshot,
-  ToolActivityEvent,
-  ToolActivityItem,
 } from './api.js';
-import { ArtifactCard } from './components/ArtifactCard.js';
-import { AttachmentChip } from './components/AttachmentChip.js';
 import { Composer } from './components/Composer.js';
-import { ToolActivity } from './components/ToolActivity.js';
+import { ConversationPanel } from './components/ConversationPanel.js';
 import { RuntimeSettingsPanel } from './components/RuntimeSettingsPanel.js';
+import { SessionSidebar } from './components/SessionSidebar.js';
 
 const INITIAL_RENDERER_SESSION_ID = 'initializing-session';
 
@@ -26,7 +25,7 @@ function createConversation(id: string, number: number): ClientConversation {
     titleManuallyRenamed: false,
     messages: [],
     prompt: '',
-    selectedVideos: [],
+    attachments: [],
   };
 }
 
@@ -42,32 +41,27 @@ function dropStreamedText(message: ClientAssistantMessage): ClientAssistantMessa
   return {
     id: message.id,
     role: message.role,
-    tools: message.tools,
-    toolsExpanded: message.toolsExpanded,
+    activity: message.activity,
+    activityExpanded: message.activityExpanded,
   };
 }
 
-function toActivityItem(event: ToolActivityEvent): ToolActivityItem {
-  if (event.type === 'tool.started') {
-    return {
-      toolCallId: event.toolCallId,
-      toolName: event.toolName,
-      status: 'running',
-    };
-  }
-
-  return {
-    toolCallId: event.toolCallId,
-    toolName: event.toolName,
-    status: event.type === 'tool.completed' ? 'completed' : 'failed',
-    durationMs: event.durationMs,
-  };
+/** 同一个活动 id 只保留一条记录：开始、完成、失败和取消都用新状态覆盖旧状态。 */
+function upsertActivity(
+  activity: readonly AgentActivityItem[],
+  nextItem: AgentActivityItem,
+): readonly AgentActivityItem[] {
+  const existingIndex = activity.findIndex((item) => item.id === nextItem.id);
+  return existingIndex === -1
+    ? [...activity, nextItem]
+    : activity.map((item, index) => (index === existingIndex ? nextItem : item));
 }
 
 interface AppProps {
   readonly api: AgentClientApi;
 }
 
+/** App 只持有会话状态、运行状态和宿主调用；界面由侧栏、对话工作区和输入区三个组件承担。 */
 export function App({ api }: AppProps) {
   const [conversations, setConversations] = useState<readonly ClientConversation[]>([
     createConversation(INITIAL_RENDERER_SESSION_ID, 1),
@@ -76,22 +70,29 @@ export function App({ api }: AppProps) {
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeView, setActiveView] = useState<'conversation' | 'settings'>('conversation');
-  const [openSessionMenuId, setOpenSessionMenuId] = useState<string | null>(null);
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState('');
-  const [confirmDeleteSessionId, setConfirmDeleteSessionId] = useState<string | null>(null);
+  // 宿主关闭请求序号：即使展示状态没有变化，每次请求也重新触发一次关闭前提交。
+  const [closeRequestSequence, setCloseRequestSequence] = useState(0);
+  const pendingClose = useRef<((error?: Error) => void) | undefined>(undefined);
+  // 常规防抖保存与关闭前强制保存共用一条队列，避免两个 IPC 同时写同一个临时文件。
+  const pendingStateSave = useRef<Promise<void>>(Promise.resolve());
   const activeSessionIdRef = useRef(INITIAL_RENDERER_SESSION_ID);
   const nextSessionNumber = useRef(2);
   const nextMessageId = useRef(1);
   const conversationScroll = useRef<HTMLDivElement>(null);
-  const activeSessionButton = useRef<HTMLButtonElement>(null);
-  const sessionMenu = useRef<HTMLDivElement>(null);
-  const sessionMenuTrigger = useRef<HTMLButtonElement>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
+  // 用户是否仍停留在最新内容处：只有跟随状态才让新内容自动滚动，向上阅读时保留当前位置。
+  const followsLatest = useRef(true);
 
   const activeConversation = conversations.find((conversation) => (
     conversation.id === activeSessionId
   )) ?? conversations[0]!;
+
+  const queueClientStateSave = (snapshot: ClientStateSnapshot): Promise<void> => {
+    const save = pendingStateSave.current.then(() => api.saveClientState(snapshot));
+    // 队列本身吸收上一项失败，让关闭时仍能用最新快照重试；调用方仍拿到本次原始结果。
+    pendingStateSave.current = save.catch(() => undefined);
+    return save;
+  };
 
   const updateConversation = (
     sessionId: string,
@@ -139,12 +140,42 @@ export function App({ api }: AppProps) {
 
   useEffect(() => {
     if (!isSessionReady || isProcessing) return;
+    // 关闭收尾正在提交同一份状态：取消尚未触发的防抖保存，避免关闭过程中重复写入。
+    if (pendingClose.current !== undefined) return;
     const snapshot: ClientStateSnapshot = { conversations, activeSessionId };
     const timeout = setTimeout(() => {
-      void api.saveClientState(snapshot);
+      void queueClientStateSave(snapshot);
     }, 150);
     return () => clearTimeout(timeout);
-  }, [activeSessionId, api, conversations, isProcessing, isSessionReady]);
+  }, [activeSessionId, api, closeRequestSequence, conversations, isProcessing, isSessionReady]);
+
+  useEffect(() => api.onPrepareClose(() => new Promise<void>((resolve, reject) => {
+    pendingClose.current = (error) => { if (error === undefined) resolve(); else reject(error); };
+    setCloseRequestSequence((sequence) => sequence + 1);
+  })), [api]);
+
+  // 关闭前提交：等本轮渲染把终态写入状态后再落盘，结果回告宿主，由宿主决定是否继续关闭。
+  useEffect(() => {
+    if (closeRequestSequence === 0) return;
+    const settle = pendingClose.current;
+    if (settle === undefined) return;
+    // 初始状态还没加载完成时没有可提交的展示状态，放行关闭，避免用占位会话覆盖磁盘历史。
+    if (!isSessionReady) {
+      pendingClose.current = undefined;
+      settle();
+      return;
+    }
+    if (isProcessing) return;
+    pendingClose.current = undefined;
+    void (async () => {
+      try {
+        await queueClientStateSave({ conversations, activeSessionId });
+        settle();
+      } catch (error) {
+        settle(error instanceof Error ? error : new Error('无法保存本地会话。'));
+      }
+    })();
+  }, [activeSessionId, api, closeRequestSequence, conversations, isProcessing, isSessionReady]);
 
   useEffect(() => api.onAgentEvent((event: AgentRuntimeEvent) => {
     const sessionId = activeSessionIdRef.current;
@@ -168,53 +199,50 @@ export function App({ api }: AppProps) {
         return { ...conversation, messages };
       }
 
-      const nextItem = toActivityItem(event);
-      const existingIndex = activeMessage.tools.findIndex(
-        (item) => item.toolCallId === nextItem.toolCallId,
-      );
-      const tools = existingIndex === -1
-        ? [...activeMessage.tools, nextItem]
-        : activeMessage.tools.map((item, index) => (
-            index === existingIndex ? nextItem : item
-          ));
+      const activity = upsertActivity(activeMessage.activity, event.item);
       const messages: readonly ClientConversationMessage[] = conversation.messages.map((message, index) => (
-        index === activeIndex ? { ...activeMessage, tools } : message
+        index === activeIndex ? { ...activeMessage, activity } : message
       ));
       return { ...conversation, messages };
     });
   }), [api]);
 
+  /** 距离底部小于一行时仍视为跟随，避免增量滚动造成的微小偏差把跟随状态误判成已离开底部。 */
+  const handleHistoryScroll = () => {
+    const scrollContainer = conversationScroll.current;
+    if (scrollContainer === null) return;
+    followsLatest.current = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight <= 24;
+  };
+
+  // 切换会话或视图后重新回到最新内容：恢复历史时用户期望看到的是这一轮对话的结尾。
   useEffect(() => {
+    followsLatest.current = true;
     const scrollContainer = conversationScroll.current;
     if (scrollContainer !== null) scrollContainer.scrollTop = scrollContainer.scrollHeight;
-  }, [activeSessionId, activeConversation.messages, activeView]);
+  }, [activeSessionId, activeView]);
 
+  // 新消息、活动更新和实时增量只在用户仍跟随最新内容时滚动；向上阅读时不得强行拉回。
   useEffect(() => {
-    activeSessionButton.current?.scrollIntoView({ block: 'nearest' });
-  }, [activeSessionId]);
+    const scrollContainer = conversationScroll.current;
+    if (scrollContainer === null || !followsLatest.current) return;
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+  }, [activeConversation.messages]);
 
-  useLayoutEffect(() => {
-    if (openSessionMenuId !== null) {
-      // 原生浮层进入顶层，避免被会话列表裁切；source 同时提供定位锚点和焦点返回目标。
-      sessionMenu.current!.showPopover({ source: sessionMenuTrigger.current! });
-    }
-  }, [openSessionMenuId]);
-
-  const selectVideo = async () => {
-    const videos = await api.selectVideoFile();
-    if (videos) {
+  const selectAttachments = async () => {
+    const attachments = await api.selectAttachmentFiles();
+    if (attachments) {
       updateConversation(activeSessionIdRef.current, (conversation) => ({
         ...conversation,
-        selectedVideos: videos,
+        attachments,
       }));
     }
   };
 
-  const removeVideo = async (index: number) => {
-    await api.removeSelectedVideo(index);
+  const removeAttachment = async (index: number) => {
+    await api.removeAttachment(index);
     updateConversation(activeSessionIdRef.current, (conversation) => ({
       ...conversation,
-      selectedVideos: conversation.selectedVideos.filter((_, currentIndex) => currentIndex !== index),
+      attachments: conversation.attachments.filter((_, currentIndex) => currentIndex !== index),
     }));
   };
 
@@ -229,26 +257,13 @@ export function App({ api }: AppProps) {
     setActiveView('conversation');
   };
 
-  const beginRename = (conversation: ClientConversation) => {
+  const renameSession = (sessionId: string, title: string) => {
     if (isProcessing) return;
-    setConfirmDeleteSessionId(null);
-    setEditingSessionId(conversation.id);
-    setEditingTitle(conversation.title);
-  };
-
-  const finishRename = (sessionId: string, save: boolean) => {
-    if (editingSessionId !== sessionId) return;
-    const title = editingTitle.trim();
-    if (save && title.length > 0) {
-      updateConversation(sessionId, (conversation) => ({
-        ...conversation,
-        title,
-        titleManuallyRenamed: true,
-      }));
-    }
-    setEditingSessionId(null);
-    setEditingTitle('');
-    setOpenSessionMenuId(null);
+    updateConversation(sessionId, (conversation) => ({
+      ...conversation,
+      title,
+      titleManuallyRenamed: true,
+    }));
   };
 
   const deleteSession = async (sessionId: string) => {
@@ -265,9 +280,6 @@ export function App({ api }: AppProps) {
     setConversations(remaining);
     activeSessionIdRef.current = nextActiveSessionId;
     setActiveSessionId(nextActiveSessionId);
-    setOpenSessionMenuId(null);
-    setConfirmDeleteSessionId(null);
-    setEditingSessionId(null);
   };
 
   const switchSession = async (sessionId: string) => {
@@ -289,6 +301,8 @@ export function App({ api }: AppProps) {
     const taskPrompt = conversation.prompt.trim();
     if (!taskPrompt || isProcessing) return;
 
+    // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
+    followsLatest.current = true;
     const assistantMessageId = nextMessageId.current + 1;
     updateConversation(sessionId, (currentConversation) => ({
       ...currentConversation,
@@ -301,24 +315,22 @@ export function App({ api }: AppProps) {
           id: nextMessageId.current,
           role: 'user',
           text: taskPrompt,
-          attachments: currentConversation.selectedVideos.map((video) => video.name),
+          attachments: currentConversation.attachments.map((attachment) => attachment.name),
+          ...(currentConversation.attachments.length === 0 ? {} : {
+            attachmentRoles: currentConversation.attachments.map((attachment) => attachment.role),
+          }),
         },
         {
           id: assistantMessageId,
           role: 'assistant',
           status: 'processing',
           streamedText: '',
-          tools: [],
-          toolsExpanded: true,
+          activity: [],
+          activityExpanded: true,
         },
       ],
     }));
     nextMessageId.current += 2;
-    // 进入执行态时关闭已有会话操作，保证重命名和删除在整个 Turn 期间不可触发。
-    setOpenSessionMenuId(null);
-    setConfirmDeleteSessionId(null);
-    setEditingSessionId(null);
-    setEditingTitle('');
     setIsProcessing(true);
 
     try {
@@ -333,7 +345,7 @@ export function App({ api }: AppProps) {
                 ...dropStreamedText(message),
                 status: 'completed',
                 result: taskResult,
-                toolsExpanded: false,
+                activityExpanded: false,
               }
             : message
         )),
@@ -343,6 +355,11 @@ export function App({ api }: AppProps) {
         && (error.name === 'AbortError'
           || error.message === 'This operation was aborted'
           || error.message === 'The operation was aborted');
+      // 失败或取消时，此前已成功的工具产出仍是真实文件：宿主把它们挂在错误上，这里原样带到终态。
+      const outputFiles = (error as { outputFiles?: readonly AgentTaskOutputFile[] }).outputFiles;
+      const artifacts = outputFiles === undefined || outputFiles.length === 0
+        ? {}
+        : { outputFiles };
       updateConversation(activeSessionIdRef.current, (currentConversation) => ({
         ...currentConversation,
         messages: currentConversation.messages.map((message) => (
@@ -351,16 +368,19 @@ export function App({ api }: AppProps) {
               ? {
                   ...dropStreamedText(message),
                   status: 'cancelled',
-                  tools: message.tools.map((tool) => (
-                    tool.status === 'running' ? { ...tool, status: 'cancelled' as const } : tool
+                  // 取消只影响仍在执行的活动，已完成的活动保留真实状态和耗时。
+                  activity: message.activity.map((item) => (
+                    item.status === 'running' ? { ...item, status: 'cancelled' as const } : item
                   )),
-                  toolsExpanded: false,
+                  activityExpanded: false,
+                  ...artifacts,
                 }
               : {
                   ...dropStreamedText(message),
                   status: 'failed',
                   errorMessage: error instanceof Error ? error.message : '任务执行失败。',
-                  toolsExpanded: false,
+                  activityExpanded: false,
+                  ...artifacts,
                 }
             : message
         )),
@@ -381,31 +401,31 @@ export function App({ api }: AppProps) {
     }
   };
 
-  const toggleTools = (messageId: number) => {
+  const toggleActivity = (messageId: number) => {
     const sessionId = activeSessionIdRef.current;
     updateConversation(sessionId, (conversation) => ({
       ...conversation,
       messages: conversation.messages.map((message) => (
         message.role === 'assistant' && message.id === messageId
-          ? { ...message, toolsExpanded: !message.toolsExpanded }
+          ? { ...message, activityExpanded: !message.activityExpanded }
           : message
       )),
     }));
   };
 
-  const { messages, prompt, selectedVideos } = activeConversation;
+  const { messages, prompt, attachments } = activeConversation;
   const hasConversation = messages.length > 0;
   const composer = (
     <Composer
-      selectedVideos={selectedVideos}
+      attachments={attachments}
       prompt={prompt}
       isProcessing={isProcessing}
       onPromptChange={(nextPrompt) => updateConversation(
         activeSessionIdRef.current,
         (conversation) => ({ ...conversation, prompt: nextPrompt }),
       )}
-      onSelectVideo={() => void selectVideo()}
-      onRemoveVideo={(index) => void removeVideo(index)}
+      onSelectFiles={() => void selectAttachments()}
+      onRemoveAttachment={(index) => void removeAttachment(index)}
       onSend={() => void sendTask()}
       onCancel={() => void cancelTask()}
     />
@@ -413,251 +433,37 @@ export function App({ api }: AppProps) {
 
   return (
     <div className="app-shell">
-      <aside className="app-sidebar" aria-label="工作区导航">
-        <div className="sidebar-brand">
-          <strong>Agent Desktop</strong>
-        </div>
-        <button
-          className="sidebar-new-session"
-          type="button"
-          aria-label="新会话"
-          title="新会话"
-          disabled={!isSessionReady || isProcessing}
-          onClick={() => void startNewSession()}
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-            <path d="M8 3v10M3 8h10" />
-          </svg>
-          <span>新会话</span>
-        </button>
-        <div className="sidebar-section-label sidebar-sessions-label">
-          <span>会话</span>
-          <button className="sidebar-search" type="button" disabled aria-label="搜索会话（待接入）" title="搜索会话待接入">
-            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="m10.5 10.5 3 3" /></svg>
-            <span>搜索待接入</span>
-          </button>
-        </div>
-        <nav className="sidebar-session-list" aria-label="会话列表">
-          {conversations.map((conversation) => {
-            const active = conversation.id === activeSessionId;
-            const selected = active && activeView === 'conversation';
-            const editing = editingSessionId === conversation.id;
-            const menuOpen = openSessionMenuId === conversation.id;
-            const confirmingDelete = confirmDeleteSessionId === conversation.id;
-            return (
-              <div
-                key={conversation.id}
-                className={`sidebar-session-row${selected ? ' active' : ''}`}
-              >
-                <button
-                  ref={active ? activeSessionButton : undefined}
-                  className="sidebar-session"
-                  type="button"
-                  aria-label={conversation.title}
-                  title={conversation.title}
-                  disabled={!isSessionReady || isProcessing}
-                  {...selected ? { 'aria-current': 'page' as const } : {}}
-                  onClick={() => void switchSession(conversation.id)}
-                >
-                  <span>{conversation.title}</span>
-                  {active && isProcessing && <small>进行中</small>}
-                </button>
-                <button
-                  className="sidebar-session-menu-button"
-                  type="button"
-                  aria-label={`会话操作：${conversation.title}`}
-                  title="会话操作"
-                  aria-expanded={menuOpen}
-                  disabled={!isSessionReady || isProcessing}
-                  onClick={(event) => {
-                    sessionMenuTrigger.current = event.currentTarget;
-                    setOpenSessionMenuId(menuOpen ? null : conversation.id);
-                    setConfirmDeleteSessionId(null);
-                  }}
-                >
-                  {/* 图标按 16px 原始尺寸渲染，避免缩放后三个点落到半像素而发虚。 */}
-                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
-                    <circle cx="3.5" cy="8" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="12.5" cy="8" r="1.5" />
-                  </svg>
-                </button>
-                {menuOpen && (
-                  <div
-                    ref={sessionMenu}
-                    popover="auto"
-                    className={`sidebar-session-menu${confirmingDelete || editing ? ' sidebar-session-editor' : ''}`}
-                    aria-label={confirmingDelete ? '删除会话确认' : `会话菜单：${conversation.title}`}
-                    onToggle={(event) => {
-                      if (event.newState === 'closed') {
-                        setOpenSessionMenuId(null);
-                        setConfirmDeleteSessionId(null);
-                        setEditingSessionId(null);
-                      }
-                    }}
-                  >
-                    {editing ? (
-                      <input
-                        className="sidebar-session-title-input"
-                        aria-label="会话标题"
-                        value={editingTitle}
-                        autoFocus
-                        onFocus={(event) => event.currentTarget.select()}
-                        onChange={(event) => setEditingTitle(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === 'Escape') {
-                            event.preventDefault();
-                            // 先卸载编辑框再返回焦点，避免 Escape 又触发旧 onBlur 保存。
-                            flushSync(() => finishRename(conversation.id, event.key === 'Enter'));
-                            sessionMenuTrigger.current?.focus();
-                          }
-                        }}
-                        onBlur={() => finishRename(conversation.id, true)}
-                      />
-                    ) : confirmingDelete ? (
-                      <>
-                        <p>删除会话将清除聊天记录和会话上下文，但不会删除已经生成的视频文件。</p>
-                        <div className="sidebar-session-confirm-actions">
-                          <button type="button" onClick={() => void deleteSession(conversation.id)}>删除会话</button>
-                          <button type="button" onClick={() => setConfirmDeleteSessionId(null)}>取消</button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <button type="button" autoFocus onClick={() => beginRename(conversation)}>重命名</button>
-                        <button type="button" onClick={() => setConfirmDeleteSessionId(conversation.id)}>删除</button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </nav>
-        <button
-          ref={settingsButton}
-          className={`sidebar-settings${activeView === 'settings' ? ' active' : ''}`}
-          type="button"
-          aria-label="设置"
-          title="设置"
-          aria-current={activeView === 'settings' ? 'page' : undefined}
-          onClick={() => setActiveView('settings')}
-        >
-          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
-            {/* 齿轮轮廓：8 齿，齿顶半径 7.2、齿根半径 5.0，中心为 2.2 半径的轴孔。 */}
-            <path d="M15.11 6.87A7.2 7.2 0 0 1 15.11 9.13L12.86 9.17A5 5 0 0 1 12.26 10.61L13.82 12.23A7.2 7.2 0 0 1 12.23 13.82L10.61 12.26A5 5 0 0 1 9.17 12.86L9.13 15.11A7.2 7.2 0 0 1 6.87 15.11L6.83 12.86A5 5 0 0 1 5.39 12.26L3.77 13.82A7.2 7.2 0 0 1 2.18 12.23L3.74 10.61A5 5 0 0 1 3.14 9.17L0.89 9.13A7.2 7.2 0 0 1 0.89 6.87L3.14 6.83A5 5 0 0 1 3.74 5.39L2.18 3.77A7.2 7.2 0 0 1 3.77 2.18L5.39 3.74A5 5 0 0 1 6.83 3.14L6.87 0.89A7.2 7.2 0 0 1 9.13 0.89L9.17 3.14A5 5 0 0 1 10.61 3.74L12.23 2.18A7.2 7.2 0 0 1 13.82 3.77L12.26 5.39A5 5 0 0 1 12.86 6.83Z" />
-            <circle cx="8" cy="8" r="2.2" />
-          </svg>
-          <span>设置</span>
-        </button>
-      </aside>
+      <SessionSidebar
+        conversations={conversations}
+        activeSessionId={activeSessionId}
+        activeView={activeView}
+        isSessionReady={isSessionReady}
+        isProcessing={isProcessing}
+        settingsButtonRef={settingsButton}
+        onNewSession={() => void startNewSession()}
+        onSwitchSession={(sessionId) => void switchSession(sessionId)}
+        onRenameSession={renameSession}
+        onDeleteSession={(sessionId) => void deleteSession(sessionId)}
+        onOpenSettings={() => setActiveView('settings')}
+      />
 
       <div className="app-main">
-      {activeView === 'settings' && (
-        <RuntimeSettingsPanel api={api} isProcessing={isProcessing} onClose={() => {
-          // 卸载模态框后再还原键盘焦点，避免焦点仍被原生模态层圈定。
-          flushSync(() => setActiveView('conversation'));
-          settingsButton.current!.focus();
-        }} />
-      )}
-      <main
-        className={`conversation-scroll${hasConversation ? '' : ' conversation-scroll-empty'}`}
-        aria-label="对话工作区"
-      >
-        <div className="conversation-history" ref={conversationScroll}>
-        <div className="conversation-feed" aria-live="polite">
-          {messages.map((message) => message.role === 'user' ? (
-            <article key={message.id} className="message-block user-message" aria-label="你的任务">
-              <div className="user-message-content">
-                {message.attachments.length > 0 && (
-                  <div className="submitted-attachments" aria-label="已提交的视频">
-                    {message.attachments.map((name, index) => (
-                      <AttachmentChip key={`${name}-${index}`} name={name} />
-                    ))}
-                  </div>
-                )}
-                <p>{message.text}</p>
-              </div>
-            </article>
-          ) : (
-            <article
-              key={message.id}
-              className={`message-block agent-message${message.status === 'failed' ? ' error-message' : ''}`}
-              aria-label="Agent 回复"
-              {...message.status === 'failed' ? { role: 'alert' } : {}}
-            >
-              {message.tools.length > 0 && (
-                <ToolActivity
-                  items={message.tools}
-                  expanded={message.toolsExpanded}
-                  isProcessing={message.status === 'processing'}
-                  onToggle={() => toggleTools(message.id)}
-                />
-              )}
-
-              {message.status === 'cancelled' ? (
-                <>
-                  <div className="agent-heading">
-                    <span className="agent-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1" /></svg></span>
-                    <strong>已停止</strong>
-                  </div>
-                </>
-              ) : message.status === 'failed' ? (
-                <>
-                  <div className="agent-heading error-heading">
-                    <span className="agent-mark error-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" /><path d="M8 4.5v4M8 11v.5" /></svg></span>
-                    <strong>任务失败</strong>
-                  </div>
-                  <div className="message-content"><p>{message.errorMessage}</p></div>
-                </>
-              ) : (
-                <>
-                  <div className="agent-heading">
-                    <span className="agent-mark" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="m5 3 7 5-7 5Z" /></svg></span>
-                    <strong>Agent</strong>
-                  </div>
-                  {message.status === 'processing' ? (
-                    message.streamedText.length > 0 ? (
-                      <div className="message-content">
-                        <p className="agent-response">{message.streamedText}</p>
-                      </div>
-                    ) : (
-                      <div className="message-content processing-line">
-                        <i aria-hidden="true" />
-                        <p>正在处理视频</p>
-                      </div>
-                    )
-                  ) : (
-                    <div className="message-content">
-                      <p className="agent-response">{message.result.responseText}</p>
-                      {message.result.outputFileName && (
-                        <ArtifactCard
-                          fileName={message.result.outputFileName}
-                          onOpen={() => void api.openOutputFile(
-                            message.result.outputFileName!,
-                          )}
-                        />
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-            </article>
-          ))}
-        </div>
-        </div>
-
-        <section
-          className={`composer-seat ${hasConversation ? 'composer-dock' : 'composer-hero'}`}
-          aria-label={hasConversation ? '任务输入' : '开始视频任务'}
-        >
-          {!hasConversation && (
-            <div className="empty-state">
-              <h2><svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true"><rect x="3" y="6" width="26" height="20" rx="5" /><path d="m13 11 8 5-8 5Z" /></svg>开始一个视频任务</h2>
-              <p>选择视频，或者直接告诉 Agent 你想做什么。</p>
-            </div>
-          )}
-          <div className="composer-wrap">{composer}</div>
-        </section>
-        </main>
+        {activeView === 'settings' && (
+          <RuntimeSettingsPanel api={api} isProcessing={isProcessing} onClose={() => {
+            // 卸载模态框后再还原键盘焦点，避免焦点仍被原生模态层圈定。
+            flushSync(() => setActiveView('conversation'));
+            settingsButton.current!.focus();
+          }} />
+        )}
+        <ConversationPanel
+          messages={messages}
+          hasConversation={hasConversation}
+          composer={composer}
+          historyRef={conversationScroll}
+          onHistoryScroll={handleHistoryScroll}
+          onToggleActivity={toggleActivity}
+          onRevealFile={(path) => api.revealFile(path)}
+        />
       </div>
     </div>
   );

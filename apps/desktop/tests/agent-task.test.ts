@@ -3,7 +3,8 @@ import type { ModelRequest, ModelResponse, ToolCallId } from '@agent-desktop/mod
 import { InMemorySession, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import {
   buildAgentPrompt,
-  findSuccessfulOutputPath,
+  findLatestTurnId,
+  findTurnArtifacts,
   runDesktopAgentTask,
 } from '../src/main/agent-task.js';
 
@@ -41,7 +42,7 @@ describe('desktop agent task', () => {
   it('passes Windows video paths with JSON-safe separators to the Agent', () => {
     expect(buildAgentPrompt(
       '删除无关内容，只保留核心部分',
-      ['D:\\videos\\sintel-trailer.mp4'],
+      [{ path: 'D:\\videos\\sintel-trailer.mp4', role: 'video' }],
       'D:\\videos\\sintel-trailer-edited.mp4',
     )).toBe([
       '删除无关内容，只保留核心部分',
@@ -59,10 +60,50 @@ describe('desktop agent task', () => {
     ].join('\n'));
   });
 
+  it('describes an audio track as a companion track, not as a second video', () => {
+    // 音轨必须与主视频分开描述：否则模型会把它当成第二个可拼接的视频输入。
+    expect(buildAgentPrompt(
+      '把这段音乐换成新的',
+      [
+        { path: 'D:\\videos\\main.mp4', role: 'video' },
+        { path: 'D:\\audio\\bgm.mp3', role: 'audio' },
+      ],
+      'D:\\videos\\main-edited.mp4',
+    )).toBe([
+      '把这段音乐换成新的',
+      '',
+      '输入视频 1：D:/videos/main.mp4',
+      '',
+      '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
+      '音轨 1：D:/audio/bgm.mp3',
+      '最终输出文件：D:/videos/main-edited.mp4',
+    ].join('\n'));
+  });
+
+  it('does not treat a lone audio track as a video input', () => {
+    // 只有音轨时没有主视频，也就没有最终输出路径：不能把音轨当输入视频，也不能虚构输出。
+    expect(buildAgentPrompt(
+      '把这段音频转成文字',
+      [{ path: 'D:\\audio\\only.mp3', role: 'audio' }],
+      'D:\\videos\\only-edited.mp4',
+    )).toBe([
+      '把这段音频转成文字',
+      '',
+      [
+        '当前未选择输入视频，只有音轨文件：',
+        '音轨 1：D:/audio/only.mp3',
+        '请只根据文字需求回答，不要把这些音轨当作可剪辑的主视频，不要调用需要主视频的 Tool，也不要声称生成了视频文件。',
+      ].join('\n'),
+    ].join('\n'));
+  });
+
   it('lists every selected video in the Agent prompt', () => {
     expect(buildAgentPrompt(
       '把两个视频拼接起来',
-      ['D:\\videos\\intro.mp4', 'D:\\videos\\main.mp4'],
+      [
+        { path: 'D:\\videos\\intro.mp4', role: 'video' },
+        { path: 'D:\\videos\\main.mp4', role: 'video' },
+      ],
       'D:\\videos\\intro-edited.mp4',
     )).toBe([
       '把两个视频拼接起来',
@@ -73,22 +114,180 @@ describe('desktop agent task', () => {
     ].join('\n'));
   });
 
-  it('returns the last successful output path from the current Turn', () => {
+  it('identifies every successful output of the current Turn by tool call and real path', () => {
     const events = [
       ...outputEvents('first', 'D:\\videos\\part.mp4', 'success'),
       ...outputEvents('final', 'D:\\videos\\final.mp4', 'success'),
     ];
 
-    expect(findSuccessfulOutputPath(events, turnId)).toBe('D:\\videos\\final.mp4');
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: 'first', path: 'D:\\videos\\part.mp4' },
+      { toolCallId: 'final', path: 'D:\\videos\\final.mp4' },
+    ]);
   });
 
-  it('does not expose an intermediate file when the final output Tool failed', () => {
+  it('does not expose extracted speech audio as a completed video artifact', () => {
+    const audioCallId = 'speech-audio' as ToolCallId;
+    const videoCallId = 'final-video' as ToolCallId;
+    const events: SessionEvent[] = [
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: audioCallId,
+        name: 'extract_audio',
+        input: { videoPath: 'D:\\videos\\input.mp4', outputPath: 'D:\\videos\\speech.wav' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: audioCallId,
+        result: { status: 'success', output: 'Audio created: D:\\videos\\speech.wav' },
+      },
+      ...outputEvents(videoCallId, 'D:\\videos\\final.mp4', 'success'),
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: videoCallId, path: 'D:\\videos\\final.mp4' },
+    ]);
+  });
+
+  it('keeps same-named outputs from different directories apart', () => {
+    const events = [
+      ...outputEvents('first', 'D:\\videos\\a\\final.mp4', 'success'),
+      ...outputEvents('final', 'D:\\videos\\b\\final.mp4', 'success'),
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: 'first', path: 'D:\\videos\\a\\final.mp4' },
+      { toolCallId: 'final', path: 'D:\\videos\\b\\final.mp4' },
+    ]);
+  });
+
+  it('registers only the successful output calls and never a failed one', () => {
     const events = [
       ...outputEvents('first', 'D:\\videos\\part.mp4', 'success'),
       ...outputEvents('final', 'D:\\videos\\final.mp4', 'error'),
     ];
 
-    expect(findSuccessfulOutputPath(events, turnId)).toBeUndefined();
+    // 失败调用不算产物；此前真实成功的文件仍然是本轮已经产生的产物事实。
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: 'first', path: 'D:\\videos\\part.mp4' },
+    ]);
+  });
+
+  it('does not treat a cancelled call or an output directory as an artifact', () => {
+    const cancelledCallId = 'cancelled' as ToolCallId;
+    const framesCallId = 'frames' as ToolCallId;
+    const events: SessionEvent[] = [
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: cancelledCallId,
+        name: 'trim_video',
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\half.mp4', start: 0, duration: 4 },
+      },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: framesCallId,
+        name: 'extract_video_frames',
+        input: { videoPath: 'input.mp4', outputDir: 'D:\\videos\\frames' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: framesCallId,
+        result: { status: 'success', output: 'frames' },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([]);
+  });
+
+  it('finds the latest Turn from Session facts so a failed Turn can still be summarized', () => {
+    const earlierTurnId = 'turn-earlier' as TurnId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId: earlierTurnId },
+      { type: 'turn.completed', turnId: earlierTurnId },
+      { type: 'turn.started', turnId },
+    ];
+
+    expect(findLatestTurnId(events)).toBe(turnId);
+  });
+
+  it('keeps the first successful output visible when a later tool in the same Turn fails', () => {
+    const firstCallId = 'first' as ToolCallId;
+    const secondCallId = 'second' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      { type: 'step.started', turnId, stepId },
+      ...outputEvents(firstCallId, 'D:\\videos\\part1.mp4', 'success'),
+      ...outputEvents(secondCallId, 'D:\\videos\\part2.mp4', 'error'),
+    ];
+
+    // 整轮失败（第二个工具 error）不改变第一份文件已经真实生成的事实。
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: firstCallId, path: 'D:\\videos\\part1.mp4' },
+    ]);
+  });
+
+  it('does not list an in-flight tool when the Turn is cancelled before it finishes', () => {
+    const doneCallId = 'done' as ToolCallId;
+    const runningCallId = 'running' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      { type: 'step.started', turnId, stepId },
+      ...outputEvents(doneCallId, 'D:\\videos\\done.mp4', 'success'),
+      // 取消发生在这一轮的工具执行中：只有 tool.called，没有 tool.result。
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: runningCallId,
+        name: 'trim_video',
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\never-finished.mp4' },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: doneCallId, path: 'D:\\videos\\done.mp4' },
+    ]);
+  });
+
+  it('keeps the successful fact of an earlier Turn out of the cancelled Turn summary', () => {
+    const earlierTurnId = 'turn-earlier' as TurnId;
+    const earlierCallId = 'earlier' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId: earlierTurnId },
+      {
+        type: 'tool.called',
+        turnId: earlierTurnId,
+        stepId,
+        toolCallId: earlierCallId,
+        name: 'trim_video',
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\earlier.mp4' },
+      },
+      {
+        type: 'tool.result',
+        turnId: earlierTurnId,
+        stepId,
+        toolCallId: earlierCallId,
+        result: { status: 'success', output: 'Video created: D:\\videos\\earlier.mp4' },
+      },
+      { type: 'turn.completed', turnId: earlierTurnId },
+      { type: 'turn.started', turnId },
+      { type: 'step.started', turnId, stepId },
+    ];
+
+    const latestTurnId = findLatestTurnId(events);
+    expect(latestTurnId).toBe(turnId);
+    // 上一轮的文件不属于本轮结果，避免取消后把历史产物算成本轮产出。
+    expect(findTurnArtifacts(events, latestTurnId!)).toEqual([]);
   });
 
   it('uses the same Session as model context across two Desktop turns', async () => {

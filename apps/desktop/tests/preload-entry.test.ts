@@ -31,14 +31,13 @@ describe('desktop preload entry', () => {
         loadRuntimeSettings: expect.any(Function),
         saveRuntimeSettings: expect.any(Function),
         getActiveSessionId: expect.any(Function),
-        selectVideoFile: expect.any(Function),
-        removeSelectedVideo: expect.any(Function),
+        selectAttachmentFiles: expect.any(Function),
+        removeAttachment: expect.any(Function),
         newSession: expect.any(Function),
         switchSession: expect.any(Function),
         deleteSession: expect.any(Function),
         runAgentTask: expect.any(Function),
         onAgentEvent: expect.any(Function),
-        openOutputFile: expect.any(Function),
       }),
     );
   });

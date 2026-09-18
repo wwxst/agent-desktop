@@ -1,26 +1,26 @@
 import type { FormEvent } from 'react';
-import type { SelectedVideo } from '../api.js';
+import type { Attachment } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
 
 interface ComposerProps {
-  readonly selectedVideos: readonly SelectedVideo[];
+  readonly attachments: readonly Attachment[];
   readonly prompt: string;
   readonly isProcessing: boolean;
   readonly onPromptChange: (prompt: string) => void;
-  readonly onSelectVideo: () => void;
-  readonly onRemoveVideo: (index: number) => void;
+  readonly onSelectFiles: () => void;
+  readonly onRemoveAttachment: (index: number) => void;
   readonly onSend: () => void;
   readonly onCancel: () => void;
 }
 
-/** Composer 集中承载视频附件、自然语言输入和发送动作。 */
+/** Composer 集中承载输入附件、自然语言输入和发送动作。 */
 export function Composer({
-  selectedVideos,
+  attachments,
   prompt,
   isProcessing,
   onPromptChange,
-  onSelectVideo,
-  onRemoveVideo,
+  onSelectFiles,
+  onRemoveAttachment,
   onSend,
   onCancel,
 }: ComposerProps) {
@@ -31,13 +31,14 @@ export function Composer({
 
   return (
     <form className="composer" onSubmit={submit}>
-      {selectedVideos.length > 0 && (
-        <div className="composer-attachments" aria-label="已选择的视频">
-          {selectedVideos.map((video, index) => (
+      {attachments.length > 0 && (
+        <div className="composer-attachments" aria-label="已选择的输入附件">
+          {attachments.map((attachment, index) => (
             <AttachmentChip
-              key={`${video.name}-${index}`}
-              name={video.name}
-              {...isProcessing ? {} : { onRemove: () => onRemoveVideo(index) }}
+              key={`${attachment.path}-${index}`}
+              name={attachment.name}
+              role={attachment.role}
+              {...isProcessing ? {} : { onRemove: () => onRemoveAttachment(index) }}
             />
           ))}
         </div>
@@ -63,10 +64,10 @@ export function Composer({
         <button
           className="icon-button attachment-button"
           type="button"
-          aria-label="选择视频"
-          title="选择视频"
+          aria-label="选择输入文件"
+          title="选择输入文件"
           disabled={isProcessing}
-          onClick={onSelectVideo}
+          onClick={onSelectFiles}
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
             <path d="M8 3v10M3 8h10" />

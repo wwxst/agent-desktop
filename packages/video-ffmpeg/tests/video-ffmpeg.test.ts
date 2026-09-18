@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -122,7 +122,7 @@ describe('FFmpeg video tools', () => {
     })).resolves.toEqual({ status: 'success', output: 'Audio created: speech.wav' });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -201,7 +201,7 @@ describe('FFmpeg video tools', () => {
       ]);
       for (const [index, timestamp] of [6, 12, 18, 24, 30, 36].entries()) {
         expect(executeCommand).toHaveBeenNthCalledWith(index + 2, 'ffmpeg', [
-          '-y',
+          '-n',
           '-hide_banner',
           '-loglevel',
           'error',
@@ -320,7 +320,7 @@ describe('FFmpeg video tools', () => {
 
       for (const [index, timestamp] of timestamps.entries()) {
         expect(executeCommand).toHaveBeenNthCalledWith(index + 1, 'ffmpeg', [
-          '-y',
+          '-n',
           '-hide_banner',
           '-loglevel',
           'error',
@@ -483,7 +483,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -506,6 +506,57 @@ describe('FFmpeg video tools', () => {
     expect(result).toEqual({ status: 'success', output: 'Video created: trimmed.mp4' });
   });
 
+  it('refuses to overwrite an existing user output file before starting FFmpeg', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-overwrite-test-'));
+    try {
+      const outputPath = join(directory, 'existing.mp4');
+      await writeFile(outputPath, 'original bytes', 'utf8');
+      const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
+
+      await expect(new TrimVideoTool(executeCommand).execute({
+        inputPath: 'input.mp4',
+        outputPath,
+        start: 0,
+        duration: 1,
+      })).resolves.toEqual({
+        status: 'error',
+        message: `Output file already exists and will not be overwritten: ${outputPath}`,
+      });
+
+      // 冲突在启动 FFmpeg 之前判定，已有文件内容保持不变。
+      expect(executeCommand).not.toHaveBeenCalled();
+      await expect(readFile(outputPath, 'utf8')).resolves.toBe('original bytes');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to overwrite existing extracted frame files', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'agent-desktop-frame-overwrite-test-'));
+    try {
+      const existingFrame = join(outputDir, 'frame-001.jpg');
+      await writeFile(existingFrame, 'existing frame', 'utf8');
+      const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+        command === 'ffprobe'
+          ? { stdout: JSON.stringify({ format: { duration: '42' }, streams: [] }), stderr: '' }
+          : { stdout: '', stderr: '' }
+      ));
+
+      const result = await new ExtractVideoFramesTool(executeCommand).execute({
+        videoPath: 'input.mp4',
+        outputDir,
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.status === 'error' ? result.message : '').toContain(existingFrame);
+      // 已有抽帧文件不被改写，后续帧也不再继续抽取。
+      await expect(readFile(existingFrame, 'utf8')).resolves.toBe('existing frame');
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it('writes an ordered concat list and removes it after execution', async () => {
     let concatListPath = '';
     let concatListContent = '';
@@ -523,7 +574,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -560,7 +611,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -694,7 +745,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -772,7 +823,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -825,7 +876,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -902,7 +953,7 @@ describe('FFmpeg video tools', () => {
       'input.mp4',
     ]);
     expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',
@@ -938,7 +989,7 @@ describe('FFmpeg video tools', () => {
     });
 
     expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
-      '-y',
+      '-n',
       '-hide_banner',
       '-loglevel',
       'error',

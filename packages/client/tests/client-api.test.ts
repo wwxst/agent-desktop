@@ -16,16 +16,17 @@ describe('AgentClientApi', () => {
       }),
       loadClientState: async () => null,
       saveClientState: async () => undefined,
+      onPrepareClose: () => () => undefined,
       getActiveSessionId: async () => 'session-a',
-      selectVideoFile: async () => null,
-      removeSelectedVideo: async () => undefined,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       deleteSession: async () => 'session-a',
       runAgentTask: async () => ({ responseText: 'ok', traceId: 'trace-a' }),
       cancelTask: async () => undefined,
       onAgentEvent: () => () => undefined,
-      openOutputFile: async () => undefined,
+      revealFile: async () => undefined,
     };
 
     expect(Object.keys(api).sort()).toEqual([
@@ -36,12 +37,13 @@ describe('AgentClientApi', () => {
       'loadRuntimeSettings',
       'newSession',
       'onAgentEvent',
-      'openOutputFile',
-      'removeSelectedVideo',
+      'onPrepareClose',
+      'removeAttachment',
+      'revealFile',
       'runAgentTask',
       'saveClientState',
       'saveRuntimeSettings',
-      'selectVideoFile',
+      'selectAttachmentFiles',
       'switchSession',
     ]);
   });

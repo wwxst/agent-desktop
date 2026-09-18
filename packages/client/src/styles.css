@@ -215,24 +215,6 @@ input:focus-visible {
   justify-content: space-between;
 }
 
-.sidebar-search {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: default;
-}
-
-.sidebar-search svg {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.25;
-}
-
 .sidebar-session-list {
   flex: 1;
   min-width: 0;
@@ -694,8 +676,8 @@ input:focus-visible {
 }
 
 .message-block + .message-block,
-.message-block + .tool-activity,
-.tool-activity + .message-block {
+.message-block + .agent-activity,
+.agent-activity + .message-block {
   margin-top: 16px;
 }
 
@@ -734,7 +716,7 @@ input:focus-visible {
   margin-bottom: 7px;
 }
 
-.agent-message > .tool-activity {
+.agent-message > .agent-activity {
   margin-bottom: 8px;
 }
 
@@ -783,6 +765,11 @@ input:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* Agent 正文里相邻的段落、列表和代码块使用 8px 紧凑节奏，不把一次回复拆成互不相关的章节。 */
+.message-content :is(.agent-response, .markdown-list, .markdown-code) + :is(.agent-response, .markdown-list, .markdown-code) {
+  margin-top: 8px;
+}
+
 .processing-line {
   display: flex;
   align-items: center;
@@ -804,10 +791,89 @@ input:focus-visible {
   .processing-line i {
     animation: none;
   }
+  .message-content.is-streaming > .agent-response:last-of-type::after {
+    animation: none;
+  }
 }
 
+/* 段落沿用真实文本换行：模型输出里的换行是内容的一部分，不能合并成空格。 */
 .agent-response {
   white-space: pre-wrap;
+}
+
+/* 行内代码用于真实路径、工具名和短命令；长路径必须在正文宽度内断行。 */
+.inline-code {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: #f1f3f5;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* 代码块在自己的区域内横向滚动，长命令不能把阅读轴或页面撑宽。 */
+.markdown-code {
+  max-width: 100%;
+  margin: 0;
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #f6f7f9;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #c4cad3 transparent;
+}
+
+.markdown-code code {
+  display: block;
+  width: fit-content;
+  min-width: 100%;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: pre;
+}
+
+/* 列表恢复标记与缩进；全局重置只清除了 p、h1、ol 的外边距。 */
+.markdown-list {
+  margin: 0;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+
+.markdown-list li + li {
+  margin-top: 4px;
+}
+
+/* 链接是正文里的次要动作，长 URL 同样需要在正文宽度内断行。 */
+.message-content a {
+  color: var(--accent);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.message-content a:hover {
+  text-decoration: underline;
+}
+
+/* 实时文本末尾的光标只表示这一轮还在输出，不参与正文宽度计算。 */
+.message-content.is-streaming > .agent-response:last-of-type::after {
+  display: inline-block;
+  width: 2px;
+  height: 15px;
+  margin-left: 2px;
+  background: var(--text-primary);
+  vertical-align: -2px;
+  content: '';
+  animation: stream-caret 1s steps(1, end) infinite;
+}
+
+@keyframes stream-caret {
+  50% {
+    opacity: 0;
+  }
 }
 
 .attachment-chip {
@@ -861,6 +927,14 @@ input:focus-visible {
 
 .attachment-icon-play {
   fill: #ffffff;
+}
+
+/* 音轨波形用描边绘制，需要显式声明 stroke 才能与播放三角同样清晰。 */
+.attachment-icon-wave {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+  stroke-linecap: round;
 }
 
 .attachment-copy {
@@ -930,11 +1004,11 @@ input:focus-visible {
   opacity: 1;
 }
 
-.tool-activity {
+.agent-activity {
   margin-left: 0;
 }
 
-.tool-heading {
+.activity-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -946,28 +1020,28 @@ input:focus-visible {
   border-bottom: 0.5px solid var(--border);
 }
 
-.tool-toggle {
+.activity-toggle {
   border: 0;
   background: transparent;
   cursor: pointer;
   border-bottom: 0.5px solid var(--border);
 }
 
-.tool-toggle:hover {
+.activity-toggle:hover {
   color: var(--text-secondary);
 }
 
-.tool-chevron {
+.activity-chevron {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
   transform: rotate(-90deg);
   transition: transform 100ms ease;
 }
-.tool-toggle[aria-expanded="true"] .tool-chevron {
+.activity-toggle[aria-expanded="true"] .activity-chevron {
   transform: rotate(0);
 }
-.tool-state svg {
+.activity-state svg {
   display: block;
   fill: none;
   stroke: currentColor;
@@ -975,20 +1049,21 @@ input:focus-visible {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.tool-spinner {
+.activity-spinner {
   stroke-dasharray: 24 8;
   transform-origin: center;
-  animation: tool-spin 0.8s linear infinite;
+  animation: activity-spin 0.8s linear infinite;
 }
-@keyframes tool-spin { to { transform: rotate(360deg); } }
+@keyframes activity-spin { to { transform: rotate(360deg); } }
 
-.tool-list {
+.activity-list {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.tool-row {
+.activity-row {
+  position: relative;
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
@@ -998,16 +1073,76 @@ input:focus-visible {
   padding: 3px 2px;
 }
 
-.tool-row:hover {
+/* 相邻活动之间用一小段细线连接状态符号，形成按真实执行顺序阅读的连续轨迹。 */
+.activity-row + .activity-row::before {
+  position: absolute;
+  top: -5px;
+  left: 10.5px;
+  width: 1px;
+  height: 10px;
+  background: var(--border);
+  content: '';
+}
+
+.activity-row:hover {
   background: var(--surface-hover);
 }
 
-.tool-state {
-  font-size: 12px;
-  text-align: center;
+/* 状态符号与状态文字共用同一组语义色，符号列保持垂直居中。 */
+.activity-state {
+  display: grid;
+  place-items: center;
 }
 
-.tool-copy {
+.activity-note {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 18px;
+}
+
+/* 文件引用是真实路径的定位入口，保持轻量文字型外观，不抢主操作权重。 */
+.activity-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1px 5px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: rgb(15 17 21 / 5%);
+  font-size: 10px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.activity-file:hover {
+  color: var(--text-primary);
+  background: rgb(15 17 21 / 10%);
+}
+
+.activity-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-file-direction,
+.activity-file-separator {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.activity-file-error {
+  grid-column: 2 / -1;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.activity-copy {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -1015,26 +1150,26 @@ input:focus-visible {
   min-width: 0;
 }
 
-.tool-copy strong,
-.tool-copy code {
+.activity-copy strong,
+.activity-copy code {
   overflow-wrap: anywhere;
   font-size: 11px;
 }
 
-.tool-copy strong {
+.activity-copy strong {
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 400;
   line-height: 20px;
 }
 
-.tool-copy code {
+.activity-copy code {
   color: var(--text-muted);
   font-size: 10px;
   line-height: 18px;
 }
 
-.tool-status {
+.activity-status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1042,7 +1177,7 @@ input:focus-visible {
   white-space: nowrap;
 }
 
-.tool-status span + span {
+.activity-status span + span {
   color: var(--text-muted);
 }
 
@@ -1095,16 +1230,6 @@ input:focus-visible {
   background: var(--surface);
   overflow: hidden;
 }
-.artifact-preview {
-  padding: 4px 8px;
-  border: 0;
-  border-right: 0.5px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  cursor: default;
-}
-
 .artifact-copy strong {
   display: block;
   min-width: 0;
@@ -1140,6 +1265,15 @@ input:focus-visible {
 .artifact-open:hover {
   color: #315fc4;
   background: var(--surface-hover);
+}
+
+.artifact-error {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 
 .composer-dock {
@@ -1378,11 +1512,11 @@ input:focus-visible {
     max-width: 86%;
   }
 
-  .tool-row {
+  .activity-row {
     grid-template-columns: 18px minmax(0, 1fr);
   }
 
-  .tool-status {
+  .activity-status {
     grid-column: 2;
   }
 
@@ -1407,10 +1541,10 @@ input:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .tool-spinner {
+  .activity-spinner {
     animation: none;
   }
-  .tool-chevron {
+  .activity-chevron {
     transition: none;
   }
 }

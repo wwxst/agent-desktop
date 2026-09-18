@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/index.js';
 import type { AgentClientApi, AgentRuntimeEvent, AgentTaskResult, ClientStateSnapshot } from '../src/index.js';
@@ -18,16 +18,17 @@ const api: AgentClientApi = {
   }),
   loadClientState: async () => null,
   saveClientState: async () => undefined,
+  onPrepareClose: () => () => undefined,
   getActiveSessionId: async () => 'session-a',
-  selectVideoFile: async () => null,
-  removeSelectedVideo: async () => undefined,
+  selectAttachmentFiles: async () => null,
+  removeAttachment: async () => undefined,
   newSession: async () => 'session-b',
   switchSession: async () => undefined,
   deleteSession: async () => 'session-a',
   runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-a' }),
   cancelTask: async () => undefined,
   onAgentEvent: () => () => undefined,
-  openOutputFile: async () => undefined,
+  revealFile: async () => undefined,
 };
 
 // jsdom 不实现布局滚动与顶层浮层；命中区域和关闭行为由真实浏览器测试验证。
@@ -156,7 +157,7 @@ describe('shared App', () => {
           title: '历史会话 A',
           titleManuallyRenamed: false,
           prompt: 'A 草稿',
-          selectedVideos: [{ name: 'a.mp4' }],
+          attachments: [{ path: 'D:\\videos\\a.mp4', name: 'a.mp4', role: 'video' }],
           messages: [{
             id: 1,
             role: 'user',
@@ -169,14 +170,15 @@ describe('shared App', () => {
           title: '历史会话 B',
           titleManuallyRenamed: false,
           prompt: 'B 草稿',
-          selectedVideos: [{ name: 'b.mp4' }],
+          attachments: [{ path: 'D:\\videos\\b.mp4', name: 'b.mp4', role: 'video' }],
           messages: [{
             id: 2,
             role: 'assistant',
             status: 'completed',
-            toolsExpanded: false,
-            tools: [{
-              toolCallId: 'call-b',
+            activityExpanded: false,
+            activity: [{
+              id: 'call-b',
+              kind: 'tool',
               toolName: 'trim_video',
               status: 'completed',
               durationMs: 8,
@@ -184,7 +186,7 @@ describe('shared App', () => {
             result: {
               responseText: 'Agent B 已完成',
               traceId: 'trace-b',
-              outputFileName: 'b-edited.mp4',
+              outputFiles: [{ path: 'D:/videos/b-edited.mp4', fileName: 'b-edited.mp4' }],
             },
           }],
         },
@@ -277,7 +279,7 @@ describe('shared App', () => {
         titleManuallyRenamed: false,
         messages: [],
         prompt: '',
-        selectedVideos: [],
+        attachments: [],
       }],
     };
 
@@ -404,6 +406,95 @@ describe('shared App', () => {
     expect(screen.queryByText('半截输出')).toBeNull();
   });
 
+  it('keeps already-succeeded artifacts visible when the turn is cancelled', async () => {
+    let rejectRunning: ((reason: Error) => void) | undefined;
+    const revealFile = vi.fn(async () => undefined);
+    const cancelTask = vi.fn(async () => {
+      // 宿主在取消时把此前已成功的产物挂在错误上。
+      const abortError = new Error('The operation was aborted') as Error & {
+        outputFiles?: readonly { readonly path: string; readonly fileName: string }[];
+      };
+      abortError.name = 'AbortError';
+      abortError.outputFiles = [{ path: 'D:/videos/done.mp4', fileName: 'done.mp4' }];
+      rejectRunning?.(abortError);
+    });
+
+    render(<App api={{
+      ...api,
+      revealFile,
+      runAgentTask: () => new Promise((_resolve, reject) => { rejectRunning = reject; }),
+      cancelTask,
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '长任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.click(screen.getByRole('button', { name: '停止' }));
+
+    expect(await screen.findByText('已停止')).toBeTruthy();
+    // 取消不代表已完成的工作消失：产物卡仍在，且仍能定位到真实路径。
+    // 产物卡的按钮文案固定是「打开文件」，文件名只出现在卡片标题里，所以按卡片定位再点按钮。
+    const card = screen.getByText('done.mp4').closest('.artifact-card');
+    expect(card).not.toBeNull();
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '打开文件' }));
+    await vi.waitFor(() => expect(revealFile).toHaveBeenCalledWith('D:/videos/done.mp4'));
+  });
+
+  it('keeps already-succeeded artifacts visible when the turn fails', async () => {
+    let rejectRunning: ((reason: Error) => void) | undefined;
+    const revealFile = vi.fn(async () => undefined);
+
+    render(<App api={{
+      ...api,
+      revealFile,
+      runAgentTask: () => new Promise((_resolve, reject) => { rejectRunning = reject; }),
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '会失败的任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await act(async () => {
+      const failure = new Error('第二个工具执行失败。') as Error & {
+        outputFiles?: readonly { readonly path: string; readonly fileName: string }[];
+      };
+      failure.outputFiles = [{ path: 'D:/videos/part1.mp4', fileName: 'part1.mp4' }];
+      rejectRunning?.(failure);
+    });
+
+    expect(await screen.findByText('任务失败')).toBeTruthy();
+    expect(screen.getByText('第二个工具执行失败。')).toBeTruthy();
+    // 整轮失败与「此前已有成功文件」同时成立。
+    const card = screen.getByText('part1.mp4').closest('.artifact-card');
+    expect(card).not.toBeNull();
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '打开文件' }));
+    await vi.waitFor(() => expect(revealFile).toHaveBeenCalledWith('D:/videos/part1.mp4'));
+  });
+
+  it('shows the real artifact reveal failure inside the artifact card', async () => {
+    const revealFile = vi.fn(async () => {
+      throw new Error('文件不存在或已被移动：D:/videos/missing.mp4');
+    });
+    render(<App api={{
+      ...api,
+      revealFile,
+      runAgentTask: async () => ({
+        responseText: '已完成',
+        traceId: 'trace-missing',
+        outputFiles: [{ path: 'D:/videos/missing.mp4', fileName: 'missing.mp4' }],
+      }),
+    }} />);
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '生成文件' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    const card = (await screen.findByText('missing.mp4')).closest('.artifact-card');
+    expect(card).not.toBeNull();
+    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '打开文件' }));
+
+    expect(await within(card as HTMLElement).findByText('文件不存在或已被移动：D:/videos/missing.mp4'))
+      .toBeTruthy();
+  });
+
   it('applies streamed text only to the assistant reply that is processing', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveFirst: ((result: AgentTaskResult) => void) | undefined;
@@ -438,8 +529,7 @@ describe('shared App', () => {
     await act(async () => resolveSecond?.({ responseText: '第二轮完成', traceId: 'trace-2' }));
   });
 
-  it('never persists temporary streamed text in the saved snapshot', async () => {
-    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+  it('never persists temporary streamed text in the saved snapshot', async () => {    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     let savedState: ClientStateSnapshot | undefined;
 
@@ -466,5 +556,229 @@ describe('shared App', () => {
       result: { responseText: '最终回复' },
     }));
     expect(JSON.stringify(savedState)).not.toContain('临时流式片段');
+  });
+
+  it('submits the pending draft immediately when the host prepares to close', async () => {
+    let prepareClose: (() => Promise<void>) | undefined;
+    const saved: ClientStateSnapshot[] = [];
+    render(<App api={{
+      ...api,
+      saveClientState: async (state) => { saved.push(state); },
+      onPrepareClose: (listener) => {
+        prepareClose = listener;
+        return () => undefined;
+      },
+    }} />);
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '关闭前的草稿' } });
+
+    // 防抖保存还没到期，宿主关闭时也要立即提交这一份草稿。
+    const flush = prepareClose!();
+    await act(async () => { await Promise.resolve(); });
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.conversations[0]?.prompt).toBe('关闭前的草稿');
+    await flush;
+  });
+
+  it('does not schedule a second save while the host is closing', async () => {
+    let prepareClose: (() => Promise<void>) | undefined;
+    const saved: ClientStateSnapshot[] = [];
+    render(<App api={{
+      ...api,
+      saveClientState: async (state) => { saved.push(state); },
+      onPrepareClose: (listener) => {
+        prepareClose = listener;
+        return () => undefined;
+      },
+    }} />);
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '关闭中的草稿' } });
+
+    const flush = prepareClose!();
+    await act(async () => { await Promise.resolve(); });
+    await flush;
+    expect(saved).toHaveLength(1);
+
+    // 关闭请求会取消尚未触发的防抖保存，避免关闭过程中重复写入同一份状态。
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 250); }); });
+    expect(saved).toHaveLength(1);
+  });
+
+  it('waits for an in-flight save before writing the final closing snapshot', async () => {
+    let prepareClose: (() => Promise<void>) | undefined;
+    let resolveFirstSave: (() => void) | undefined;
+    const saved: ClientStateSnapshot[] = [];
+    render(<App api={{
+      ...api,
+      saveClientState: async (state) => {
+        saved.push(state);
+        if (saved.length === 1) {
+          await new Promise<void>((resolve) => { resolveFirstSave = resolve; });
+        }
+      },
+      onPrepareClose: (listener) => {
+        prepareClose = listener;
+        return () => undefined;
+      },
+    }} />);
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '普通保存中的草稿' } });
+    await waitFor(() => expect(saved).toHaveLength(1));
+
+    fireEvent.change(input, { target: { value: '关闭时的最终草稿' } });
+    let closeSettled = false;
+    const flush = prepareClose!().then(() => { closeSettled = true; });
+    await act(async () => { await Promise.resolve(); });
+
+    // 前一份快照尚未写完时，关闭快照必须排队，不能并发占用同一个临时文件。
+    expect(saved).toHaveLength(1);
+    expect(closeSettled).toBe(false);
+
+    await act(async () => { resolveFirstSave?.(); });
+    await flush;
+    expect(saved).toHaveLength(2);
+    expect(saved[1]?.conversations[0]?.prompt).toBe('关闭时的最终草稿');
+  });
+
+  it('waits for the running turn to settle before submitting the closing state', async () => {
+    let prepareClose: (() => Promise<void>) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const saved: ClientStateSnapshot[] = [];
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      saveClientState: async (state) => { saved.push(state); },
+      onPrepareClose: (listener) => {
+        prepareClose = listener;
+        return () => undefined;
+      },
+    }} />);
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '关闭时的长任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    let settled = false;
+    const flush = prepareClose!().then(() => { settled = true; });
+    await act(async () => { await Promise.resolve(); });
+    // 轮次仍在执行：既不提交临时流式状态，也不提前放行关闭。
+    expect(saved.every((state) => !JSON.stringify(state).includes('"processing"'))).toBe(true);
+    expect(settled).toBe(false);
+
+    await act(async () => { resolveTask?.({ responseText: '完成', traceId: 'trace-close' }); });
+    await act(async () => { await Promise.resolve(); });
+    expect(settled).toBe(true);
+    expect(saved.at(-1)?.conversations[0]?.messages.at(-1)).toMatchObject({ status: 'completed' });
+    await flush;
+  });
+
+  it('renders the Agent reply as formatted text, code and links instead of raw Markdown', async () => {
+    const reply = [
+      '已完成 **两段剪辑**，输出到 `E:/videos/out.mp4`：',
+      '',
+      '- 第一段 00:12 → 00:48',
+      '- 第二段 01:20 → 02:05',
+      '',
+      '```bash',
+      'ffmpeg -i "E:/videos/长文件名-示例-第一版.mp4" -vf crop=1280:720:0:0 -c:v libx264 E:/videos/out.mp4',
+      '```',
+      '',
+      '细节见 [剪辑报告](https://example.com/report)。',
+    ].join('\n');
+    const runAgentTask = async () => ({ responseText: reply, traceId: 'trace-markdown' });
+
+    render(<App api={{ ...api, runAgentTask }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '剪两段' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    // 列表按真实条目拆分，代码块保留原始命令，行内代码和链接去掉标记后仍然是可读文本。
+    const items = await screen.findAllByRole('listitem');
+    expect(items.map((item) => item.textContent)).toEqual([
+      '第一段 00:12 → 00:48',
+      '第二段 01:20 → 02:05',
+    ]);
+    expect(screen.getByText(/^ffmpeg -i/)).toBeTruthy();
+    expect(screen.getByText('E:/videos/out.mp4')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '剪辑报告' }).getAttribute('href')).toBe('https://example.com/report');
+    expect(screen.getByText('两段剪辑')).toBeTruthy();
+
+    // 未支持的语法标记不得留在正文里。
+    expect(screen.queryByText(/\*\*/)).toBeNull();
+    expect(screen.queryByText(/`E:\/videos\/out\.mp4`/)).toBeNull();
+    expect(screen.queryByText(/\[剪辑报告\]/)).toBeNull();
+  });
+
+  it('keeps a non-web link literal instead of handing it to the host', async () => {
+    const runAgentTask = async () => ({
+      responseText: '按 [打开设置](javascript:void) 处理。',
+      traceId: 'trace-unsafe-link',
+    });
+
+    render(<App api={{ ...api, runAgentTask }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '危险链接' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    await screen.findByText('按 [打开设置](javascript:void) 处理。');
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('formats streamed increments with the same inline syntax as the final reply', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '流式格式' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    act(() => receiveEvent?.({ type: 'text.delta', delta: '正在读取 `E:/videos/a.mp4`' }));
+    expect(screen.getByText('E:/videos/a.mp4')).toBeTruthy();
+    expect(screen.queryByText(/`E:\/videos\/a\.mp4`/)).toBeNull();
+
+    await act(async () => resolveTask?.({ responseText: '读取完成', traceId: 'trace-inline' }));
+    expect(await screen.findByText('读取完成')).toBeTruthy();
+  });
+
+  it('keeps every session draft and attachment and reuses the same composer node when switching', async () => {
+    const switchApi: AgentClientApi = {
+      ...api,
+      selectAttachmentFiles: async () => [
+        { path: 'D:\\videos\\a.mp4', name: 'a.mp4', role: 'video' },
+      ],
+    };
+
+    render(<App api={switchApi} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '会话一草稿' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '新会话' }));
+    await screen.findByRole('button', { name: '会话 2' });
+    expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('');
+    fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '会话二草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
+    await screen.findByLabelText('视频附件：a.mp4');
+
+    // 切回第一个会话：草稿和附件各自恢复，且输入节点没有被重建。
+    fireEvent.click(screen.getByRole('button', { name: '会话 1' }));
+    await waitFor(() => expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('会话一草稿'));
+    expect(screen.getByLabelText('剪辑需求')).toBe(input);
+    expect(screen.queryByLabelText('视频附件：a.mp4')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '会话 2' }));
+    await waitFor(() => expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('会话二草稿'));
+    expect(screen.getByLabelText('视频附件：a.mp4')).toBeTruthy();
+    expect(screen.getByLabelText('剪辑需求')).toBe(input);
   });
 });

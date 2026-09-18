@@ -1,9 +1,10 @@
-import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import type {
   AgentClientApi,
   AgentRuntimeEvent,
+  AgentTaskOutputFile,
   AgentTaskResult,
-  SelectedVideo,
+  Attachment,
+  AttachmentRole,
 } from '@agent-desktop/client';
 
 export const DESKTOP_CHANNELS = {
@@ -12,22 +13,32 @@ export const DESKTOP_CHANNELS = {
   getActiveSessionId: 'desktop:get-active-session-id',
   loadClientState: 'desktop:load-client-state',
   saveClientState: 'desktop:save-client-state',
-  selectVideo: 'desktop:select-video',
-  removeVideo: 'desktop:remove-video',
+  selectAttachmentFiles: 'desktop:select-attachment-files',
+  removeAttachment: 'desktop:remove-attachment',
   newSession: 'desktop:new-session',
   switchSession: 'desktop:switch-session',
   deleteSession: 'desktop:delete-session',
   runAgentTask: 'desktop:run-agent-task',
   cancelTask: 'desktop:cancel-task',
   agentEvent: 'desktop:agent-event',
-  openOutputFile: 'desktop:open-output-file',
+  closeReady: 'desktop:close-ready',
+  prepareClose: 'desktop:prepare-close',
+  closePrepared: 'desktop:close-prepared',
+  revealFile: 'desktop:reveal-file',
 } as const;
 
-/** Execution Trace 中属于 Tool Activity 的事件子集，Main 只把这三类投影为工具活动。 */
-export type ToolActivityEvent = Extract<
-  ExecutionTraceEvent,
-  { type: 'tool.started' | 'tool.completed' | 'tool.failed' }
->;
+/**
+ * Electron 不会把 Main 抛出 Error 的自定义字段传给 Preload，因此任务终态使用可结构化克隆的结果。
+ * Preload 再把 error 分支还原成 Renderer 既有的 Promise rejection 契约。
+ */
+export type AgentTaskIpcResult =
+  | { readonly status: 'success'; readonly result: AgentTaskResult }
+  | {
+    readonly status: 'error';
+    readonly errorName: string;
+    readonly errorMessage: string;
+    readonly outputFiles?: readonly AgentTaskOutputFile[];
+  };
 
-export type { AgentRuntimeEvent, AgentTaskResult, SelectedVideo };
+export type { AgentRuntimeEvent, AgentTaskOutputFile, AgentTaskResult, Attachment, AttachmentRole };
 export type DesktopApi = AgentClientApi;
