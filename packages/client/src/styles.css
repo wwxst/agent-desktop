@@ -807,17 +807,6 @@ input:focus-visible {
   white-space: pre-wrap;
 }
 
-.trace-id {
-  margin-top: 14px;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.trace-id code {
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
 .attachment-chip {
   position: relative;
   display: inline-flex;

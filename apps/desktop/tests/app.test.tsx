@@ -371,8 +371,6 @@ describe('App', () => {
     expect(screen.getAllByLabelText('Agent 回复')).toHaveLength(2);
     expect(within(screen.getAllByLabelText('你的任务')[0]!).getByText('请记住数字 731。')).toBeTruthy();
     expect(screen.getByText('我刚才让你记住的数字是多少？')).toBeTruthy();
-    expect(screen.getByText('trace-turn-1')).toBeTruthy();
-    expect(screen.getByText('trace-turn-2')).toBeTruthy();
   });
 
   it('keeps Tool activity with the Agent reply from its own turn', async () => {
@@ -568,8 +566,6 @@ describe('App', () => {
     expect(within(conversationWorkspace).queryByText('第二轮完成。')).toBeNull();
     expect(within(conversationWorkspace).queryByRole('button', { name: '已执行 1 个工具' })).toBeNull();
     expect(within(conversationWorkspace).queryByText('first-output.mp4')).toBeNull();
-    expect(within(conversationWorkspace).queryByText('trace-new-1')).toBeNull();
-    expect(within(conversationWorkspace).queryByText('trace-new-2')).toBeNull();
     expect(within(conversationWorkspace).queryByLabelText('视频附件：input.mp4')).toBeNull();
     expect((composerInput as HTMLTextAreaElement).value).toBe('');
     expect(screen.getByRole('region', { name: '开始视频任务' })).toBeTruthy();
@@ -663,7 +659,6 @@ describe('App', () => {
     expect(screen.getByText('tool_a')).toBeTruthy();
     expect(screen.queryByText('tool_b')).toBeNull();
     expect(screen.getByText('a.mp4')).toBeTruthy();
-    expect(screen.getByText('trace-a')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
     expect(openOutputFile).toHaveBeenLastCalledWith('a.mp4');
 
@@ -677,7 +672,6 @@ describe('App', () => {
     expect(screen.getByText('tool_b')).toBeTruthy();
     expect(screen.queryByText('tool_a')).toBeNull();
     expect(screen.getByText('b.mp4')).toBeTruthy();
-    expect(screen.getByText('trace-b')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
     expect(openOutputFile).toHaveBeenLastCalledWith('b.mp4');
   });

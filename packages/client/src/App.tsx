@@ -635,7 +635,6 @@ export function App({ api }: AppProps) {
                           )}
                         />
                       )}
-                      <p className="trace-id">Trace: <code>{message.result.traceId}</code></p>
                     </div>
                   )}
                 </>

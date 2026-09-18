@@ -5,7 +5,7 @@ description: 修改或审查 Agent Desktop 渲染层界面时使用，覆盖布�
 
 # 桌面端前端界面
 
-本技能负责指导 `apps/desktop/src/renderer/**` 的界面修改与视觉验收。它不定义另一套设计事实；开始工作前必须阅读 [`docs/desktop-ui.md`](../../../docs/desktop-ui.md)，具体尺寸、层级、状态和验收矩阵以该文档为唯一来源。
+本技能负责指导 `packages/client/src/**` 共享客户端和 `apps/desktop/src/renderer/**` 桌面入口的界面修改与视觉验收。它不定义另一套设计事实；开始工作前必须阅读 [`docs/desktop-ui.md`](../../../docs/desktop-ui.md)，具体尺寸、层级、状态和验收矩阵以该文档为唯一来源。
 
 ```text
 English term                中文术语          介绍

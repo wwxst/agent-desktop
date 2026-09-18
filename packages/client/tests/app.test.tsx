@@ -198,7 +198,7 @@ describe('shared App', () => {
     expect(activeButton.getAttribute('aria-current')).toBe('page');
     expect(screen.getByText('Agent B 已完成')).toBeTruthy();
     expect(screen.getByText('b-edited.mp4')).toBeTruthy();
-    expect(screen.getByText('trace-b')).toBeTruthy();
+    expect(screen.queryByText('trace-b')).toBeNull();
     expect(screen.getByLabelText('视频附件：b.mp4')).toBeTruthy();
     await waitFor(() => expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('B 草稿'));
 
