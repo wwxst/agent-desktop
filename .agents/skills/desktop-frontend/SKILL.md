@@ -17,7 +17,7 @@ Visual Verification         视觉验收          通过真实渲染确认界面
 ## 适用范围
 
 - 修改或审查桌面端的布局、排版、颜色、间距、组件外观和响应式行为。
-- 调整 `Composer`、`AttachmentChip`、`ToolActivity`、`ArtifactCard` 或 `App` 中的界面结构。
+- 调整 `Composer`、`AttachmentChip`、`AgentActivity`、`ArtifactCard` 或 `App` 中的界面结构。
 - 根据真实窗口截图判断信息密度、交互层级、重叠、溢出或演示品感。
 
 不使用本技能设计新的产品能力、会话模型、智能体行为、进程通信契约、运行时架构或通用组件库。

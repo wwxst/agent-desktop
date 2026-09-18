@@ -58,6 +58,7 @@ Docs, decision, handoff  文档、决定、交接        references/knowledge-co
 Reference                 何时加载                              负责内容
 project-rules.md          影响 package、依赖或运行时边界时      项目结构、调用链、不变量和非目标
 verification.md           选择测试、Gate 或真实验证时            现有可执行证据、外部能力和 Skip/Fail
+desktop-real-acceptance.md 做 Electron 真实验收或写快照夹具时   启动方式、夹具约束、反证和报告口径
 simplification.md         评估删除、抽象或防御代码时              消费者证据、Coverage 和简化停止条件
 knowledge-continuity.md   更新文档、决定、事故或交接时            知识分类、唯一归属和沉淀方式
 ```
