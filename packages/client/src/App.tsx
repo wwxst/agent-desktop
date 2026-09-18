@@ -475,8 +475,9 @@ export function App({ api }: AppProps) {
                     setConfirmDeleteSessionId(null);
                   }}
                 >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
-                    <circle cx="3" cy="8" r="1" /><circle cx="8" cy="8" r="1" /><circle cx="13" cy="8" r="1" />
+                  {/* 图标按 16px 原始尺寸渲染，避免缩放后三个点落到半像素而发虚。 */}
+                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                    <circle cx="3.5" cy="8" r="1.5" /><circle cx="8" cy="8" r="1.5" /><circle cx="12.5" cy="8" r="1.5" />
                   </svg>
                 </button>
                 {menuOpen && (

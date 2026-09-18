@@ -242,6 +242,8 @@ input:focus-visible {
   scrollbar-width: thin;
   scrollbar-color: #c4cad3 transparent;
   padding: 4px;
+  /* 稳定槽位占用的宽度折进侧栏内边距，行右边缘才会和左边缘保持同样的留白。 */
+  margin-right: -10px;
 }
 
 .sidebar-session-row {
@@ -274,7 +276,8 @@ input:focus-visible {
 
 .sidebar-session-menu-button:hover:not(:disabled) {
   color: var(--text-primary);
-  background: var(--surface-hover);
+  /* 会话行自身的悬停色和选中色都与 surface-hover 接近，半透明叠加才能让按钮边界看得出来。 */
+  background: rgb(15 17 21 / 6%);
 }
 
 .sidebar-session-menu-button:disabled {
