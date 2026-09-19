@@ -12,6 +12,8 @@ interface AgentActivityProps {
 }
 
 const TOOL_LABELS: Readonly<Record<string, string>> = {
+  set_working_directory: '设置工作目录',
+  list_directory: '列出目录',
   probe_media: '读取视频信息',
   extract_audio: '提取音频',
   transcribe_audio: '识别对白',

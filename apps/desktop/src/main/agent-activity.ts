@@ -5,10 +5,12 @@ import type { AgentActivityFile, AgentActivityItem } from '@agent-desktop/client
 import type { SessionEvent } from '@agent-desktop/session';
 
 /**
- * 当前视频工具输入里真实表示文件的字段。
- * 输入与输出分开，避免把中间产物误报成输入文件；字段名以视频工具的 inputSchema 为准。
+ * 当前工具输入里真实表示文件的字段。
+ * 输入与输出分开，避免把中间产物误报成输入文件；字段名以各工具的 inputSchema 为准。
  */
 const INPUT_PATH_FIELDS = ['videoPath', 'inputPath', 'inputPaths', 'audioPath', 'subtitlePath'] as const;
+/** 表示「被设置或读取的目录」的输入字段：它也是真实路径，但按目录展示。 */
+const INPUT_DIRECTORY_FIELDS = ['path', 'directory'] as const;
 const OUTPUT_PATH_FIELDS = ['outputPath'] as const;
 const OUTPUT_DIRECTORY_FIELDS = ['outputDir'] as const;
 
@@ -45,6 +47,12 @@ export function readActivityFiles(input: unknown): readonly AgentActivityFile[] 
   for (const field of OUTPUT_PATH_FIELDS) {
     for (const path of readPathList(input, field)) {
       files.push({ path, label: basename(path), role: 'output' });
+    }
+  }
+  for (const field of INPUT_DIRECTORY_FIELDS) {
+    for (const path of readPathList(input, field)) {
+      // 输入目录与输出目录一样用结尾斜杠区分于文件，让界面不需要猜测路径类型。
+      files.push({ path, label: `${basename(path)}/`, role: 'input' });
     }
   }
   for (const field of OUTPUT_DIRECTORY_FIELDS) {

@@ -1,5 +1,6 @@
 import type { Agent } from '@agent-desktop/agent';
 import {
+  ListDirectoryTool,
   SetWorkingDirectoryTool,
   type WorkspacePort,
 } from '@agent-desktop/local-tools';
@@ -47,6 +48,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   // 工作目录工具只有在宿主提供目录状态和审批能力时才有合法消费者。
   if (options.workspace !== undefined) {
     tools.register(new SetWorkingDirectoryTool(options.workspace));
+    tools.register(new ListDirectoryTool(options.workspace));
   }
   tools.register(new ProbeMediaTool());
   tools.register(new ExtractVideoFramesTool());

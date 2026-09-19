@@ -74,6 +74,16 @@ describe('readActivityFiles', () => {
     ]);
   });
 
+  it('shows the directory a local tool set or read, distinguished from a file', () => {
+    expect(readActivityFiles({
+      path: 'E:/videos',
+      directory: 'E:/videos/素材 目录',
+    })).toEqual([
+      { path: 'E:/videos', label: 'videos/', role: 'input' },
+      { path: 'E:/videos/素材 目录', label: '素材 目录/', role: 'input' },
+    ]);
+  });
+
   it('produces no file reference for tool input outside the current contract', () => {
     expect(readActivityFiles({ start: 0, end: 12 })).toEqual([]);
     expect(readActivityFiles(undefined)).toEqual([]);
