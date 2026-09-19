@@ -18,7 +18,7 @@ const MAX_LINE_CHARS = 2000;
 const MAX_OUTPUT_CHARS = 20_000;
 /**
  * 允许整份读入的文件大小上限。
- * 读取需要把文件放进内存并切分成行，超过这个大小就明确拒绝。
+ * 读取需要把文件放进内存并切分成行，超过这个大小的文本文件应当改用 `search_text` 定位片段。
  */
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
@@ -103,7 +103,8 @@ export class ReadFileTool implements Tool {
     }
     if (size > MAX_FILE_BYTES) {
       return errorResult(
-        `文件过大（${size} 字节，上限 ${MAX_FILE_BYTES} 字节），不能用 read_file 整份读入：${scoped.path}`,
+        `文件过大（${size} 字节，上限 ${MAX_FILE_BYTES} 字节），不能整份读入；`
+        + `请改用 search_text 定位需要的片段：${scoped.path}`,
       );
     }
 

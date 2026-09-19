@@ -2,6 +2,7 @@ import type { Agent } from '@agent-desktop/agent';
 import {
   ListDirectoryTool,
   ReadFileTool,
+  SearchTextTool,
   SetWorkingDirectoryTool,
   type WorkspacePort,
 } from '@agent-desktop/local-tools';
@@ -51,6 +52,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     tools.register(new SetWorkingDirectoryTool(options.workspace));
     tools.register(new ListDirectoryTool(options.workspace));
     tools.register(new ReadFileTool(options.workspace));
+    tools.register(new SearchTextTool(options.workspace));
   }
   tools.register(new ProbeMediaTool());
   tools.register(new ExtractVideoFramesTool());

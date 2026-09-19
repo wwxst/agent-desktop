@@ -265,7 +265,7 @@ describe('read_file', () => {
     expect(output.note).toContain(`startLine=${output.nextStartLine}`);
   });
 
-  it('refuses a file that is too large to read as a whole', async () => {
+  it('refuses a file that is too large to read as a whole and points at search_text', async () => {
     const big = join(root, 'big.txt');
     const handle = await open(big, 'w');
     try {
@@ -279,7 +279,7 @@ describe('read_file', () => {
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('文件过大');
-    expect(result.status === 'error' && result.message).toContain('read_file');
+    expect(result.status === 'error' && result.message).toContain('search_text');
   });
 
   it('exposes a model-visible schema for the file and line arguments', () => {

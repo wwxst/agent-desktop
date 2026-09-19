@@ -47,6 +47,16 @@
 
 `read_file` 按行范围返回文本，行号从 1 开始并与用户在编辑器里看到的一致；返回行数组和对应行号，便于模型准确引用内容。超过行数或字符预算时返回 `nextStartLine`，连续读取不重不漏。它先检查文件大小，再按 UTF-8 解码；出现替换字符时如实说明文件可能不是 UTF-8，二进制文件（含 NUL 字节）直接拒绝。
 
+`search_text` 把搜索交给 ripgrep 真实进程（`--json` 行分隔输出、`--fixed-strings` 字面匹配），只负责参数、已确认目录范围、结果上限和取消。它不自行遍历目录、不做正则或语义索引。达到上限时结束进程并说明缩小范围的方法；ripgrep 退出码 1（无匹配）是正常空结果。
+
+```text
+Dependency       中文名称        当前状态
+ripgrep          文本搜索工具    由 `@vscode/ripgrep` 随包提供，工具用它的 `rgPath` 启动进程，
+                                不依赖运行环境 PATH 上是否安装 rg。
+```
+
+Desktop 主进程打包时把 `@vscode/ripgrep` 保持为 external（外部依赖），运行时从应用自己的 `node_modules` 解析平台二进制。开发入口已使用随包依赖；安装包内的资源落地留到 Commit 49 的分发验收验证。
+
 ```text
 Video Agent Application
 视频智能体应用层

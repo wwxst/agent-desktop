@@ -8,5 +8,6 @@
 export { ListDirectoryTool } from './list-directory.js';
 export { resolveScopedPath, type ScopedPath } from './path-scope.js';
 export { ReadFileTool } from './read-file.js';
+export { SearchTextTool, type RipgrepMatch, type RipgrepOutcome, type RipgrepRunner } from './search-text.js';
 export { SetWorkingDirectoryTool } from './workspace.js';
 export type { ApprovalTarget, WorkspacePort } from './workspace.js';

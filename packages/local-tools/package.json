@@ -4,7 +4,8 @@
   "type": "module",
   "dependencies": {
     "@agent-desktop/model": "workspace:*",
-    "@agent-desktop/tools": "workspace:*"
+    "@agent-desktop/tools": "workspace:*",
+    "@vscode/ripgrep": "1.18.0"
   },
   "exports": {
     ".": "./src/index.ts"
