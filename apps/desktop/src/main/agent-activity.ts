@@ -8,7 +8,14 @@ import type { SessionEvent } from '@agent-desktop/session';
  * 当前工具输入里真实表示文件的字段。
  * 输入与输出分开，避免把中间产物误报成输入文件；字段名以各工具的 inputSchema 为准。
  */
-const INPUT_PATH_FIELDS = ['videoPath', 'inputPath', 'inputPaths', 'audioPath', 'subtitlePath'] as const;
+const INPUT_PATH_FIELDS = [
+  'videoPath',
+  'inputPath',
+  'inputPaths',
+  'audioPath',
+  'subtitlePath',
+  'filePath',
+] as const;
 /** 表示「被设置或读取的目录」的输入字段：它也是真实路径，但按目录展示。 */
 const INPUT_DIRECTORY_FIELDS = ['path', 'directory'] as const;
 const OUTPUT_PATH_FIELDS = ['outputPath'] as const;

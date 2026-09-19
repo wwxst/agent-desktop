@@ -84,6 +84,12 @@ describe('readActivityFiles', () => {
     ]);
   });
 
+  it('shows the text file a local tool actually read', () => {
+    expect(readActivityFiles({ filePath: 'E:/videos/字幕.srt', startLine: 1 })).toEqual([
+      { path: 'E:/videos/字幕.srt', label: '字幕.srt', role: 'input' },
+    ]);
+  });
+
   it('produces no file reference for tool input outside the current contract', () => {
     expect(readActivityFiles({ start: 0, end: 12 })).toEqual([]);
     expect(readActivityFiles(undefined)).toEqual([]);

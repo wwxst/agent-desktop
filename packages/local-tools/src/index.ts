@@ -7,5 +7,6 @@
  */
 export { ListDirectoryTool } from './list-directory.js';
 export { resolveScopedPath, type ScopedPath } from './path-scope.js';
+export { ReadFileTool } from './read-file.js';
 export { SetWorkingDirectoryTool } from './workspace.js';
 export type { ApprovalTarget, WorkspacePort } from './workspace.js';

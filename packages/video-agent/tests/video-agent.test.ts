@@ -66,7 +66,7 @@ describe('createVideoAgent', () => {
   });
 
   it('registers the local tools only when the host provides a workspace port', () => {
-    const localTools = ['set_working_directory', 'list_directory'];
+    const localTools = ['set_working_directory', 'list_directory', 'read_file'];
     const withoutWorkspace = createVideoAgent({ deepSeekApiKey: 'test-deepseek-key' });
     // 没有宿主目录确认能力时不能注册这些工具：目录工具没有合法的范围来源，也没有审批消费者。
     for (const name of localTools) {
