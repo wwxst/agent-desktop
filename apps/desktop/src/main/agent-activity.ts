@@ -5,7 +5,7 @@ import type { AgentActivityFile, AgentActivityItem } from '@agent-desktop/client
 import type { SessionEvent } from '@agent-desktop/session';
 
 /**
- * 当前工具输入里真实表示文件的字段。
+ * 当前本地工具输入里真实表示文件的字段。
  * 输入与输出分开，避免把中间产物误报成输入文件；字段名以各工具的 inputSchema 为准。
  */
 const INPUT_PATH_FIELDS = [
@@ -138,8 +138,18 @@ export function isSessionFilePath(
   filePath: string,
 ): boolean {
   if (sessionPaths.includes(filePath)) return true;
-  return events.some((event) => event.type === 'tool.called'
-    && readActivityFiles(event.input).some((file) => file.path === filePath));
+  return events.some((event) => {
+    if (event.type === 'tool.called') {
+      return readActivityFiles(event.input).some((file) => file.path === filePath);
+    }
+    // 成功结果报告的产物是这次会话真实创建过的文件，也是产物卡的路径来源。
+    // 工具的输入里可能只有相对路径（例如 write_text_file 的 filePath），
+    // 因此只按输入校验会让刚创建出来的产物卡无法定位。
+    if (event.type === 'tool.result' && event.result.status === 'success') {
+      return (event.result.artifacts ?? []).includes(filePath);
+    }
+    return false;
+  });
 }
 
 /** 定位前确认文件仍然存在，让界面可以展示真实的打开失败。 */

@@ -17,7 +17,7 @@ const mainMocks = vi.hoisted(() => {
   const agentOptions: Array<{
     readonly workspace?: {
       confirmedDirectory(): string | undefined;
-      requestApproval(target: { kind: 'directory'; path: string }, signal?: AbortSignal): Promise<boolean>;
+      requestApproval(target: { kind: 'directory' | 'create-file'; path: string }, signal?: AbortSignal): Promise<boolean>;
       confirmDirectory(directory: string): void;
     };
   }> = [];
@@ -53,7 +53,7 @@ const mainMocks = vi.hoisted(() => {
       };
       workspace?: {
         confirmedDirectory(): string | undefined;
-        requestApproval(target: { kind: 'directory'; path: string }, signal?: AbortSignal): Promise<boolean>;
+        requestApproval(target: { kind: 'directory' | 'create-file'; path: string }, signal?: AbortSignal): Promise<boolean>;
         confirmDirectory(directory: string): void;
       };
     }) => {
@@ -736,7 +736,11 @@ describe('desktop main session lifecycle', () => {
         turnId: 'turn-failed',
         stepId: 'step-failed',
         toolCallId: 'call-done',
-        result: { status: 'success', output: 'Video created: D:\\videos\\done.mp4' },
+        result: {
+          status: 'success',
+          output: 'Video created: D:\\videos\\done.mp4',
+          artifacts: ['D:\\videos\\done.mp4'],
+        },
       });
       throw new Error('第二个工具执行失败。');
     });
@@ -771,7 +775,11 @@ describe('desktop main session lifecycle', () => {
         turnId: 'turn-earlier-success',
         stepId: 'step-earlier-success',
         toolCallId: 'call-earlier-success',
-        result: { status: 'success', output: 'Video created: D:\\videos\\earlier.mp4' },
+        result: {
+          status: 'success',
+          output: 'Video created: D:\\videos\\earlier.mp4',
+          artifacts: ['D:\\videos\\earlier.mp4'],
+        },
       });
       return {
         responseText: '上一轮完成。',
@@ -822,7 +830,11 @@ describe('desktop main session lifecycle', () => {
         turnId: 'turn-cancelled-artifacts',
         stepId: 'step-cancelled',
         toolCallId: 'call-cancelled-done',
-        result: { status: 'success', output: 'Video created: D:\\videos\\cancelled-done.mp4' },
+        result: {
+          status: 'success',
+          output: 'Video created: D:\\videos\\cancelled-done.mp4',
+          artifacts: ['D:\\videos\\cancelled-done.mp4'],
+        },
       });
       // 取消发生在下一个工具执行中：只有 tool.called，没有结果。
       agent.session.append({
@@ -966,6 +978,7 @@ describe('desktop main session lifecycle', () => {
 
     decideApproval({}, requestId, false);
     await expect(running).resolves.toMatchObject({ status: 'success' });
+
     expect(decision).toBe('refused');
     expect(() => decideApproval({}, requestId, true)).toThrow('该审批请求已失效。');
   });

@@ -60,6 +60,13 @@ function readStringArray(value: unknown, field: string): readonly string[] {
   return value.map((item, index) => readString(item, `${field}[${index}]`));
 }
 
+/** 成功结果里的产物路径；字段缺失表示这次调用没有创建交付文件。 */
+function readArtifacts(value: unknown, field: string): { readonly artifacts?: readonly string[] } {
+  if (value === undefined) return {};
+  const artifacts = readStringArray(value, field);
+  return artifacts.length === 0 ? {} : { artifacts };
+}
+
 function readToolCall(value: unknown, field: string): SessionToolCall {
   if (!isRecord(value)) invalid(field);
   const id = readString(value.id, `${field}.id`);
@@ -119,9 +126,12 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
       if (!isRecord(value.result)) invalid(`${field}.result`);
       const status = readString(value.result.status, `${field}.result.status`);
       const result = status === 'success'
-        ? Object.hasOwn(value.result, 'output')
-          ? { status, output: value.result.output }
-          : invalid(`${field}.result.output`)
+        ? {
+            status,
+            ...(Object.hasOwn(value.result, 'output') ? { output: value.result.output } : invalid(`${field}.result.output`)),
+            // 产物事实随成功结果持久化：它是宿主登记产物的唯一权威来源，形状不对时直接失败。
+            ...readArtifacts(value.result.artifacts, `${field}.result.artifacts`),
+          }
         : status === 'error'
           ? { status, message: readString(value.result.message, `${field}.result.message`) }
           : invalid(`${field}.result.status`);

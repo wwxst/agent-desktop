@@ -1,5 +1,11 @@
 import type { ApprovalRequest as ApprovalRequestData } from '../api.js';
 
+/** 每种操作对应的问话：界面只展示宿主要执行的确切操作，不替用户推断它是什么。 */
+const APPROVAL_QUESTIONS: Readonly<Record<ApprovalRequestData['kind'], string>> = {
+  directory: '允许 Agent 使用这个目录吗？',
+  'create-file': '允许 Agent 创建这个文件吗？',
+};
+
 interface ApprovalRequestProps {
   readonly request: ApprovalRequestData;
   readonly onDecide: (approved: boolean) => void;
@@ -15,7 +21,7 @@ interface ApprovalRequestProps {
 export function ApprovalRequest({ request, onDecide }: ApprovalRequestProps) {
   return (
     <section className="approval-request" aria-label="操作审批">
-      <p className="approval-question">允许 Agent 使用这个目录吗？</p>
+      <p className="approval-question">{APPROVAL_QUESTIONS[request.kind]}</p>
       <p className="approval-directory" title={request.target}>{request.target}</p>
       <div className="approval-actions">
         <button type="button" className="approval-allow" onClick={() => onDecide(true)}>允许</button>

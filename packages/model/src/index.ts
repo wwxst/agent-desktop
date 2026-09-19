@@ -3,7 +3,16 @@ export type ToolCallId = string & { readonly __brand: 'ToolCallId' };
 
 // Tool Result 是模型上下文和 Session 共同使用的供应商无关结果，不归 Tools 或 Session 单独重复定义。
 export type ToolResult =
-  | { readonly status: 'success'; readonly output: unknown }
+  | {
+    readonly status: 'success';
+    readonly output: unknown;
+    /**
+     * 这次调用真实创建的交付文件（只承载真实路径，展示用的文件名由路径生成）。
+     * 它是产物事实的唯一权威来源：宿主只从这里登记产物，不从回复文本、退出码或磁盘扫描推断。
+     * 只有写出型工具报告它；读取、搜索和中间产物（抽帧目录、语音 WAV）不报告。
+     */
+    readonly artifacts?: readonly string[];
+  }
   | { readonly status: 'error'; readonly message: string };
 
 /** 模型可见的供应商无关工具描述，刻意不包含运行时 execute 方法。 */

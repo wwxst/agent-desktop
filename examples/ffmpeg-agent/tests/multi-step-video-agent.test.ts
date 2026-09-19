@@ -108,10 +108,10 @@ describe('Multi-step Video Editing Agent', () => {
       { videoPath: 'step-3.mp4', subtitlePath: 'subtitle.srt', outputPath: 'final.mp4' },
     ]);
     expect(resultEvents(session).map((event) => event.result)).toEqual([
-      { status: 'success', output: 'Video created: step-1.mp4' },
-      { status: 'success', output: 'Video created: step-2.mp4' },
-      { status: 'success', output: 'Video created: step-3.mp4' },
-      { status: 'success', output: 'Video created: final.mp4' },
+      { status: 'success', output: 'Video created: step-1.mp4', artifacts: ['step-1.mp4'] },
+      { status: 'success', output: 'Video created: step-2.mp4', artifacts: ['step-2.mp4'] },
+      { status: 'success', output: 'Video created: step-3.mp4', artifacts: ['step-3.mp4'] },
+      { status: 'success', output: 'Video created: final.mp4', artifacts: ['final.mp4'] },
     ]);
     expect(session.events().filter((event) => event.type === 'turn.completed')).toHaveLength(1);
     expect(session.events().filter((event) => event.type === 'step.completed')).toHaveLength(5);

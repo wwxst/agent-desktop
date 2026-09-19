@@ -885,6 +885,41 @@ describe('shared App', () => {
     expect(screen.queryByText('D:/videos')).toBeNull();
   });
 
+  it('asks a different question for a file creation and does not treat it as a working directory', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const decideApproval = vi.fn(async () => undefined);
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      decideApproval,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '写一份剪辑清单' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-file', kind: 'create-file', target: 'D:/videos/清单.txt' },
+    }));
+
+    // 问话必须和真正要执行的操作一致：创建文件和访问目录不是同一件事。
+    expect(screen.getByText('允许 Agent 创建这个文件吗？')).toBeTruthy();
+    expect(screen.getByText('D:/videos/清单.txt')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
+    await waitFor(() => expect(decideApproval).toHaveBeenCalledWith('request-file', true));
+    // 批准一次文件创建不改变会话工作目录。
+    expect(screen.queryByText('工作目录')).toBeNull();
+
+    await act(async () => resolveTask?.({ responseText: '已创建', traceId: 'trace-file' }));
+    expect(await screen.findByText('已创建')).toBeTruthy();
+  });
+
   it('scrolls the pending approval fully into view while following the latest content', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
@@ -910,7 +945,7 @@ describe('shared App', () => {
     });
 
     const input = await screen.findByLabelText('剪辑需求');
-    fireEvent.change(input, { target: { value: '设置工作目录' } });
+    fireEvent.change(input, { target: { value: '创建文件' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(scrollTop).toBe(400));
 
@@ -918,7 +953,7 @@ describe('shared App', () => {
     scrollHeight = 620;
     act(() => receiveEvent?.({
       type: 'approval.requested',
-      request: { requestId: 'request-scroll', kind: 'directory', target: 'D:/videos' },
+      request: { requestId: 'request-scroll', kind: 'create-file', target: 'D:/videos/清单.txt' },
     }));
     await waitFor(() => expect(scrollTop).toBe(620));
 

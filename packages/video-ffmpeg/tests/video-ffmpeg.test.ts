@@ -503,7 +503,7 @@ describe('FFmpeg video tools', () => {
       'aac',
       'trimmed.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: trimmed.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: trimmed.mp4', artifacts: ['trimmed.mp4'] });
   });
 
   it('refuses to overwrite an existing user output file before starting FFmpeg', async () => {
@@ -597,6 +597,7 @@ describe('FFmpeg video tools', () => {
     expect(result).toEqual({
       status: 'success',
       output: 'Video created: C:\\videos\\joined.mp4',
+      artifacts: ['C:\\videos\\joined.mp4'],
     });
   });
 
@@ -632,7 +633,7 @@ describe('FFmpeg video tools', () => {
       '-shortest',
       'with-audio.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: with-audio.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: with-audio.mp4', artifacts: ['with-audio.mp4'] });
   });
 
   it('converts FFmpeg execution failures into concise Tool errors', async () => {
@@ -763,7 +764,7 @@ describe('FFmpeg video tools', () => {
       'copy',
       'output.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: output.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: output.mp4', artifacts: ['output.mp4'] });
   });
 
   it('reports an unavailable subtitles filter explicitly', async () => {
@@ -841,7 +842,7 @@ describe('FFmpeg video tools', () => {
       'copy',
       'portrait.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: portrait.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: portrait.mp4', artifacts: ['portrait.mp4'] });
   });
 
   it('validates crop coordinates and dimensions before starting FFmpeg', async () => {
@@ -894,7 +895,7 @@ describe('FFmpeg video tools', () => {
       'copy',
       'cropped.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: cropped.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: cropped.mp4', artifacts: ['cropped.mp4'] });
   });
 
   it('defines set_speed with the supported speed range', () => {
@@ -971,7 +972,7 @@ describe('FFmpeg video tools', () => {
       'aac',
       'faster.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: faster.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: faster.mp4', artifacts: ['faster.mp4'] });
   });
 
   it('changes only video timing when no audio stream exists', async () => {
@@ -1004,6 +1005,6 @@ describe('FFmpeg video tools', () => {
       'libx264',
       'slower.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: slower.mp4' });
+    expect(result).toEqual({ status: 'success', output: 'Video created: slower.mp4', artifacts: ['slower.mp4'] });
   });
 });

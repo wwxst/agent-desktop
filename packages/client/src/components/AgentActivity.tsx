@@ -16,6 +16,7 @@ const TOOL_LABELS: Readonly<Record<string, string>> = {
   list_directory: '列出目录',
   read_file: '读取文件',
   search_text: '搜索内容',
+  write_text_file: '创建文本文件',
   probe_media: '读取视频信息',
   extract_audio: '提取音频',
   transcribe_audio: '识别对白',

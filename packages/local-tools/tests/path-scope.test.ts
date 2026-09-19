@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveScopedPath } from '../src/index.js';
+import { resolveCreatablePath, resolveScopedPath } from '../src/index.js';
 
 /**
  * 用真实目录做范围边界：范围判断的错误几乎都来自真实路径与字符串路径的差别，
@@ -106,5 +106,48 @@ describe('resolveScopedPath', () => {
 
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.message).toContain('工作目录不可用');
+  });
+});
+
+describe('resolveCreatablePath', () => {
+  it('resolves a new file inside the confirmed directory', async () => {
+    await expect(resolveCreatablePath(await real(root), join(root, 'new.txt')))
+      .resolves.toEqual({ ok: true, path: join(await real(root), 'new.txt') });
+  });
+
+  it('resolves a relative new file against the confirmed directory', async () => {
+    await expect(resolveCreatablePath(await real(root), 'sub/new.txt'))
+      .resolves.toEqual({ ok: true, path: join(await real(root), 'sub', 'new.txt') });
+  });
+
+  it('refuses a target whose parent is outside the confirmed directory', async () => {
+    const result = await resolveCreatablePath(await real(root), join(outside, 'new.txt'));
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain('不在当前会话的工作目录内');
+  });
+
+  it('refuses to escape the confirmed directory with a parent segment', async () => {
+    const result = await resolveCreatablePath(await real(root), '../outside/new.txt');
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain('不在当前会话的工作目录内');
+  });
+
+  it('refuses a parent directory that does not exist instead of creating it', async () => {
+    const result = await resolveCreatablePath(await real(root), 'missing/new.txt');
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain('ENOENT');
+  });
+
+  it('refuses a link that points outside the confirmed directory', async () => {
+    const link = join(root, 'link-out');
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const result = await resolveCreatablePath(await real(root), join('link-out', 'new.txt'));
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.message).toContain('不在当前会话的工作目录内');
   });
 });

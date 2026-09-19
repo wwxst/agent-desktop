@@ -90,6 +90,36 @@ describe('readActivityFiles', () => {
     ]);
   });
 
+  it('treats a file reported by a successful result as revealable even when the input only has a relative path', () => {
+    // write_text_file 的输入里是模型写的相对路径，产物事实才是绝对真实路径；
+    // 只按输入校验会让刚创建出来的产物卡无法定位。
+    const events: readonly SessionEvent[] = [
+      {
+        type: 'tool.called',
+        turnId: 'turn-write' as TurnId,
+        stepId: 'step-write' as StepId,
+        toolCallId: 'call-write' as ToolCallId,
+        name: 'write_text_file',
+        input: { filePath: '剪辑清单.txt', content: '第一段' },
+      },
+      {
+        type: 'tool.result',
+        turnId: 'turn-write' as TurnId,
+        stepId: 'step-write' as StepId,
+        toolCallId: 'call-write' as ToolCallId,
+        result: {
+          status: 'success',
+          output: { filePath: 'D:/videos/剪辑清单.txt' },
+          artifacts: ['D:/videos/剪辑清单.txt'],
+        },
+      },
+    ];
+
+    expect(isSessionFilePath(events, [], 'D:/videos/剪辑清单.txt')).toBe(true);
+    // 没有出现在这次会话事实里的路径仍然被拒绝。
+    expect(isSessionFilePath(events, [], 'D:/videos/别处的文件.txt')).toBe(false);
+  });
+
   it('produces no file reference for tool input outside the current contract', () => {
     expect(readActivityFiles({ start: 0, end: 12 })).toEqual([]);
     expect(readActivityFiles(undefined)).toEqual([]);

@@ -81,37 +81,22 @@ export function findLatestTurnId(events: readonly SessionEvent[]): TurnId | unde
 
 /**
  * 只按 Session 的成功工具事实识别当前 Turn 的产物。
- * 失败或取消的调用不算产物，磁盘上恰好存在同名文件也不算；工具清理过的私有临时文件不出现在工具输入里，因此不会被列出。
+ *
+ * 权威来源是成功结果自己报告的 `artifacts`：写出型工具在真正写入成功后才报告它，
+ * 因此宿主不需要从回复文本、退出码或磁盘扫描推断产物，失败调用也不会产生产物。
  */
 export function findTurnArtifacts(
   events: readonly SessionEvent[],
   turnId: TurnId,
 ): readonly TurnArtifact[] {
-  const resultStatuses = new Map<string, 'success' | 'error'>();
-  for (const event of events) {
-    if (event.type === 'tool.result' && event.turnId === turnId) {
-      resultStatuses.set(event.toolCallId, event.result.status);
-    }
-  }
-
   const artifacts: TurnArtifact[] = [];
   for (const event of events) {
-    if (event.type !== 'tool.called'
-      || event.turnId !== turnId
-      // extract_audio 的 WAV 只服务语音理解，不是当前视频产物卡可交付的成品。
-      || event.name === 'extract_audio'
-      || typeof event.input !== 'object'
-      || event.input === null
-      || Array.isArray(event.input)) {
-      continue;
+    if (event.type !== 'tool.result' || event.turnId !== turnId) continue;
+    if (event.result.status !== 'success') continue;
+
+    for (const path of event.result.artifacts ?? []) {
+      artifacts.push({ toolCallId: event.toolCallId, path });
     }
-
-    // 只有工具输入里明确声明的输出文件才算产物；outputDir 是目录，不冒充视频文件。
-    const outputPath = (event.input as Record<string, unknown>).outputPath;
-    if (typeof outputPath !== 'string') continue;
-    if (resultStatuses.get(event.toolCallId) !== 'success') continue;
-
-    artifacts.push({ toolCallId: event.toolCallId, path: outputPath });
   }
 
   return artifacts;

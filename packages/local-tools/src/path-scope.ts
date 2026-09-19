@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 /**
  * 一次路径解析的结果。
@@ -84,4 +84,20 @@ export async function resolveScopedPath(
     ok: false,
     message: `该路径不在当前会话的工作目录内：${real}。请先用 set_working_directory 指定包含它的目录。`,
   };
+}
+
+/**
+ * 解析一个**将要创建**的路径。
+ *
+ * 目标本身还不存在，因此不能对它做 `realpath`：这里对**父目录**做真实路径范围判断，再拼上文件名。
+ * 父目录不存在时直接失败——当前不创建中间目录（递归创建不在本阶段范围内）。
+ * 复用同一条范围规则：父目录的真实路径必须落在根目录内，所以 `..` 与联接同样无法把目标挪出范围。
+ */
+export async function resolveCreatablePath(
+  rootDirectory: string | undefined,
+  requested: string,
+): Promise<ScopedPath> {
+  const parent = await resolveScopedPath(rootDirectory, dirname(requested));
+  if (!parent.ok) return parent;
+  return { ok: true, path: join(parent.path, basename(requested)) };
 }

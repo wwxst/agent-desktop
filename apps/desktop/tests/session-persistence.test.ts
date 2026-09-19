@@ -601,6 +601,78 @@ describe('desktop session persistence', () => {
       .toEqual([{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }]);
   });
 
+  it('keeps the artifacts reported by a successful result across a restart', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const turnId = 'turn-write' as TurnId;
+    const stepId = 'step-write' as StepId;
+    const toolCallId = 'call-write' as ToolCallId;
+    const events: readonly SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId,
+        name: 'write_text_file',
+        input: { filePath: 'D:/videos/剪辑清单.txt', content: '第一段' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId,
+        // 产物事实随成功结果持久化：重启后仍要能定位到同一个真实路径。
+        result: {
+          status: 'success',
+          output: { filePath: 'D:/videos/剪辑清单.txt', bytes: 9 },
+          artifacts: ['D:/videos/剪辑清单.txt'],
+        },
+      },
+      { type: 'turn.completed', turnId },
+    ];
+    await saveDesktopState(filePath, {
+      ...state,
+      sessions: [{ ...state.sessions[0]!, events }, state.sessions[1]!],
+    });
+
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.sessions[0]?.events).toEqual(events);
+  });
+
+  it('rejects a success result whose artifacts is not an array of strings', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const turnId = 'turn-bad' as TurnId;
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      sessions: [{
+        ...state.sessions[0]!,
+        events: [
+          { type: 'turn.started', turnId },
+          {
+            type: 'tool.called',
+            turnId,
+            stepId: 'step-bad',
+            toolCallId: 'call-bad',
+            name: 'write_text_file',
+            input: { filePath: 'D:/videos/a.txt' },
+          },
+          {
+            type: 'tool.result',
+            turnId,
+            stepId: 'step-bad',
+            toolCallId: 'call-bad',
+            result: { status: 'success', output: {}, artifacts: [7] },
+          },
+        ],
+      }, state.sessions[1]!],
+    }), 'utf8');
+
+    await expect(loadDesktopState(filePath)).rejects.toThrowError(/artifacts/);
+  });
+
   it('restores artifact cards from the legacy per-file name table', async () => {
     const filePath = await temporaryStatePath();
     // Commit 35 之前的真实格式：产物路径存在会话的 outputFilePaths 表里，消息只记 outputFileName。

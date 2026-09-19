@@ -8,7 +8,7 @@ import { isAbsolute, resolve } from 'node:path';
  * `kind` 让宿主和界面知道这是什么操作，`path` 是工具已经解析过的真实路径。
  */
 export interface ApprovalTarget {
-  readonly kind: 'directory';
+  readonly kind: 'directory' | 'create-file';
   readonly path: string;
 }
 

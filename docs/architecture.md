@@ -37,7 +37,7 @@
 
 ### Local Tools（本地工具）
 
-`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的目录访问通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。
+`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的操作（当前是目录访问与创建文件）一律通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。
 
 `set_working_directory` 把会话工作目录设为一个真实存在的目录：先 `realpath` 再让用户确认，因此用户确认的就是实际会被使用的目录。已经确认的同一目录不重复审批；换到新目录必须重新确认。相对路径以当前会话工作目录为基准，没有基准时返回明确错误。
 
@@ -56,6 +56,12 @@ ripgrep          文本搜索工具    由 `@vscode/ripgrep` 随包提供，工�
 ```
 
 Desktop 主进程打包时把 `@vscode/ripgrep` 保持为 external（外部依赖），运行时从应用自己的 `node_modules` 解析平台二进制。开发入口已使用随包依赖；安装包内的资源落地留到 Commit 49 的分发验收验证。
+
+`write_text_file` 经用户批准后创建一个新的文本文件。三条边界：目标路径的**父目录**必须在会话已确认的工作目录内（目标还不存在，不能对它做 `realpath`，因此复用 `resolveCreatablePath`）；已有文件一律拒绝（`wx` 是真正的写入边界兜底，先检查存在性只是为了让用户不必为一个注定失败的操作点批准）；写入前必须拿到用户对**这一次创建**的明确批准，拒绝和取消都不产生任何写入。
+
+### Tool Result Artifacts（成功结果的产物事实）
+
+产物的唯一权威来源是成功结果自己报告的 `artifacts`：写出型工具**真正写入成功后**才报告它。宿主因此不需要从回复文本、退出码或磁盘扫描推断产物，失败调用也不会产生产物。只有写出型工具报告它——读取、搜索和中间产物（抽帧目录、语音 WAV）都不报告。
 
 ```text
 Video Agent Application
@@ -78,7 +84,7 @@ Video Agent Application
 
 每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/session-state.json`。每个会话只长期持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot 里的附件只是发给 Renderer 的展示副本；重启恢复时按会话附件重建一次界面副本，避免旧格式快照里「只有名称、没有路径」的副本被继续沿用。输出序号随状态文件保存，以避免重启后不同任务为同一输入生成相同文件名。
 
-产物由所属会话、轮次、工具调用和真实路径识别，文件名只是界面标签。识别规则只有一个权威实现（`apps/desktop/src/main/agent-task.ts` 的 `findTurnArtifacts`）：只把 `tool.result` 为 success 的 `tool.called.input.outputPath` 记为产物，不因为磁盘上存在同名文件就登记产物，也不把 `outputDir` 当成视频文件。产物路径随轮次写入 Client Snapshot，因此同名文件位于不同目录、或同一轮次产生多个产物都能分别定位；宿主不再维护按文件名索引的产物表，`revealFile` 用会话事件与附件路径校验来路后才交给系统文件管理器。
+产物由所属会话、轮次、工具调用和真实路径识别，文件名只是界面标签。识别规则只有一个权威实现（`apps/desktop/src/main/agent-task.ts` 的 `findTurnArtifacts`）：以成功结果自己报告的 `artifacts` 为准（见「成功结果的产物事实」），不因为磁盘上存在同名文件就登记产物，也不把 `outputDir` 当成视频文件。产物路径随轮次写入 Client Snapshot，因此同名文件位于不同目录、或同一轮次产生多个产物都能分别定位；宿主不再维护按文件名索引的产物表，`revealFile` 用会话事件与附件路径校验来路后才交给系统文件管理器。
 
 整轮失败或用户取消不代表本轮此前已成功的工具没有产出。收尾路径用 `findLatestTurnId` 从 Session 事实反查最近一轮 Turn（失败时 `runTurn` 直接抛错，拿不到返回值，但 `turn.started` 已落盘），再按同一个 turnId 统计已成功的产物；这些产物以 `outputFiles` 挂在抛出的错误上，经 preload 透传到 Shared Client，最终并入同一轮的 `failed` / `cancelled` 终态。因此产物卡在成功、失败、取消三种终态下是同一张卡、同一套定位入口。字段缺失或为空数组都表示本轮没有产物，不允许凭空造卡。
 

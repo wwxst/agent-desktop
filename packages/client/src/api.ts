@@ -167,7 +167,7 @@ export interface AgentTextDeltaEvent {
  */
 export interface ApprovalRequest {
   readonly requestId: string;
-  readonly kind: 'directory';
+  readonly kind: 'directory' | 'create-file';
   readonly target: string;
 }
 

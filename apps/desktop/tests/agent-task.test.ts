@@ -32,7 +32,7 @@ function outputEvents(
       stepId,
       toolCallId,
       result: status === 'success'
-        ? { status: 'success', output: `Video created: ${outputPath}` }
+        ? { status: 'success', output: `Video created: ${outputPath}`, artifacts: [outputPath] }
         : { status: 'error', message: 'FFmpeg failed' },
     },
   ];
@@ -227,6 +227,166 @@ describe('desktop agent task', () => {
     expect(findTurnArtifacts(events, turnId)).toEqual([]);
   });
 
+  it('takes the artifacts reported by a successful result as the authoritative fact', () => {
+    const writeCallId = 'write' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: writeCallId,
+        name: 'write_text_file',
+        input: { filePath: 'D:\\videos\\剪辑清单.txt', content: '第一段' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: writeCallId,
+        result: {
+          status: 'success',
+          output: { filePath: 'D:\\videos\\剪辑清单.txt' },
+          artifacts: ['D:\\videos\\剪辑清单.txt'],
+        },
+      },
+    ];
+
+    // 产物来自成功结果自己报告的事实，不从输入形状或磁盘推断。
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: writeCallId, path: 'D:\\videos\\剪辑清单.txt' },
+    ]);
+  });
+
+  it('does not infer an artifact from tool input when the successful result reports none', () => {
+    const callId = 'legacy-shaped' as ToolCallId;
+    const events: SessionEvent[] = [
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        name: 'trim_video',
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\unreported.mp4' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        result: { status: 'success', output: 'Video created: D:\\videos\\unreported.mp4' },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([]);
+  });
+
+  it('keeps every file one result reported, in the order the tool reported them', () => {
+    const callId = 'multi' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        name: 'write_text_file',
+        input: { filePath: 'D:\\videos\\a.txt' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        result: { status: 'success', output: {}, artifacts: ['D:\\videos\\b.txt', 'D:\\videos\\a.txt'] },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: callId, path: 'D:\\videos\\b.txt' },
+      { toolCallId: callId, path: 'D:\\videos\\a.txt' },
+    ]);
+  });
+
+  it('does not double-count a media call that reports artifacts and also has an output path in its input', () => {
+    const callId = 'trim' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        name: 'trim_video',
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\trimmed.mp4' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        // 新事件里同一个文件既在输入里又在 artifacts 里：只能登记一次。
+        result: {
+          status: 'success',
+          output: 'Video created: D:\\videos\\trimmed.mp4',
+          artifacts: ['D:\\videos\\trimmed.mp4'],
+        },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([
+      { toolCallId: callId, path: 'D:\\videos\\trimmed.mp4' },
+    ]);
+  });
+
+  it('reports no artifact for a read-only tool', () => {
+    const readCallId = 'read' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: readCallId,
+        name: 'read_file',
+        input: { filePath: 'D:\\videos\\字幕.srt', startLine: 1 },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: readCallId,
+        result: { status: 'success', output: { filePath: 'D:\\videos\\字幕.srt', lines: [] } },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([]);
+  });
+
+  it('does not treat a failed result as creating a file even when it reports artifacts', () => {
+    const callId = 'failed-write' as ToolCallId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        name: 'write_text_file',
+        input: { filePath: 'D:\\videos\\半成品.txt' },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: callId,
+        result: { status: 'error', message: '用户拒绝创建该文件' },
+      },
+    ];
+
+    expect(findTurnArtifacts(events, turnId)).toEqual([]);
+  });
+
   it('finds the latest Turn from Session facts so a failed Turn can still be summarized', () => {
     const earlierTurnId = 'turn-earlier' as TurnId;
     const events: SessionEvent[] = [
@@ -295,7 +455,11 @@ describe('desktop agent task', () => {
         turnId: earlierTurnId,
         stepId,
         toolCallId: earlierCallId,
-        result: { status: 'success', output: 'Video created: D:\\videos\\earlier.mp4' },
+        result: {
+          status: 'success',
+          output: 'Video created: D:\\videos\\earlier.mp4',
+          artifacts: ['D:\\videos\\earlier.mp4'],
+        },
       },
       { type: 'turn.completed', turnId: earlierTurnId },
       { type: 'turn.started', turnId },

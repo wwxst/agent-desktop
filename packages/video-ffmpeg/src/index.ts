@@ -128,8 +128,13 @@ async function executeOutputCommand(
   await executeCommand('ffmpeg', args, ...(signal === undefined ? [] : [signal]));
 }
 
+/** 写出型视频工具的统一成功结果：文本给模型看，artifacts 给宿主登记产物。 */
 function videoCreated(outputPath: string): ToolResult {
-  return { status: 'success', output: `Video created: ${outputPath}` };
+  return {
+    status: 'success',
+    output: `Video created: ${outputPath}`,
+    artifacts: [outputPath],
+  };
 }
 
 /** 从视频提取供本地语音识别使用的单声道 16 kHz 16-bit PCM WAV 音频。 */

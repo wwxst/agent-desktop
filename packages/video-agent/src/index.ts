@@ -4,6 +4,7 @@ import {
   ReadFileTool,
   SearchTextTool,
   SetWorkingDirectoryTool,
+  WriteTextFileTool,
   type WorkspacePort,
 } from '@agent-desktop/local-tools';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
@@ -47,12 +48,13 @@ export interface VideoAgentOptions {
 /** 组装当前正式能力；不读取环境、不创建 CLI 或桌面层状态。 */
 export function createVideoAgent(options: VideoAgentOptions): Agent {
   const tools = new InMemoryToolRegistry();
-  // 工作目录工具只有在宿主提供目录状态和审批能力时才有合法消费者。
+  // 先注册目录基准工具：它决定后续本地文件工具的路径解析基准。
   if (options.workspace !== undefined) {
     tools.register(new SetWorkingDirectoryTool(options.workspace));
     tools.register(new ListDirectoryTool(options.workspace));
     tools.register(new ReadFileTool(options.workspace));
     tools.register(new SearchTextTool(options.workspace));
+    tools.register(new WriteTextFileTool(options.workspace));
   }
   tools.register(new ProbeMediaTool());
   tools.register(new ExtractVideoFramesTool());

@@ -30,6 +30,7 @@ Session Working Directory         会话工作目录与目录授权        Commi
 Directory & File Discovery        目录与文件发现              Commit 39 已完成。
 Text File Reading                 文本文件读取                Commit 40 已完成。
 Text Content Search               文本内容搜索                Commit 41 已完成（ripgrep 由 `@vscode/ripgrep` 随包提供）。
+Text File Creation                经审批创建文本文件          Commit 42 已完成。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
