@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@agent-desktop/agent": "workspace:*",
+    "@agent-desktop/local-tools": "workspace:*",
     "@agent-desktop/model-deepseek": "workspace:*",
     "@agent-desktop/session": "workspace:*",
     "@agent-desktop/speech-whisper-cpp": "workspace:*",

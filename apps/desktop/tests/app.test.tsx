@@ -36,6 +36,7 @@ const persistenceMethods = {
   onPrepareClose: () => () => undefined,
   deleteSession: async () => 'session-a',
   cancelTask: async () => undefined,
+  decideApproval: async () => undefined,
   revealFile: async () => undefined,
 };
 

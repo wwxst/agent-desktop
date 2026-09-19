@@ -28,6 +28,7 @@ const api: AgentClientApi = {
   runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-a' }),
   cancelTask: async () => undefined,
   onAgentEvent: () => () => undefined,
+  decideApproval: async () => undefined,
   revealFile: async () => undefined,
 };
 
@@ -780,5 +781,218 @@ describe('shared App', () => {
     await waitFor(() => expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('会话二草稿'));
     expect(screen.getByLabelText('视频附件：a.mp4')).toBeTruthy();
     expect(screen.getByLabelText('剪辑需求')).toBe(input);
+  });
+
+  it('asks for approval with the exact host directory and only then shows it as the working directory', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const decideApproval = vi.fn(async () => undefined);
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      decideApproval,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '列出这个目录的 MP4' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-1', kind: 'directory', target: 'D:/videos' },
+    }));
+    // 界面只展示宿主给出的确切目录，不提供修改入口。
+    expect(screen.getByText('D:/videos')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '允许' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '拒绝' })).toBeTruthy();
+    // 用户还没有答复时，目录不算已经可用。
+    expect(screen.queryByText('工作目录')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
+    await waitFor(() => expect(decideApproval).toHaveBeenCalledWith('request-1', true));
+    // 提交决定本身还不算确认：宿主真的执行了 confirmDirectory 之后才发布目录事实。
+    expect(screen.queryByText('工作目录')).toBeNull();
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
+
+    act(() => receiveEvent?.({ type: 'workspace.confirmed', workingDirectory: 'D:/videos' }));
+    expect(await screen.findByText('工作目录')).toBeTruthy();
+    expect(screen.getByText('D:/videos')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-approval' }));
+    expect(await screen.findByText('完成')).toBeTruthy();
+  });
+
+  it('does not treat a refused directory as usable', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const decideApproval = vi.fn(async () => undefined);
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      decideApproval,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '使用这个目录' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-2', kind: 'directory', target: 'D:/private' },
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '拒绝' }));
+    await waitFor(() => expect(decideApproval).toHaveBeenCalledWith('request-2', false));
+    // 拒绝不产生目录事实，界面也不出现工作目录。
+    expect(screen.queryByText('工作目录')).toBeNull();
+
+    await act(async () => resolveTask?.({ responseText: '未执行', traceId: 'trace-refused' }));
+    expect(await screen.findByText('未执行')).toBeTruthy();
+  });
+
+  it('drops a pending approval once the turn ends so a stale card cannot be answered', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '取消中的审批' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-3', kind: 'directory', target: 'D:/videos' },
+    }));
+    expect(screen.getByRole('button', { name: '允许' })).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-dropped' }));
+
+    expect(await screen.findByText('完成')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
+    expect(screen.queryByText('D:/videos')).toBeNull();
+  });
+
+  it('scrolls the pending approval fully into view while following the latest content', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const rendered = render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const history = rendered.container.querySelector<HTMLDivElement>('.conversation-history')!;
+    let scrollHeight = 400;
+    let scrollTop = 0;
+    Object.defineProperties(history, {
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = value; },
+      },
+    });
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '设置工作目录' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(scrollTop).toBe(400));
+
+    // 审批卡让阅读轴变长；跟随最新内容时必须再次滚到新的底部。
+    scrollHeight = 620;
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-scroll', kind: 'directory', target: 'D:/videos' },
+    }));
+    await waitFor(() => expect(scrollTop).toBe(620));
+
+    await act(async () => resolveTask?.({ responseText: '已停止', traceId: 'trace-scroll' }));
+  });
+
+  it('keeps the conversation usable when the host rejects a late approval decision', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const decideApproval = vi.fn(async () => {
+      throw new Error("Error invoking remote method 'desktop:decide-approval': Error: 该审批请求已失效。");
+    });
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      decideApproval,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '迟到的批准' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-4', kind: 'directory', target: 'D:/videos' },
+    }));
+
+    // 轮次恰好先结束时宿主会拒绝这次决定；界面不应因此崩溃或卡住。
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
+    await waitFor(() => expect(decideApproval).toHaveBeenCalledOnce());
+    // 决定失效意味着宿主没有执行 confirmDirectory：界面不能留下一个并未确认的工作目录。
+    expect(screen.queryByText('工作目录')).toBeNull();
+    expect(screen.queryByText('D:/videos')).toBeNull();
+
+    await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-late' }));
+    expect(await screen.findByText('完成')).toBeTruthy();
+    // 轮次结束后仍然不能凭空出现工作目录。
+    expect(screen.queryByText('工作目录')).toBeNull();
+  });
+
+  it('shows the working directory only after the host publishes the confirmed fact', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const decideApproval = vi.fn(async () => undefined);
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      decideApproval,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '把 D:/videos 设为工作目录' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: { requestId: 'request-ws', kind: 'directory', target: 'D:/videos' },
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
+    await waitFor(() => expect(decideApproval).toHaveBeenCalledWith('request-ws', true));
+    // 提交决定本身不改变界面：目录事实由宿主在确认之后发布。
+    expect(screen.queryByText('工作目录')).toBeNull();
+
+    act(() => receiveEvent?.({ type: 'workspace.confirmed', workingDirectory: 'D:/videos' }));
+    expect(await screen.findByText('工作目录')).toBeTruthy();
+    expect(screen.getByText('D:/videos')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-ws' }));
   });
 });

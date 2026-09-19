@@ -1615,3 +1615,96 @@ input:focus-visible {
     width: 100%;
   }
 }
+
+/* 会话工作目录：输入区上方的只读一行，让用户随时知道相对路径以哪里为基准。 */
+.composer-directory {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 16px 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.composer-directory-label {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.composer-directory-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 待决操作审批：宿主在执行本地操作前必须拿到明确答复，因此它是当前轮唯一的阻塞交互。 */
+.approval-request {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 0 0 0.5px var(--border), 0 4px 16px rgb(0 0 0 / 3%);
+}
+
+.approval-question {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.approval-directory {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.approval-allow,
+.approval-deny {
+  min-height: 30px;
+  padding: 0 16px;
+  border: 0.5px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.approval-allow {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.approval-allow:hover {
+  background: #3568d4;
+}
+
+.approval-deny:hover {
+  background: var(--surface-hover);
+}
+
+@media (max-width: 560px) {
+  .approval-actions {
+    flex-wrap: wrap;
+  }
+}

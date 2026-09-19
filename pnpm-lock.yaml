@@ -29,6 +29,9 @@ importers:
       '@agent-desktop/execution-trace':
         specifier: workspace:*
         version: link:../../packages/execution-trace
+      '@agent-desktop/local-tools':
+        specifier: workspace:*
+        version: link:../../packages/local-tools
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../../packages/session
@@ -228,6 +231,15 @@ importers:
         specifier: workspace:*
         version: link:../agent-loop
 
+  packages/local-tools:
+    dependencies:
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../tools
+
   packages/model: {}
 
   packages/model-deepseek:
@@ -264,6 +276,9 @@ importers:
       '@agent-desktop/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agent-desktop/local-tools':
+        specifier: workspace:*
+        version: link:../local-tools
       '@agent-desktop/model-deepseek':
         specifier: workspace:*
         version: link:../model-deepseek

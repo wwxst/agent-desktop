@@ -20,6 +20,7 @@ export const DESKTOP_CHANNELS = {
   deleteSession: 'desktop:delete-session',
   runAgentTask: 'desktop:run-agent-task',
   cancelTask: 'desktop:cancel-task',
+  decideApproval: 'desktop:decide-approval',
   agentEvent: 'desktop:agent-event',
   closeReady: 'desktop:close-ready',
   prepareClose: 'desktop:prepare-close',

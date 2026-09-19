@@ -114,6 +114,7 @@ apps/desktop/
 @agent-desktop/execution-trace         执行追踪持久化包
 @agent-desktop/model-deepseek          DeepSeek 模型适配器包
 @agent-desktop/video-ffmpeg            FFmpeg 视频工具包
+@agent-desktop/local-tools             本地文件与进程工具包
 @agent-desktop/vision-openai           Vision 视觉工具包
 @agent-desktop/speech-whisper-cpp      whisper.cpp 本地语音时间轴工具包
 @agent-desktop/video-agent             视频智能体应用层包
@@ -147,7 +148,7 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 应用 package 可以依赖所需的 Core、应用层和运行诊断 package，应用依赖不得反向进入 Core。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`，`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool 和 `session`，三个 example 与 `apps/desktop` 只依赖各自实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai`、`speech-whisper-cpp` 和 `local-tools` 依赖 `model`、`tools`，`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool、`local-tools` 和 `session`，三个 example 与 `apps/desktop` 只依赖各自实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 

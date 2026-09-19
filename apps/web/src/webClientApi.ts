@@ -164,6 +164,13 @@ export function createWebClientApi(): AgentClientApi {
       if (activeTaskController === undefined) throw new Error('当前没有正在执行的任务。');
       activeTaskController.abort();
     },
+    /**
+     * Web Host 不执行本地操作，也就没有需要确认的目录，因此这里只补齐客户端契约：
+     * 没有待决请求时任何决定都是失效的，行为与真实宿主的过期请求一致。
+     */
+    decideApproval: async () => {
+      throw new Error('该审批请求已失效。');
+    },
     onAgentEvent: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

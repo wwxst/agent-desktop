@@ -12,6 +12,7 @@
     "@agent-desktop/agent-loop": "workspace:*",
     "@agent-desktop/client": "workspace:*",
     "@agent-desktop/execution-trace": "workspace:*",
+    "@agent-desktop/local-tools": "workspace:*",
     "@agent-desktop/session": "workspace:*",
     "@agent-desktop/video-agent": "workspace:*",
     "react": "19.2.8",

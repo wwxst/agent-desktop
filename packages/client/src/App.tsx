@@ -5,12 +5,14 @@ import type {
   AgentClientApi,
   AgentRuntimeEvent,
   AgentTaskOutputFile,
+  ApprovalRequest,
   ClientAssistantMessage,
   ClientAssistantMessageBase,
   ClientConversation,
   ClientConversationMessage,
   ClientStateSnapshot,
 } from './api.js';
+import { ApprovalRequest as ApprovalRequestCard } from './components/ApprovalRequest.js';
 import { Composer } from './components/Composer.js';
 import { ConversationPanel } from './components/ConversationPanel.js';
 import { RuntimeSettingsPanel } from './components/RuntimeSettingsPanel.js';
@@ -69,6 +71,8 @@ export function App({ api }: AppProps) {
   const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  // 宿主当前待决的操作审批；一个 Turn 最多只有一个，轮次结束即失效。
+  const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | undefined>(undefined);
   const [activeView, setActiveView] = useState<'conversation' | 'settings'>('conversation');
   // 宿主关闭请求序号：即使展示状态没有变化，每次请求也重新触发一次关闭前提交。
   const [closeRequestSequence, setCloseRequestSequence] = useState(0);
@@ -179,6 +183,22 @@ export function App({ api }: AppProps) {
 
   useEffect(() => api.onAgentEvent((event: AgentRuntimeEvent) => {
     const sessionId = activeSessionIdRef.current;
+    // 审批请求不是某一轮的消息内容：它由 App 单独持有并渲染在当前对话末尾。
+    if (event.type === 'approval.requested') {
+      setPendingApproval(event.request);
+      return;
+    }
+
+    // 工作目录事实由宿主在真正确认之后发布。界面**不**在提交审批决定时提前写入：
+    // 审批可能已经失效（轮次取消或窗口关闭），那时目录并没有被确认。
+    if (event.type === 'workspace.confirmed') {
+      updateConversation(sessionId, (conversation) => ({
+        ...conversation,
+        workingDirectory: event.workingDirectory,
+      }));
+      return;
+    }
+
     // 会话切换在执行期间禁用，因此运行期事件只会进入发起当前 Turn 的会话。
     updateConversation(sessionId, (conversation) => {
       const activeIndex = conversation.messages.findLastIndex(
@@ -221,12 +241,13 @@ export function App({ api }: AppProps) {
     if (scrollContainer !== null) scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [activeSessionId, activeView]);
 
-  // 新消息、活动更新和实时增量只在用户仍跟随最新内容时滚动；向上阅读时不得强行拉回。
+  // 新消息、活动更新、实时增量和待决审批只在用户仍跟随最新内容时滚动；
+  // 向上阅读时不得强行拉回。审批卡不属于消息数组，因此必须单独作为触发事实。
   useEffect(() => {
     const scrollContainer = conversationScroll.current;
     if (scrollContainer === null || !followsLatest.current) return;
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
-  }, [activeConversation.messages]);
+  }, [activeConversation.messages, pendingApproval]);
 
   const selectAttachments = async () => {
     const attachments = await api.selectAttachmentFiles();
@@ -386,7 +407,25 @@ export function App({ api }: AppProps) {
         )),
       }));
     } finally {
+      // 轮次结束（成功、失败或取消）后宿主也会结束等待，界面上不能再留下待决审批。
+      setPendingApproval(undefined);
       setIsProcessing(false);
+    }
+  };
+
+  const decideApproval = async (approved: boolean) => {
+    const request = pendingApproval;
+    if (request === undefined) return;
+    // 先清掉待决状态：宿主只接受当前请求，重复提交会被拒绝。
+    setPendingApproval(undefined);
+    try {
+      // 工作目录不在这里写入：只有宿主真的执行了 confirmDirectory 才会发布目录事实，
+      // 这次决定可能因为轮次已经取消而失效。
+      await api.decideApproval(request.requestId, approved);
+    } catch (error) {
+      // 轮次恰好先结束时宿主会拒绝这次迟到的决定；界面已经回到无待决状态。
+      if (error instanceof Error && error.message.includes('该审批请求已失效')) return;
+      throw error;
     }
   };
 
@@ -413,13 +452,14 @@ export function App({ api }: AppProps) {
     }));
   };
 
-  const { messages, prompt, attachments } = activeConversation;
+  const { messages, prompt, attachments, workingDirectory } = activeConversation;
   const hasConversation = messages.length > 0;
   const composer = (
     <Composer
       attachments={attachments}
       prompt={prompt}
       isProcessing={isProcessing}
+      {...(workingDirectory === undefined ? {} : { workingDirectory })}
       onPromptChange={(nextPrompt) => updateConversation(
         activeSessionIdRef.current,
         (conversation) => ({ ...conversation, prompt: nextPrompt }),
@@ -428,6 +468,12 @@ export function App({ api }: AppProps) {
       onRemoveAttachment={(index) => void removeAttachment(index)}
       onSend={() => void sendTask()}
       onCancel={() => void cancelTask()}
+    />
+  );
+  const approval = pendingApproval === undefined ? null : (
+    <ApprovalRequestCard
+      request={pendingApproval}
+      onDecide={(approved) => void decideApproval(approved)}
     />
   );
 
@@ -459,6 +505,7 @@ export function App({ api }: AppProps) {
           messages={messages}
           hasConversation={hasConversation}
           composer={composer}
+          approval={approval}
           historyRef={conversationScroll}
           onHistoryScroll={handleHistoryScroll}
           onToggleActivity={toggleActivity}

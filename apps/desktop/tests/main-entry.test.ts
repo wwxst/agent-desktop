@@ -13,6 +13,14 @@ const mainMocks = vi.hoisted(() => {
       events(): readonly unknown[];
     };
   }> = [];
+  // 组装参数要保留：宿主注入的工作目录端口只有在这里才能验证真实形状。
+  const agentOptions: Array<{
+    readonly workspace?: {
+      confirmedDirectory(): string | undefined;
+      requestApproval(target: { kind: 'directory'; path: string }, signal?: AbortSignal): Promise<boolean>;
+      confirmDirectory(directory: string): void;
+    };
+  }> = [];
   // 窗口级监听器由主进程在创建窗口时注册，测试需要拿到它们验证外链与关闭收尾行为。
   const windowHandlers: {
     open?: (details: { readonly url: string }) => { readonly action: string };
@@ -25,6 +33,7 @@ const mainMocks = vi.hoisted(() => {
   return {
     handlers,
     agents,
+    agentOptions,
     windowHandlers,
     onceHandlers,
     openExternal: vi.fn(),
@@ -42,11 +51,17 @@ const mainMocks = vi.hoisted(() => {
         append(event: unknown): void;
         events(): readonly unknown[];
       };
+      workspace?: {
+        confirmedDirectory(): string | undefined;
+        requestApproval(target: { kind: 'directory'; path: string }, signal?: AbortSignal): Promise<boolean>;
+        confirmDirectory(directory: string): void;
+      };
     }) => {
       const agent = {
         session: options.session,
       };
       agents.push(agent);
+      agentOptions.push(options);
       return agent;
     }),
     runDesktopAgentTask: vi.fn(),
@@ -882,5 +897,76 @@ describe('desktop main session lifecycle', () => {
     const internalNavigation = { preventDefault: vi.fn() };
     navigate(internalNavigation, 'file:///E:/repo/apps/desktop/dist/renderer/index.html');
     expect(internalNavigation.preventDefault).not.toHaveBeenCalled();
+  });
+
+  /** 宿主推给客户端的待决审批事件；用来读取真实请求标识。 */
+  const publishedApprovals = () => mainMocks.webContentsSend.mock.calls
+    .map((call) => call[1])
+    .filter((payload): payload is {
+      readonly type: string;
+      readonly request?: { readonly requestId: string; readonly kind: string; readonly target: string };
+    } => (
+      typeof payload === 'object' && payload !== null
+      && (payload as { readonly type?: unknown }).type === 'approval.requested'
+    ));
+
+  it('gives each Turn a workspace port that publishes one approval and records the confirmed directory', async () => {
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    const decideApproval = mainMocks.handlers.get('desktop:decide-approval');
+    expect(decideApproval).toBeTypeOf('function');
+    const agentCountBefore = mainMocks.agentOptions.length;
+    const approvalsBefore = publishedApprovals().length;
+
+    let observed: {
+      readonly initial: string | undefined;
+      readonly approved: boolean;
+      readonly afterConfirm: string | undefined;
+    } | undefined;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+      const workspace = mainMocks.agentOptions[agentCountBefore]!.workspace!;
+      const initial = workspace.confirmedDirectory();
+      const approved = await workspace.requestApproval({ kind: 'directory', path: 'D:/videos' });
+      workspace.confirmDirectory('D:/videos');
+      observed = { initial, approved, afterConfirm: workspace.confirmedDirectory() };
+      return { responseText: '目录已就绪。', turnId: 'turn-workspace', artifacts: [] };
+    });
+
+    const running = runAgentTask!({}, '把 D:/videos 设为工作目录');
+    await vi.waitFor(() => expect(publishedApprovals().length).toBe(approvalsBefore + 1));
+    const request = publishedApprovals()[approvalsBefore]!.request!;
+    expect(request.kind).toBe('directory');
+    expect(request.target).toBe('D:/videos');
+    decideApproval!({}, request.requestId, true);
+    await expect(running).resolves.toMatchObject({ status: 'success' });
+
+    expect(observed).toEqual({ initial: undefined, approved: true, afterConfirm: 'D:/videos' });
+  });
+
+  it('accepts only the current approval request and refuses a forged or late decision', async () => {
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    const decideApproval = mainMocks.handlers.get('desktop:decide-approval')!;
+    const agentCountBefore = mainMocks.agentOptions.length;
+    const approvalsBefore = publishedApprovals().length;
+
+    expect(() => decideApproval({}, 'forged', true)).toThrow('该审批请求已失效。');
+    expect(() => decideApproval({}, 7, true)).toThrow('无效的审批决定。');
+    expect(() => decideApproval({}, 'anything', 'yes')).toThrow('无效的审批决定。');
+
+    let decision: string | undefined;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+      const workspace = mainMocks.agentOptions[agentCountBefore]!.workspace!;
+      const approved = await workspace.requestApproval({ kind: 'directory', path: 'D:/clips' });
+      decision = approved ? 'approved' : 'refused';
+      return { responseText: '完成。', turnId: 'turn-approval', artifacts: [] };
+    });
+
+    const running = runAgentTask!({}, '检查目录');
+    await vi.waitFor(() => expect(publishedApprovals().length).toBe(approvalsBefore + 1));
+    const requestId = publishedApprovals()[approvalsBefore]!.request!.requestId;
+
+    decideApproval({}, requestId, false);
+    await expect(running).resolves.toMatchObject({ status: 'success' });
+    expect(decision).toBe('refused');
+    expect(() => decideApproval({}, requestId, true)).toThrow('该审批请求已失效。');
   });
 });

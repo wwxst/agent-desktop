@@ -17,6 +17,8 @@ export const SESSION_STATE_FILE_NAME = 'session-state.json';
 export interface PersistedDesktopSession {
   readonly id: string;
   readonly attachments: readonly PersistedAttachment[];
+  /** 会话工作目录；旧快照没有这个字段时按「尚未确认目录」读取。 */
+  readonly workingDirectory?: string;
   readonly events: readonly SessionEvent[];
 }
 
@@ -389,6 +391,11 @@ function readClientConversation(
 ): ClientConversation {
   if (!isRecord(value)) invalid(field);
   if (!Array.isArray(value.messages)) invalid(`${field}.messages`);
+  // 界面副本里的工作目录只是展示值；权威事实在会话侧，恢复时按会话事实重建。
+  const workingDirectory = value.workingDirectory;
+  if (workingDirectory !== undefined && typeof workingDirectory !== 'string') {
+    invalid(`${field}.workingDirectory`);
+  }
   return {
     id: readString(value.id, `${field}.id`),
     title: readString(value.title, `${field}.title`),
@@ -402,6 +409,7 @@ function readClientConversation(
     )),
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
+    ...(workingDirectory === undefined ? {} : { workingDirectory }),
   };
 }
 
@@ -467,10 +475,15 @@ function parseDesktopSession(
 ): { readonly session: PersistedDesktopSession; readonly legacyOutputFilePaths: Readonly<Record<string, string>> } {
   if (!isRecord(value)) invalid(field);
   if (!Array.isArray(value.events)) invalid(`${field}.events`);
+  const workingDirectory = value.workingDirectory;
+  if (workingDirectory !== undefined && typeof workingDirectory !== 'string') {
+    invalid(`${field}.workingDirectory`);
+  }
   return {
     session: {
       id: readString(value.id, `${field}.id`),
       attachments: readAttachments(value, field),
+      ...(workingDirectory === undefined ? {} : { workingDirectory }),
       events: value.events.map((item, index) => readSessionEvent(item, `${field}.events[${index}]`)),
     },
     // 旧快照带按文件名索引的产物表；新快照没有，用空表表示「没有可还原的旧关联」。

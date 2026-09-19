@@ -50,6 +50,7 @@ function clientState(): ClientStateSnapshot {
         titleManuallyRenamed: true,
         prompt: 'Session A 未发送草稿',
         attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
+        workingDirectory: 'D:\\videos',
         messages: [
           {
             id: 1,
@@ -119,6 +120,7 @@ function persistedState(): PersistedDesktopState {
       {
         id: 'session-a',
         attachments: [{ path: 'D:\\videos\\input-a.mp4', role: 'video' }],
+        workingDirectory: 'D:\\videos',
         events: sessionEvents('731'),
       },
       {
@@ -165,6 +167,40 @@ describe('desktop session persistence', () => {
       activity: [{ status: 'completed' }],
       result: { outputFiles: [{ path: 'D:/videos/input-a-edited.mp4', fileName: 'input-a-edited.mp4' }], traceId: 'trace-a' },
     });
+    expect(restored?.sessions[0]?.workingDirectory).toBe('D:\\videos');
+    expect(restored?.clientState.conversations[0]?.workingDirectory).toBe('D:\\videos');
+  });
+
+  it('reads a session without a working directory as having none', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const legacy = {
+      ...state,
+      sessions: state.sessions.map(({ workingDirectory: _ignored, ...session }) => session),
+      clientState: {
+        ...state.clientState,
+        conversations: state.clientState.conversations.map(
+          ({ workingDirectory: _ignored, ...conversation }) => conversation,
+        ),
+      },
+    };
+    await writeFile(filePath, JSON.stringify(legacy), 'utf8');
+
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.sessions[0]?.workingDirectory).toBeUndefined();
+    expect(restored?.clientState.conversations[0]?.workingDirectory).toBeUndefined();
+  });
+
+  it('rejects a working directory that is not a string', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    await writeFile(filePath, JSON.stringify({
+      ...state,
+      sessions: [{ ...state.sessions[0]!, workingDirectory: 7 }, state.sessions[1]!],
+    }), 'utf8');
+
+    await expect(loadDesktopState(filePath)).rejects.toThrowError(/workingDirectory/);
   });
 
   it('keeps already-succeeded files on failed and cancelled replies across a restart', async () => {

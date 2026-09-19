@@ -65,6 +65,27 @@ describe('createVideoAgent', () => {
     expect(agent.tools.list().map((tool) => tool.name)).not.toContain('analyze_images');
   });
 
+  it('registers the local tools only when the host provides a workspace port', () => {
+    const localTools = ['set_working_directory'];
+    const withoutWorkspace = createVideoAgent({ deepSeekApiKey: 'test-deepseek-key' });
+    // 没有宿主目录确认能力时不能注册这些工具：目录工具没有合法的范围来源，也没有审批消费者。
+    for (const name of localTools) {
+      expect(withoutWorkspace.tools.list().map((tool) => tool.name)).not.toContain(name);
+    }
+
+    const withWorkspace = createVideoAgent({
+      deepSeekApiKey: 'test-deepseek-key',
+      workspace: {
+        confirmedDirectory: () => undefined,
+        requestApproval: async () => true,
+        confirmDirectory: () => undefined,
+      },
+    });
+    for (const name of localTools) {
+      expect(withWorkspace.tools.list().map((tool) => tool.name)).toContain(name);
+    }
+  });
+
   it('passes the configured model override to DeepSeek', async () => {
     const requests: unknown[] = [];
     const previousFetch = globalThis.fetch;

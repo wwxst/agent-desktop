@@ -119,6 +119,9 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     ) as ReturnType<DesktopApi['deleteSession']>,
     runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
     cancelTask: async () => { await ipc.invoke(DESKTOP_CHANNELS.cancelTask); },
+    decideApproval: async (requestId, approved) => {
+      await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);
+    },
     onAgentEvent: (listener) => {
       const receive: IpcListener = (_event, payload) => listener(payload as AgentRuntimeEvent);
       ipc.on(DESKTOP_CHANNELS.agentEvent, receive);

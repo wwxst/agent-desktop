@@ -6,6 +6,8 @@ interface ComposerProps {
   readonly attachments: readonly Attachment[];
   readonly prompt: string;
   readonly isProcessing: boolean;
+  /** 当前会话工作目录；未设置时不渲染这一行。 */
+  readonly workingDirectory?: string;
   readonly onPromptChange: (prompt: string) => void;
   readonly onSelectFiles: () => void;
   readonly onRemoveAttachment: (index: number) => void;
@@ -18,6 +20,7 @@ export function Composer({
   attachments,
   prompt,
   isProcessing,
+  workingDirectory,
   onPromptChange,
   onSelectFiles,
   onRemoveAttachment,
@@ -31,6 +34,13 @@ export function Composer({
 
   return (
     <form className="composer" onSubmit={submit}>
+      {workingDirectory !== undefined && (
+        <p className="composer-directory" title={workingDirectory}>
+          <span className="composer-directory-label">工作目录</span>
+          <span className="composer-directory-path">{workingDirectory}</span>
+        </p>
+      )}
+
       {attachments.length > 0 && (
         <div className="composer-attachments" aria-label="已选择的输入附件">
           {attachments.map((attachment, index) => (

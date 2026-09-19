@@ -31,7 +31,15 @@
 
 ### Video Agent Application Layer（视频智能体应用层）
 
-`@agent-desktop/video-agent` 负责组装当前正式视频 Agent 的 Model、InMemorySession、System Prompt 和视频相关 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace 持久化。视频处理规则提示词集中在 `src/system-prompt.ts`，是这些规则的唯一出处，CLI 与 Desktop 都不重复维护。`examples/ffmpeg-agent` 与 `apps/desktop` 负责各自的配置和入口交互，并共同调用 `createVideoAgent(...)`。
+`@agent-desktop/video-agent` 负责组装当前正式 Agent 的 Model、InMemorySession、System Prompt 和已注册 Tool。它不读取环境变量、不创建终端或界面，也不拥有 Trace 持久化。系统指令集中在 `src/system-prompt.ts`，CLI 与 Desktop 都不重复维护。`examples/ffmpeg-agent` 与 `apps/desktop` 负责各自的配置和入口交互，并共同调用 `createVideoAgent(...)`。
+
+`set_working_directory` 只有在调用方传入 `workspace` 端口时才注册：没有宿主的目录状态和目录确认能力，这个工具就没有合法的审批消费者。CLI 目前不传，因此 CLI 不提供本地目录工具。
+
+### Local Tools（本地工具）
+
+`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的目录访问通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。
+
+`set_working_directory` 把会话工作目录设为一个真实存在的目录：先 `realpath` 再让用户确认，因此用户确认的就是实际会被使用的目录。已经确认的同一目录不重复审批；换到新目录必须重新确认。相对路径以当前会话工作目录为基准，没有基准时返回明确错误。
 
 ```text
 Video Agent Application

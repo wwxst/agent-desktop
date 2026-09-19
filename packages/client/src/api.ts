@@ -100,6 +100,11 @@ export interface ClientConversation {
   readonly messages: readonly ClientConversationMessage[];
   readonly prompt: string;
   readonly attachments: readonly Attachment[];
+  /**
+   * 当前会话工作目录的展示副本。
+   * 权威事实由宿主会话持有；重启恢复时按会话事实重建，界面不自己推导目录。
+   */
+  readonly workingDirectory?: string;
 }
 
 /** Renderer 的可序列化展示状态，不参与 Agent 模型上下文重建。 */
@@ -155,8 +160,40 @@ export interface AgentTextDeltaEvent {
   readonly delta: string;
 }
 
-/** Host 在 Turn 执行期间推送给 Client 的运行期事件：活动轨迹更新或实时文本增量。 */
-export type AgentRuntimeEvent = AgentActivityEvent | AgentTextDeltaEvent;
+/**
+ * 宿主在执行本地操作前请求用户批准的一项确切操作。
+ * `kind` 说明这是什么操作（界面据此提问），`target` 是宿主已经解析过的真实路径。
+ * 界面只展示它并提交允许或拒绝，没有修改待执行操作的入口。
+ */
+export interface ApprovalRequest {
+  readonly requestId: string;
+  readonly kind: 'directory';
+  readonly target: string;
+}
+
+/** Host 在工具等待审批时推送的待决请求；一个 Turn 最多只有一个。 */
+export interface AgentApprovalRequestEvent {
+  readonly type: 'approval.requested';
+  readonly request: ApprovalRequest;
+}
+
+/**
+ * Host 真正确认了会话工作目录之后发布的事实。
+ *
+ * 界面据此更新展示副本，而不是在提交审批决定时提前写入：审批可能已经失效（轮次取消或窗口关闭），
+ * 那时 `confirmDirectory` 并没有执行，提前写入会在界面上留下一个并不存在的工作目录。
+ */
+export interface AgentWorkspaceEvent {
+  readonly type: 'workspace.confirmed';
+  readonly workingDirectory: string;
+}
+
+/** Host 在 Turn 执行期间推送给 Client 的运行期事件：活动轨迹、实时文本增量、待决审批或已确认的工作目录。 */
+export type AgentRuntimeEvent =
+  | AgentActivityEvent
+  | AgentTextDeltaEvent
+  | AgentApprovalRequestEvent
+  | AgentWorkspaceEvent;
 
 export interface AgentClientApi {
   loadRuntimeSettings(): Promise<RuntimeSettings>;
@@ -178,6 +215,11 @@ export interface AgentClientApi {
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
   cancelTask(): Promise<void>;
   onAgentEvent(listener: (event: AgentRuntimeEvent) => void): () => void;
+  /**
+   * 对当前待决操作提交允许或拒绝。
+   * 宿主只接受当前请求的标识：客户端不能用一次迟到的批准重新启动已经失效的操作。
+   */
+  decideApproval(requestId: string, approved: boolean): Promise<void>;
   /** 在系统文件管理器中定位一个真实文件；宿主负责校验该文件属于当前会话。 */
   revealFile(path: string): Promise<void>;
 }

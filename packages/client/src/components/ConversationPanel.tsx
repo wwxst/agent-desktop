@@ -8,6 +8,8 @@ interface ConversationPanelProps {
   readonly messages: readonly ClientConversationMessage[];
   readonly hasConversation: boolean;
   readonly composer: ReactNode;
+  /** 当前待决操作审批；没有待决请求时由调用方传 null。 */
+  readonly approval: ReactNode;
   readonly historyRef: RefObject<HTMLDivElement | null>;
   readonly onHistoryScroll: () => void;
   readonly onToggleActivity: (messageId: number) => void;
@@ -23,6 +25,7 @@ export function ConversationPanel({
   messages,
   hasConversation,
   composer,
+  approval,
   historyRef,
   onHistoryScroll,
   onToggleActivity,
@@ -50,6 +53,7 @@ export function ConversationPanel({
               onRevealFile={onRevealFile}
             />
           ))}
+          {approval}
         </div>
       </div>
 

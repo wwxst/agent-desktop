@@ -4,10 +4,12 @@ import { basename, join, parse, resolve } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
+import type { WorkspacePort } from '@agent-desktop/local-tools';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
 import { findLatestTurnId, findTurnArtifacts, runDesktopAgentTask, type TurnArtifact } from './agent-task.js';
 import { assertRevealableFile, isSessionFilePath, projectAgentActivity } from './agent-activity.js';
+import { ToolApprovalGate } from './tool-approval.js';
 import {
   DESKTOP_CHANNELS,
   type AgentRuntimeEvent,
@@ -49,6 +51,11 @@ interface DesktopSessionState {
   readonly session: InMemorySession;
   /** 当前会话的输入附件；角色决定提示词把它当主视频还是音轨。 */
   readonly attachments: SelectedAttachment[];
+  /**
+   * 当前会话已经用户确认的工作目录；相对路径以它为基准。
+   * 它与附件互相独立：选择附件不会改变工作目录，目录也不会被最后一次附件选择覆盖。
+   */
+  workingDirectory?: string;
 }
 
 /** 宿主侧的附件：路径是身份，角色决定用途。 */
@@ -93,6 +100,7 @@ function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopS
     sessions: [...sessions].map(([id, session]) => ({
       id,
       attachments: session.attachments,
+      ...(session.workingDirectory === undefined ? {} : { workingDirectory: session.workingDirectory }),
       events: session.session.events(),
     })),
     clientState: snapshot,
@@ -113,19 +121,30 @@ async function restoreDesktopState(): Promise<void> {
     createDesktopSession(savedSession.id, savedSession.events);
     const session = sessions.get(savedSession.id)!;
     session.attachments.push(...savedSession.attachments);
+    if (savedSession.workingDirectory !== undefined) {
+      session.workingDirectory = savedSession.workingDirectory;
+    }
   }
   activeSessionId = persisted.activeSessionId;
 
-  // 会话侧附件是权威事实（旧快照在这里被换算成带 role 的形状）。
+  // 会话侧附件与工作目录是权威事实（旧快照在这里被换算成带 role 的形状）。
   // 快照里的界面副本可能来自更旧的格式（只有名称、没有真实路径），
-  // 因此按会话事实重建一次，避免界面拿着无法定位的空路径。
+  // 因此按会话事实重建一次，避免界面拿着无法定位的空路径或过期目录。
+  // `workingDirectory` 必须先摘掉再按会话事实放回：会话里没有目录时，
+  // 用条件展开（缺键）会把快照里的旧目录留在副本里，错误状态会跨重启存活。
   clientState = {
     ...clientState,
     conversations: clientState.conversations.map((conversation) => {
       const session = sessions.get(conversation.id);
-      return session === undefined
-        ? conversation
-        : { ...conversation, attachments: toClientAttachments(session.attachments) };
+      if (session === undefined) return conversation;
+      const { workingDirectory: _staleDirectory, ...rest } = conversation;
+      return {
+        ...rest,
+        attachments: toClientAttachments(session.attachments),
+        ...(session.workingDirectory === undefined
+          ? {}
+          : { workingDirectory: session.workingDirectory }),
+      };
     }),
   };
 }
@@ -169,6 +188,34 @@ function sendAgentEvent(event: AgentRuntimeEvent): void {
   if (mainWindow?.isDestroyed() === false) {
     mainWindow.webContents.send(DESKTOP_CHANNELS.agentEvent, event);
   }
+}
+
+/**
+ * 窗口持有的唯一待决审批。
+ * 待决请求经同一个运行期事件通道推给 Client，答复由 decideApproval 通道回到这里。
+ */
+const approvalGate = new ToolApprovalGate((request) => {
+  sendAgentEvent({ type: 'approval.requested', request });
+});
+
+/**
+ * 会话工作目录端口：目录事实存在会话状态里，工具只通过它读写。
+ * 工具自己不做权限判断，也不缓存目录——它每次调用都读同一份会话状态。
+ */
+function workspacePortFor(sessionId: string): WorkspacePort {
+  return {
+    confirmedDirectory: () => sessions.get(sessionId)?.workingDirectory,
+    requestApproval: (target, signal) => approvalGate.request(target, signal),
+    confirmDirectory: (directory) => {
+      const session = sessions.get(sessionId);
+      // 会话在任务执行期间不能被删除，因此这里一定拿得到同一个会话。
+      if (session === undefined) throw new Error('会话已不存在，无法记录工作目录。');
+      session.workingDirectory = directory;
+      // 目录事实在**确认之后**才发布：界面不在提交审批决定时提前写入，
+      // 否则一个已经失效的审批会在界面上留下一个从未被确认的目录。
+      sendAgentEvent({ type: 'workspace.confirmed', workingDirectory: directory });
+    },
+  };
 }
 
 /**
@@ -329,6 +376,7 @@ function registerIpcHandlers(): void {
         ...(settings.whisperModelPath === undefined ? {} : { whisperModelPath: settings.whisperModelPath }),
         ...(settings.whisperCliPath === undefined ? {} : { whisperCliPath: settings.whisperCliPath }),
         session: session.session,
+        workspace: workspacePortFor(sessionId),
       });
       // 输出命名只跟随主视频；单独添加音轨不应改变输出文件的位置。
       const primaryVideoPath = session.attachments.find((attachment) => attachment.role === 'video')?.path;
@@ -389,6 +437,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle(DESKTOP_CHANNELS.cancelTask, () => {
     if (activeTask === undefined) throw new Error('当前没有正在执行的任务。');
     activeTask.controller.abort();
+  });
+
+  ipcMain.handle(DESKTOP_CHANNELS.decideApproval, (_event, requestId: unknown, approved: unknown) => {
+    // 边界只接受当前请求的标识和一个布尔决定：待执行的操作参数不经过这里，客户端无法改写它。
+    if (typeof requestId !== 'string' || typeof approved !== 'boolean') {
+      throw new Error('无效的审批决定。');
+    }
+    approvalGate.decide(requestId, approved);
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.revealFile, (_event, filePath: unknown) => {
