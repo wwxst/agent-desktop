@@ -52,12 +52,30 @@ describe('desktop agent task', () => {
     ].join('\n'));
   });
 
-  it('marks a text-only task without inventing media paths', () => {
+  it('states the missing attachments as a fact instead of forbidding media tools', () => {
+    // 宿主只补充事实：普通问答不会因为「没有附件」被追加任何禁止调用 Tool 的策略。
     expect(buildAgentPrompt('介绍一下这个客户端的能力。')).toBe([
       '介绍一下这个客户端的能力。',
       '',
-      '当前未选择输入视频。请只根据文字需求回答，不要调用需要媒体文件的 Tool，也不要声称生成了视频文件。',
+      '本次没有选择输入附件。',
+      '本次没有预设的最终输出路径。',
     ].join('\n'));
+  });
+
+  it('keeps a task that already names a real path usable without attachments', () => {
+    // 用户在需求里直接给出完整视频路径时，宿主不再追加「不要调用需要媒体文件的 Tool」，
+    // 因此模型仍可以对那个路径调用 probe_media 等已注册工具。
+    const task = '检查 D:\\videos\\sintel-trailer.mp4 的时长和分辨率。';
+    const composed = buildAgentPrompt(task);
+
+    expect(composed).toBe([
+      task,
+      '',
+      '本次没有选择输入附件。',
+      '本次没有预设的最终输出路径。',
+    ].join('\n'));
+    expect(composed).not.toContain('不要调用');
+    expect(composed).not.toContain('只根据文字需求回答');
   });
 
   it('describes an audio track as a companion track, not as a second video', () => {
@@ -82,6 +100,7 @@ describe('desktop agent task', () => {
 
   it('does not treat a lone audio track as a video input', () => {
     // 只有音轨时没有主视频，也就没有最终输出路径：不能把音轨当输入视频，也不能虚构输出。
+    // 但同样不追加「不要调用需要主视频的 Tool」——用户可能在文字里给出主视频路径。
     expect(buildAgentPrompt(
       '把这段音频转成文字',
       [{ path: 'D:\\audio\\only.mp3', role: 'audio' }],
@@ -89,11 +108,10 @@ describe('desktop agent task', () => {
     )).toBe([
       '把这段音频转成文字',
       '',
-      [
-        '当前未选择输入视频，只有音轨文件：',
-        '音轨 1：D:/audio/only.mp3',
-        '请只根据文字需求回答，不要把这些音轨当作可剪辑的主视频，不要调用需要主视频的 Tool，也不要声称生成了视频文件。',
-      ].join('\n'),
+      '本次没有选择主视频，只有音轨文件：',
+      '音轨 1：D:/audio/only.mp3',
+      '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
+      '本次没有预设的最终输出路径。',
     ].join('\n'));
   });
 

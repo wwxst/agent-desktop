@@ -33,10 +33,26 @@ describe('createVideoAgent', () => {
     ]);
 
     const systemPrompt = agent.systemPrompt.build();
+    // 通用客户端规则：普通问答直接回答、只用真实注册的能力。
+    expect(systemPrompt).toContain('你是一个通用智能体');
+    expect(systemPrompt).toContain('不需要为了回答调用 Tool');
+    expect(systemPrompt).toContain('某个能力当前没有注册对应 Tool 时，直接说明缺少什么能力');
+    // 视频规则：已经真实剪辑验证过的行为保持不变。
     expect(systemPrompt).toContain('优先使用 extract_audio 和 transcribe_audio');
     expect(systemPrompt).toContain('多个不连续保留区间应分别从原视频裁剪');
     expect(systemPrompt).toContain('如果用户提供多个输入视频');
     expect(systemPrompt).toContain('固定秒数裁剪可以直接使用 trim_video');
+  });
+
+  it('scopes the write rules to tasks that actually ask for a file', () => {
+    const agent = createVideoAgent({ deepSeekApiKey: 'test-deepseek-key' });
+    const systemPrompt = agent.systemPrompt.build();
+
+    // 「最后一个 Tool 必须写入 outputPath」只在用户确实要求产出文件时成立；
+    // 否则普通问答、读取和搜索会被迫生成多余文件。
+    expect(systemPrompt).toContain('只有在用户确实要求产出文件时才写文件');
+    expect(systemPrompt).toContain('提示中给出最终 outputPath 时，合并结果必须写入它');
+    expect(systemPrompt).not.toContain('最后一个 Tool 必须写入用户要求的最终 outputPath');
   });
 
   it('can assemble a text-only Agent without registering media transcription', () => {

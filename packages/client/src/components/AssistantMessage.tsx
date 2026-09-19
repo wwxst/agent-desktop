@@ -77,7 +77,7 @@ export function AssistantMessage({
         ) : (
           <div className="message-content processing-line">
             <i aria-hidden="true" />
-            <p>正在处理视频</p>
+            <p>正在处理任务</p>
           </div>
         )
       ) : (

@@ -738,7 +738,7 @@ describe('App', () => {
       target: { value: '流式任务' },
     });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    expect(screen.getByText('正在处理视频')).toBeTruthy();
+    expect(screen.getByText('正在处理任务')).toBeTruthy();
 
     act(() => receiveEvent?.({ type: 'text.delta', delta: '实时文本' }));
     expect(screen.getByText('实时文本')).toBeTruthy();

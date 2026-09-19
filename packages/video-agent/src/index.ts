@@ -18,7 +18,7 @@ import {
   TrimVideoTool,
 } from '@agent-desktop/video-ffmpeg';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
-import { VIDEO_AGENT_SYSTEM_PROMPT } from './system-prompt.js';
+import { AGENT_SYSTEM_PROMPT } from './system-prompt.js';
 
 /** 创建正式视频 Agent 所需的最小外部配置；环境变量解析由调用入口负责。 */
 export interface VideoAgentOptions {
@@ -71,6 +71,6 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     model: new DeepSeekModel(modelOptions),
     session: options.session ?? new InMemorySession(),
     tools,
-    systemPrompt: new StaticSystemPrompt(VIDEO_AGENT_SYSTEM_PROMPT),
+    systemPrompt: new StaticSystemPrompt(AGENT_SYSTEM_PROMPT),
   };
 }

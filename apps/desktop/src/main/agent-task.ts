@@ -15,8 +15,9 @@ function toPromptPath(filePath: string): string {
 
 /**
  * 把 Renderer 的用户意图与 Main 持有的附件组合成一次 Agent 输入。
- * 主视频与音轨分开描述，音轨不会被当成可剪辑的主输入；没有主视频时不提供最终输出路径，
- * 与「未选择输入视频」的既有语义一致，模型不会去调用需要视频的 Tool。
+ * 这里只描述本次真实存在的事实：选了哪些附件、有没有预设的最终输出路径。
+ * 「没有主视频就一律禁止媒体工具」这类策略不在用户消息里追加——它会让用户在需求里
+ * 直接给出视频路径时也无法调用探测工具；工具可见性与使用规则统一由系统指令描述。
  */
 export function buildAgentPrompt(
   prompt: string,
@@ -26,18 +27,20 @@ export function buildAgentPrompt(
   const videos = attachments?.filter((attachment) => attachment.role === 'video') ?? [];
   const audios = attachments?.filter((attachment) => attachment.role === 'audio') ?? [];
 
-  if (videos.length === 0 || outputPath === undefined) {
+  // 没有主视频时既没有可剪辑的主输入，也没有合法的输出目标（输出路径由主视频推导），
+  // 所以调用方即使传了输出路径也不提供给模型，只如实说明用户给了音轨还是什么都没给。
+  if (videos.length === 0) {
     return [
       prompt,
       '',
-      audios.length === 0
-        ? '当前未选择输入视频。请只根据文字需求回答，不要调用需要媒体文件的 Tool，也不要声称生成了视频文件。'
-        // 只有音轨时明确说明它不能当主视频，也不虚构一个输出来源。
+      ...(audios.length === 0
+        ? ['本次没有选择输入附件。']
         : [
-            '当前未选择输入视频，只有音轨文件：',
+            '本次没有选择主视频，只有音轨文件：',
             ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
-            '请只根据文字需求回答，不要把这些音轨当作可剪辑的主视频，不要调用需要主视频的 Tool，也不要声称生成了视频文件。',
-          ].join('\n'),
+            '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
+          ]),
+      '本次没有预设的最终输出路径。',
     ].join('\n');
   }
 
@@ -51,7 +54,9 @@ export function buildAgentPrompt(
       '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
       ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
     ]),
-    `最终输出文件：${toPromptPath(outputPath)}`,
+    outputPath === undefined
+      ? '本次没有预设的最终输出路径。'
+      : `最终输出文件：${toPromptPath(outputPath)}`,
   ].join('\n');
 }
 

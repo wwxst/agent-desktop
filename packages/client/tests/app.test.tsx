@@ -341,11 +341,11 @@ describe('shared App', () => {
     const input = await screen.findByLabelText('剪辑需求');
     fireEvent.change(input, { target: { value: '流式任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    expect(screen.getByText('正在处理视频')).toBeTruthy();
+    expect(screen.getByText('正在处理任务')).toBeTruthy();
 
     act(() => receiveEvent?.({ type: 'text.delta', delta: '正在' }));
     expect(screen.getByText('正在')).toBeTruthy();
-    expect(screen.queryByText('正在处理视频')).toBeNull();
+    expect(screen.queryByText('正在处理任务')).toBeNull();
     act(() => receiveEvent?.({ type: 'text.delta', delta: '生成结果' }));
     expect(screen.getByText('正在生成结果')).toBeTruthy();
 
