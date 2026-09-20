@@ -4,6 +4,7 @@ import type { ApprovalRequest as ApprovalRequestData } from '../api.js';
 const APPROVAL_QUESTIONS: Readonly<Record<ApprovalRequestData['kind'], string>> = {
   directory: '允许 Agent 使用这个目录吗？',
   'create-file': '允许 Agent 创建这个文件吗？',
+  'edit-file': '允许 Agent 修改这个文件吗？',
 };
 
 interface ApprovalRequestProps {
@@ -23,6 +24,18 @@ export function ApprovalRequest({ request, onDecide }: ApprovalRequestProps) {
     <section className="approval-request" aria-label="操作审批">
       <p className="approval-question">{APPROVAL_QUESTIONS[request.kind]}</p>
       <p className="approval-directory" title={request.target}>{request.target}</p>
+      {request.kind === 'edit-file' ? (
+        <div className="approval-change" aria-label="文件变更">
+          <div className="approval-change-section">
+            <span>原内容</span>
+            <pre>{request.before}</pre>
+          </div>
+          <div className="approval-change-section">
+            <span>新内容</span>
+            <pre>{request.after}</pre>
+          </div>
+        </div>
+      ) : null}
       <div className="approval-actions">
         <button type="button" className="approval-allow" onClick={() => onDecide(true)}>允许</button>
         <button type="button" className="approval-deny" onClick={() => onDecide(false)}>拒绝</button>

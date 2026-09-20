@@ -1,5 +1,6 @@
 import type { ToolResult } from '@agent-desktop/model';
 import type { Tool } from '@agent-desktop/tools';
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { resolveScopedPath } from './path-scope.js';
 import type { WorkspacePort } from './workspace.js';
@@ -122,6 +123,8 @@ export class ReadFileTool implements Tool {
     }
 
     const text = source.toString('utf8');
+    // 摘要覆盖完整源文件字节，分段读取时仍能把后续编辑绑定到同一个已读取版本。
+    const sha256 = createHash('sha256').update(source).digest('hex');
     // 统一按 \n 切分并去掉行尾的 \r：Windows 上的 SRT 等文件都是 CRLF，行号不受影响。
     const lines = text.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
     // 以换行结尾的文件最后一个元素是空串，它不是一行。
@@ -132,7 +135,7 @@ export class ReadFileTool implements Tool {
     if (totalLines === 0) {
       return {
         status: 'success',
-        output: { filePath: scoped.path, startLine: 1, endLine: 0, totalLines: 0, lines: [] },
+        output: { filePath: scoped.path, sha256, startLine: 1, endLine: 0, totalLines: 0, lines: [] },
       };
     }
     if (from >= totalLines) {
@@ -175,6 +178,7 @@ export class ReadFileTool implements Tool {
       status: 'success',
       output: {
         filePath: scoped.path,
+        sha256,
         startLine: from + 1,
         endLine: end,
         totalLines,

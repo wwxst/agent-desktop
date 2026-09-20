@@ -84,6 +84,20 @@ export function findToolCallInput(events: readonly SessionEvent[], toolCallId: s
   return undefined;
 }
 
+/** 成功结果里的 filePath 是工具解析并实际操作的真实路径，优先于模型输入的相对路径。 */
+function findSuccessfulToolResultFilePath(
+  events: readonly SessionEvent[],
+  toolCallId: string,
+): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event?.type !== 'tool.result' || event.toolCallId !== toolCallId) continue;
+    if (event.result.status !== 'success' || !isRecord(event.result.output)) return undefined;
+    return typeof event.result.output.filePath === 'string' ? event.result.output.filePath : undefined;
+  }
+  return undefined;
+}
+
 /** 把 Trace 事件投影成一条界面活动；Turn 生命周期事件不单独成行。 */
 export function projectAgentActivity(
   event: ExecutionTraceEvent,
@@ -110,7 +124,12 @@ export function projectAgentActivity(
     case 'tool.started':
     case 'tool.completed':
     case 'tool.failed': {
-      const files = readActivityFiles(findToolCallInput(events, event.toolCallId));
+      const resultFilePath = event.type === 'tool.completed' && event.toolName === 'edit_text_file'
+        ? findSuccessfulToolResultFilePath(events, event.toolCallId)
+        : undefined;
+      const files = resultFilePath === undefined
+        ? readActivityFiles(findToolCallInput(events, event.toolCallId))
+        : [{ path: resultFilePath, label: basename(resultFilePath), role: 'input' as const }];
       return {
         id: event.toolCallId,
         kind: 'tool',
@@ -142,11 +161,11 @@ export function isSessionFilePath(
     if (event.type === 'tool.called') {
       return readActivityFiles(event.input).some((file) => file.path === filePath);
     }
-    // 成功结果报告的产物是这次会话真实创建过的文件，也是产物卡的路径来源。
-    // 工具的输入里可能只有相对路径（例如 write_text_file 的 filePath），
-    // 因此只按输入校验会让刚创建出来的产物卡无法定位。
+    // 成功结果报告的产物或实际文件路径都是这次会话真实操作过的文件。
+    // 工具输入可能只有相对路径，因此定位时也要承认工具执行后解析出的绝对路径。
     if (event.type === 'tool.result' && event.result.status === 'success') {
-      return (event.result.artifacts ?? []).includes(filePath);
+      if ((event.result.artifacts ?? []).includes(filePath)) return true;
+      return isRecord(event.result.output) && event.result.output.filePath === filePath;
     }
     return false;
   });

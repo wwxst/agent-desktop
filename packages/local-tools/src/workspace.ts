@@ -5,12 +5,17 @@ import { isAbsolute, resolve } from 'node:path';
 
 /**
  * 宿主需要用户明确批准的一项确切操作。
- * `kind` 让宿主和界面知道这是什么操作，`path` 是工具已经解析过的真实路径。
+ * `kind` 让宿主和界面知道这是什么操作，`path` 是工具已经解析过的真实路径；
+ * 修改文件还携带用户批准的原内容和新内容。
  */
-export interface ApprovalTarget {
-  readonly kind: 'directory' | 'create-file';
-  readonly path: string;
-}
+export type ApprovalTarget =
+  | { readonly kind: 'directory' | 'create-file'; readonly path: string }
+  | {
+    readonly kind: 'edit-file';
+    readonly path: string;
+    readonly before: string;
+    readonly after: string;
+  };
 
 /**
  * 宿主提供的会话工作目录与操作审批能力。

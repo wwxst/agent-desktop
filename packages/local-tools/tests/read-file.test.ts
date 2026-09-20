@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +15,7 @@ const real = (path: string) => realpath(path);
 
 interface ReadOutput {
   readonly filePath: string;
+  readonly sha256: string;
   readonly startLine: number;
   readonly endLine: number;
   readonly totalLines: number;
@@ -71,6 +73,7 @@ describe('read_file', () => {
 
     expect(reading(result)).toEqual({
       filePath: await real(join(root, 'notes.txt')),
+      sha256: createHash('sha256').update('alpha\nbeta\ngamma\n').digest('hex'),
       startLine: 1,
       endLine: 3,
       totalLines: 3,
@@ -217,6 +220,7 @@ describe('read_file', () => {
 
     expect(output).toEqual({
       filePath: join(await real(root), '空.txt'),
+      sha256: createHash('sha256').update('').digest('hex'),
       startLine: 1,
       endLine: 0,
       totalLines: 0,

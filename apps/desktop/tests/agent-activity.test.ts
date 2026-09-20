@@ -195,6 +195,46 @@ describe('projectAgentActivity', () => {
     });
   });
 
+  it('uses the successful edit result path for the completed file-change activity', () => {
+    const editEvents: readonly SessionEvent[] = [
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId,
+        name: 'edit_text_file',
+        input: {
+          filePath: '字幕.srt',
+          expectedSha256: 'read-version',
+          oldText: '旧台词',
+          newText: '新台词',
+        },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId,
+        result: {
+          status: 'success',
+          output: { filePath: 'E:/videos/字幕.srt', replacements: 1, bytes: 9 },
+        },
+      },
+    ];
+
+    expect(projectAgentActivity({
+      type: 'tool.completed', turnId, stepId, toolCallId, toolName: 'edit_text_file', durationMs: 18,
+    }, editEvents)).toEqual({
+      id: 'call-1',
+      kind: 'tool',
+      status: 'completed',
+      toolName: 'edit_text_file',
+      durationMs: 18,
+      files: [{ path: 'E:/videos/字幕.srt', label: '字幕.srt', role: 'input' }],
+    });
+    expect(isSessionFilePath(editEvents, [], 'E:/videos/字幕.srt')).toBe(true);
+  });
+
   it('omits the file list when the Tool Call used no file from the current contract', () => {
     const events: readonly SessionEvent[] = [toolCalled({ start: 0, end: 12 })];
     const item = projectAgentActivity({

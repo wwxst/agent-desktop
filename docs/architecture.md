@@ -37,7 +37,7 @@
 
 ### Local Tools（本地工具）
 
-`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的操作（当前是目录访问与创建文件）一律通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。
+`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的操作（当前是目录访问、创建文件与修改文件）一律通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。
 
 `set_working_directory` 把会话工作目录设为一个真实存在的目录：先 `realpath` 再让用户确认，因此用户确认的就是实际会被使用的目录。已经确认的同一目录不重复审批；换到新目录必须重新确认。相对路径以当前会话工作目录为基准，没有基准时返回明确错误。
 
@@ -45,7 +45,7 @@
 
 `list_directory` 列出工作目录或其子目录中的真实条目（名称、真实路径、类型），可按扩展名过滤；扩展名过滤只作用于文件，目录始终保留。它不递归、不扫描全盘，超过上限时明确报告总数和缩小范围的方法。
 
-`read_file` 按行范围返回文本，行号从 1 开始并与用户在编辑器里看到的一致；返回行数组和对应行号，便于模型准确引用内容。超过行数或字符预算时返回 `nextStartLine`，连续读取不重不漏。它先检查文件大小，再按 UTF-8 解码；出现替换字符时如实说明文件可能不是 UTF-8，二进制文件（含 NUL 字节）直接拒绝。
+`read_file` 按行范围返回文本，行号从 1 开始并与用户在编辑器里看到的一致；返回行数组和对应行号，便于模型准确引用内容。每次成功读取同时返回完整源文件字节的 `sha256`，后续编辑据此确认目标仍是模型读到的版本；分段读取同一版本时摘要保持相同。超过行数或字符预算时返回 `nextStartLine`，连续读取不重不漏。它先检查文件大小，再按 UTF-8 解码；出现替换字符时如实说明文件可能不是 UTF-8，二进制文件（含 NUL 字节）直接拒绝。
 
 `search_text` 把搜索交给 ripgrep 真实进程（`--json` 行分隔输出、`--fixed-strings` 字面匹配），只负责参数、已确认目录范围、结果上限和取消。它不自行遍历目录、不做正则或语义索引。达到上限时结束进程并说明缩小范围的方法；ripgrep 退出码 1（无匹配）是正常空结果。
 
@@ -58,6 +58,8 @@ ripgrep          文本搜索工具    由 `@vscode/ripgrep` 随包提供，工�
 Desktop 主进程打包时把 `@vscode/ripgrep` 保持为 external（外部依赖），运行时从应用自己的 `node_modules` 解析平台二进制。开发入口已使用随包依赖；安装包内的资源落地留到 Commit 49 的分发验收验证。
 
 `write_text_file` 经用户批准后创建一个新的文本文件。三条边界：目标路径的**父目录**必须在会话已确认的工作目录内（目标还不存在，不能对它做 `realpath`，因此复用 `resolveCreatablePath`）；已有文件一律拒绝（`wx` 是真正的写入边界兜底，先检查存在性只是为了让用户不必为一个注定失败的操作点批准）；写入前必须拿到用户对**这一次创建**的明确批准，拒绝和取消都不产生任何写入。
+
+`edit_text_file` 只修改会话已确认工作目录内的已有 UTF-8 文本。调用必须携带 `read_file` 返回的文件路径和 `sha256`；摘要不一致时在审批前失败并要求重新读取。原内容必须精确出现一次，不存在或出现多次都不请求审批、不写入。宿主向用户展示真实路径、原内容和新内容；批准后工具再次读取并逐字节比较审批前快照，文件在等待期间变化就停止。成功结果报告实际路径、替换次数和最终字节数，不报告 `artifacts`，因为编辑已有文件不是新产物。
 
 ### Tool Result Artifacts（成功结果的产物事实）
 
@@ -532,7 +534,7 @@ durationMs             执行耗时      来自 Trace 的真实耗时
 plannedToolCallCount   计划工具数    来自 model.completed 的 toolCallCount
 ```
 
-Electron Main 在 `apps/desktop/src/main/agent-activity.ts` 中把两类真实事实投影成一条活动：状态、耗时和模型步骤来自 Execution Trace，文件引用来自 Session 的 `tool.called.input`。Trace 不复制工具内容，因此文件事实必须从 Session 读取；投影只读取当前视频工具契约声明的字段（`videoPath`、`inputPath`、`inputPaths`、`audioPath`、`subtitlePath`、`outputPath`、`outputDir`）以及 `analyze_images` 的 `images[].path`，其他形状不产生文件引用。Turn 生命周期事件不单独成行。
+Electron Main 在 `apps/desktop/src/main/agent-activity.ts` 中把两类真实事实投影成一条活动：状态、耗时和模型步骤来自 Execution Trace，文件引用来自 Session 的 `tool.called.input`。Trace 不复制工具内容，因此文件事实必须从 Session 读取；投影只读取当前工具契约声明的文件和目录字段，以及 `analyze_images` 的 `images[].path`，其他形状不产生文件引用。`edit_text_file` 成功后以同一 Tool Result（工具结果）中的真实 `filePath` 更新活动，避免把模型传入的相对路径保存成修改事实。Turn 生命周期事件不单独成行。
 
 同一个活动 `id` 只保留一条记录：`running` 会被后续的 `completed`、`failed` 或 `cancelled` 覆盖，因此界面顺序是真实的执行顺序，而不是事件到达顺序。取消只把仍在 `running` 的活动标记为 `cancelled`，已完成活动的真实状态和耗时保持不变。
 

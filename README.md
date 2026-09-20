@@ -8,7 +8,7 @@
 
 当前优先级是让桌面入口跑通通用任务闭环，视频剪辑作为配置最完整的能力继续可用。
 
-普通问答和文字任务不以视频附件为前提。模型可以用 `set_working_directory` 请求会话工作目录，经用户确认后，用 `list_directory` 发现文件、用 `read_file` 按行读取文本、用 `search_text` 按字面文本搜索内容，并用 `write_text_file` 经用户逐次确认后创建新的文本文件；已有文件不会被覆盖，成功创建的文件会显示为本轮产物。所有本地文件操作只限已确认的目录，越界会明确要求重新指定工作目录。
+普通问答和文字任务不以视频附件为前提。模型可以用 `set_working_directory` 请求会话工作目录，经用户确认后，用 `list_directory` 发现文件、用 `read_file` 按行读取文本、用 `search_text` 按字面文本搜索内容，并用 `write_text_file` 经用户逐次确认后创建新的文本文件。对已经读取的 UTF-8 文本，`edit_text_file` 会展示确切文件、原内容和新内容，只在用户批准且文件版本未变化时完成一次唯一匹配的精确替换。新建文件会显示为本轮产物，修改已有文件只记录为活动，不冒充新产物。所有本地文件操作只限已确认的目录，越界会明确要求重新指定工作目录。
 
 文本搜索由随包提供的 ripgrep 执行（`@vscode/ripgrep`），不依赖运行环境 PATH 上是否安装 `rg`。安装包内的资源落地由打包阶段验收。
 
@@ -88,14 +88,14 @@ pnpm ffmpeg-agent
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口在当前应用进程内持有多个独立的 Video Agent（视频智能体）和 InMemorySession（内存会话）；侧栏可新建和切换会话，并分别恢复消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示。Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。关闭应用后全部会话和界面历史消失，当前不提供删除、搜索、重命名或重启恢复。
+Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可新建、切换、重命名和删除会话。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
 
 ```text
 Layer                 中文名称         职责
-Renderer              渲染进程         保存运行期会话列表的界面历史，收集任务并展示消息、Tool 活动与产物
+Renderer              渲染进程         维护会话列表的界面副本，收集任务并展示消息、Tool 活动与产物
 Preload contextBridge 预加载安全桥     暴露受限的桌面 API
-Electron Main         Electron 主进程  按会话持有 Agent、Session 和文件状态并调用应用层
-createVideoAgent      组装视频智能体   创建正式视频 Agent
+Electron Main         Electron 主进程  按会话持有 Session 和文件状态，持久化会话并调用应用层
+createVideoAgent      组装视频智能体   为当前 Turn 创建正式视频 Agent
 runTurn               执行任务轮次     驱动 Model 与 Tool 执行
 ```
 

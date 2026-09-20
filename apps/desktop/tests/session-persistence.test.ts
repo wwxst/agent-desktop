@@ -641,6 +641,76 @@ describe('desktop session persistence', () => {
     expect(restored?.sessions[0]?.events).toEqual(events);
   });
 
+  it('keeps an approved text edit and its activity across a restart without creating an artifact', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const turnId = 'turn-edit' as TurnId;
+    const stepId = 'step-edit' as StepId;
+    const toolCallId = 'call-edit' as ToolCallId;
+    const editedPath = 'D:/videos/字幕.srt';
+    const events: readonly SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      {
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId,
+        name: 'edit_text_file',
+        input: {
+          filePath: editedPath,
+          expectedSha256: 'edit-version',
+          oldText: '旧台词',
+          newText: '新台词',
+        },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId,
+        result: {
+          status: 'success',
+          output: { filePath: editedPath, replacements: 1, bytes: 9 },
+        },
+      },
+      { type: 'turn.completed', turnId },
+    ];
+    const originalConversation = state.clientState.conversations[0]!;
+    const editActivity = {
+      id: toolCallId,
+      kind: 'tool' as const,
+      toolName: 'edit_text_file',
+      status: 'completed' as const,
+      files: [{ path: editedPath, label: '字幕.srt', role: 'input' as const }],
+      durationMs: 12,
+    };
+    await saveDesktopState(filePath, {
+      ...state,
+      sessions: [{ ...state.sessions[0]!, events }, state.sessions[1]!],
+      clientState: {
+        ...state.clientState,
+        conversations: [{
+          ...originalConversation,
+          messages: [{
+            id: 1,
+            role: 'assistant',
+            status: 'completed',
+            activity: [editActivity],
+            activityExpanded: false,
+            result: { responseText: '已修改', traceId: 'trace-edit' },
+          }],
+        }, state.clientState.conversations[1]!],
+      },
+    });
+
+    const restored = await loadDesktopState(filePath);
+
+    expect(restored?.sessions[0]?.events).toEqual(events);
+    const restoredMessage = restored?.clientState.conversations[0]?.messages[0];
+    expect(restoredMessage).toMatchObject({ activity: [editActivity] });
+    expect(restoredMessage).not.toHaveProperty('result.outputFiles');
+  });
+
   it('rejects a success result whose artifacts is not an array of strings', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();

@@ -19,6 +19,27 @@ describe('ToolApprovalGate', () => {
     await expect(pending).resolves.toBe(true);
   });
 
+  it('publishes the exact text replacement without letting the client rewrite it', async () => {
+    const { gate, published } = createGate();
+
+    const pending = gate.request({
+      kind: 'edit-file',
+      path: 'D:/videos/字幕.srt',
+      before: '旧台词',
+      after: '新台词',
+    });
+
+    expect(published[0]).toEqual({
+      requestId: expect.any(String),
+      kind: 'edit-file',
+      target: 'D:/videos/字幕.srt',
+      before: '旧台词',
+      after: '新台词',
+    });
+    gate.decide(published[0]!.requestId, true);
+    await expect(pending).resolves.toBe(true);
+  });
+
   it('reports a refusal without any side effect', async () => {
     const { gate, published } = createGate();
 

@@ -920,6 +920,49 @@ describe('shared App', () => {
     expect(await screen.findByText('已创建')).toBeTruthy();
   });
 
+  it('shows the exact text replacement before approving a file edit', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const decideApproval = vi.fn(async () => undefined);
+
+    render(<App api={{
+      ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>((resolve) => { resolveTask = resolve; }),
+      decideApproval,
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '修改字幕' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({
+      type: 'approval.requested',
+      request: {
+        requestId: 'request-edit',
+        kind: 'edit-file',
+        target: 'D:/videos/字幕.srt',
+        before: '旧台词',
+        after: '新台词',
+      },
+    }));
+
+    expect(screen.getByText('允许 Agent 修改这个文件吗？')).toBeTruthy();
+    expect(screen.getByText('D:/videos/字幕.srt')).toBeTruthy();
+    expect(screen.getByText('原内容')).toBeTruthy();
+    expect(screen.getByText('旧台词')).toBeTruthy();
+    expect(screen.getByText('新内容')).toBeTruthy();
+    expect(screen.getByText('新台词')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
+    await waitFor(() => expect(decideApproval).toHaveBeenCalledWith('request-edit', true));
+    expect(screen.queryByText('工作目录')).toBeNull();
+
+    await act(async () => resolveTask?.({ responseText: '已修改', traceId: 'trace-edit' }));
+    expect(await screen.findByText('已修改')).toBeTruthy();
+  });
+
   it('scrolls the pending approval fully into view while following the latest content', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;

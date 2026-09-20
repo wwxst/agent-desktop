@@ -52,7 +52,15 @@ export class ToolApprovalGate {
           resolve(approved);
         },
       };
-      this.publish({ requestId, kind: target.kind, target: target.path });
+      this.publish(target.kind === 'edit-file'
+        ? {
+          requestId,
+          kind: target.kind,
+          target: target.path,
+          before: target.before,
+          after: target.after,
+        }
+        : { requestId, kind: target.kind, target: target.path });
     });
   }
 

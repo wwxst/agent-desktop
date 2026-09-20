@@ -165,11 +165,13 @@ export interface AgentTextDeltaEvent {
  * `kind` 说明这是什么操作（界面据此提问），`target` 是宿主已经解析过的真实路径。
  * 界面只展示它并提交允许或拒绝，没有修改待执行操作的入口。
  */
-export interface ApprovalRequest {
+export type ApprovalRequest = {
   readonly requestId: string;
-  readonly kind: 'directory' | 'create-file';
   readonly target: string;
-}
+} & (
+  | { readonly kind: 'directory' | 'create-file' }
+  | { readonly kind: 'edit-file'; readonly before: string; readonly after: string }
+);
 
 /** Host 在工具等待审批时推送的待决请求；一个 Turn 最多只有一个。 */
 export interface AgentApprovalRequestEvent {
