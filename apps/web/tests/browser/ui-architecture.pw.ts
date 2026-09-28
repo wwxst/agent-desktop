@@ -81,7 +81,7 @@ test('keeps the desktop layout across empty, processing, cancelled, success and 
   await composer.press('Enter');
   await expect(page.getByRole('region', { name: '结果产物' })).toContainText('精彩片段-架构验收.mp4');
   const successActivity = page.getByRole('region', { name: '执行过程' }).last();
-  await successActivity.getByRole('button', { name: '展开执行过程，共 3 项' }).click();
+  await successActivity.getByRole('button', { name: '展开执行过程，共 2 次工具调用' }).click();
   await expect(successActivity.getByText('trim_video', { exact: true })).toBeVisible();
   await expect(successActivity.getByRole('button', { name: '定位文件：E:/videos/精彩片段-架构验收.mp4' })).toBeVisible();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('1100x750-success.png') });
@@ -91,7 +91,7 @@ test('keeps the desktop layout across empty, processing, cancelled, success and 
   await composer.press('Enter');
   await expect(page.getByRole('alert')).toContainText('视频文件无法读取');
   await expect(composer).toHaveValue('测试失败');
-  await page.getByRole('alert').getByRole('button', { name: '展开执行过程，共 2 项' }).click();
+  await page.getByRole('alert').getByRole('button', { name: '展开执行过程，共 1 次工具调用' }).click();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('1100x750-failure.png') });
 
   // 窄窗口：活动行、文件按钮、产物动作和按钮互不遮挡。

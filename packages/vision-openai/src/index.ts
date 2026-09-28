@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
@@ -140,7 +140,7 @@ export class AnalyzeImagesTool implements Tool {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
   }
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || !Array.isArray(input.images)
       || (input.images.length < 1 || input.images.length > 6)) {

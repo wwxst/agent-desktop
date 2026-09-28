@@ -148,7 +148,7 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 应用 package 可以依赖所需的 Core、应用层和运行诊断 package，应用依赖不得反向进入 Core。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model` 和 `session`，`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`；`local-tools` 依赖 `model`、`tools` 和 `@vscode/ripgrep`；`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool、`local-tools` 和 `session`；Desktop 因主进程打包 external 直接依赖 `@vscode/ripgrep`。三个 example 与 `apps/desktop` 只依赖实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model`、`session` 和 `tools`（只引用工具执行上下文与进度事件类型），`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`；`local-tools` 依赖 `model`、`tools` 和 `@vscode/ripgrep`；`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool、`local-tools` 和 `session`；Desktop 因主进程打包 external 直接依赖 `@vscode/ripgrep`。三个 example 与 `apps/desktop` 只依赖实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 

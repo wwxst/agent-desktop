@@ -111,7 +111,7 @@ export function createWebClientApi(): AgentClientApi {
         kind: 'analysis',
         status: 'completed',
         durationMs: 320,
-        plannedToolCallCount: 2,
+        plannedToolCallCount: 3,
       });
       emit({
         id: 'web-tool-1',
@@ -145,6 +145,26 @@ export function createWebClientApi(): AgentClientApi {
         id: 'web-tool-2',
         kind: 'tool',
         status: 'completed',
+        toolName: 'read_file',
+        durationMs: 18,
+        files: [{ path: 'E:/videos/cut-plan.txt', label: 'cut-plan.txt', role: 'input' }],
+      });
+      listeners.forEach((listener) => listener({
+        type: 'activity.detail',
+        activityId: 'web-tool-2',
+        detail: {
+          kind: 'file-content',
+          filePath: 'E:/videos/cut-plan.txt',
+          startLine: 1,
+          endLine: 3,
+          totalLines: 3,
+          lines: ['保留开场人物对白', '删除中间停顿', '结尾保留 2 秒'],
+        },
+      }));
+      emit({
+        id: 'web-tool-3',
+        kind: 'tool',
+        status: 'completed',
         toolName: 'trim_video',
         durationMs: 860,
         files: [
@@ -156,6 +176,20 @@ export function createWebClientApi(): AgentClientApi {
         responseText: `开发测试宿主已模拟完成：${prompt}`,
         traceId: `web-trace-${Date.now()}`,
         outputFiles: [{ path: 'E:/videos/web-dev-artifact.mp4', fileName: 'web-dev-artifact.mp4' }],
+        // 逐项交付结果与真实宿主使用同一份契约：一项已交付，另一项保留未交付原因。
+        outputs: [
+          {
+            outputItemId: 'web-out-1',
+            status: 'published' as const,
+            path: 'E:/videos/web-dev-artifact.mp4',
+            fileName: 'web-dev-artifact.mp4',
+          },
+          {
+            outputItemId: 'web-out-2',
+            status: 'blocked' as const,
+            reason: '内容要求当前没有可靠的自动判定与覆盖方法，尚不能确认。',
+          },
+        ],
       };
       if (activeTaskController === controller) activeTaskController = undefined;
       return result;

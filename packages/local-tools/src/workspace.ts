@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
@@ -7,6 +7,9 @@ import { isAbsolute, resolve } from 'node:path';
  * 宿主需要用户明确批准的一项确切操作。
  * `kind` 让宿主和界面知道这是什么操作，`path` 是工具已经解析过的真实路径；
  * 修改文件还携带用户批准的原内容和新内容。
+ *
+ * 命令审批携带解释器、完整命令、执行起点和生效超时：用户批准的就是这些确切值，
+ * 界面没有改写它们的通道，工具也不会在批准之后换一个解释器或目录执行。
  */
 export type ApprovalTarget =
   | { readonly kind: 'directory' | 'create-file'; readonly path: string }
@@ -15,6 +18,17 @@ export type ApprovalTarget =
     readonly path: string;
     readonly before: string;
     readonly after: string;
+  }
+  | {
+    readonly kind: 'command';
+    /** 宿主解析并固定的命令解释器绝对路径。 */
+    readonly interpreter: string;
+    /** 将被执行的完整命令原文。 */
+    readonly command: string;
+    /** 命令的执行起点目录（真实路径）。它只是起点，不是操作系统沙箱。 */
+    readonly workingDirectory: string;
+    /** 本次命令生效的超时毫秒数。 */
+    readonly timeoutMs: number;
   };
 
 /**
@@ -71,7 +85,7 @@ export class SetWorkingDirectoryTool implements Tool {
 
   public constructor(private readonly workspace: WorkspacePort) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.path !== 'string' || input.path.length === 0) {
       return errorResult('set_working_directory requires path to be a non-empty string');
     }

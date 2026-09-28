@@ -5,8 +5,12 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { runTurn } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
-import { type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
-import { createVideoAgent } from '@agent-desktop/video-agent';
+import { type SessionEvent, type ToolResultEvent, type TurnId } from '@agent-desktop/session';
+import {
+  createVideoAgent,
+  projectOutputItemResults,
+  readVideoDeliveryFacts,
+} from '@agent-desktop/video-agent';
 
 function formatToolResult(event: ToolResultEvent): string {
   if (event.result.status === 'error') return event.result.message;
@@ -25,6 +29,28 @@ function printTurnEvents(events: readonly SessionEvent[]): void {
     if (event.type === 'tool.result') {
       output.write(`Tool Result > ${formatToolResult(event)}\n`);
     }
+  }
+}
+
+/**
+ * 打印本轮的视频交付结果。
+ *
+ * 它复用应用层的读取投影，因此命令行与桌面使用同一份「什么算交付」的规则；
+ * 没有声明过输出项时（普通问答、只读分析）不打印交付结论。
+ */
+function printDeliveryResults(events: readonly SessionEvent[], turnId: TurnId): void {
+  const facts = readVideoDeliveryFacts(events);
+  if (facts.declarationTurnId !== turnId) return;
+
+  const results = projectOutputItemResults(facts);
+  if (results.length === 0) return;
+
+  const publishedCount = results.filter((result) => result.status === 'published').length;
+  output.write(`Delivery > ${publishedCount}/${results.length} delivered\n`);
+  for (const result of results) {
+    output.write(result.status === 'published'
+      ? `  - published: ${result.output.path}\n`
+      : `  - ${result.status}: ${result.reason}\n`);
   }
 }
 
@@ -60,10 +86,11 @@ async function runCli(
       await mkdir('logs', { recursive: true });
       const trace = createJsonlTrace(join('logs', 'agent-trace.jsonl'));
       stderr.write(`Trace: ${trace.id}\n`);
-      const result = await runTurn(agent, userInput, trace.write);
+      const result = await runTurn(agent, userInput, { trace: trace.write });
       const turnEvents = agent.session.events().slice(eventStart);
 
       printTurnEvents(turnEvents);
+      printDeliveryResults(agent.session.events(), result.turnId);
       if (result.response.text !== undefined) {
         output.write(`Agent > ${result.response.text}\n\n`);
       }

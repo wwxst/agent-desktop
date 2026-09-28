@@ -21,11 +21,36 @@ export interface AgentTaskOutputFile {
   readonly fileName: string;
 }
 
+/**
+ * 一个视频输出项的逐项交付结果。
+ *
+ * 它由应用层的读取投影计算：已交付项带真实路径，未交付项带真实原因（失败、受阻或未完成）。
+ * 界面只展示这些事实，不自行判断某项是否合格。
+ */
+export type AgentTaskOutputItemResult =
+  | {
+    readonly outputItemId: string;
+    readonly status: 'published';
+    /** 实际发布成功的绝对路径；这是最终路径的权威事实。 */
+    readonly path: string;
+    readonly fileName: string;
+  }
+  | {
+    readonly outputItemId: string;
+    readonly status: 'failed' | 'blocked' | 'incomplete';
+    readonly reason: string;
+  };
+
 export interface AgentTaskResult {
   readonly responseText: string;
   readonly traceId: string;
   /** 本轮真实成功生成的持久产物；没有产物时省略。 */
   readonly outputFiles?: readonly AgentTaskOutputFile[];
+  /**
+   * 本轮按声明集合产生的逐项交付结果；没有声明过视频输出项时省略。
+   * 它与产物卡是同一批事实的两种视图：产物卡负责定位文件，逐项结果负责展示缺口。
+   */
+  readonly outputs?: readonly AgentTaskOutputItemResult[];
 }
 
 export type AgentActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled';
@@ -40,6 +65,74 @@ export interface AgentActivityFile {
   readonly role: 'input' | 'output';
 }
 
+export interface AgentActivityDirectoryEntry {
+  readonly name: string;
+  readonly path: string;
+  readonly type: 'file' | 'directory';
+}
+
+export interface AgentActivitySearchMatch {
+  readonly filePath: string;
+  readonly lineNumber: number;
+  readonly line: string;
+}
+
+/**
+ * 工具行可展开的真实结果摘要。
+ * 这里只承载当前本地工具已经返回且有直接界面消费者的有界数据，不复制任意 Tool 输出。
+ */
+export type AgentActivityDetail =
+  | {
+    readonly kind: 'file-content';
+    readonly filePath: string;
+    readonly startLine: number;
+    readonly endLine: number;
+    readonly totalLines: number;
+    readonly lines: readonly string[];
+    readonly note?: string;
+  }
+  | {
+    readonly kind: 'directory';
+    readonly directory: string;
+    readonly total: number;
+    readonly entries: readonly AgentActivityDirectoryEntry[];
+    readonly note?: string;
+  }
+  | {
+    readonly kind: 'search';
+    readonly directory: string;
+    readonly pattern: string;
+    readonly total: number;
+    readonly matches: readonly AgentActivitySearchMatch[];
+    readonly note?: string;
+  }
+  | { readonly kind: 'error'; readonly message: string }
+  | {
+    /**
+     * 命令执行期间的实时输出投影。
+     * 宿主按小批次推送它，因此它只表示当前已经收到的有界输出，不是命令终态。
+     */
+    readonly kind: 'command-output';
+    readonly command: string;
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly truncated: boolean;
+    readonly droppedBytes: number;
+  }
+  | {
+    /** 命令的真实终态：成功与失败都保留退出码和有界输出，失败另外给出原因。 */
+    readonly kind: 'command';
+    readonly command: string;
+    readonly workingDirectory: string;
+    readonly exitCode: number | null;
+    readonly termination: 'exited' | 'timed-out';
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly truncated: boolean;
+    readonly droppedBytes: number;
+    readonly note?: string;
+  };
+
 /**
  * 一条真实执行活动：模型工作（analysis）或一次工具调用（tool）。
  * 字段只承载宿主已知的事实，动作文案由界面根据 kind、toolName 和状态组合。
@@ -53,6 +146,8 @@ export interface AgentActivityItem {
   readonly durationMs?: number;
   /** analysis 完成后真实产生的工具调用数量；0 表示该步直接生成回复。 */
   readonly plannedToolCallCount?: number;
+  /** 工具完成后由宿主从真实 Tool Result 投影出的有界展示详情。 */
+  readonly detail?: AgentActivityDetail;
 }
 
 export interface ClientUserMessage {
@@ -82,11 +177,16 @@ export interface ClientAssistantMessageBase {
 export type ClientAssistantMessage = ClientAssistantMessageBase & (
   | { readonly status: 'processing'; readonly streamedText: string }
   | { readonly status: 'completed'; readonly result: AgentTaskResult }
-  | { readonly status: 'cancelled'; readonly outputFiles?: readonly AgentTaskOutputFile[] }
+  | {
+    readonly status: 'cancelled';
+    readonly outputFiles?: readonly AgentTaskOutputFile[];
+    readonly outputs?: readonly AgentTaskOutputItemResult[];
+  }
   | {
     readonly status: 'failed';
     readonly errorMessage: string;
     readonly outputFiles?: readonly AgentTaskOutputFile[];
+    readonly outputs?: readonly AgentTaskOutputItemResult[];
   }
 );
 
@@ -154,6 +254,13 @@ export interface AgentActivityEvent {
   readonly item: AgentActivityItem;
 }
 
+/** Tool Result 写入 Session 后，为对应活动补充真实结果详情。 */
+export interface AgentActivityDetailEvent {
+  readonly type: 'activity.detail';
+  readonly activityId: string;
+  readonly detail: AgentActivityDetail;
+}
+
 /** Host 在 Turn 执行期间推送的 assistant 文本增量，只用于实时展示。 */
 export interface AgentTextDeltaEvent {
   readonly type: 'text.delta';
@@ -162,15 +269,24 @@ export interface AgentTextDeltaEvent {
 
 /**
  * 宿主在执行本地操作前请求用户批准的一项确切操作。
- * `kind` 说明这是什么操作（界面据此提问），`target` 是宿主已经解析过的真实路径。
+ * `kind` 说明这是什么操作（界面据此提问），路径操作携带宿主已经解析过的真实路径；
+ * 命令操作携带解释器、完整命令、执行起点和生效超时。
  * 界面只展示它并提交允许或拒绝，没有修改待执行操作的入口。
  */
-export type ApprovalRequest = {
-  readonly requestId: string;
-  readonly target: string;
-} & (
-  | { readonly kind: 'directory' | 'create-file' }
-  | { readonly kind: 'edit-file'; readonly before: string; readonly after: string }
+export type ApprovalRequest = { readonly requestId: string } & (
+  | { readonly kind: 'directory' | 'create-file'; readonly target: string }
+  | { readonly kind: 'edit-file'; readonly target: string; readonly before: string; readonly after: string }
+  | {
+    readonly kind: 'command';
+    /** 宿主解析并固定的命令解释器绝对路径。 */
+    readonly interpreter: string;
+    /** 将被执行的完整命令原文。 */
+    readonly command: string;
+    /** 执行起点目录；它只是起点，不是操作系统沙箱。 */
+    readonly workingDirectory: string;
+    /** 本次命令生效的超时毫秒数。 */
+    readonly timeoutMs: number;
+  }
 );
 
 /** Host 在工具等待审批时推送的待决请求；一个 Turn 最多只有一个。 */
@@ -193,6 +309,7 @@ export interface AgentWorkspaceEvent {
 /** Host 在 Turn 执行期间推送给 Client 的运行期事件：活动轨迹、实时文本增量、待决审批或已确认的工作目录。 */
 export type AgentRuntimeEvent =
   | AgentActivityEvent
+  | AgentActivityDetailEvent
   | AgentTextDeltaEvent
   | AgentApprovalRequestEvent
   | AgentWorkspaceEvent;

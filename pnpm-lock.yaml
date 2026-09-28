@@ -35,6 +35,9 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../../packages/session
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
       '@agent-desktop/video-agent':
         specifier: workspace:*
         version: link:../../packages/video-agent
@@ -205,6 +208,9 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../session
+      '@agent-desktop/tools':
+        specifier: workspace:*
+        version: link:../tools
 
   packages/client:
     dependencies:
@@ -285,6 +291,9 @@ importers:
       '@agent-desktop/local-tools':
         specifier: workspace:*
         version: link:../local-tools
+      '@agent-desktop/model':
+        specifier: workspace:*
+        version: link:../model
       '@agent-desktop/model-deepseek':
         specifier: workspace:*
         version: link:../model-deepseek

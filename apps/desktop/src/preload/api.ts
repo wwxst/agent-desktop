@@ -1,6 +1,7 @@
 import type {
   AgentTaskIpcResult,
   AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
   AgentRuntimeEvent,
   DesktopApi,
 } from '../shared/ipc.js';
@@ -25,27 +26,66 @@ async function invokeAgentTask(
 
     const taskError = new Error(ipcResult.errorMessage) as Error & {
       outputFiles?: readonly AgentTaskOutputFile[];
+      outputs?: readonly AgentTaskOutputItemResult[];
     };
     taskError.name = ipcResult.errorName;
     if (ipcResult.outputFiles !== undefined) taskError.outputFiles = ipcResult.outputFiles;
+    if (ipcResult.outputs !== undefined) taskError.outputs = ipcResult.outputs;
     throw taskError;
   } catch (error) {
-    if (!(error instanceof Error)) throw error;
-    // Electron 会给 Main 的业务错误增加固定 IPC 前缀；Renderer 只展示原始任务错误。
-    const remoteError = /^Error invoking remote method '.+?': (Error|AbortError): (.+)$/.exec(error.message);
-    if (remoteError !== null) {
-      const [, errorName, message] = remoteError;
-      const normalized = new Error(message) as Error & {
-        outputFiles?: readonly AgentTaskOutputFile[];
-      };
-      if (errorName === 'AbortError') normalized.name = 'AbortError';
-      // 兼容 Electron 自身拒绝的普通错误；结构化任务失败在上面已经还原完整字段。
-      const outputFiles = readErrorOutputFiles(error);
-      if (outputFiles !== undefined) normalized.outputFiles = outputFiles;
-      throw normalized;
-    }
-    throw error;
+    throw unwrapRemoteError(error);
   }
+}
+
+/**
+ * Electron 在 invoke 拒绝时给 Main 的业务错误加上固定前缀
+ * （`Error invoking remote method '<channel>': Error: `），调用方只展示宿主真实消息。
+ * 只剥离已证实的这一层包装：不匹配的错误和非 Error 抛出值都原样返回，不用默认值或兜底文案掩盖。
+ */
+function unwrapRemoteError(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const remoteError = /^Error invoking remote method '.+?': (Error|AbortError): (.+)$/.exec(error.message);
+  if (remoteError === null) return error;
+  const [, errorName, message] = remoteError;
+  const normalized = new Error(message) as Error & {
+    outputFiles?: readonly AgentTaskOutputFile[];
+    outputs?: readonly AgentTaskOutputItemResult[];
+  };
+  if (errorName === 'AbortError') normalized.name = 'AbortError';
+  // Electron 自身拒绝任务时仍可能带上此前已成功的产物与逐项结果，必须继续透传。
+  const outputFiles = readErrorOutputFiles(error);
+  if (outputFiles !== undefined) normalized.outputFiles = outputFiles;
+  const outputs = readErrorOutputResults(error);
+  if (outputs !== undefined) normalized.outputs = outputs;
+  return normalized;
+}
+
+/** 从宿主抛出的错误里读取逐项交付结果；形状不符时不附加字段。 */
+function readErrorOutputResults(error: Error): readonly AgentTaskOutputItemResult[] | undefined {
+  const value = (error as { outputs?: unknown }).outputs;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const results: AgentTaskOutputItemResult[] = [];
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) return undefined;
+    const record = item as Record<string, unknown>;
+    if (typeof record.outputItemId !== 'string' || typeof record.status !== 'string') return undefined;
+    if (record.status === 'published') {
+      if (typeof record.path !== 'string' || typeof record.fileName !== 'string') return undefined;
+      results.push({
+        outputItemId: record.outputItemId,
+        status: 'published',
+        path: record.path,
+        fileName: record.fileName,
+      });
+      continue;
+    }
+    if (record.status !== 'failed' && record.status !== 'blocked' && record.status !== 'incomplete') {
+      return undefined;
+    }
+    if (typeof record.reason !== 'string') return undefined;
+    results.push({ outputItemId: record.outputItemId, status: record.status, reason: record.reason });
+  }
+  return results;
 }
 
 /** 从宿主抛出的错误里读取已成功产物；形状不符时不附加字段。 */
@@ -128,7 +168,12 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       return () => ipc.removeListener(DESKTOP_CHANNELS.agentEvent, receive);
     },
     revealFile: async (path) => {
-      await ipc.invoke(DESKTOP_CHANNELS.revealFile, path);
+      try {
+        await ipc.invoke(DESKTOP_CHANNELS.revealFile, path);
+      } catch (error) {
+        // 定位失败要在活动行和产物卡里显示宿主真实原因，不能泄漏 Electron 的 invoke 包装。
+        throw unwrapRemoteError(error);
+      }
     },
   };
 }

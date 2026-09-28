@@ -38,9 +38,9 @@ test('orders real activity, reveals files and reports a real reveal failure', as
   await composer.fill('提取对白并加字幕');
   await composer.press('Enter');
 
-  // 完成后默认折叠为真实活动数量摘要。
+  // 完成后默认折叠为真实工具调用次数；模型步骤不伪装成一次工具调用。
   const activity = page.getByRole('region', { name: '执行过程' }).last();
-  const toggle = activity.getByRole('button', { name: '展开执行过程，共 3 项' });
+  const toggle = activity.getByRole('button', { name: '展开执行过程，共 2 次工具调用' });
   await expect(toggle).toBeVisible();
   await expect(activity.getByRole('listitem')).toHaveCount(0);
   await page.screenshot({ animations: 'disabled', path: info.outputPath('activity-collapsed.png') });
@@ -119,7 +119,7 @@ test('restores persisted activity with its own files and status', async ({ page 
 
   // 恢复的历史活动保持原来的折叠状态、顺序和文件引用。
   const activity = page.getByRole('region', { name: '执行过程' });
-  const toggle = activity.getByRole('button', { name: '展开执行过程，共 2 项' });
+  const toggle = activity.getByRole('button', { name: '展开执行过程，共 1 次工具调用' });
   await expect(toggle).toBeVisible();
   await toggle.click();
   const rows = activity.getByRole('listitem');
@@ -128,4 +128,68 @@ test('restores persisted activity with its own files and status', async ({ page 
   await expect(rows.nth(1)).toContainText('audio.wav');
   await expect(rows.nth(1).getByRole('button', { name: '定位文件：E:/videos/audio.wav' })).toBeVisible();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('activity-restored.png') });
+});
+
+test('discloses persisted file, directory, search, and failure details', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1100, height: 750 });
+  await page.route(/\/webClientApi\.ts$/, (route) => route.fulfill({
+    contentType: 'text/javascript',
+    body: `
+      import { createWebClientApi as createHost } from '/webClientApi.ts?activity-detail-fixture';
+      export function createWebClientApi() {
+        return {
+          ...createHost(),
+          loadClientState: async () => ({
+            activeSessionId: 'web-session-1',
+            conversations: [{
+              id: 'web-session-1', title: '检查项目文件', titleManuallyRenamed: true, prompt: '', attachments: [],
+              messages: [
+                {id: 1, role: 'user', text: '检查项目说明和源码', attachments: []},
+                {id: 2, role: 'assistant', status: 'completed', activityExpanded: true,
+                 activity: [
+                   {id: 'read-1', kind: 'tool', status: 'completed', toolName: 'read_file', durationMs: 8,
+                    detail: {kind: 'file-content', filePath: 'D:/work/README.md', startLine: 1, endLine: 3,
+                     totalLines: 3, lines: ['# Agent Desktop', '', '通用智能体桌面客户端。']}},
+                   {id: 'list-1', kind: 'tool', status: 'completed', toolName: 'list_directory', durationMs: 12,
+                    detail: {kind: 'directory', directory: 'D:/work', total: 3,
+                     entries: [{name: 'apps', path: 'D:/work/apps', type: 'directory'},
+                               {name: 'packages', path: 'D:/work/packages', type: 'directory'},
+                               {name: 'package.json', path: 'D:/work/package.json', type: 'file'}]}},
+                   {id: 'search-1', kind: 'tool', status: 'completed', toolName: 'search_text', durationMs: 34,
+                    detail: {kind: 'search', directory: 'D:/work', pattern: 'AgentActivity', total: 2,
+                     matches: [{filePath: 'packages/client/src/App.tsx', lineNumber: 4, line: 'import type { AgentActivityItem }'},
+                               {filePath: 'packages/client/src/api.ts', lineNumber: 88, line: 'export interface AgentActivityItem {'}]}},
+                   {id: 'failed-1', kind: 'tool', status: 'failed', toolName: 'read_file', durationMs: 5,
+                    detail: {kind: 'error', message: '文件不存在：D:/work/missing.txt'}},
+                 ],
+                 result: {responseText: '已检查项目说明和相关源码。', traceId: 'trace-details'}},
+              ],
+            }],
+          }),
+        };
+      }
+    `,
+  }));
+
+  await page.goto('/');
+  const activity = page.getByRole('region', { name: '执行过程' });
+  await expect(activity.getByRole('button', { name: '收起执行过程，共 4 次工具调用' })).toBeVisible();
+
+  await activity.getByRole('button', { name: '展开 读取文件 结果' }).first().click();
+  await activity.getByRole('button', { name: '展开 列出目录 结果' }).click();
+  await activity.getByRole('button', { name: '展开 搜索内容 结果' }).click();
+  await activity.getByRole('button', { name: '展开 读取文件 结果' }).last().click();
+
+  await expect(activity.getByText('第 1-3 行，共 3 行')).toBeVisible();
+  await expect(activity.getByText('package.json', { exact: true })).toBeVisible();
+  await expect(activity.getByText('packages/client/src/api.ts:88', { exact: true })).toBeVisible();
+  await expect(activity.getByRole('status')).toHaveText('文件不存在：D:/work/missing.txt');
+  await page.screenshot({ animations: 'disabled', path: info.outputPath('activity-details-1100x750.png') });
+
+  await page.setViewportSize({ width: 560, height: 600 });
+  expect(await page.evaluate(() => Math.max(
+    document.documentElement.scrollWidth,
+    document.body.scrollWidth,
+  ) - window.innerWidth)).toBeLessThanOrEqual(0);
+  await page.screenshot({ animations: 'disabled', path: info.outputPath('activity-details-560x600.png') });
 });

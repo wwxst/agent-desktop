@@ -14,6 +14,7 @@
     "@agent-desktop/execution-trace": "workspace:*",
     "@agent-desktop/local-tools": "workspace:*",
     "@agent-desktop/session": "workspace:*",
+    "@agent-desktop/tools": "workspace:*",
     "@agent-desktop/video-agent": "workspace:*",
     "@vscode/ripgrep": "1.18.0",
     "react": "19.2.8",

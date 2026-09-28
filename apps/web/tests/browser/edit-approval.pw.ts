@@ -42,6 +42,13 @@ test('shows an exact text edit approval without overflowing desktop or narrow la
   await expect(approval).toContainText('允许 Agent 修改这个文件吗？');
   await expect(approval).toContainText('原内容');
   await expect(approval).toContainText('新内容');
+  await expect(page.locator('.conversation-feed .approval-request')).toHaveCount(0);
+  await expect(page.locator('.composer-stack .approval-request')).toHaveCount(1);
+  const approvalBox = await approval.boundingBox();
+  const composerBox = await page.locator('.composer').boundingBox();
+  expect(approvalBox).not.toBeNull();
+  expect(composerBox).not.toBeNull();
+  expect(approvalBox!.y + approvalBox!.height).toBeLessThanOrEqual(composerBox!.y);
   expect(await approval.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
   await page.screenshot({ animations: 'disabled', path: info.outputPath('edit-approval-1100x750.png') });
 

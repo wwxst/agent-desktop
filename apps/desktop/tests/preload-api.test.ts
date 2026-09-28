@@ -105,6 +105,37 @@ describe('createDesktopApi', () => {
     );
   });
 
+  it('removes the Electron IPC prefix from reveal failures and keeps successful calls unchanged', async () => {
+    const missingPath = 'D:\\work\\notes-moved.txt';
+    const failingIpc = {
+      invoke: async (channel: string) => {
+        if (channel === 'desktop:reveal-file') {
+          throw new Error(
+            `Error invoking remote method 'desktop:reveal-file': Error: 文件不存在或已被移动：${missingPath}`,
+          );
+        }
+        return undefined;
+      },
+      send: () => undefined,
+      on: () => undefined,
+      removeListener: () => undefined,
+    };
+
+    // 活动行和产物卡都只展示宿主真实消息，不展示 Electron 为 invoke 添加的技术包装。
+    await expect(createDesktopApi(failingIpc).revealFile(missingPath)).rejects.toEqual(
+      new Error(`文件不存在或已被移动：${missingPath}`),
+    );
+
+    // 成功定位保持原样：不改写参数，也不产生错误。
+    const invocations: Array<{ channel: string; args: readonly unknown[] }> = [];
+    const resolvingIpc = {
+      ...failingIpc,
+      invoke: async (channel: string, ...args: unknown[]) => { invocations.push({ channel, args }); },
+    };
+    await expect(createDesktopApi(resolvingIpc).revealFile('D:\\videos\\done.mp4')).resolves.toBeUndefined();
+    expect(invocations).toEqual([{ channel: 'desktop:reveal-file', args: ['D:\\videos\\done.mp4'] }]);
+  });
+
   it('preserves cancellation as AbortError across the IPC boundary', async () => {
     const ipc = {
       invoke: async () => {

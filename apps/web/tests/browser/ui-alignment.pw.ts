@@ -68,7 +68,7 @@ test('renders processing, cancellation, completion and failure without losing th
   await expect(page.getByRole('alert')).toContainText('视频文件无法读取');
   await expect(input).toHaveValue('测试失败');
   await expect(input).toBeEditable();
-  await page.getByRole('alert').getByRole('button', { name: '展开执行过程，共 1 项' }).click();
+  await page.getByRole('alert').getByRole('button', { name: '展开执行过程，共 1 次工具调用' }).click();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('failure.png') });
   expect(await originalInput!.evaluate(element => element.isConnected)).toBe(true);
 });

@@ -293,11 +293,59 @@ describe('App', () => {
       responseText: '完成。',
       traceId: 'trace-3',
     }));
-    const summary = await screen.findByRole('button', { name: '展开执行过程，共 1 项' });
+    const summary = await screen.findByRole('button', { name: '展开执行过程，共 1 次工具调用' });
     expect(screen.queryByText('probe_media')).toBeNull();
 
     fireEvent.click(summary);
     expect(screen.getByText('probe_media')).toBeTruthy();
+  });
+
+  it('merges a real Tool Result detail into its activity row and discloses it on demand', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    window.agentDesktop = {
+      ...persistenceMethods,
+      getActiveSessionId: async () => 'session-a',
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
+      newSession: async () => 'session-b',
+      switchSession: async () => undefined,
+      runAgentTask: () => new Promise((resolve) => { resolveTask = resolve; }),
+      onAgentEvent: (listener) => {
+        receiveEvent = listener;
+        return () => undefined;
+      },
+    } satisfies DesktopApi;
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '读取说明文件' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => {
+      receiveEvent?.({
+        type: 'activity',
+        item: { id: 'read-1', kind: 'tool', status: 'completed', toolName: 'read_file', durationMs: 8 },
+      });
+      receiveEvent?.({
+        type: 'activity.detail',
+        activityId: 'read-1',
+        detail: {
+          kind: 'file-content',
+          filePath: 'D:/work/README.md',
+          startLine: 1,
+          endLine: 2,
+          totalLines: 2,
+          lines: ['# Project', '真实文件内容'],
+        },
+      });
+    });
+
+    const resultToggle = screen.getByRole('button', { name: '展开 读取文件 结果' });
+    expect(screen.queryByText('真实文件内容')).toBeNull();
+    fireEvent.click(resultToggle);
+    expect(screen.getByText('第 1-2 行，共 2 行')).toBeTruthy();
+    expect(screen.getByText('真实文件内容')).toBeTruthy();
+
+    await act(async () => resolveTask?.({ responseText: '已读取。', traceId: 'trace-read' }));
   });
 
   it('sends a text-only task without requiring a video attachment', async () => {
@@ -400,7 +448,7 @@ describe('App', () => {
     await act(async () => resolveTask?.({ responseText: '第二轮完成', traceId: 'trace-b' }));
 
     const agentReplies = screen.getAllByLabelText('Agent 回复');
-    const toolSummaries = screen.getAllByRole('button', { name: '展开执行过程，共 1 项' });
+    const toolSummaries = screen.getAllByRole('button', { name: '展开执行过程，共 1 次工具调用' });
     fireEvent.click(toolSummaries[0]!);
     fireEvent.click(toolSummaries[1]!);
     expect(within(agentReplies[0]!).getByText('tool_a')).toBeTruthy();
@@ -525,7 +573,7 @@ describe('App', () => {
       traceId: 'trace-new-1',
     }));
     expect(await screen.findByText('first-output.mp4')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '展开执行过程，共 1 项' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '展开执行过程，共 1 次工具调用' })).toBeTruthy();
 
     fireEvent.change(composerInput, { target: { value: '第二轮任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
@@ -541,7 +589,7 @@ describe('App', () => {
     expect(within(conversationWorkspace).queryByText('第二轮任务')).toBeNull();
     expect(within(conversationWorkspace).queryByText('第一轮完成。')).toBeNull();
     expect(within(conversationWorkspace).queryByText('第二轮完成。')).toBeNull();
-    expect(within(conversationWorkspace).queryByRole('button', { name: '展开执行过程，共 1 项' })).toBeNull();
+    expect(within(conversationWorkspace).queryByRole('button', { name: '展开执行过程，共 1 次工具调用' })).toBeNull();
     expect(within(conversationWorkspace).queryByText('first-output.mp4')).toBeNull();
     expect(within(conversationWorkspace).queryByLabelText('视频附件：input.mp4')).toBeNull();
     expect((composerInput as HTMLTextAreaElement).value).toBe('');
@@ -628,7 +676,7 @@ describe('App', () => {
     expect(screen.getAllByLabelText('视频附件：video-a.mp4')).toHaveLength(2);
     expect(screen.queryByLabelText('视频附件：video-b.mp4')).toBeNull();
     expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('draft A');
-    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，共 1 项' }));
+    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，共 1 次工具调用' }));
     expect(screen.getByText('tool_a')).toBeTruthy();
     expect(screen.queryByText('tool_b')).toBeNull();
     expect(screen.getByText('a.mp4')).toBeTruthy();
@@ -641,7 +689,7 @@ describe('App', () => {
     expect(screen.queryByText('assistant A')).toBeNull();
     expect(screen.getAllByLabelText('视频附件：video-b.mp4')).toHaveLength(2);
     expect(screen.queryByLabelText('视频附件：video-a.mp4')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，共 1 项' }));
+    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，共 1 次工具调用' }));
     expect(screen.getByText('tool_b')).toBeTruthy();
     expect(screen.queryByText('tool_a')).toBeNull();
     expect(screen.getByText('b.mp4')).toBeTruthy();

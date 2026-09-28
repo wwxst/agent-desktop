@@ -7,8 +7,21 @@ import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
-import { findLatestTurnId, findTurnArtifacts, runDesktopAgentTask, type TurnArtifact } from './agent-task.js';
-import { assertRevealableFile, isSessionFilePath, projectAgentActivity } from './agent-activity.js';
+import {
+  findLatestTurnId,
+  findTurnArtifacts,
+  projectTurnOutputs,
+  runDesktopAgentTask,
+  type TurnArtifact,
+} from './agent-task.js';
+import {
+  assertRevealableFile,
+  findCommandText,
+  isSessionFilePath,
+  projectAgentActivity,
+  projectAgentActivityDetail,
+} from './agent-activity.js';
+import { CommandOutputProjection, createCommandPort } from './command-host.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import {
   DESKTOP_CHANNELS,
@@ -23,7 +36,13 @@ import {
   SESSION_STATE_FILE_NAME,
   type PersistedDesktopState,
 } from './session-persistence.js';
-import type { AgentTaskOutputFile, AttachmentRole, ClientStateSnapshot } from '@agent-desktop/client';
+import type {
+  AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
+  AttachmentRole,
+  ClientStateSnapshot,
+} from '@agent-desktop/client';
+import type { OutputItemResult } from '@agent-desktop/video-agent';
 import {
   loadRuntimeConfiguration,
   loadRuntimeSettings,
@@ -34,7 +53,6 @@ import {
 } from './runtime-settings.js';
 
 let mainWindow: BrowserWindow | null = null;
-let outputSequence = 0;
 let isTaskRunning = false;
 let activeTask: {
   readonly sessionId: string;
@@ -96,7 +114,6 @@ function runtimeSecretsFilePath(): string {
 function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopState {
   return {
     activeSessionId,
-    outputSequence,
     sessions: [...sessions].map(([id, session]) => ({
       id,
       attachments: session.attachments,
@@ -115,7 +132,6 @@ async function restoreDesktopState(): Promise<void> {
     return;
   }
 
-  outputSequence = persisted.outputSequence;
   clientState = persisted.clientState;
   for (const savedSession of persisted.sessions) {
     createDesktopSession(savedSession.id, savedSession.events);
@@ -177,12 +193,6 @@ function toClientAttachments(attachments: readonly SelectedAttachment[]) {
   }));
 }
 
-function defaultOutputPath(inputPath: string, sequence: number): string {
-  const input = parse(inputPath);
-  const suffix = sequence === 1 ? '-edited' : `-edited-${sequence}`;
-  return join(input.dir, `${input.name}${suffix}${input.ext || '.mp4'}`);
-}
-
 /** 沿现有 desktop:agent-event 通道把运行期事件推给 Renderer。 */
 function sendAgentEvent(event: AgentRuntimeEvent): void {
   if (mainWindow?.isDestroyed() === false) {
@@ -196,6 +206,14 @@ function sendAgentEvent(event: AgentRuntimeEvent): void {
  */
 const approvalGate = new ToolApprovalGate((request) => {
   sendAgentEvent({ type: 'approval.requested', request });
+});
+
+/**
+ * 窗口持有的命令实时输出投影。
+ * 它把命令输出按约 50 毫秒一批推给 Client；进度只用于实时展示，不写入 Session 和 Trace。
+ */
+const commandOutput = new CommandOutputProjection((activityId, detail) => {
+  sendAgentEvent({ type: 'activity.detail', activityId, detail });
 });
 
 /**
@@ -245,6 +263,33 @@ function succeededOutputFiles(
   if (turnId === undefined) return undefined;
   const outputFiles = toOutputFiles(findTurnArtifacts(events, turnId));
   return outputFiles.length === 0 ? undefined : outputFiles;
+}
+
+/** 本轮新开始 Turn 的逐项交付结果；没有声明过输出项时返回 undefined（不适用）。 */
+function turnOutputResults(
+  events: readonly SessionEvent[],
+  firstTaskEventIndex: number,
+): readonly AgentTaskOutputItemResult[] | undefined {
+  const turnId = findLatestTurnId(events.slice(firstTaskEventIndex));
+  if (turnId === undefined) return undefined;
+  const outputs = projectTurnOutputs(events, turnId).map(toClientOutputResult);
+  return outputs.length === 0 ? undefined : outputs;
+}
+
+/**
+ * 把应用层的逐项结果投影成界面可序列化的形状。
+ * 界面不重新计算状态；这里只补上展示用的文件名，路径仍是身份。
+ */
+function toClientOutputResult(result: OutputItemResult): AgentTaskOutputItemResult {
+  if (result.status !== 'published') {
+    return { outputItemId: result.outputItemId, status: result.status, reason: result.reason };
+  }
+  return {
+    outputItemId: result.outputItemId,
+    status: 'published',
+    path: result.output.path,
+    fileName: basename(result.output.path),
+  };
 }
 
 function registerIpcHandlers(): void {
@@ -377,18 +422,9 @@ function registerIpcHandlers(): void {
         ...(settings.whisperCliPath === undefined ? {} : { whisperCliPath: settings.whisperCliPath }),
         session: session.session,
         workspace: workspacePortFor(sessionId),
+        // 命令能力由宿主提供解释器绝对路径和受限子进程环境；工具自己不做这些选择。
+        command: createCommandPort(),
       });
-      // 输出命名只跟随主视频；单独添加音轨不应改变输出文件的位置。
-      const primaryVideoPath = session.attachments.find((attachment) => attachment.role === 'video')?.path;
-      const requestedOutputPath = primaryVideoPath === undefined
-        ? undefined
-        : defaultOutputPath(primaryVideoPath, outputSequence + 1);
-      if (requestedOutputPath !== undefined) {
-        outputSequence += 1;
-        if (clientState !== null) {
-          await saveDesktopState(persistenceFilePath(), currentPersistedState(clientState));
-        }
-      }
       // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
       const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
       await mkdir(logsDirectory, { recursive: true });
@@ -398,36 +434,57 @@ function registerIpcHandlers(): void {
         agent,
         prompt.trim(),
         session.attachments,
-        requestedOutputPath,
-        async (traceEvent) => {
-          await trace.write(traceEvent);
-          sendActivity(traceEvent, session.session.events());
+        {
+          trace: async (traceEvent) => {
+            await trace.write(traceEvent);
+            sendActivity(traceEvent, session.session.events());
+          },
+          signal: controller.signal,
+          // 把 Model 文本增量实时推给 Renderer；它不进入 Session，也不影响最终结果。
+          onTextDelta: (delta) => sendAgentEvent({ type: 'text.delta', delta }),
+          onToolResult: (toolCallId, toolName, toolResult) => {
+            // 先结清实时输出再发布最终详情：最终详情是权威结果，不能被迟到的进度覆盖。
+            commandOutput.flush();
+            const detail = projectAgentActivityDetail(toolName, toolResult);
+            if (detail !== undefined) {
+              sendAgentEvent({ type: 'activity.detail', activityId: toolCallId, detail });
+            }
+          },
+          onToolProgress: (toolCallId, event) => {
+            // 命令原文来自 Session 的 tool.called 事实；进度事件本身只携带输出片段。
+            commandOutput.push(toolCallId, findCommandText(session.session.events(), toolCallId), event);
+          },
         },
-        controller.signal,
-        // 把 Model 文本增量实时推给 Renderer；它不进入 Session，也不影响最终结果。
-        (delta) => sendAgentEvent({ type: 'text.delta', delta }),
       );
       // 产物身份是真实路径；文件名只是给界面看的标签，因此同名不同目录可以并存。
       const outputFiles = toOutputFiles(result.artifacts);
+      // 逐项结果与失败路径共用同一条读取投影，保证两种终态口径一致。
+      const outputs = turnOutputResults(session.session.events(), firstTaskEventIndex);
       return {
         status: 'success',
         result: {
           responseText: result.responseText,
           traceId: trace.id,
           ...(outputFiles.length === 0 ? {} : { outputFiles }),
+          ...(outputs === undefined ? {} : { outputs }),
         },
       };
     } catch (error) {
       // Electron 不传递 Error 自定义字段：失败终态改用普通对象跨 IPC，再由 Preload 还原 Error。
       if (!(error instanceof Error)) throw error;
+      // 失败或取消不代表本轮此前没有产出：已交付文件和逐项结果都是真实事实。
+      const outputs = turnOutputResults(session.session.events(), firstTaskEventIndex);
       const outputFiles = succeededOutputFiles(session.session.events(), firstTaskEventIndex);
       return {
         status: 'error',
         errorName: error.name,
         errorMessage: error.message,
         ...(outputFiles === undefined ? {} : { outputFiles }),
+        ...(outputs === undefined ? {} : { outputs }),
       };
     } finally {
+      // 轮次结束前结清尚未推送的命令输出：取消或失败时，本轮真实收到的有界输出仍要可见。
+      commandOutput.flush();
       isTaskRunning = false;
       if (activeTask?.controller === controller) activeTask = undefined;
       markFinished();

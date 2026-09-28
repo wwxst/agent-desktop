@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 
 const DEFAULT_COMMAND = 'whisper-cli';
@@ -147,7 +147,7 @@ export class TranscribeAudioTool implements Tool {
     this.executeCommand = executeCommand;
   }
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.audioPath !== 'string') {
       return { status: 'error', message: 'transcribe_audio requires audioPath to be a string' };
     }

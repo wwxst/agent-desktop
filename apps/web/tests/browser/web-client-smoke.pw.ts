@@ -64,13 +64,23 @@ test('runs the shared client task and preserves session state', async ({ page })
 
   const activity = page.getByRole('region', { name: '执行过程' }).last();
   await expect(page.getByText('开发测试宿主已模拟完成：测试 Web Agent')).toBeVisible();
-  await activity.getByRole('button', { name: '展开执行过程，共 3 项' }).click();
+  await activity.getByRole('button', { name: '展开执行过程，共 3 次工具调用' }).click();
   await expect(activity.getByText('已完成', { exact: true }).first()).toBeVisible();
   await expect(activity.getByText('trim_video', { exact: true })).toBeVisible();
+  await activity.getByRole('button', { name: '展开 读取文件 结果' }).click();
+  await expect(activity.getByText('删除中间停顿', { exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: '定位文件：E:/videos/web-dev-artifact.mp4' })).toBeVisible();
 
   const artifact = page.getByRole('region', { name: '结果产物' });
   await expect(artifact).toContainText('web-dev-artifact.mp4');
+
+  // 逐项交付结果：总数来自声明集合，未交付项保留真实原因，不显示成全部完成。
+  const delivery = page.getByRole('region', { name: '交付结果' });
+  await expect(delivery).toContainText('交付结果 1/2');
+  await expect(delivery).toContainText('web-dev-artifact.mp4');
+  await expect(delivery).toContainText('已交付');
+  await expect(delivery).toContainText('无法确认');
+  await expect(delivery).toContainText('内容要求当前没有可靠的自动判定与覆盖方法，尚不能确认。');
 
   const sessionList = page.getByRole('navigation', { name: '会话列表' });
   const firstSession = sessionList.getByRole('button', { name: '取消 Web Agent', exact: true });

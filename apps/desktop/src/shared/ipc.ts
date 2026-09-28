@@ -2,6 +2,7 @@ import type {
   AgentClientApi,
   AgentRuntimeEvent,
   AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
   AgentTaskResult,
   Attachment,
   AttachmentRole,
@@ -38,8 +39,17 @@ export type AgentTaskIpcResult =
     readonly status: 'error';
     readonly errorName: string;
     readonly errorMessage: string;
+    /** 取消或失败前已经真实交付的文件与逐项结果仍然可见。 */
     readonly outputFiles?: readonly AgentTaskOutputFile[];
+    readonly outputs?: readonly AgentTaskOutputItemResult[];
   };
 
-export type { AgentRuntimeEvent, AgentTaskOutputFile, AgentTaskResult, Attachment, AttachmentRole };
+export type {
+  AgentRuntimeEvent,
+  AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
+  AgentTaskResult,
+  Attachment,
+  AttachmentRole,
+};
 export type DesktopApi = AgentClientApi;

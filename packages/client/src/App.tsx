@@ -5,6 +5,7 @@ import type {
   AgentClientApi,
   AgentRuntimeEvent,
   AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
   ApprovalRequest,
   ClientAssistantMessage,
   ClientAssistantMessageBase,
@@ -183,7 +184,7 @@ export function App({ api }: AppProps) {
 
   useEffect(() => api.onAgentEvent((event: AgentRuntimeEvent) => {
     const sessionId = activeSessionIdRef.current;
-    // 审批请求不是某一轮的消息内容：它由 App 单独持有并渲染在当前对话末尾。
+    // 审批请求不是某一轮的消息内容：它由 App 单独持有并交给 Composer 渲染。
     if (event.type === 'approval.requested') {
       setPendingApproval(event.request);
       return;
@@ -219,6 +220,16 @@ export function App({ api }: AppProps) {
         return { ...conversation, messages };
       }
 
+      if (event.type === 'activity.detail') {
+        const activity = activeMessage.activity.map((item) => (
+          item.id === event.activityId ? { ...item, detail: event.detail } : item
+        ));
+        const messages: readonly ClientConversationMessage[] = conversation.messages.map((message, index) => (
+          index === activeIndex ? { ...activeMessage, activity } : message
+        ));
+        return { ...conversation, messages };
+      }
+
       const activity = upsertActivity(activeMessage.activity, event.item);
       const messages: readonly ClientConversationMessage[] = conversation.messages.map((message, index) => (
         index === activeIndex ? { ...activeMessage, activity } : message
@@ -241,13 +252,13 @@ export function App({ api }: AppProps) {
     if (scrollContainer !== null) scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [activeSessionId, activeView]);
 
-  // 新消息、活动更新、实时增量和待决审批只在用户仍跟随最新内容时滚动；
-  // 向上阅读时不得强行拉回。审批卡不属于消息数组，因此必须单独作为触发事实。
+  // 新消息、活动更新和实时增量只在用户仍跟随最新内容时滚动；
+  // 待决审批位于 Composer，不改变历史阅读轴的滚动位置。
   useEffect(() => {
     const scrollContainer = conversationScroll.current;
     if (scrollContainer === null || !followsLatest.current) return;
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
-  }, [activeConversation.messages, pendingApproval]);
+  }, [activeConversation.messages]);
 
   const selectAttachments = async () => {
     const attachments = await api.selectAttachmentFiles();
@@ -376,11 +387,13 @@ export function App({ api }: AppProps) {
         && (error.name === 'AbortError'
           || error.message === 'This operation was aborted'
           || error.message === 'The operation was aborted');
-      // 失败或取消时，此前已成功的工具产出仍是真实文件：宿主把它们挂在错误上，这里原样带到终态。
+      // 失败或取消时，此前已成功的工具产出和逐项结果仍是真实事实：宿主把它们挂在错误上，这里原样带到终态。
       const outputFiles = (error as { outputFiles?: readonly AgentTaskOutputFile[] }).outputFiles;
-      const artifacts = outputFiles === undefined || outputFiles.length === 0
-        ? {}
-        : { outputFiles };
+      const outputs = (error as { outputs?: readonly AgentTaskOutputItemResult[] }).outputs;
+      const artifacts = {
+        ...(outputFiles === undefined || outputFiles.length === 0 ? {} : { outputFiles }),
+        ...(outputs === undefined || outputs.length === 0 ? {} : { outputs }),
+      };
       updateConversation(activeSessionIdRef.current, (currentConversation) => ({
         ...currentConversation,
         messages: currentConversation.messages.map((message) => (
@@ -454,11 +467,18 @@ export function App({ api }: AppProps) {
 
   const { messages, prompt, attachments, workingDirectory } = activeConversation;
   const hasConversation = messages.length > 0;
+  const approval = pendingApproval === undefined ? null : (
+    <ApprovalRequestCard
+      request={pendingApproval}
+      onDecide={(approved) => void decideApproval(approved)}
+    />
+  );
   const composer = (
     <Composer
       attachments={attachments}
       prompt={prompt}
       isProcessing={isProcessing}
+      approval={approval}
       {...(workingDirectory === undefined ? {} : { workingDirectory })}
       onPromptChange={(nextPrompt) => updateConversation(
         activeSessionIdRef.current,
@@ -470,13 +490,6 @@ export function App({ api }: AppProps) {
       onCancel={() => void cancelTask()}
     />
   );
-  const approval = pendingApproval === undefined ? null : (
-    <ApprovalRequestCard
-      request={pendingApproval}
-      onDecide={(approved) => void decideApproval(approved)}
-    />
-  );
-
   return (
     <div className="app-shell">
       <SessionSidebar
@@ -505,7 +518,6 @@ export function App({ api }: AppProps) {
           messages={messages}
           hasConversation={hasConversation}
           composer={composer}
-          approval={approval}
           historyRef={conversationScroll}
           onHistoryScroll={handleHistoryScroll}
           onToggleActivity={toggleActivity}

@@ -14,12 +14,14 @@ describe('Web Dev API', () => {
 
     expect(second).not.toBe(initial);
     expect(events.map((event) => event.type)).toEqual([
-      'activity', 'activity', 'activity', 'text.delta', 'text.delta', 'activity', 'activity',
+      'activity', 'activity', 'activity', 'text.delta', 'text.delta',
+      'activity', 'activity', 'activity.detail', 'activity',
     ]);
     // 开发宿主的模拟活动必须使用与真实 Desktop 相同的契约和真实形状的文件路径，否则浏览器验收会验证到假数据。
     const activity = events.flatMap((event) => (event.type === 'activity' ? [event.item] : []));
     expect(activity.map((item) => item.id)).toEqual([
       'web-model-1', 'web-model-1', 'web-tool-1', 'web-tool-1', 'web-tool-2',
+      'web-tool-3',
     ]);
     expect(activity.at(-1)).toMatchObject({
       kind: 'tool',
@@ -29,6 +31,11 @@ describe('Web Dev API', () => {
         { path: 'E:/videos/web-test-video.mp4', role: 'input' },
         { path: 'E:/videos/web-dev-artifact.mp4', role: 'output' },
       ],
+    });
+    expect(events).toContainEqual({
+      type: 'activity.detail',
+      activityId: 'web-tool-2',
+      detail: expect.objectContaining({ kind: 'file-content', totalLines: 3 }),
     });
     expect(result.responseText).toContain('测试任务');
     expect(result.outputFiles).toEqual([

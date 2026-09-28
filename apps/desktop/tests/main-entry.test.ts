@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { DesktopTaskOptions } from '../src/main/agent-task.js';
 
 type IpcHandler = (...args: unknown[]) => unknown;
 
@@ -139,7 +140,9 @@ vi.mock('electron', () => ({
   shell: { showItemInFolder: mainMocks.showItemInFolder, openExternal: mainMocks.openExternal },
 }));
 
-vi.mock('@agent-desktop/video-agent', () => ({
+vi.mock('@agent-desktop/video-agent', async (importOriginal) => ({
+  // 交付事实的读取与逐项投影是纯函数，直接用真实实现，避免替身与生产规则漂移。
+  ...(await importOriginal<typeof import('@agent-desktop/video-agent')>()),
   createVideoAgent: mainMocks.createVideoAgent,
 }));
 
@@ -148,9 +151,8 @@ vi.mock('@agent-desktop/execution-trace', () => ({
 }));
 
 vi.mock('../src/main/agent-task.js', async (importOriginal) => ({
-  // 产物识别是纯函数，直接用真实实现，避免替身与生产规则漂移。
-  findLatestTurnId: (await importOriginal<typeof import('../src/main/agent-task.js')>()).findLatestTurnId,
-  findTurnArtifacts: (await importOriginal<typeof import('../src/main/agent-task.js')>()).findTurnArtifacts,
+  // 产物识别与逐项交付投影是纯函数，直接用真实实现，避免替身与生产规则漂移。
+  ...(await importOriginal<typeof import('../src/main/agent-task.js')>()),
   runDesktopAgentTask: mainMocks.runDesktopAgentTask,
 }));
 
@@ -283,10 +285,13 @@ describe('desktop main session lifecycle', () => {
       secondAgent,
       '记住数字 952',
       [],
-      undefined,
-      expect.any(Function),
-      expect.any(AbortSignal),
-      expect.any(Function),
+      expect.objectContaining({
+        trace: expect.any(Function),
+        signal: expect.any(AbortSignal),
+        onTextDelta: expect.any(Function),
+        onToolResult: expect.any(Function),
+        onToolProgress: expect.any(Function),
+      }),
     );
     secondAgent.session.append({ type: 'user.message', content: '记住数字 952' });
 
@@ -302,10 +307,13 @@ describe('desktop main session lifecycle', () => {
       followUpAgent,
       '我刚才让你记住什么数字？',
       [{ path: 'D:\\videos\\input.mp4', role: 'video' }],
-      expect.stringContaining('input-edited-'),
-      expect.any(Function),
-      expect.any(AbortSignal),
-      expect.any(Function),
+      expect.objectContaining({
+        trace: expect.any(Function),
+        signal: expect.any(AbortSignal),
+        onTextDelta: expect.any(Function),
+        onToolResult: expect.any(Function),
+        onToolProgress: expect.any(Function),
+      }),
     );
     revealFile!({}, firstOutputPath);
     expect(mainMocks.showItemInFolder).toHaveBeenLastCalledWith(firstOutputPath);
@@ -320,42 +328,110 @@ describe('desktop main session lifecycle', () => {
     rmSync(artifactDirectory, { recursive: true, force: true });
   });
 
-  it('keeps default output paths unique across new sessions for the same video', async () => {
-    const selectVideo = mainMocks.handlers.get('desktop:select-attachment-files');
-    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+  it('projects per-item delivery results from the session facts of the turn', async () => {
     const newSession = mainMocks.handlers.get('desktop:new-session');
-    expect(selectVideo).toBeTypeOf('function');
-    expect(runAgentTask).toBeTypeOf('function');
-    expect(newSession).toBeTypeOf('function');
-
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
     await newSession!({});
-    mainMocks.showOpenDialog.mockResolvedValue({
-      canceled: false,
-      filePaths: ['D:\\videos\\video.mp4'],
-    });
-    const requestedOutputPaths: Array<string | undefined> = [];
-    mainMocks.runDesktopAgentTask.mockImplementation(async (
-      _agent: unknown,
-      _prompt: unknown,
-      _attachments: unknown,
-      requestedOutputPath: string | undefined,
-    ) => {
-      requestedOutputPaths.push(requestedOutputPath);
+
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+      const agent = mainMocks.agents.at(-1)!;
+      const turnId = 'turn-delivery';
+      const stepId = 'step-delivery';
+      agent.session.append({ type: 'turn.started', turnId });
+      agent.session.append({ type: 'step.started', turnId, stepId });
+      // 真实链路里这些事实由交付工具产生；这里直接写入同一份结构，验证宿主的读取投影。
+      agent.session.append({
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: 'call-declare',
+        name: 'declare_video_outputs',
+        input: {},
+      });
+      agent.session.append({
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: 'call-declare',
+        result: {
+          status: 'success',
+          output: {
+            kind: 'video.outputs.declared',
+            items: [
+              {
+                id: 'out-1',
+                sourcePaths: ['D:\\videos\\a.mp4'],
+                target: { kind: 'explicit', path: 'D:\\videos\\a-result.mp4' },
+                workingDirectory: 'D:\\videos\\.agent-output-out-1',
+                requirements: [{ id: 'r1', kind: 'decodable-video' }],
+              },
+              {
+                id: 'out-2',
+                sourcePaths: ['D:\\videos\\b.mp4'],
+                target: { kind: 'explicit', path: 'D:\\videos\\b-result.mp4' },
+                workingDirectory: 'D:\\videos\\.agent-output-out-2',
+                requirements: [{ id: 'r1', kind: 'decodable-video' }],
+              },
+            ],
+          },
+        },
+      });
+      agent.session.append({
+        type: 'tool.called',
+        turnId,
+        stepId,
+        toolCallId: 'call-publish',
+        name: 'publish_video_output',
+        input: { validationId: 'validation-1' },
+      });
+      agent.session.append({
+        type: 'tool.result',
+        turnId,
+        stepId,
+        toolCallId: 'call-publish',
+        result: {
+          status: 'success',
+          output: {
+            kind: 'video.output.published',
+            output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:\\videos\\a-result.mp4' },
+          },
+          artifacts: ['D:\\videos\\a-result.mp4'],
+        },
+      });
       return {
-        responseText: '剪辑完成。',
-        turnId: `turn-output-${requestedOutputPaths.length}`,
-        artifacts: [{ toolCallId: 'call-output', path: requestedOutputPath }],
+        responseText: '第一项已交付。',
+        turnId,
+        artifacts: [{ toolCallId: 'call-publish', path: 'D:\\videos\\a-result.mp4' }],
       };
     });
 
-    await selectVideo!({});
-    await runAgentTask!({}, '剪辑视频');
-    await newSession!({});
-    await selectVideo!({});
-    await runAgentTask!({}, '再次剪辑视频');
+    await expect(runAgentTask!({}, '分别输出两个视频')).resolves.toMatchObject({
+      status: 'success',
+      result: {
+        outputFiles: [{ path: 'D:\\videos\\a-result.mp4', fileName: 'a-result.mp4' }],
+        // 总数来自声明列表：一项已交付，另一项保留未完成，不能删掉失败项后变成全部完成。
+        outputs: [
+          { outputItemId: 'out-1', status: 'published', fileName: 'a-result.mp4' },
+          { outputItemId: 'out-2', status: 'incomplete', reason: '尚未进入候选验收。' },
+        ],
+      },
+    });
+  });
 
-    expect(requestedOutputPaths).toHaveLength(2);
-    expect(requestedOutputPaths[1]).not.toBe(requestedOutputPaths[0]);
+  it('omits per-item results for tasks that never declared a video output item', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    await newSession!({});
+    mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
+      responseText: '这是一个普通回答。',
+      turnId: 'turn-plain',
+      artifacts: [],
+    });
+
+    const result = await runAgentTask!({}, '介绍一下这个客户端。');
+    // 普通问答不创建输出项，视频交付结论是不适用而不是「零项全部完成」。
+    expect(result).toMatchObject({ status: 'success', result: { responseText: '这是一个普通回答。' } });
+    expect((result as { result: Record<string, unknown> }).result).not.toHaveProperty('outputs');
   });
 
   it('runs fixed-time video editing without a Whisper model path', async () => {
@@ -442,7 +518,7 @@ describe('desktop main session lifecycle', () => {
     expect(await getActiveSessionId!({})).toBe(baseSessionId);
   });
 
-  it('keeps artifact files and continues output sequence after deleting the last session', async () => {
+  it('keeps artifact files when the last session is deleted', async () => {
     const getActiveSessionId = mainMocks.handlers.get('desktop:get-active-session-id');
     const selectVideo = mainMocks.handlers.get('desktop:select-attachment-files');
     const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
@@ -457,22 +533,15 @@ describe('desktop main session lifecycle', () => {
     const directory = mkdtempSync(join(tmpdir(), 'agent-desktop-delete-'));
     try {
       const inputPath = join(directory, 'input.mp4');
-      const requestedOutputPaths: string[] = [];
+      const outputPath = join(directory, 'input-edited.mp4');
       await newSession!({});
       mainMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [inputPath] });
-      mainMocks.runDesktopAgentTask.mockImplementation(async (
-        _agent: unknown,
-        _prompt: unknown,
-        _attachments: unknown,
-        requestedOutputPath: string | undefined,
-      ) => {
-        const outputPath = requestedOutputPath!;
-        requestedOutputPaths.push(outputPath);
+      mainMocks.runDesktopAgentTask.mockImplementation(async () => {
         writeFileSync(outputPath, 'artifact');
         return {
           responseText: '剪辑完成。',
-          turnId: `turn-delete-${requestedOutputPaths.length}`,
-          artifacts: [{ toolCallId: `call-delete-${requestedOutputPaths.length}`, path: outputPath }],
+          turnId: 'turn-delete-1',
+          artifacts: [{ toolCallId: 'call-delete-1', path: outputPath }],
         };
       });
 
@@ -482,19 +551,8 @@ describe('desktop main session lifecycle', () => {
       const replacementSessionId = deleteSession!({}, deletedSessionId);
 
       expect(replacementSessionId).not.toBe(deletedSessionId);
-      expect(existsSync(requestedOutputPaths[0]!)).toBe(true);
-
-      await newSession!({});
-      await selectVideo!({});
-      await runAgentTask!({}, '生成第二个视频');
-      const outputSequence = (path: string) => {
-        const match = /-edited(?:-(\d+))?\.mp4$/.exec(path);
-        return match?.[1] === undefined ? 1 : Number(match[1]);
-      };
-      expect(outputSequence(requestedOutputPaths[1]!)).toBe(
-        outputSequence(requestedOutputPaths[0]!) + 1,
-      );
-      expect(existsSync(requestedOutputPaths[1]!)).toBe(true);
+      // 删除会话不删除已经真实交付的视频文件。
+      expect(existsSync(outputPath)).toBe(true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -511,13 +569,10 @@ describe('desktop main session lifecycle', () => {
       _agent: unknown,
       _prompt: unknown,
       _attachments: unknown,
-      _outputPath: unknown,
-      _trace: unknown,
-      _signal: unknown,
-      onTextDelta: (delta: string) => void,
+      options: DesktopTaskOptions,
     ) => {
-      onTextDelta('实时');
-      onTextDelta('增量');
+      options.onTextDelta?.('实时');
+      options.onTextDelta?.('增量');
       return { responseText: '完成', turnId: 'turn-delta', artifacts: [] };
     });
 
@@ -536,6 +591,41 @@ describe('desktop main session lifecycle', () => {
     });
   });
 
+  it('forwards bounded Tool Result details without writing content into Trace events', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session');
+    const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
+    expect(runAgentTask).toBeTypeOf('function');
+    await newSession!({});
+
+    mainMocks.webContentsSend.mockClear();
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
+      _agent: unknown,
+      _prompt: unknown,
+      _attachments: unknown,
+      options: DesktopTaskOptions,
+    ) => {
+      options.onToolResult?.('read-1' as Parameters<NonNullable<DesktopTaskOptions['onToolResult']>>[0], 'read_file', {
+        status: 'success',
+        output: {
+          filePath: 'D:/work/readme.md', startLine: 1, endLine: 1,
+          totalLines: 1, lines: ['hello'],
+        },
+      });
+      return { responseText: '完成', turnId: 'turn-detail', artifacts: [] };
+    });
+
+    await runAgentTask!({}, '读取文件');
+
+    expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
+      type: 'activity.detail',
+      activityId: 'read-1',
+      detail: {
+        kind: 'file-content', filePath: 'D:/work/readme.md', startLine: 1,
+        endLine: 1, totalLines: 1, lines: ['hello'],
+      },
+    });
+  });
+
   it('cancels only the active task and clears the controller for the next task', async () => {
     const newSession = mainMocks.handlers.get('desktop:new-session');
     const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
@@ -547,11 +637,9 @@ describe('desktop main session lifecycle', () => {
       _agent: unknown,
       _prompt: unknown,
       _attachments: unknown,
-      _outputPath: unknown,
-      _trace: unknown,
-      signal: AbortSignal,
+      options: DesktopTaskOptions,
     ) => new Promise((resolve) => {
-      signal.addEventListener('abort', () => resolve({
+      options.signal?.addEventListener('abort', () => resolve({
         responseText: '停止', turnId: 'turn-cancelled', artifacts: [],
       }), { once: true });
     }));
@@ -618,11 +706,9 @@ describe('desktop main session lifecycle', () => {
       _agent: unknown,
       _prompt: unknown,
       _videos: unknown,
-      _output: unknown,
-      _trace: unknown,
-      signal: AbortSignal,
+      options: DesktopTaskOptions,
     ) => new Promise((resolve) => {
-      signal.addEventListener('abort', () => {
+      options.signal?.addEventListener('abort', () => {
         aborted = true;
         resolve({ responseText: '已取消', turnId: 'turn-close', artifacts: [] });
       }, { once: true });
@@ -665,11 +751,9 @@ describe('desktop main session lifecycle', () => {
       _agent: unknown,
       _prompt: unknown,
       _videos: unknown,
-      _output: unknown,
-      _trace: unknown,
-      signal: AbortSignal,
+      options: DesktopTaskOptions,
     ) => new Promise((resolve) => {
-      signal.addEventListener('abort', () => {
+      options.signal?.addEventListener('abort', () => {
         aborted = true;
         resolve({ responseText: '已取消', turnId: 'turn-close-repeat', artifacts: [] });
       }, { once: true });

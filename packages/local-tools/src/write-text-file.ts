@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { stat, writeFile } from 'node:fs/promises';
 import { resolveCreatablePath } from './path-scope.js';
 import type { WorkspacePort } from './workspace.js';
@@ -56,7 +56,7 @@ export class WriteTextFileTool implements Tool {
 
   public constructor(private readonly workspace: WorkspacePort) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)) return errorResult('write_text_file requires an object input');
     const { filePath, content } = input;
     if (typeof filePath !== 'string' || filePath.length === 0) {

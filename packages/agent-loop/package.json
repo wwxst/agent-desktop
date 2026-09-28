@@ -5,7 +5,8 @@
   "dependencies": {
     "@agent-desktop/agent": "workspace:*",
     "@agent-desktop/model": "workspace:*",
-    "@agent-desktop/session": "workspace:*"
+    "@agent-desktop/session": "workspace:*",
+    "@agent-desktop/tools": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

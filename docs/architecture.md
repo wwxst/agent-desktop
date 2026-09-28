@@ -35,9 +35,33 @@
 
 `set_working_directory` 只有在调用方传入 `workspace` 端口时才注册：没有宿主的目录状态和目录确认能力，这个工具就没有合法的审批消费者。CLI 目前不传，因此 CLI 不提供本地目录工具。
 
+### Video Delivery（视频交付）
+
+视频成片不是「最后一个写出 Tool 成功」就算完成。应用层把交付拆成四个有真实事实支撑的阶段，并让桌面与命令行共用同一套判定。
+
+```text
+Concept                中文术语    当前事实
+Output Item            输出项      用户预期得到的一项视频结果：来源、目标与必要要求。
+Candidate              候选文件    某次成功生产调用真实写出、被选中送验的文件。
+Candidate Validation   候选验收    逐条记录必要要求的检查结论与真实证据引用。
+Published Output       已交付文件  必要检查全部通过并成功复制到最终路径的文件。
+```
+
+`declare_video_outputs` 接受本轮完整声明并返回应用层生成的输出项标识、目标与 `workingDirectory`；声明列表就是预期交付集合，不再从首个附件强制推导唯一最终路径，也不默认要求多视频合并。所有要求都是必要条件，`decodable-video` 由应用层自动加入。
+
+候选只能写进所属输出项的工作目录。该约束由应用层组装时套在写出型视频工具外层（`ScopedVideoOutputTool`）落实，因此它作用在真实写出调用上而不是提示词里：没有声明就写出会被拒绝，直接写最终目标或跨输出项目录写出同样被拒绝。写出型视频工具因此只报告结构化生产事实 `{ outputPath }`，不再直接登记 `artifacts`。
+
+`validate_video_candidate` 只接受输出项与候选路径：应用层按这条路径反查写出它的成功生产调用，并逐条计算检查结论——`decode_video` 提供全文件解码事实，`probe_media` 提供真实时长，`detect_black_segments` 提供该参数下的黑段区间。证据必须来自真实检查结果且其实际输入路径与候选路径一致，因此源视频、别的候选或别的输出项的检查不能批准当前候选；缺少证据的要求记为 `blocked`，明确不满足记为 `failed`，`semantic` 要求在没有合格判定方法前统一为 `blocked`。检查不通过是验收工具成功执行后的业务结果，不是外层工具错误。
+
+模型不提交工具调用标识：真实运行表明模型无法可靠引用不透明的调用标识，因此归属由应用层按路径核对。这比让模型提交标识更严格，也去掉了模型伪造归属的可能。
+
+`publish_video_output` 只接受验收引用：应用层反查候选、输出项与目标，复核它是本项当前候选的最新一次全项通过验收，再以「独占创建目标后复制候选」的方式发布。默认名称在发布时按真实磁盘占用确定，不再从全局计数器取起点；明确目标已存在时拒绝覆盖也不改名。复制未完成（包括中途取消）时只清理本次调用创建的目标，不登记产物；发布已经完成的事实不因随后取消而回滚。发布成功的结果同时返回 `PublishedOutput` 与 `artifacts`，两处路径来自同一个发布结果值。
+
+`@agent-desktop/video-agent` 的读取投影（`readVideoDeliveryFacts` / `projectOutputItemResults`）是「什么算交付」的唯一权威实现，桌面与命令行都只调用它。逐项结果按声明集合给出 `published` / `failed` / `blocked` / `incomplete`，总数来自声明列表而不是成功计数器；没有声明过输出项的普通问答与通用文本任务不产生视频交付结论。旧历史里由视频 Tool 直接报告的产物继续可见、可定位，但不补造验收记录。
+
 ### Local Tools（本地工具）
 
-`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的操作（当前是目录访问、创建文件与修改文件）一律通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。
+`@agent-desktop/local-tools` 的唯一职责是实现本地文件与进程工具。它不持有 Session、不选模型、不编排任务，也不承担宿主权限管理：需要宿主决定的操作（当前是目录访问、创建文件、修改文件与命令执行）一律通过调用方注入的 `WorkspacePort` 回调，因此该 package 不依赖 Electron、React 或 `client`。命令工具另外通过调用方注入的 `CommandPort` 取得解释器绝对路径和受限子进程环境——这两项属于宿主环境事实，不由工具自己搜索或复制。
 
 `set_working_directory` 把会话工作目录设为一个真实存在的目录：先 `realpath` 再让用户确认，因此用户确认的就是实际会被使用的目录。已经确认的同一目录不重复审批；换到新目录必须重新确认。相对路径以当前会话工作目录为基准，没有基准时返回明确错误。
 
@@ -61,9 +85,19 @@ Desktop 主进程打包时把 `@vscode/ripgrep` 保持为 external（外部依�
 
 `edit_text_file` 只修改会话已确认工作目录内的已有 UTF-8 文本。调用必须携带 `read_file` 返回的文件路径和 `sha256`；摘要不一致时在审批前失败并要求重新读取。原内容必须精确出现一次，不存在或出现多次都不请求审批、不写入。宿主向用户展示真实路径、原内容和新内容；批准后工具再次读取并逐字节比较审批前快照，文件在等待期间变化就停止。成功结果报告实际路径、替换次数和最终字节数，不报告 `artifacts`，因为编辑已有文件不是新产物。
 
+`run_command` 在会话已确认的工作目录中运行一条本机命令。首期正式支持 Windows 非交互 PowerShell：解释器绝对路径和子进程环境由宿主提供，工具不搜索 PATH，也不把包含模型密钥的宿主环境整体注入子进程。执行起点必须是会话已确认目录范围内的真实目录，没有目录时先要求模型调用 `set_working_directory`。
+
+每次调用都重新审批，没有「本会话始终允许」，也不根据命令前缀推断只读。审批卡展示解释器、完整命令、执行起点和生效超时；用户拒绝时不启动任何进程，要改命令由模型重新提交。这是一项以当前用户权限执行的本机命令授权：工作目录只是执行起点，无法限制脚本访问其他目录、网络或调用其他程序，首期不是操作系统沙箱。
+
+输出用 `spawn` 分别读取两条流并增量解码，保留来源标记和宿主收到的顺序，不声称两条流之间有操作系统保证的精确顺序。两条流合计最多保留 64 KiB 的首尾摘要，中间被丢弃的部分以 `droppedBytes` 如实说明。默认超时 120 秒，模型可请求的上限 600 秒，超过上限按上限执行，审批卡展示的就是生效值。退出码为 0 只代表该命令正常退出；非零退出、启动失败和超时都保留失败语义，失败结果同时携带退出码和有界输出，不只留一条错误文字。命令不从输出猜测交付文件，因此不报告 `artifacts`。
+
+取消沿同一个 `AbortSignal` 传入审批等待和进程执行：取消后不再请求确认，已经启动的命令用系统 `taskkill /PID <pid> /T /F` 结束它创建的进程树并等待退出，再按 `AbortError` 结束，不返回普通工具失败让模型继续执行。只调用 `child.kill()` 无法证明 PowerShell 启动的 `.cmd` 与 Node 孙进程已经退出，因此进程树回收必须用真实孙进程用例验收。
+
 ### Tool Result Artifacts（成功结果的产物事实）
 
 产物的唯一权威来源是成功结果自己报告的 `artifacts`：写出型工具**真正写入成功后**才报告它。宿主因此不需要从回复文本、退出码或磁盘扫描推断产物，失败调用也不会产生产物。只有写出型工具报告它——读取、搜索和中间产物（抽帧目录、语音 WAV）都不报告。
+
+视频交付的 `artifacts` 只由 `publish_video_output` 在真正发布成功后报告。写出型视频工具改为返回结构化生产事实 `{ outputPath }`，因此中间片段、待修成片和最终交付在宿主看来是可区分的；`extract_audio` 的 WAV 与抽帧目录继续只作为过程用途。通用文本创建（`write_text_file`）仍在真正创建成功后报告 `artifacts`，不被强制套入视频验收。
 
 ```text
 Video Agent Application
@@ -82,9 +116,9 @@ Video Agent Application
 
 `apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的桌面宿主。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交的输入附件、提交自然语言剪辑任务、按轮展示由共享 Execution Trace（执行追踪）与 Session 事实投影的 Agent Activity（活动轨迹）、执行期间的实时助手文本、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
 
-输入附件用统一的 `Attachment`（附件）表达，字段只有 `path`（身份，也是模型实际使用的路径）、`name`（界面展示名）和 `role`（用途）。`role` 当前只有 `video`（主视频）和 `audio`（外加音轨）两种取值，它决定提示词把该文件描述成什么，而不是决定工具调用顺序——顺序仍由模型根据提示词与已注册工具自行判断。角色按扩展名判定（`.mp3` 等归 `audio`，其余归 `video`），且必须对应一个已注册的工具消费者：`audio` 的消费者是 `add_audio`。共同的文件对话框按这两类扩展名过滤，因此「用户能选到」与「有工具能用」始终是同一份来源。输出命名只跟随主视频，单独添加音轨不会改变输出文件位置；缺少主视频时不提供最终输出路径，与「未选择输入视频」的既有语义一致。
+输入附件用统一的 `Attachment`（附件）表达，字段只有 `path`（身份，也是模型实际使用的路径）、`name`（界面展示名）和 `role`（用途）。`role` 当前只有 `video`（主视频）和 `audio`（外加音轨）两种取值，它决定提示词把该文件描述成什么，而不是决定工具调用顺序——顺序仍由模型根据提示词与已注册工具自行判断。角色按扩展名判定（`.mp3` 等归 `audio`，其余归 `video`），且必须对应一个已注册的工具消费者：`audio` 的消费者是 `add_audio`。共同的文件对话框按这两类扩展名过滤，因此「用户能选到」与「有工具能用」始终是同一份来源。宿主不再为视频任务预设最终输出路径：输出项由模型按用户要求声明，最终名称在发布时按真实磁盘占用确定，因此单独添加音轨与缺少主视频都不会改变任何命名事实。
 
-每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/session-state.json`。每个会话只长期持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot 里的附件只是发给 Renderer 的展示副本；重启恢复时按会话附件重建一次界面副本，避免旧格式快照里「只有名称、没有路径」的副本被继续沿用。输出序号随状态文件保存，以避免重启后不同任务为同一输入生成相同文件名。
+每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/session-state.json`。每个会话只长期持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot 里的附件只是发给 Renderer 的展示副本；重启恢复时按会话附件重建一次界面副本，避免旧格式快照里「只有名称、没有路径」的副本被继续沿用。旧快照里的全局输出序号不再参与任何命名，读取时直接忽略：新命名只依赖发布时的真实磁盘占用。
 
 产物由所属会话、轮次、工具调用和真实路径识别，文件名只是界面标签。识别规则只有一个权威实现（`apps/desktop/src/main/agent-task.ts` 的 `findTurnArtifacts`）：以成功结果自己报告的 `artifacts` 为准（见「成功结果的产物事实」），不因为磁盘上存在同名文件就登记产物，也不把 `outputDir` 当成视频文件。产物路径随轮次写入 Client Snapshot，因此同名文件位于不同目录、或同一轮次产生多个产物都能分别定位；宿主不再维护按文件名索引的产物表，`revealFile` 用会话事件与附件路径校验来路后才交给系统文件管理器。
 
@@ -331,6 +365,10 @@ execute          执行        接收合法输入并返回结果或错误
 
 Tool Registry 负责注册、查找和返回 Tool，不负责执行 Loop 算法。MVP 不要求使用 Zod、JSON Schema library 或 Valibot，当前通过 Tool 的 inputSchema 描述输入约束。
 
+`execute` 接收 `ToolExecutionContext`（工具执行上下文），而不是继续增加位置参数。上下文提供当前 `AbortSignal`、`toolCallId` 和同步的 `reportProgress`：进度只用于实时展示，同步入队，工具不等待界面消费，也不把 IPC Promise 带进工具契约；具体工具仍然只返回最终结果，不控制 Agent Loop。
+
+首期只定义一种有真实消费者的进度 `command.output`，包含来源流、序号、文本片段和被丢弃字节数。Agent Loop 通过可选的 `onToolProgress` 把它转发给宿主；进度不写入诊断 Trace，也不写入 Session 或模型上下文。`runTurn` 的可选端口（`trace`、`signal`、`onTextDelta`、`onToolResult`、`onToolProgress`）统一收在一个选项对象里，不引入事件总线。
+
 ## Tool Execution Failure（工具执行失败）
 
 Tool 执行失败不能直接让 Session 历史丢失。MVP 采用最小方案：使用 `tool.result` 事件表达结果，并通过状态区分成功和失败。
@@ -343,7 +381,13 @@ Tool Error       工具错误    表示 Tool Result 的 error 状态及可解释
 
 Tool 不存在、输入不合法或 execute 失败，都必须产生可追溯的失败结果，并允许 Agent Loop 决定是否结束当前 Turn。MVP 不设计复杂 Retry Policy（重试策略）。
 
-视频 Tool 写出用户可见文件时拒绝覆盖：目标已存在就直接返回 Tool error，由模型改用其他输出路径，不自动改名、不重试。判定发生在 Tool 边界（`packages/video-ffmpeg` 的 `executeOutputCommand`），FFmpeg 参数里的 `-n` 只作为写入边界兜底——本机 FFmpeg 9.0 在 `-n` 拒绝覆盖时退出码仍为 0，只看退出码会把冲突误报成成功。抽帧的 JPG 与 `extract_audio` 的 WAV 同样受该规则约束；工具私有临时目录（concat 的 ffconcat 列表、whisper 的转写目录）由各自工具创建和清理，不受该规则约束。
+视频 Tool 写出用户可见文件时拒绝覆盖：目标已存在就直接返回 Tool error，由模型改用其他输出路径，不自动改名、不重试。判定发生在 Tool 边界（`packages/video-ffmpeg` 的 `executeOutputCommand`），FFmpeg 参数里的 `-n` 只作为写入边界兜底——本机 FFmpeg 9.0 在 `-n` 拒绝覆盖时退出码仍为 0，只看退出码会把冲突误报成成功。抽帧的 JPG 与 `extract_audio` 的 WAV 同样受该规则约束；工具私有临时目录（whisper 的转写目录）由各自工具创建和清理，不受该规则约束。
+
+`concat_videos` 按输入顺序用 FFmpeg 拼接滤镜（concat filter）逐段解码后重新编码，因此各段音频采样率或 time_base（时间基准）不一致也能正确拼接；旧的拼接解复用器（concat demuxer）会沿用首段音频参数，静默丢弃后续片段却仍返回成功。拼接滤镜必须为每段显式提供音频输入，所以该 Tool 在启动 FFmpeg 之前用一次 ffprobe 逐段确认音轨：全部片段都没有音轨时只拼接视频流，与无音轨输入的既有结果一致；只有部分片段有音轨时明确返回 Tool error，不产出比视频短的音轨，也不静默丢音。音轨探测发生在真实进程边界，复用 Tool 自己的 `CommandExecutor`，并让探测与拼接使用同一个 AbortSignal（取消信号）。
+
+`decode_video` 用一次完整的「解码到 null」证明整段媒体都能读出，并报告真实被检查的路径。它区分两种不同结论：解码进程无法启动是工具不可用，按 Tool error 暴露；进程正常运行后报错说明这段媒体自身不能完整解码，是真实检查结论，返回 `fullyDecoded: false` 而不是工具错误。`probe_media` 与 `detect_black_segments` 的结果同样保留真实输入路径，黑段检测另外报告实际生效的 `blackdetect` 参数，使历史结论只能被解释成「在这组参数下」的结果。
+
+Agent Loop 先把 `tool.result` 追加到 Session，再写完成诊断：诊断写入失败不能遮蔽已经发生的成功事实（例如一个已经真正发布的文件）。成功结果的会话追加顺序只做这一处通用调整，不向核心引入视频或发布分支。
 
 ## Agent Loop State Machine（Agent 循环状态机）
 
@@ -535,6 +579,10 @@ plannedToolCallCount   计划工具数    来自 model.completed 的 toolCallCou
 ```
 
 Electron Main 在 `apps/desktop/src/main/agent-activity.ts` 中把两类真实事实投影成一条活动：状态、耗时和模型步骤来自 Execution Trace，文件引用来自 Session 的 `tool.called.input`。Trace 不复制工具内容，因此文件事实必须从 Session 读取；投影只读取当前工具契约声明的文件和目录字段，以及 `analyze_images` 的 `images[].path`，其他形状不产生文件引用。`edit_text_file` 成功后以同一 Tool Result（工具结果）中的真实 `filePath` 更新活动，避免把模型传入的相对路径保存成修改事实。Turn 生命周期事件不单独成行。
+
+Agent Loop 在每个 `tool.result` 已经追加到 Session 之后调用可选的 Tool Result Listener（工具结果监听器）。Desktop Main 通过这条独立内容通道，把 `read_file` 的有界行内容、`list_directory` 的有界目录项、`search_text` 的有界匹配、`run_command` 的退出码与有界输出，以及所有工具的真实失败消息投影为 `activity.detail`；Shared Client（共享客户端）把详情合并到同一 `AgentActivityItem` 并随界面快照持久化。详情不进入 Execution Trace，Trace 继续只保存状态、顺序、耗时和错误定位元数据；其他成功工具结果没有当前界面消费者，不复制到活动或快照。
+
+命令执行期间的实时输出复用同一条 `activity.detail` 通道：宿主按约 50 毫秒一批推送 `command-output` 详情，并把两条流累积量限制在与工具最终结果相同的保留预算内，因此界面缓存不随输出增长。命令结束后，来自 Tool Result 的 `command` 详情覆盖实时投影，成为该活动的权威终态；取消或失败时已经收到的有界输出仍然保留在展示快照里，但不会伪装成模型可见的成功结果。
 
 同一个活动 `id` 只保留一条记录：`running` 会被后续的 `completed`、`failed` 或 `cancelled` 覆盖，因此界面顺序是真实的执行顺序，而不是事件到达顺序。取消只把仍在 `running` 的活动标记为 `cancelled`，已完成活动的真实状态和耗时保持不变。
 

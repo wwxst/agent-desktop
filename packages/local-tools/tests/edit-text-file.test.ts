@@ -4,7 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolResult } from '@agent-desktop/model';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
 import { EditTextFileTool, ReadFileTool, type ApprovalTarget, type WorkspacePort } from '../src/index.js';
+
+/** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
+function toolContext(signal?: AbortSignal): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
 
 let base: string;
 let root: string;
@@ -81,7 +91,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256(before),
       oldText: '需要修改的台词',
       newText: '已经修改的台词',
-    });
+    }, toolContext());
 
     expect(edit(result)).toEqual({
       filePath: target,
@@ -109,7 +119,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('现有内容'),
       oldText: '不存在',
       newText: '新内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('没有找到');
@@ -128,7 +138,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('重复内容、重复内容'),
       oldText: '重复内容',
       newText: '替换内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('多处匹配');
@@ -147,7 +157,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('原有内容'),
       oldText: '原有内容',
       newText: '新内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('用户拒绝');
@@ -168,7 +178,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('审批前内容'),
       oldText: '审批前内容',
       newText: 'Agent 修改内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('审批期间发生变化');
@@ -188,7 +198,7 @@ describe('edit_text_file', () => {
       expectedSha256: readOutput.sha256,
       oldText: '读取时内容',
       newText: 'Agent 修改内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('读取后发生变化');
@@ -219,7 +229,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('原有内容'),
       oldText: '原有内容',
       newText: '新内容',
-    }, controller.signal);
+    }, toolContext(controller.signal));
     await waiting;
     controller.abort();
 
@@ -242,7 +252,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('原有内容'),
       oldText: '原有内容',
       newText: '新内容',
-    }, controller.signal);
+    }, toolContext(controller.signal));
 
     await expect(result).rejects.toHaveProperty('name', 'AbortError');
     await expect(readFile(target, 'utf8')).resolves.toBe('原有内容');
@@ -259,7 +269,7 @@ describe('edit_text_file', () => {
       expectedSha256: sha256('原有内容'),
       oldText: '原有内容',
       newText: '新内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('不在当前会话的工作目录内');
@@ -281,7 +291,7 @@ describe('edit_text_file', () => {
       { filePath: 'a.txt', oldText: 'a' },
       { filePath: 7, oldText: 'a', newText: 'b' },
     ]) {
-      const result = await tool.execute(input);
+      const result = await tool.execute(input, toolContext());
       expect(result.status).toBe('error');
     }
     expect(requested).toEqual([]);

@@ -1,8 +1,7 @@
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** 命令执行结果只保留 FFmpeg Tool 需要的标准输出和标准错误。 */
@@ -22,6 +21,16 @@ export type CommandExecutor = (
 ) => Promise<CommandOutput>;
 
 /**
+ * 「可执行文件不存在」的稳定消息。
+ *
+ * 它是本模块自己产生的契约，用来区分两种完全不同的结论：
+ * 进程无法启动（工具不可用）与进程正常运行后报告失败（文件本身有问题）。
+ */
+function missingExecutableMessage(command: string): string {
+  return `${command} not found in PATH`;
+}
+
+/**
  * execFile 直接接收可执行文件和参数数组，不经过 shell 解析。
  * 这样路径中的空格或控制字符只会作为 FFmpeg 参数，不会变成额外命令。
  */
@@ -39,7 +48,7 @@ export const executeFileCommand: CommandExecutor = (command, args, signal) => (
         return;
       }
       if (error.code === 'ENOENT') {
-        reject(new Error(`${command} not found in PATH`));
+        reject(new Error(missingExecutableMessage(command)));
         return;
       }
 
@@ -62,6 +71,46 @@ interface MediaInfo {
   readonly height: number | null;
   readonly videoCodec: string | null;
   readonly audioCodec: string | null;
+}
+
+interface BlackSegment {
+  readonly start: number;
+  readonly end: number;
+  readonly duration: number;
+}
+
+interface BlackSegmentsInfo {
+  readonly inputPath: string;
+  readonly hasBlackSegments: boolean;
+  readonly segments: readonly BlackSegment[];
+  /** 实际生效的 blackdetect 参数：历史结论必须能解释成「在这组参数下」的结果。 */
+  readonly parameters: {
+    readonly minimumDurationSeconds: number;
+    readonly pixelThreshold: number;
+  };
+}
+
+/**
+ * blackdetect 的固定参数。结果里报告的就是这两个常量，
+ * 因此「没有检出黑段」永远等于「在这组参数下没有检出」，不能被解释成更强的结论。
+ */
+const BLACK_DETECT_MINIMUM_DURATION_SECONDS = 0.04;
+const BLACK_DETECT_PIXEL_THRESHOLD = 0.1;
+
+/** 从 blackdetect 的 stderr 诊断行提取模型可直接使用的黑段区间。 */
+function parseBlackSegments(stderr: string): BlackSegment[] {
+  const segments: BlackSegment[] = [];
+  const blackSegmentPattern = /black_start:(\d+(?:\.\d+)?)\s+black_end:(\d+(?:\.\d+)?)\s+black_duration:(\d+(?:\.\d+)?)/g;
+
+  for (const match of stderr.matchAll(blackSegmentPattern)) {
+    segments.push({
+      start: Number(match[1]),
+      end: Number(match[2]),
+      duration: Number(match[3]),
+    });
+  }
+
+  return segments;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -128,19 +177,24 @@ async function executeOutputCommand(
   await executeCommand('ffmpeg', args, ...(signal === undefined ? [] : [signal]));
 }
 
-/** 写出型视频工具的统一成功结果：文本给模型看，artifacts 给宿主登记产物。 */
-function videoCreated(outputPath: string): ToolResult {
+/**
+ * 写出型视频工具的统一成功结果。
+ *
+ * 它只报告这次调用真实写出的路径（结构化生产事实），不再直接登记 `artifacts`：
+ * 中间片段、待修成片和最终交付在宿主看来必须可区分，视频交付的 `artifacts`
+ * 只由应用层的发布工具在真正发布成功后报告。
+ */
+function videoProduced(outputPath: string): ToolResult {
   return {
     status: 'success',
-    output: `Video created: ${outputPath}`,
-    artifacts: [outputPath],
+    output: { outputPath },
   };
 }
 
 /** 从视频提取供本地语音识别使用的单声道 16 kHz 16-bit PCM WAV 音频。 */
 export class ExtractAudioTool implements Tool {
   readonly name = 'extract_audio';
-  readonly description = '从视频中提取单声道 16 kHz 16-bit PCM WAV 音频';
+description = '从视频中提取单声道 16 kHz 16-bit PCM WAV 音频';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -153,7 +207,7 @@ export class ExtractAudioTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -190,13 +244,6 @@ export class ExtractAudioTool implements Tool {
       return errorResult(error);
     }
   }
-}
-
-/** ffconcat 是文件格式而不是 shell；这里只转义它自己的路径语法。 */
-function concatFileLine(inputPath: string): string {
-  const normalizedPath = inputPath.replace(/\\/g, '/');
-  const escapedPath = normalizedPath.replace(/'/g, "'\\''");
-  return `file '${escapedPath}'`;
 }
 
 /**
@@ -263,10 +310,34 @@ async function probeDuration(executeCommand: CommandExecutor, inputPath: string,
   return duration;
 }
 
+/**
+ * 用一次 ffprobe 判断输入是否带音轨。
+ * 需要引用 `0:a:0` 的 Tool 都必须先经过这里：无音轨时引用音频流会让 FFmpeg 直接失败。
+ */
+async function hasAudioStream(
+  executeCommand: CommandExecutor,
+  inputPath: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const { stdout } = await executeCommand('ffprobe', [
+    '-v',
+    'error',
+    '-select_streams',
+    'a:0',
+    '-show_entries',
+    'stream=index',
+    '-of',
+    'csv=p=0',
+    inputPath,
+  ], ...(signal === undefined ? [] : [signal]));
+
+  return stdout.trim().length > 0;
+}
+
 /** 使用 ffprobe 读取媒体容器和音视频流的基本信息。 */
 export class ProbeMediaTool implements Tool {
   readonly name = 'probe_media';
-  readonly description = '读取媒体文件的时长、画面尺寸和音视频编码信息';
+description = '读取媒体文件的时长、画面尺寸和音视频编码信息';
   readonly inputSchema = {
     type: 'object',
     properties: { inputPath: { type: 'string' } },
@@ -276,7 +347,7 @@ export class ProbeMediaTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.inputPath !== 'string') {
       return { status: 'error', message: 'probe_media requires inputPath to be a string' };
     }
@@ -292,13 +363,162 @@ export class ProbeMediaTool implements Tool {
         '-show_streams',
         input.inputPath,
       ], ...(signal === undefined ? [] : [signal]));
-      return { status: 'success', output: parseMediaInfo(stdout) };
+      // 结果里保留真实被探测的路径：候选验收必须能把证据归属到具体文件，
+      // 不能让「另一个文件的探测结果」或模型回复文本冒充本候选的证据。
+      return { status: 'success', output: { inputPath: input.inputPath, ...parseMediaInfo(stdout) } };
     } catch (error) {
       return errorResult(error);
     }
   }
 }
 
+/** 使用 FFmpeg blackdetect 检测黑段；这是只读检查，不登记产物。 */
+export class DetectBlackSegmentsTool implements Tool {
+  readonly name = 'detect_black_segments';
+description = '使用 FFmpeg blackdetect 检测视频中的黑段区间';
+  readonly inputSchema = {
+    type: 'object',
+    properties: { inputPath: { type: 'string' } },
+    required: ['inputPath'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+    if (!isRecord(input) || typeof input.inputPath !== 'string') {
+      return { status: 'error', message: 'detect_black_segments requires inputPath to be a string' };
+    }
+
+    try {
+      // blackdetect 的检测结果写在 stderr；不设置 error 级日志，否则会压掉检测行。
+      const { stderr } = await this.executeCommand('ffmpeg', [
+        '-hide_banner',
+        '-i',
+        input.inputPath,
+        '-vf',
+        `blackdetect=d=${BLACK_DETECT_MINIMUM_DURATION_SECONDS}:pix_th=${BLACK_DETECT_PIXEL_THRESHOLD}`,
+        '-an',
+        '-f',
+        'null',
+        '-',
+      ], ...(signal === undefined ? [] : [signal]));
+      const segments = parseBlackSegments(stderr);
+
+      return {
+        status: 'success',
+        output: {
+          inputPath: input.inputPath,
+          hasBlackSegments: segments.length > 0,
+          segments,
+          parameters: {
+            minimumDurationSeconds: BLACK_DETECT_MINIMUM_DURATION_SECONDS,
+            pixelThreshold: BLACK_DETECT_PIXEL_THRESHOLD,
+          },
+        } satisfies BlackSegmentsInfo,
+      };
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
+
+interface DecodeVideoInfo {
+  readonly inputPath: string;
+  /** 容器里是否存在可用的视频流；它不等同于整段都能解码。 */
+  readonly hasVideoStream: boolean;
+  readonly videoCodec: string | null;
+  readonly durationSeconds: number | null;
+  /** 是否完成全文件解码。false 表示这段媒体自身无法完整读出。 */
+  readonly fullyDecoded: boolean;
+}
+
+/**
+ * 对整段视频做真实解码检查。
+ *
+ * probe_media 只读取容器与流信息，不能证明整段都能解码；本 Tool 用一次完整的
+ * 「解码到 null」真正读完所有帧。它只报告检查事实，不决定候选是否合格。
+ */
+export class DecodeVideoTool implements Tool {
+  readonly name = 'decode_video';
+  readonly description = '对视频做全文件解码检查，确认存在可用视频流并且整段可以完整解码';
+  readonly inputSchema = {
+    type: 'object',
+    properties: { inputPath: { type: 'string' } },
+    required: ['inputPath'],
+    additionalProperties: false,
+  };
+
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+    if (!isRecord(input) || typeof input.inputPath !== 'string') {
+      return { status: 'error', message: 'decode_video requires inputPath to be a string' };
+    }
+
+    try {
+      // 先探测容器与流：没有视频流时不必再解码，结论已经是「不是可用视频」。
+      const { stdout } = await this.executeCommand('ffprobe', [
+        '-v',
+        'error',
+        '-print_format',
+        'json',
+        '-show_format',
+        '-show_streams',
+        input.inputPath,
+      ], ...(signal === undefined ? [] : [signal]));
+      const mediaInfo = parseMediaInfo(stdout);
+      const hasVideoStream = mediaInfo.videoCodec !== null;
+
+      if (!hasVideoStream) {
+        return {
+          status: 'success',
+          output: {
+            inputPath: input.inputPath,
+            hasVideoStream: false,
+            videoCodec: null,
+            durationSeconds: mediaInfo.duration,
+            fullyDecoded: false,
+          } satisfies DecodeVideoInfo,
+        };
+      }
+
+      let fullyDecoded = true;
+      try {
+        // 解码到 null：只有整段都能读出时 FFmpeg 才正常退出。
+        await this.executeCommand('ffmpeg', [
+          '-hide_banner',
+          '-v',
+          'error',
+          '-i',
+          input.inputPath,
+          '-f',
+          'null',
+          '-',
+        ], ...(signal === undefined ? [] : [signal]));
+      } catch (error) {
+        // 解码进程无法启动属于工具不可用，必须继续向上暴露；
+        // 进程正常运行后报错则说明这段媒体自身不能完整解码，是真实的检查结论。
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (error instanceof Error && error.message === missingExecutableMessage('ffmpeg')) throw error;
+        fullyDecoded = false;
+      }
+
+      return {
+        status: 'success',
+        output: {
+          inputPath: input.inputPath,
+          hasVideoStream: true,
+          videoCodec: mediaInfo.videoCodec,
+          durationSeconds: mediaInfo.duration,
+          fullyDecoded,
+        } satisfies DecodeVideoInfo,
+      };
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+}
 interface ExtractedVideoFrame {
   readonly timestamp: number;
   readonly path: string;
@@ -367,7 +587,7 @@ export class ExtractVideoFramesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputDir !== 'string') {
@@ -408,7 +628,7 @@ interface ExtractVideoRangeFramesOutput {
  */
 export class ExtractVideoRangeFramesTool implements Tool {
   readonly name = 'extract_video_range_frames';
-  readonly description = '在指定原视频时间范围内均匀抽取六帧，用于进一步确认内容变化和近似剪切边界';
+description = '在指定原视频时间范围内均匀抽取六帧，用于进一步确认内容变化和近似剪切边界';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -423,7 +643,7 @@ export class ExtractVideoRangeFramesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.outputDir !== 'string') {
@@ -494,7 +714,7 @@ export class TrimVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -539,14 +759,20 @@ export class TrimVideoTool implements Tool {
         'aac',
         input.outputPath,
       ], signal);
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       return errorResult(error);
     }
   }
 }
 
-/** 使用 FFmpeg concat demuxer 按输入顺序拼接条件一致的视频。 */
+/**
+ * 使用 FFmpeg concat filter 按输入顺序解码并重新编码各段。
+ * concat demuxer 会沿用首段的流参数，遇到采样率不同的 AAC 时静默丢弃后续音频并仍然返回成功；
+ * concat filter 逐段提供视频与音频输入，由 FFmpeg 统一重采样后再拼接，因此不依赖各段音频参数一致。
+ * concat filter 必须为每段显式给出音频输入，所以先探测音轨：全部无音轨时只拼接视频，
+ * 只有部分片段有音轨时明确失败，不产出比视频短的音轨。
+ */
 export class ConcatVideosTool implements Tool {
   readonly name = 'concat_videos';
   readonly description = '按顺序拼接多个编码条件一致的视频';
@@ -562,7 +788,7 @@ export class ConcatVideosTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || !Array.isArray(input.inputPaths)
       || input.inputPaths.length === 0
@@ -574,44 +800,52 @@ export class ConcatVideosTool implements Tool {
       };
     }
 
-    let temporaryDirectory: string | undefined;
-
     try {
-      temporaryDirectory = await mkdtemp(join(tmpdir(), 'agent-desktop-ffmpeg-'));
-      const concatListPath = join(temporaryDirectory, 'inputs.ffconcat');
       const inputPaths = input.inputPaths as string[];
-      const concatList = [
-        'ffconcat version 1.0',
-        ...inputPaths.map(concatFileLine),
-        '',
-      ].join('\n');
+      // 逐段探测音轨：无音轨的片段不能提供 [i:a:0] 输入，必须先知道每段的真实情况。
+      const audioFlags: boolean[] = [];
+      for (const inputPath of inputPaths) {
+        audioFlags.push(await hasAudioStream(this.executeCommand, inputPath, signal));
+      }
+      const audioCount = audioFlags.filter(Boolean).length;
 
-      await writeFile(concatListPath, concatList, 'utf8');
-      // concat demuxer 保留输入顺序；编码条件不兼容时让 FFmpeg 明确失败。
+      if (audioCount !== 0 && audioCount !== inputPaths.length) {
+        // 混合输入既无法只拼视频，也无法为无声片段补出等长音频；直接失败，不静默丢音。
+        const silentPaths = inputPaths.filter((_, index) => !audioFlags[index]);
+        return {
+          status: 'error',
+          message: `concat_videos cannot mix inputs with and without audio streams: ${silentPaths.join(', ')}`,
+        };
+      }
+
+      const hasAudio = audioCount === inputPaths.length;
+      // concat filter 按段依次消费「视频+音频」两个输入，顺序必须逐段交错。
+      const segmentInputs = hasAudio
+        ? inputPaths.map((_, index) => `[${index}:v:0][${index}:a:0]`).join('')
+        : inputPaths.map((_, index) => `[${index}:v:0]`).join('');
+      const filterGraph = hasAudio
+        ? `${segmentInputs}concat=n=${inputPaths.length}:v=1:a=1[video][audio]`
+        : `${segmentInputs}concat=n=${inputPaths.length}:v=1:a=0[video]`;
+
       await executeOutputCommand(this.executeCommand, input.outputPath, [
         REFUSE_OVERWRITE,
         '-hide_banner',
         '-loglevel',
         'error',
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        concatListPath,
+        // -i 的出现顺序就是拼接顺序，与 inputPaths 一一对应。
+        ...inputPaths.flatMap((inputPath) => ['-i', inputPath]),
+        '-filter_complex',
+        filterGraph,
+        '-map',
+        '[video]',
+        ...(hasAudio ? ['-map', '[audio]', '-c:a', 'aac'] : []),
         '-c:v',
         'libx264',
-        '-c:a',
-        'aac',
         input.outputPath,
       ], signal);
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       return errorResult(error);
-    } finally {
-      if (temporaryDirectory !== undefined) {
-        await rm(temporaryDirectory, { recursive: true, force: true });
-      }
     }
   }
 }
@@ -619,7 +853,7 @@ export class ConcatVideosTool implements Tool {
 /** 保留视频画面，并用传入音频替换输出文件的声音。 */
 export class AddAudioTool implements Tool {
   readonly name = 'add_audio';
-  readonly description = '保留视频画面并使用传入音频，输出时长以视频为准';
+description = '保留视频画面并使用传入音频，输出时长以视频为准';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -633,7 +867,7 @@ export class AddAudioTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.audioPath !== 'string'
@@ -668,7 +902,7 @@ export class AddAudioTool implements Tool {
         '-shortest',
         input.outputPath,
       ], signal);
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       return errorResult(error);
     }
@@ -678,7 +912,7 @@ export class AddAudioTool implements Tool {
 /** 使用 FFmpeg subtitles filter 把外部 SRT 字幕永久烧录进视频画面。 */
 export class AddSubtitlesTool implements Tool {
   readonly name = 'add_subtitles';
-  readonly description = '将外部 SRT 字幕烧录到视频画面中';
+description = '将外部 SRT 字幕烧录到视频画面中';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -692,7 +926,7 @@ export class AddSubtitlesTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.videoPath !== 'string'
       || typeof input.subtitlePath !== 'string'
@@ -727,7 +961,7 @@ export class AddSubtitlesTool implements Tool {
         'copy',
         input.outputPath,
       ], signal);
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/No such filter:\s*['"]?subtitles/i.test(message)) {
@@ -741,7 +975,7 @@ export class AddSubtitlesTool implements Tool {
 /** scale filter 将每一帧直接缩放到用户指定宽高，不隐式保持原始比例。 */
 export class ResizeVideoTool implements Tool {
   readonly name = 'resize_video';
-  readonly description = '将视频画面直接缩放到指定宽度和高度';
+description = '将视频画面直接缩放到指定宽度和高度';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -756,7 +990,7 @@ export class ResizeVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -798,7 +1032,7 @@ export class ResizeVideoTool implements Tool {
         'copy',
         input.outputPath,
       ], signal);
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       return errorResult(error);
     }
@@ -825,7 +1059,7 @@ export class CropVideoTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -873,7 +1107,7 @@ export class CropVideoTool implements Tool {
         'copy',
         input.outputPath,
       ], signal);
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       return errorResult(error);
     }
@@ -883,7 +1117,7 @@ export class CropVideoTool implements Tool {
 /** 在 0.5～2.0 倍范围内同步调整视频时间戳与音频节奏。 */
 export class SetSpeedTool implements Tool {
   readonly name = 'set_speed';
-  readonly description = '在 0.5 到 2.0 倍范围内同步调整视频播放速度';
+description = '在 0.5 到 2.0 倍范围内同步调整视频播放速度';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -897,7 +1131,7 @@ export class SetSpeedTool implements Tool {
 
   constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)
       || typeof input.inputPath !== 'string'
       || typeof input.outputPath !== 'string') {
@@ -919,18 +1153,7 @@ export class SetSpeedTool implements Tool {
 
     try {
       // 先探测首个音轨，避免无音频视频引用 0:a:0 时产生无意义错误。
-      const audioProbe = await this.executeCommand('ffprobe', [
-        '-v',
-        'error',
-        '-select_streams',
-        'a:0',
-        '-show_entries',
-        'stream=index',
-        '-of',
-        'csv=p=0',
-        input.inputPath,
-      ], ...(signal === undefined ? [] : [signal]));
-      const hasAudio = audioProbe.stdout.trim().length > 0;
+      const hasAudio = await hasAudioStream(this.executeCommand, input.inputPath, signal);
 
       if (hasAudio) {
         // setpts 控制视频帧时间戳，atempo 控制音频节奏；同一倍率保持音视频同步。
@@ -973,7 +1196,7 @@ export class SetSpeedTool implements Tool {
         ], signal);
       }
 
-      return videoCreated(input.outputPath);
+      return videoProduced(input.outputPath);
     } catch (error) {
       return errorResult(error);
     }

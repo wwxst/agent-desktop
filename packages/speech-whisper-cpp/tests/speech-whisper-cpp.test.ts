@@ -1,6 +1,14 @@
 import { access, writeFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
 import { executeFileCommand, TranscribeAudioTool, type CommandExecutor } from '../src/index.js';
+
+function toolContext(): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+  };
+}
 
 function getOutputBase(args: readonly string[]): string {
   const outputFlagIndex = args.indexOf('-of');
@@ -56,7 +64,7 @@ describe('whisper.cpp speech tools', () => {
     });
     const tool = new TranscribeAudioTool({ modelPath: 'models/ggml-small.bin' }, executeCommand);
 
-    await expect(tool.execute({ audioPath: 'speech.wav' })).resolves.toEqual({
+    await expect(tool.execute({ audioPath: 'speech.wav' }, toolContext())).resolves.toEqual({
       status: 'success',
       output: {
         text: 'hello world',
@@ -94,7 +102,7 @@ describe('whisper.cpp speech tools', () => {
       command: 'C:\\tools\\whisper-cli.exe',
     }, executeCommand);
 
-    await expect(tool.execute({ audioPath: 'speech.wav' })).resolves.toEqual({
+    await expect(tool.execute({ audioPath: 'speech.wav' }, toolContext())).resolves.toEqual({
       status: 'success',
       output: {
         text: '你好',
@@ -119,7 +127,7 @@ describe('whisper.cpp speech tools', () => {
     const executeCommand = vi.fn<CommandExecutor>();
 
     await expect(new TranscribeAudioTool({ modelPath: 'models/ggml-small.bin' }, executeCommand)
-      .execute({ audioPath: 'speech.mp3' })).resolves.toEqual({
+      .execute({ audioPath: 'speech.mp3' }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'transcribe_audio only supports .wav audioPath',
       });
@@ -160,7 +168,7 @@ describe('whisper.cpp speech tools', () => {
     };
 
     await expect(new TranscribeAudioTool({ modelPath: 'model.bin' }, executeCommand)
-      .execute({ audioPath: 'speech.wav' })).resolves.toEqual({
+      .execute({ audioPath: 'speech.wav' }, toolContext())).resolves.toEqual({
         status: 'error',
         message: expectedMessage,
       });
@@ -177,7 +185,7 @@ describe('whisper.cpp speech tools', () => {
     };
 
     await expect(new TranscribeAudioTool({ modelPath: 'model.bin' }, executeCommand)
-      .execute({ audioPath: 'speech.wav' })).resolves.toEqual({
+      .execute({ audioPath: 'speech.wav' }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'Whisper produced an empty transcript',
       });
@@ -189,7 +197,7 @@ describe('whisper.cpp speech tools', () => {
     };
 
     await expect(new TranscribeAudioTool({ modelPath: 'model.bin' }, executeCommand)
-      .execute({ audioPath: 'speech.wav' })).resolves.toEqual({
+      .execute({ audioPath: 'speech.wav' }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'whisper-cli failed: model not found',
       });

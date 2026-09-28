@@ -1,8 +1,12 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import type {
+  AgentActivityDetail,
+  AgentActivityDirectoryEntry,
   AgentActivityFile,
   AgentActivityItem,
+  AgentActivitySearchMatch,
   AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
   AgentTaskResult,
   ClientConversation,
   ClientConversationMessage,
@@ -28,9 +32,14 @@ export interface PersistedAttachment {
   readonly role: AttachmentRole;
 }
 
+/**
+ * 桌面持久化状态。
+ *
+ * 旧快照里的 `outputSequence` 不再参与任何命名：新命名只依赖发布时的真实磁盘占用，
+ * 因此读取时直接忽略该字段，不保留第二套「名字起点」事实。
+ */
 export interface PersistedDesktopState {
   readonly activeSessionId: string;
-  readonly outputSequence: number;
   readonly sessions: readonly PersistedDesktopSession[];
   readonly clientState: ClientStateSnapshot;
 }
@@ -133,7 +142,11 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
             ...readArtifacts(value.result.artifacts, `${field}.result.artifacts`),
           }
         : status === 'error'
-          ? { status, message: readString(value.result.message, `${field}.result.message`) }
+          ? {
+              status,
+              message: readString(value.result.message, `${field}.result.message`),
+              ...(Object.hasOwn(value.result, 'output') ? { output: value.result.output } : {}),
+            }
           : invalid(`${field}.result.status`);
       return {
         type,
@@ -177,6 +190,107 @@ function readActivityFile(value: unknown, field: string): AgentActivityFile {
   };
 }
 
+function readOptionalString(value: unknown, field: string): { readonly note?: string } {
+  if (value === undefined) return {};
+  return { note: readString(value, field) };
+}
+
+function readActivityDirectoryEntry(value: unknown, field: string): AgentActivityDirectoryEntry {
+  if (!isRecord(value)) invalid(field);
+  const type = readString(value.type, `${field}.type`);
+  if (type !== 'file' && type !== 'directory') invalid(`${field}.type`);
+  return {
+    name: readString(value.name, `${field}.name`),
+    path: readString(value.path, `${field}.path`),
+    type,
+  };
+}
+
+function readActivitySearchMatch(value: unknown, field: string): AgentActivitySearchMatch {
+  if (!isRecord(value)) invalid(field);
+  return {
+    filePath: readString(value.filePath, `${field}.filePath`),
+    lineNumber: readNonNegativeInteger(value.lineNumber, `${field}.lineNumber`),
+    line: readString(value.line, `${field}.line`),
+  };
+}
+
+/** 活动详情来自本机快照边界，按可辨识联合逐字段读取，拒绝半截或伪造的历史结果。 */
+function readActivityDetail(value: unknown, field: string): AgentActivityDetail {
+  if (!isRecord(value)) invalid(field);
+  const kind = readString(value.kind, `${field}.kind`);
+  switch (kind) {
+    case 'error':
+      return { kind, message: readString(value.message, `${field}.message`) };
+    case 'file-content':
+      return {
+        kind,
+        filePath: readString(value.filePath, `${field}.filePath`),
+        startLine: readNonNegativeInteger(value.startLine, `${field}.startLine`),
+        endLine: readNonNegativeInteger(value.endLine, `${field}.endLine`),
+        totalLines: readNonNegativeInteger(value.totalLines, `${field}.totalLines`),
+        lines: readStringArray(value.lines, `${field}.lines`),
+        ...readOptionalString(value.note, `${field}.note`),
+      };
+    case 'directory': {
+      if (!Array.isArray(value.entries)) invalid(`${field}.entries`);
+      return {
+        kind,
+        directory: readString(value.directory, `${field}.directory`),
+        total: readNonNegativeInteger(value.total, `${field}.total`),
+        entries: value.entries.map((entry, index) => (
+          readActivityDirectoryEntry(entry, `${field}.entries[${index}]`)
+        )),
+        ...readOptionalString(value.note, `${field}.note`),
+      };
+    }
+    case 'search': {
+      if (!Array.isArray(value.matches)) invalid(`${field}.matches`);
+      return {
+        kind,
+        directory: readString(value.directory, `${field}.directory`),
+        pattern: readString(value.pattern, `${field}.pattern`),
+        total: readNonNegativeInteger(value.total, `${field}.total`),
+        matches: value.matches.map((match, index) => (
+          readActivitySearchMatch(match, `${field}.matches[${index}]`)
+        )),
+        ...readOptionalString(value.note, `${field}.note`),
+      };
+    }
+    case 'command-output':
+      return {
+        kind,
+        command: readString(value.command, `${field}.command`),
+        stdout: readString(value.stdout, `${field}.stdout`),
+        stderr: readString(value.stderr, `${field}.stderr`),
+        truncated: readBoolean(value.truncated, `${field}.truncated`),
+        droppedBytes: readNonNegativeInteger(value.droppedBytes, `${field}.droppedBytes`),
+      };
+    case 'command': {
+      const termination = readString(value.termination, `${field}.termination`);
+      if (termination !== 'exited' && termination !== 'timed-out') invalid(`${field}.termination`);
+      const exitCode = value.exitCode;
+      if (exitCode !== null && (typeof exitCode !== 'number' || !Number.isInteger(exitCode))) {
+        invalid(`${field}.exitCode`);
+      }
+      return {
+        kind,
+        command: readString(value.command, `${field}.command`),
+        workingDirectory: readString(value.workingDirectory, `${field}.workingDirectory`),
+        exitCode,
+        termination,
+        stdout: readString(value.stdout, `${field}.stdout`),
+        stderr: readString(value.stderr, `${field}.stderr`),
+        truncated: readBoolean(value.truncated, `${field}.truncated`),
+        droppedBytes: readNonNegativeInteger(value.droppedBytes, `${field}.droppedBytes`),
+        ...readOptionalString(value.note, `${field}.note`),
+      };
+    }
+    default:
+      return invalid(`${field}.kind`);
+  }
+}
+
 function readActivityItem(value: unknown, field: string): AgentActivityItem {
   if (!isRecord(value)) invalid(field);
   const kind = readString(value.kind, `${field}.kind`);
@@ -202,6 +316,7 @@ function readActivityItem(value: unknown, field: string): AgentActivityItem {
   }
   const files = value.files;
   if (files !== undefined && !Array.isArray(files)) invalid(`${field}.files`);
+  const detail = value.detail;
 
   return {
     id: readString(value.id, `${field}.id`),
@@ -213,6 +328,7 @@ function readActivityItem(value: unknown, field: string): AgentActivityItem {
       : { files: files.map((item, index) => readActivityFile(item, `${field}.files[${index}]`)) }),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(plannedToolCallCount === undefined ? {} : { plannedToolCallCount }),
+    ...(detail === undefined ? {} : { detail: readActivityDetail(detail, `${field}.detail`) }),
   };
 }
 
@@ -255,6 +371,34 @@ function readOptionalOutputFiles(
   return value.map((item, index) => readOutputFile(item, `${field}[${index}]`));
 }
 
+/** 一个输出项的逐项交付结果；已交付项带真实路径，其余项带真实原因。 */
+function readOutputItemResult(value: unknown, field: string): AgentTaskOutputItemResult {
+  if (!isRecord(value)) invalid(field);
+  const outputItemId = readString(value.outputItemId, `${field}.outputItemId`);
+  const status = readString(value.status, `${field}.status`);
+  if (status === 'published') {
+    return {
+      outputItemId,
+      status,
+      path: readString(value.path, `${field}.path`),
+      fileName: readString(value.fileName, `${field}.fileName`),
+    };
+  }
+  if (status !== 'failed' && status !== 'blocked' && status !== 'incomplete') invalid(`${field}.status`);
+  return { outputItemId, status, reason: readString(value.reason, `${field}.reason`) };
+}
+
+/** 可选逐项结果列表：字段缺失或为空数组时按「视频交付不适用」读取。 */
+function readOptionalOutputResults(
+  value: unknown,
+  field: string,
+): readonly AgentTaskOutputItemResult[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) invalid(field);
+  if (value.length === 0) return undefined;
+  return value.map((item, index) => readOutputItemResult(item, `${field}[${index}]`));
+}
+
 /**
  * 旧版产物表：按文件名索引的 `Record<fileName, path>`，随会话保存。
  * 它保存了 Commit 35 之前唯一可用的产物关系，读取时要用来还原历史产物卡。
@@ -279,6 +423,7 @@ function readTaskResult(
   if (!isRecord(value)) invalid(field);
   const outputFiles = value.outputFiles;
   if (outputFiles !== undefined && !Array.isArray(outputFiles)) invalid(`${field}.outputFiles`);
+  const outputs = readOptionalOutputResults(value.outputs, `${field}.outputs`);
   if (outputFiles !== undefined) {
     return {
       responseText: readString(value.responseText, `${field}.responseText`),
@@ -286,12 +431,14 @@ function readTaskResult(
       ...(outputFiles.length === 0 ? {} : {
         outputFiles: outputFiles.map((item, index) => readOutputFile(item, `${field}.outputFiles[${index}]`)),
       }),
+      ...(outputs === undefined ? {} : { outputs }),
     };
   }
 
   const base = {
     responseText: readString(value.responseText, `${field}.responseText`),
     traceId: readString(value.traceId, `${field}.traceId`),
+    ...(outputs === undefined ? {} : { outputs }),
   };
   const outputFileName = value.outputFileName;
   if (outputFileName === undefined) return base;
@@ -347,18 +494,25 @@ function readClientMessage(
       result: readTaskResult(value.result, `${field}.result`, legacyOutputFilePaths),
     };
   }
-  // 失败与取消分支可以带已成功的产物；字段缺失表示本轮没有产出。
+  // 失败与取消分支可以带已成功的产物与逐项交付结果；字段缺失表示本轮没有产出。
   const outputFiles = readOptionalOutputFiles(value.outputFiles, `${field}.outputFiles`);
+  const outputs = readOptionalOutputResults(value.outputs, `${field}.outputs`);
   if (status === 'failed') {
     return {
       ...base,
       status,
       errorMessage: readString(value.errorMessage, `${field}.errorMessage`),
       ...(outputFiles === undefined ? {} : { outputFiles }),
+      ...(outputs === undefined ? {} : { outputs }),
     };
   }
   if (status === 'cancelled') {
-    return { ...base, status, ...(outputFiles === undefined ? {} : { outputFiles }) };
+    return {
+      ...base,
+      status,
+      ...(outputFiles === undefined ? {} : { outputFiles }),
+      ...(outputs === undefined ? {} : { outputs }),
+    };
   }
   return invalid(`${field}.status`);
 }
@@ -528,12 +682,7 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
     invalid('activeSessionId');
   }
 
-  return {
-    activeSessionId,
-    outputSequence: readNonNegativeInteger(value.outputSequence, 'outputSequence'),
-    sessions,
-    clientState,
-  };
+  return { activeSessionId, sessions, clientState };
 }
 
 export async function loadDesktopState(filePath: string): Promise<PersistedDesktopState | null> {

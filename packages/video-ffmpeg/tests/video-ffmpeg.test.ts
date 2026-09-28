@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
 import {
   AddAudioTool,
   AddSubtitlesTool,
   ConcatVideosTool,
   CropVideoTool,
+  DecodeVideoTool,
+  DetectBlackSegmentsTool,
   ExtractAudioTool,
   ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool,
@@ -20,6 +23,68 @@ import {
 
 const unusedExecutor: CommandExecutor = vi.fn(async () => ({ stdout: '', stderr: '' }));
 const escapedFilterQuote = "'" + '\\'.repeat(3) + "''";
+
+/** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
+function toolContext(signal?: AbortSignal): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
+
+/**
+ * 真实媒体测试需要本机 ffmpeg/ffprobe。
+ * 缺少二进制时明确 skip 而不是伪装成通过；本机存在时该测试真实执行。
+ */
+const realFfmpegAvailable = await executeFileCommand('ffprobe', ['-version'])
+  .then(() => true)
+  .catch(() => false);
+
+/** 用 lavfi 生成一个无音轨片段，作为 concat 的真实媒体夹具。 */
+async function createSilentClip(path: string, color: string): Promise<void> {
+  await executeFileCommand('ffmpeg', [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-f',
+    'lavfi',
+    '-i',
+    `color=c=${color}:s=64x64:d=1`,
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-an',
+    path,
+  ]);
+}
+
+interface ProbedStream {
+  readonly codec_type: string;
+}
+
+/** 读取真实输出的容器时长和流列表，用于断言拼接结果的时长与音轨。 */
+async function probeRealMedia(path: string): Promise<{
+  readonly duration: number;
+  readonly streams: readonly ProbedStream[];
+}> {
+  const { stdout } = await executeFileCommand('ffprobe', [
+    '-v',
+    'error',
+    '-print_format',
+    'json',
+    '-show_format',
+    '-show_streams',
+    path,
+  ]);
+  const payload = JSON.parse(stdout) as {
+    format: { duration: string };
+    streams: ProbedStream[];
+  };
+
+  return { duration: Number(payload.format.duration), streams: payload.streams };
+}
 
 describe('FFmpeg video tools', () => {
   it('aborts a running child process', async () => {
@@ -43,9 +108,11 @@ describe('FFmpeg video tools', () => {
       .rejects.toThrow('agent-desktop-command-that-does-not-exist not found in PATH');
   });
 
-  it('exposes the eleven model-visible Tool definitions', () => {
+  it('exposes the thirteen model-visible Tool definitions', () => {
     const tools = [
       new ProbeMediaTool(unusedExecutor),
+      new DecodeVideoTool(unusedExecutor),
+      new DetectBlackSegmentsTool(unusedExecutor),
       new ExtractVideoFramesTool(unusedExecutor),
       new ExtractVideoRangeFramesTool(unusedExecutor),
       new TrimVideoTool(unusedExecutor),
@@ -60,6 +127,8 @@ describe('FFmpeg video tools', () => {
 
     expect(tools.map(({ name }) => name)).toEqual([
       'probe_media',
+      'decode_video',
+      'detect_black_segments',
       'extract_video_frames',
       'extract_video_range_frames',
       'trim_video',
@@ -97,14 +166,14 @@ describe('FFmpeg video tools', () => {
     await expect(tool.execute({
       videoPath: 'input.mp4',
       outputPath: 'audio.mp3',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'extract_audio only supports .wav outputPath',
     });
     await expect(tool.execute({
       videoPath: 42,
       outputPath: 'audio.wav',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'extract_audio requires videoPath and outputPath to be strings',
     });
@@ -119,7 +188,7 @@ describe('FFmpeg video tools', () => {
     await expect(tool.execute({
       videoPath: 'input video.mp4',
       outputPath: 'speech.wav',
-    })).resolves.toEqual({ status: 'success', output: 'Audio created: speech.wav' });
+    }, toolContext())).resolves.toEqual({ status: 'success', output: 'Audio created: speech.wav' });
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-n',
@@ -147,7 +216,7 @@ describe('FFmpeg video tools', () => {
     await expect(new ExtractAudioTool(executeCommand).execute({
       videoPath: 'broken.mp4',
       outputPath: 'speech.wav',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffmpeg failed: cannot extract audio',
     });
@@ -179,7 +248,7 @@ describe('FFmpeg video tools', () => {
       ));
       const tool = new ExtractVideoFramesTool(executeCommand);
 
-      await expect(tool.execute({ videoPath: 'input.mp4', outputDir })).resolves.toEqual({
+      await expect(tool.execute({ videoPath: 'input.mp4', outputDir }, toolContext())).resolves.toEqual({
         status: 'success',
         output: {
           duration: 42,
@@ -230,7 +299,7 @@ describe('FFmpeg video tools', () => {
     };
     const tool = new ExtractVideoFramesTool(executeCommand);
 
-    await expect(tool.execute({ videoPath: 'broken.mp4', outputDir: 'frames' })).resolves.toEqual({
+    await expect(tool.execute({ videoPath: 'broken.mp4', outputDir: 'frames' }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffprobe failed: broken input',
     });
@@ -260,7 +329,7 @@ describe('FFmpeg video tools', () => {
       outputDir: 'frames',
       start: 10,
       end: 20,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'extract_video_range_frames requires videoPath and outputDir to be strings',
     });
@@ -269,7 +338,7 @@ describe('FFmpeg video tools', () => {
       outputDir: 'frames',
       start: -1,
       end: 20,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'extract_video_range_frames requires finite start >= 0 and end > start',
     });
@@ -278,7 +347,7 @@ describe('FFmpeg video tools', () => {
       outputDir: 'frames',
       start: 10,
       end: 10,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'extract_video_range_frames requires finite start >= 0 and end > start',
     });
@@ -287,7 +356,7 @@ describe('FFmpeg video tools', () => {
       outputDir: 'frames',
       start: Number.NaN,
       end: Number.POSITIVE_INFINITY,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'extract_video_range_frames requires finite start >= 0 and end > start',
     });
@@ -306,7 +375,7 @@ describe('FFmpeg video tools', () => {
         outputDir,
         start: 10,
         end: 24,
-      })).resolves.toEqual({
+      }, toolContext())).resolves.toEqual({
         status: 'success',
         output: {
           start: 10,
@@ -352,7 +421,7 @@ describe('FFmpeg video tools', () => {
       outputDir: 'frames',
       start: 10,
       end: 20,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffmpeg failed: cannot seek range',
     });
@@ -361,16 +430,20 @@ describe('FFmpeg video tools', () => {
   it('rejects invalid inputs before starting FFmpeg', async () => {
     const executeCommand = vi.fn<CommandExecutor>();
 
-    await expect(new ProbeMediaTool(executeCommand).execute({ inputPath: 42 })).resolves.toEqual({
+    await expect(new ProbeMediaTool(executeCommand).execute({ inputPath: 42 }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'probe_media requires inputPath to be a string',
+    });
+    await expect(new DetectBlackSegmentsTool(executeCommand).execute({ inputPath: 42 }, toolContext())).resolves.toEqual({
+      status: 'error',
+      message: 'detect_black_segments requires inputPath to be a string',
     });
     await expect(new TrimVideoTool(executeCommand).execute({
       inputPath: 'input.mp4',
       outputPath: 'output.mp4',
       start: -1,
       duration: 0,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'trim_video requires start >= 0 and duration > 0',
     });
@@ -379,14 +452,14 @@ describe('FFmpeg video tools', () => {
       outputPath: 'output.mp4',
       start: Number.NaN,
       duration: Number.POSITIVE_INFINITY,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'trim_video requires start >= 0 and duration > 0',
     });
     await expect(new ConcatVideosTool(executeCommand).execute({
       inputPaths: [],
       outputPath: 'output.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'concat_videos requires a non-empty inputPaths string array and outputPath string',
     });
@@ -394,7 +467,7 @@ describe('FFmpeg video tools', () => {
       videoPath: 'video.mp4',
       audioPath: 42,
       outputPath: 'output.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'add_audio requires videoPath, audioPath, and outputPath to be strings',
     });
@@ -415,7 +488,7 @@ describe('FFmpeg video tools', () => {
     }));
     const tool = new ProbeMediaTool(executeCommand);
 
-    const result = await tool.execute({ inputPath: 'C:\\videos\\input.mp4' });
+    const result = await tool.execute({ inputPath: 'C:\\videos\\input.mp4' }, toolContext());
 
     expect(executeCommand).toHaveBeenCalledWith('ffprobe', [
       '-v',
@@ -426,9 +499,11 @@ describe('FFmpeg video tools', () => {
       '-show_streams',
       'C:\\videos\\input.mp4',
     ]);
+    // 结果保留真实被探测的路径：候选验收要能证明证据属于哪一个文件。
     expect(result).toEqual({
       status: 'success',
       output: {
+        inputPath: 'C:\\videos\\input.mp4',
         duration: 12.5,
         width: 1920,
         height: 1080,
@@ -446,9 +521,10 @@ describe('FFmpeg video tools', () => {
 
     await expect(new ProbeMediaTool(executeCommand).execute({
       inputPath: 'audio-or-empty.bin',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'success',
       output: {
+        inputPath: 'audio-or-empty.bin',
         duration: null,
         width: null,
         height: null,
@@ -465,9 +541,208 @@ describe('FFmpeg video tools', () => {
 
     await expect(new ProbeMediaTool(executeCommand).execute({
       inputPath: 'broken.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffprobe failed: Invalid data found when processing input',
+    });
+  });
+
+  it('detects black segments with fixed FFmpeg blackdetect parameters', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({
+      stdout: '',
+      stderr: [
+        '[blackdetect @ 000001] black_start:0 black_end:1.125 black_duration:1.125',
+        '[blackdetect @ 000001] black_start:4.666667 black_end:5.5 black_duration:0.833333',
+      ].join('\n'),
+    }));
+    const tool = new DetectBlackSegmentsTool(executeCommand);
+
+    const result = await tool.execute({ inputPath: 'final.mp4' }, toolContext());
+
+    expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
+      '-hide_banner',
+      '-i',
+      'final.mp4',
+      '-vf',
+      // 过滤器文本与结果里报告的参数来自同一组常量：报告值不可能与实际检测不一致。
+      'blackdetect=d=0.04:pix_th=0.1',
+      '-an',
+      '-f',
+      'null',
+      '-',
+    ]);
+    // 结果同时报告真实路径与实际生效的参数：历史结论必须能解释成「在这组参数下」的结果。
+    expect(result).toEqual({
+      status: 'success',
+      output: {
+        inputPath: 'final.mp4',
+        hasBlackSegments: true,
+        segments: [
+          { start: 0, end: 1.125, duration: 1.125 },
+          { start: 4.666667, end: 5.5, duration: 0.833333 },
+        ],
+        parameters: { minimumDurationSeconds: 0.04, pixelThreshold: 0.1 },
+      },
+    });
+  });
+
+  it('returns an empty black segment list when blackdetect finds none', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: 'frame=10 fps=0.0' }));
+
+    await expect(new DetectBlackSegmentsTool(executeCommand).execute({ inputPath: 'clean.mp4' }, toolContext())).resolves.toEqual({
+      status: 'success',
+      output: {
+        inputPath: 'clean.mp4',
+        hasBlackSegments: false,
+        segments: [],
+        parameters: { minimumDurationSeconds: 0.04, pixelThreshold: 0.1 },
+      },
+    });
+  });
+
+  it('returns blackdetect execution failures as Tool errors', async () => {
+    const executeCommand: CommandExecutor = async () => {
+      throw new Error('ffmpeg failed: Invalid data found when processing input');
+    };
+
+    await expect(new DetectBlackSegmentsTool(executeCommand).execute({
+      inputPath: 'broken.mp4',
+    }, toolContext())).resolves.toEqual({
+      status: 'error',
+      message: 'ffmpeg failed: Invalid data found when processing input',
+    });
+  });
+
+  it('decodes the whole file and reports the real input path', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+      command === 'ffprobe'
+        ? {
+          stdout: JSON.stringify({
+            format: { duration: '5.04' },
+            streams: [{ codec_type: 'video', codec_name: 'h264', width: 64, height: 64 }],
+          }),
+          stderr: '',
+        }
+        : { stdout: '', stderr: '' }
+    ));
+
+    const result = await new DecodeVideoTool(executeCommand).execute({
+      inputPath: 'candidate.mp4',
+    }, toolContext());
+
+    // 全文件解码到 null：只有整段都能读出时才算通过。
+    expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
+      '-hide_banner',
+      '-v',
+      'error',
+      '-i',
+      'candidate.mp4',
+      '-f',
+      'null',
+      '-',
+    ]);
+    expect(result).toEqual({
+      status: 'success',
+      output: {
+        inputPath: 'candidate.mp4',
+        hasVideoStream: true,
+        videoCodec: 'h264',
+        durationSeconds: 5.04,
+        fullyDecoded: true,
+      },
+    });
+  });
+
+  it('reports a file without a video stream as not decodable without running the decoder', async () => {
+    const executeCommand = vi.fn<CommandExecutor>(async () => ({
+      stdout: JSON.stringify({ format: { duration: '3' }, streams: [{ codec_type: 'audio', codec_name: 'aac' }] }),
+      stderr: '',
+    }));
+
+    await expect(new DecodeVideoTool(executeCommand).execute({
+      inputPath: 'audio-only.m4a',
+    }, toolContext())).resolves.toEqual({
+      status: 'success',
+      output: {
+        inputPath: 'audio-only.m4a',
+        hasVideoStream: false,
+        videoCodec: null,
+        durationSeconds: 3,
+        fullyDecoded: false,
+      },
+    });
+    // 没有视频流时不需要再解码：结论已经是「不是可用视频」。
+    expect(executeCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a file the decoder cannot read as not fully decoded instead of a Tool error', async () => {
+    const executeCommand: CommandExecutor = async (command) => {
+      if (command === 'ffprobe') {
+        return {
+          stdout: JSON.stringify({
+            format: { duration: '5' },
+            streams: [{ codec_type: 'video', codec_name: 'h264', width: 64, height: 64 }],
+          }),
+          stderr: '',
+        };
+      }
+      throw new Error('ffmpeg failed: Invalid data found when processing input');
+    };
+
+    // 进程正常运行后报错说明这段媒体自身不能完整解码，是真实检查结论而不是工具不可用。
+    await expect(new DecodeVideoTool(executeCommand).execute({
+      inputPath: 'truncated.mp4',
+    }, toolContext())).resolves.toEqual({
+      status: 'success',
+      output: {
+        inputPath: 'truncated.mp4',
+        hasVideoStream: true,
+        videoCodec: 'h264',
+        durationSeconds: 5,
+        fullyDecoded: false,
+      },
+    });
+  });
+
+  it('propagates cancellation during full-file decoding', async () => {
+    const executeCommand: CommandExecutor = async (command) => {
+      if (command === 'ffprobe') {
+        return {
+          stdout: JSON.stringify({
+            format: { duration: '5' },
+            streams: [{ codec_type: 'video', codec_name: 'h264', width: 64, height: 64 }],
+          }),
+          stderr: '',
+        };
+      }
+      throw new DOMException('The operation was aborted', 'AbortError');
+    };
+
+    await expect(new DecodeVideoTool(executeCommand).execute({
+      inputPath: 'cancelled.mp4',
+    }, toolContext())).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('keeps a missing ffmpeg binary as a Tool error', async () => {
+    const executeCommand: CommandExecutor = async (command) => {
+      if (command === 'ffprobe') {
+        return {
+          stdout: JSON.stringify({
+            format: { duration: '5' },
+            streams: [{ codec_type: 'video', codec_name: 'h264', width: 64, height: 64 }],
+          }),
+          stderr: '',
+        };
+      }
+      throw new Error('ffmpeg not found in PATH');
+    };
+
+    // 工具不可用和文件不可解码是两件不同的事，不能混为一谈。
+    await expect(new DecodeVideoTool(executeCommand).execute({
+      inputPath: 'candidate.mp4',
+    }, toolContext())).resolves.toEqual({
+      status: 'error',
+      message: 'ffmpeg not found in PATH',
     });
   });
 
@@ -480,7 +755,7 @@ describe('FFmpeg video tools', () => {
       outputPath: 'trimmed.mp4',
       start: 5,
       duration: 10,
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-n',
@@ -503,7 +778,8 @@ describe('FFmpeg video tools', () => {
       'aac',
       'trimmed.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: trimmed.mp4', artifacts: ['trimmed.mp4'] });
+    // 写出型工具只报告结构化生产事实，不直接登记 artifacts。
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'trimmed.mp4' } });
   });
 
   it('refuses to overwrite an existing user output file before starting FFmpeg', async () => {
@@ -518,7 +794,7 @@ describe('FFmpeg video tools', () => {
         outputPath,
         start: 0,
         duration: 1,
-      })).resolves.toEqual({
+      }, toolContext())).resolves.toEqual({
         status: 'error',
         message: `Output file already exists and will not be overwritten: ${outputPath}`,
       });
@@ -545,7 +821,7 @@ describe('FFmpeg video tools', () => {
       const result = await new ExtractVideoFramesTool(executeCommand).execute({
         videoPath: 'input.mp4',
         outputDir,
-      });
+      }, toolContext());
 
       expect(result.status).toBe('error');
       expect(result.status === 'error' ? result.message : '').toContain(existingFrame);
@@ -557,49 +833,175 @@ describe('FFmpeg video tools', () => {
     }
   });
 
-  it('writes an ordered concat list and removes it after execution', async () => {
-    let concatListPath = '';
-    let concatListContent = '';
-    const executeCommand = vi.fn<CommandExecutor>(async (_command, args) => {
-      const inputIndex = args.indexOf('-i');
-      concatListPath = args[inputIndex + 1] ?? '';
-      concatListContent = await readFile(concatListPath, 'utf8');
-      return { stdout: '', stderr: '' };
-    });
+  it('concatenates every input through the concat filter in input order', async () => {
+    // 三段都有音轨：探测返回音轨存在，走「视频+音频」一起拼接的路径。
+    const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+      command === 'ffprobe'
+        ? { stdout: '1\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    ));
     const tool = new ConcatVideosTool(executeCommand);
+    const inputPaths = ['C:\\videos\\one.mp4', 'C:\\videos\\two.mp4', 'C:\\videos\\three.mp4'];
 
-    const result = await tool.execute({
-      inputPaths: ['C:\\videos\\one.mp4', 'C:\\videos\\two.mp4'],
-      outputPath: 'C:\\videos\\joined.mp4',
-    });
+    const result = await tool.execute({ inputPaths, outputPath: 'C:\\videos\\joined.mp4' }, toolContext());
 
-    expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
+    // 每段各自作为 -i 输入并显式贡献视频与音频；参数中不出现 concat demuxer，
+    // 该 demuxer 会沿用首段音频参数，把采样率不同的后续片段静默丢弃。
+    for (const [index, inputPath] of inputPaths.entries()) {
+      expect(executeCommand).toHaveBeenNthCalledWith(index + 1, 'ffprobe', [
+        '-v',
+        'error',
+        '-select_streams',
+        'a:0',
+        '-show_entries',
+        'stream=index',
+        '-of',
+        'csv=p=0',
+        inputPath,
+      ]);
+    }
+    expect(executeCommand).toHaveBeenNthCalledWith(4, 'ffmpeg', [
       '-n',
       '-hide_banner',
       '-loglevel',
       'error',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
       '-i',
-      concatListPath,
-      '-c:v',
-      'libx264',
+      'C:\\videos\\one.mp4',
+      '-i',
+      'C:\\videos\\two.mp4',
+      '-i',
+      'C:\\videos\\three.mp4',
+      '-filter_complex',
+      '[0:v:0][0:a:0][1:v:0][1:a:0][2:v:0][2:a:0]concat=n=3:v=1:a=1[video][audio]',
+      '-map',
+      '[video]',
+      '-map',
+      '[audio]',
       '-c:a',
       'aac',
+      '-c:v',
+      'libx264',
       'C:\\videos\\joined.mp4',
     ]);
-    expect(concatListContent).toBe(
-      "ffconcat version 1.0\nfile 'C:/videos/one.mp4'\nfile 'C:/videos/two.mp4'\n",
-    );
-    await expect(access(concatListPath)).rejects.toThrow();
     expect(result).toEqual({
       status: 'success',
-      output: 'Video created: C:\\videos\\joined.mp4',
-      artifacts: ['C:\\videos\\joined.mp4'],
+      output: { outputPath: 'C:\\videos\\joined.mp4' },
     });
   });
+
+  it('concatenates video only when no input has an audio stream', async () => {
+    // 全部无音轨：不能引用 [i:a:0]，只拼接视频流，与旧实现产出的视频-only 结果一致。
+    const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+      command === 'ffprobe'
+        ? { stdout: '', stderr: '' }
+        : { stdout: '', stderr: '' }
+    ));
+    const tool = new ConcatVideosTool(executeCommand);
+
+    const result = await tool.execute({
+      inputPaths: ['silent-one.mp4', 'silent-two.mp4'],
+      outputPath: 'joined.mp4',
+    }, toolContext());
+
+    expect(executeCommand).toHaveBeenNthCalledWith(3, 'ffmpeg', [
+      '-n',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-i',
+      'silent-one.mp4',
+      '-i',
+      'silent-two.mp4',
+      '-filter_complex',
+      '[0:v:0][1:v:0]concat=n=2:v=1:a=0[video]',
+      '-map',
+      '[video]',
+      '-c:v',
+      'libx264',
+      'joined.mp4',
+    ]);
+    expect(result).toEqual({
+      status: 'success',
+      output: { outputPath: 'joined.mp4' },
+    });
+  });
+
+  it('rejects inputs that mix segments with and without audio', async () => {
+    // 混合输入无法只拼视频，也无法为无声片段补出等长音频：必须明确失败，不能产出短音轨后返回成功。
+    const executeCommand = vi.fn<CommandExecutor>(async (command, args) => (
+      command === 'ffprobe' && args.at(-1) === 'silent.mp4'
+        ? { stdout: '', stderr: '' }
+        : { stdout: '1\n', stderr: '' }
+    ));
+    const tool = new ConcatVideosTool(executeCommand);
+
+    await expect(tool.execute({
+      inputPaths: ['with-audio.mp4', 'silent.mp4'],
+      outputPath: 'joined.mp4',
+    }, toolContext())).resolves.toEqual({
+      status: 'error',
+      message: 'concat_videos cannot mix inputs with and without audio streams: silent.mp4',
+    });
+
+    // 判定发生在启动 FFmpeg 之前，因此不会写出任何输出文件。
+    expect(executeCommand.mock.calls.map((call) => call[0])).toEqual(['ffprobe', 'ffprobe']);
+  });
+
+  it('passes the same AbortSignal to every concat probe and to FFmpeg', async () => {
+    // 拼接现在先逐段探测音轨再启动 FFmpeg，这三个外部命令都必须拿到同一个取消信号；
+    // 漏传信号会让长视频拼接期间的取消无法终止子进程，与 Tool 执行的取消契约不一致。
+    const controller = new AbortController();
+    const executeCommand = vi.fn<CommandExecutor>(async (command) => (
+      command === 'ffprobe'
+        ? { stdout: '1\n', stderr: '' }
+        : { stdout: '', stderr: '' }
+    ));
+
+    await expect(new ConcatVideosTool(executeCommand).execute({
+      inputPaths: ['one.mp4', 'two.mp4'],
+      outputPath: 'joined.mp4',
+    }, toolContext(controller.signal))).resolves.toEqual({
+      status: 'success',
+      output: { outputPath: 'joined.mp4' },
+    });
+
+    expect(executeCommand.mock.calls.map((call) => call[2])).toEqual([
+      controller.signal,
+      controller.signal,
+      controller.signal,
+    ]);
+  });
+
+  it.skipIf(!realFfmpegAvailable)(
+    'joins two video-only segments with real FFmpeg and produces no audio track',
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-concat-media-test-'));
+      try {
+        const firstPath = join(directory, 'silent-one.mp4');
+        const secondPath = join(directory, 'silent-two.mp4');
+        const outputPath = join(directory, 'joined.mp4');
+        await createSilentClip(firstPath, 'black');
+        await createSilentClip(secondPath, 'white');
+
+        await expect(new ConcatVideosTool().execute({
+          inputPaths: [firstPath, secondPath],
+          outputPath,
+        }, toolContext())).resolves.toEqual({
+          status: 'success',
+          output: { outputPath },
+        });
+
+        const { duration, streams } = await probeRealMedia(outputPath);
+        // 两个 1 秒片段拼成约 2 秒视频，且不产生任何音轨。
+        expect(streams.filter((stream) => stream.codec_type === 'audio')).toEqual([]);
+        expect(streams.filter((stream) => stream.codec_type === 'video')).toHaveLength(1);
+        expect(duration).toBeGreaterThan(1.9);
+        expect(duration).toBeLessThan(2.1);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('builds add-audio arguments that keep the video duration', async () => {
     const executeCommand = vi.fn<CommandExecutor>(async () => ({ stdout: '', stderr: '' }));
@@ -609,7 +1011,7 @@ describe('FFmpeg video tools', () => {
       videoPath: 'video.mp4',
       audioPath: 'music.wav',
       outputPath: 'with-audio.mp4',
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-n',
@@ -633,7 +1035,7 @@ describe('FFmpeg video tools', () => {
       '-shortest',
       'with-audio.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: with-audio.mp4', artifacts: ['with-audio.mp4'] });
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'with-audio.mp4' } });
   });
 
   it('converts FFmpeg execution failures into concise Tool errors', async () => {
@@ -646,7 +1048,7 @@ describe('FFmpeg video tools', () => {
       outputPath: 'output.mp4',
       start: 0,
       duration: 1,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffmpeg failed: Error opening output file',
     });
@@ -654,7 +1056,15 @@ describe('FFmpeg video tools', () => {
       videoPath: 'video.mp4',
       audioPath: 'audio.wav',
       outputPath: 'output.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
+      status: 'error',
+      message: 'ffmpeg failed: Error opening output file',
+    });
+    // concat 的音轨探测或拼接命令失败时必须让模型看到失败，不能返回成功。
+    await expect(new ConcatVideosTool(executeCommand).execute({
+      inputPaths: ['one.mp4', 'two.mp4'],
+      outputPath: 'output.mp4',
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffmpeg failed: Error opening output file',
     });
@@ -665,7 +1075,7 @@ describe('FFmpeg video tools', () => {
 
     await expect(new ProbeMediaTool(executeCommand).execute({
       inputPath: 'input.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffprobe returned invalid JSON',
     });
@@ -673,7 +1083,7 @@ describe('FFmpeg video tools', () => {
     const missingFields: CommandExecutor = async () => ({ stdout: '{}', stderr: '' });
     await expect(new ProbeMediaTool(missingFields).execute({
       inputPath: 'input.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'ffprobe response is missing format or streams',
     });
@@ -702,7 +1112,7 @@ describe('FFmpeg video tools', () => {
       videoPath: 'input.mp4',
       subtitlePath: 42,
       outputPath: 'output.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'add_subtitles requires videoPath, subtitlePath, and outputPath to be strings',
     });
@@ -710,7 +1120,7 @@ describe('FFmpeg video tools', () => {
       videoPath: 'input.mp4',
       subtitlePath: 'subtitle.ass',
       outputPath: 'output.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'add_subtitles only supports .srt subtitle files',
     });
@@ -743,7 +1153,7 @@ describe('FFmpeg video tools', () => {
       videoPath: 'input.mp4',
       subtitlePath,
       outputPath: 'output.mp4',
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-n',
@@ -764,7 +1174,7 @@ describe('FFmpeg video tools', () => {
       'copy',
       'output.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: output.mp4', artifacts: ['output.mp4'] });
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'output.mp4' } });
   });
 
   it('reports an unavailable subtitles filter explicitly', async () => {
@@ -776,7 +1186,7 @@ describe('FFmpeg video tools', () => {
       videoPath: 'input.mp4',
       subtitlePath: 'subtitle.srt',
       outputPath: 'output.mp4',
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'FFmpeg subtitles filter is not available',
     });
@@ -805,7 +1215,7 @@ describe('FFmpeg video tools', () => {
       outputPath: 'output.mp4',
       width: 0,
       height: Number.POSITIVE_INFINITY,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'resize_video requires finite width > 0 and height > 0',
     });
@@ -821,7 +1231,7 @@ describe('FFmpeg video tools', () => {
       outputPath: 'portrait.mp4',
       width: 1080,
       height: 1920,
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-n',
@@ -842,7 +1252,7 @@ describe('FFmpeg video tools', () => {
       'copy',
       'portrait.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: portrait.mp4', artifacts: ['portrait.mp4'] });
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'portrait.mp4' } });
   });
 
   it('validates crop coordinates and dimensions before starting FFmpeg', async () => {
@@ -856,7 +1266,7 @@ describe('FFmpeg video tools', () => {
       y: Number.NaN,
       width: 0,
       height: 360,
-    })).resolves.toEqual({
+    }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'crop_video requires finite x >= 0, y >= 0, width > 0, and height > 0',
     });
@@ -874,7 +1284,7 @@ describe('FFmpeg video tools', () => {
       y: 50,
       width: 640,
       height: 360,
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenCalledWith('ffmpeg', [
       '-n',
@@ -895,7 +1305,7 @@ describe('FFmpeg video tools', () => {
       'copy',
       'cropped.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: cropped.mp4', artifacts: ['cropped.mp4'] });
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'cropped.mp4' } });
   });
 
   it('defines set_speed with the supported speed range', () => {
@@ -920,7 +1330,7 @@ describe('FFmpeg video tools', () => {
         inputPath: 'input.mp4',
         outputPath: 'output.mp4',
         speed,
-      })).resolves.toEqual({
+      }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'set_speed requires a finite speed between 0.5 and 2.0',
       });
@@ -940,7 +1350,7 @@ describe('FFmpeg video tools', () => {
       inputPath: 'input.mp4',
       outputPath: 'faster.mp4',
       speed: 1.5,
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenNthCalledWith(1, 'ffprobe', [
       '-v',
@@ -972,7 +1382,7 @@ describe('FFmpeg video tools', () => {
       'aac',
       'faster.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: faster.mp4', artifacts: ['faster.mp4'] });
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'faster.mp4' } });
   });
 
   it('changes only video timing when no audio stream exists', async () => {
@@ -987,7 +1397,7 @@ describe('FFmpeg video tools', () => {
       inputPath: 'silent.mp4',
       outputPath: 'slower.mp4',
       speed: 0.5,
-    });
+    }, toolContext());
 
     expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
       '-n',
@@ -1005,6 +1415,6 @@ describe('FFmpeg video tools', () => {
       'libx264',
       'slower.mp4',
     ]);
-    expect(result).toEqual({ status: 'success', output: 'Video created: slower.mp4', artifacts: ['slower.mp4'] });
+    expect(result).toEqual({ status: 'success', output: { outputPath: 'slower.mp4' } });
   });
 });

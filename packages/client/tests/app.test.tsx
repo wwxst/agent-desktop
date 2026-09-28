@@ -41,6 +41,12 @@ beforeAll(() => {
 
 afterEach(() => cleanup());
 
+/** 产物卡的类型文案是文件名之外的那一行；按卡片定位，避免命中其他轮次的同名文件。 */
+function artifactTypeText(fileName: string): string {
+  const card = screen.getByText(fileName).closest('.artifact-card');
+  return within(card as HTMLElement).getByText(/· 已完成$/).textContent ?? '';
+}
+
 describe('shared App', () => {
   it('sends with Enter but leaves Shift+Enter and IME confirmation to the editor', async () => {
     const runAgentTask = vi.fn(api.runAgentTask);
@@ -494,6 +500,88 @@ describe('shared App', () => {
 
     expect(await within(card as HTMLElement).findByText('文件不存在或已被移动：D:/videos/missing.mp4'))
       .toBeTruthy();
+  });
+
+  it('shows the host reveal message verbatim in the activity row', async () => {
+    const missingPath = 'D:\\work\\notes-moved.txt';
+    const revealFile = vi.fn(async () => {
+      // 宿主边界（Desktop Preload）已经剥离 Electron 的 invoke 包装，界面只转发真实原因。
+      throw new Error(`文件不存在或已被移动：${missingPath}`);
+    });
+    render(<App api={{
+      ...api,
+      revealFile,
+      loadClientState: async () => ({
+        activeSessionId: 'session-a',
+        conversations: [{
+          id: 'session-a',
+          title: '会话 1',
+          titleManuallyRenamed: false,
+          prompt: '',
+          attachments: [],
+          messages: [{
+            id: 1,
+            role: 'assistant',
+            status: 'completed',
+            activityExpanded: true,
+            activity: [{
+              id: 'call-moved',
+              kind: 'tool',
+              toolName: 'write_text_file',
+              status: 'completed',
+              files: [{ path: missingPath, label: 'notes-moved.txt', role: 'output' }],
+            }],
+            result: { responseText: '已创建文件', traceId: 'trace-moved' },
+          }],
+        }],
+      }),
+    }} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `定位文件：${missingPath}` }));
+
+    // 活动行只显示宿主的可操作消息，不出现 Electron IPC 的技术包装。
+    const inlineError = await screen.findByText(`文件不存在或已被移动：${missingPath}`);
+    expect(inlineError.closest('.activity-file-error')).not.toBeNull();
+    expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+  });
+
+  it('shows the real artifact type for video, subtitle, text and unknown files', async () => {
+    const revealFile = vi.fn(async () => undefined);
+    render(<App api={{
+      ...api,
+      revealFile,
+      runAgentTask: async () => ({
+        responseText: '已完成',
+        traceId: 'trace-artifact-kinds',
+        outputFiles: [
+          { path: 'D:/videos/edited.mp4', fileName: 'edited.mp4' },
+          { path: 'D:/work/subtitle-test.srt', fileName: 'subtitle-test.srt' },
+          { path: 'D:/work/notes.txt', fileName: 'notes.txt' },
+          { path: 'D:/work/notes.md', fileName: 'notes.md' },
+          { path: 'D:/work/NOTES.TXT', fileName: 'NOTES.TXT' },
+          { path: 'D:/work/archive.zip', fileName: 'archive.zip' },
+        ],
+      }),
+    }} />);
+
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '生成文件和字幕' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+    // 类型文案是用户可见事实：非视频产物不能显示成「视频」。
+    expect(await screen.findByText('edited.mp4')).toBeTruthy();
+    expect(artifactTypeText('edited.mp4')).toBe('视频 · 已完成');
+    expect(artifactTypeText('subtitle-test.srt')).toBe('字幕 · 已完成');
+    expect(artifactTypeText('notes.txt')).toBe('文本 · 已完成');
+    expect(artifactTypeText('notes.md')).toBe('文本 · 已完成');
+    expect(artifactTypeText('NOTES.TXT')).toBe('文本 · 已完成');
+    expect(artifactTypeText('archive.zip')).toBe('文件 · 已完成');
+
+    // 类型改变不影响打开动作：非视频产物仍定位到自己的真实路径。
+    const textCard = screen.getByText('notes.txt').closest('.artifact-card');
+    expect(textCard).not.toBeNull();
+    fireEvent.click(within(textCard as HTMLElement).getByRole('button', { name: '打开文件' }));
+    await vi.waitFor(() => expect(revealFile).toHaveBeenCalledWith('D:/work/notes.txt'));
   });
 
   it('applies streamed text only to the assistant reply that is processing', async () => {
@@ -963,7 +1051,7 @@ describe('shared App', () => {
     expect(await screen.findByText('已修改')).toBeTruthy();
   });
 
-  it('scrolls the pending approval fully into view while following the latest content', async () => {
+  it('keeps history position stable while showing approval above the composer', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
     const rendered = render(<App api={{
@@ -992,13 +1080,14 @@ describe('shared App', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     await waitFor(() => expect(scrollTop).toBe(400));
 
-    // 审批卡让阅读轴变长；跟随最新内容时必须再次滚到新的底部。
+    // 审批卡属于 Composer，不进入历史阅读轴；历史位置不因审批出现而变化。
     scrollHeight = 620;
     act(() => receiveEvent?.({
       type: 'approval.requested',
       request: { requestId: 'request-scroll', kind: 'create-file', target: 'D:/videos/清单.txt' },
     }));
-    await waitFor(() => expect(scrollTop).toBe(620));
+    await waitFor(() => expect(scrollTop).toBe(400));
+    expect(rendered.container.querySelector('.composer-stack .approval-request')).not.toBeNull();
 
     await act(async () => resolveTask?.({ responseText: '已停止', traceId: 'trace-scroll' }));
   });

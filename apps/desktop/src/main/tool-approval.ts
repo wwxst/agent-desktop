@@ -52,6 +52,7 @@ export class ToolApprovalGate {
           resolve(approved);
         },
       };
+      // 审批卡只展示宿主算出的确切操作参数；客户端能做的只有批准或拒绝。
       this.publish(target.kind === 'edit-file'
         ? {
           requestId,
@@ -60,7 +61,16 @@ export class ToolApprovalGate {
           before: target.before,
           after: target.after,
         }
-        : { requestId, kind: target.kind, target: target.path });
+        : target.kind === 'command'
+          ? {
+            requestId,
+            kind: target.kind,
+            interpreter: target.interpreter,
+            command: target.command,
+            workingDirectory: target.workingDirectory,
+            timeoutMs: target.timeoutMs,
+          }
+          : { requestId, kind: target.kind, target: target.path });
     });
   }
 

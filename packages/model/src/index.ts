@@ -13,7 +13,16 @@ export type ToolResult =
      */
     readonly artifacts?: readonly string[];
   }
-  | { readonly status: 'error'; readonly message: string };
+  | {
+    readonly status: 'error';
+    readonly message: string;
+    /**
+     * 失败调用仍然真实产生的结构化结果。
+     * 当前只有命令的失败分支使用它：非零退出和超时都保留退出码与有界输出，
+     * 因此不能只留一条错误文字而丢弃命令输出。它只补充错误详情，不把失败伪装成成功。
+     */
+    readonly output?: unknown;
+  };
 
 /** 模型可见的供应商无关工具描述，刻意不包含运行时 execute 方法。 */
 export interface ModelToolDefinition {

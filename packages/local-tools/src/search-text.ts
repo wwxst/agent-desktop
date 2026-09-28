@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { rgPath } from '@vscode/ripgrep';
 import { spawn } from 'node:child_process';
 import { resolveScopedPath } from './path-scope.js';
@@ -145,7 +145,7 @@ export class SearchTextTool implements Tool {
     private readonly maxMatches: number = DEFAULT_MAX_MATCHES,
   ) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)) return errorResult('search_text requires an object input');
     const { pattern, directory, extension } = input;
     if (typeof pattern !== 'string' || pattern.length === 0) {

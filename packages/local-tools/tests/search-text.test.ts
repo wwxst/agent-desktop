@@ -3,12 +3,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolResult } from '@agent-desktop/model';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
 import {
   SearchTextTool,
   type RipgrepMatch,
   type RipgrepRunner,
   type WorkspacePort,
 } from '../src/index.js';
+
+/** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
+function toolContext(signal?: AbortSignal): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
 
 /**
  * 解析、上限和取消语义用替身进程验证（确定性、不依赖机器上是否装了 ripgrep）；
@@ -98,7 +108,7 @@ describe('search_text', () => {
       ],
     });
 
-    const result = await toolFor(await real(root), runner).execute({ pattern: '句台词' });
+    const result = await toolFor(await real(root), runner).execute({ pattern: '句台词' }, toolContext());
 
     expect(search(result)).toEqual({
       directory: await real(root),
@@ -115,7 +125,7 @@ describe('search_text', () => {
     // ripgrep 无匹配时退出码是 1，这不是错误。
     const { runner } = fakeRunner({ matches: [], exitCode: 1 });
 
-    const result = await toolFor(await real(root), runner).execute({ pattern: '不存在的台词' });
+    const result = await toolFor(await real(root), runner).execute({ pattern: '不存在的台词' }, toolContext());
 
     expect(search(result)).toMatchObject({ total: 0, matches: [] });
   });
@@ -124,7 +134,7 @@ describe('search_text', () => {
     const { runner, calls } = fakeRunner();
     const resolved = await real(root);
 
-    await toolFor(resolved, runner).execute({ pattern: 'a.b', extension: 'srt' });
+    await toolFor(resolved, runner).execute({ pattern: 'a.b', extension: 'srt' }, toolContext());
 
     // 字面文本：`.` 不能变成正则；目录必须是范围解析后的真实路径。
     expect(calls[0]).toEqual([
@@ -160,7 +170,7 @@ describe('search_text', () => {
       return inner;
     };
 
-    const output = search(await toolFor(await real(root), ignoringStop, 3).execute({ pattern: '行' }));
+    const output = search(await toolFor(await real(root), ignoringStop, 3).execute({ pattern: '行' }, toolContext()));
 
     expect(output.matches).toHaveLength(3);
     expect(output.total).toBe(3);
@@ -175,7 +185,7 @@ describe('search_text', () => {
       })),
     });
 
-    const result = await toolFor(await real(root), runner, 3).execute({ pattern: '行' });
+    const result = await toolFor(await real(root), runner, 3).execute({ pattern: '行' }, toolContext());
 
     const output = search(result);
     expect(output.matches).toHaveLength(3);
@@ -190,7 +200,7 @@ describe('search_text', () => {
       matches: [{ filePath: join(root, '字幕.srt'), lineNumber: 1, line: 'x'.repeat(500) }],
     });
 
-    const output = search(await toolFor(await real(root), runner).execute({ pattern: 'x' }));
+    const output = search(await toolFor(await real(root), runner).execute({ pattern: 'x' }, toolContext()));
 
     expect(output.matches[0]?.line).toHaveLength(201);
     expect(output.matches[0]?.line.endsWith('…')).toBe(true);
@@ -202,7 +212,7 @@ describe('search_text', () => {
     missing.code = 'ENOENT';
     const { runner } = fakeRunner({ failWith: missing });
 
-    const result = await toolFor(await real(root), runner).execute({ pattern: '台词' });
+    const result = await toolFor(await real(root), runner).execute({ pattern: '台词' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('随包提供');
@@ -214,7 +224,7 @@ describe('search_text', () => {
   it('surfaces a real search failure with the process exit code', async () => {
     const { runner } = fakeRunner({ exitCode: 2, stderr: 'regex parse error\nsecond line' });
 
-    const result = await toolFor(await real(root), runner).execute({ pattern: '台词' });
+    const result = await toolFor(await real(root), runner).execute({ pattern: '台词' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('退出码 2');
@@ -230,7 +240,7 @@ describe('search_text', () => {
       return { exitCode: 0, stderr: '' };
     };
 
-    await expect(toolFor(await real(root), runner).execute({ pattern: '台词' }, controller.signal))
+    await expect(toolFor(await real(root), runner).execute({ pattern: '台词' }, toolContext(controller.signal)))
       .rejects.toHaveProperty('name', 'AbortError');
   });
 
@@ -239,7 +249,7 @@ describe('search_text', () => {
     const { runner, calls } = fakeRunner();
     controller.abort();
 
-    await expect(toolFor(await real(root), runner).execute({ pattern: '台词' }, controller.signal))
+    await expect(toolFor(await real(root), runner).execute({ pattern: '台词' }, toolContext(controller.signal)))
       .rejects.toHaveProperty('name', 'AbortError');
     expect(calls).toEqual([]);
   });
@@ -250,7 +260,7 @@ describe('search_text', () => {
     const result = await toolFor(await real(root), runner).execute({
       pattern: '台词',
       directory: outside,
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('不在当前会话的工作目录内');
@@ -260,7 +270,7 @@ describe('search_text', () => {
   it('tells the model how to get a working directory when the session has none', async () => {
     const { runner } = fakeRunner();
 
-    const result = await toolFor(undefined, runner).execute({ pattern: '台词' });
+    const result = await toolFor(undefined, runner).execute({ pattern: '台词' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('set_working_directory');
@@ -271,7 +281,7 @@ describe('search_text', () => {
     const tool = toolFor(await real(root), runner);
 
     for (const input of [null, '台词', { pattern: '' }, { pattern: 7 }, { pattern: 'x', directory: 7 }]) {
-      const result = await tool.execute(input);
+      const result = await tool.execute(input, toolContext());
       expect(result.status).toBe('error');
     }
     expect(calls).toEqual([]);

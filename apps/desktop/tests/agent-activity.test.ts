@@ -11,6 +11,7 @@ import {
   findToolCallInput,
   isSessionFilePath,
   projectAgentActivity,
+  projectAgentActivityDetail,
   readActivityFiles,
 } from '../src/main/agent-activity.js';
 
@@ -255,6 +256,50 @@ describe('projectAgentActivity', () => {
     for (const event of lifecycle) {
       expect(projectAgentActivity(event, [])).toBeUndefined();
     }
+  });
+});
+
+describe('projectAgentActivityDetail', () => {
+  it('projects bounded read, directory, and search results into typed UI details', () => {
+    expect(projectAgentActivityDetail('read_file', {
+      status: 'success',
+      output: {
+        filePath: 'D:/work/notes.txt', startLine: 3, endLine: 4, totalLines: 8,
+        lines: ['alpha', 'beta'], note: '继续读取请从第 5 行开始。',
+      },
+    })).toEqual({
+      kind: 'file-content', filePath: 'D:/work/notes.txt', startLine: 3, endLine: 4,
+      totalLines: 8, lines: ['alpha', 'beta'], note: '继续读取请从第 5 行开始。',
+    });
+    expect(projectAgentActivityDetail('list_directory', {
+      status: 'success',
+      output: {
+        directory: 'D:/work', total: 1,
+        entries: [{ name: 'src', path: 'D:/work/src', type: 'directory' }],
+      },
+    })).toEqual({
+      kind: 'directory', directory: 'D:/work', total: 1,
+      entries: [{ name: 'src', path: 'D:/work/src', type: 'directory' }],
+    });
+    expect(projectAgentActivityDetail('search_text', {
+      status: 'success',
+      output: {
+        directory: 'D:/work', pattern: 'needle', total: 1,
+        matches: [{ filePath: 'D:/work/a.txt', lineNumber: 7, line: 'needle here' }],
+      },
+    })).toEqual({
+      kind: 'search', directory: 'D:/work', pattern: 'needle', total: 1,
+      matches: [{ filePath: 'D:/work/a.txt', lineNumber: 7, line: 'needle here' }],
+    });
+  });
+
+  it('shows every real Tool failure but does not copy unrelated successful outputs', () => {
+    expect(projectAgentActivityDetail('trim_video', {
+      status: 'error', message: '输出文件已经存在。',
+    })).toEqual({ kind: 'error', message: '输出文件已经存在。' });
+    expect(projectAgentActivityDetail('trim_video', {
+      status: 'success', output: { duration: 5 },
+    })).toBeUndefined();
   });
 });
 

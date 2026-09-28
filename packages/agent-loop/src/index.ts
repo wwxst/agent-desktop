@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '@agent-desktop/agent';
 import type { ModelMessage, ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
 import { recoverSessionEvents, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
 
 /** 一次 Turn 的最小公开结果；不返回可变 Session，调用方通过 Agent 自己读取历史。 */
 export interface RunTurnResult {
@@ -26,6 +27,24 @@ export type ExecutionTraceEvent =
 /** Agent Loop 产生事件，具体持久化方式由当前生产入口提供。 */
 export type ExecutionTrace = (event: ExecutionTraceEvent) => void | Promise<void>;
 
+/** Tool Result 已写入 Session 后通知当前宿主；这条内容通道不进入只记录元数据的 Trace。 */
+export type ToolResultListener = (
+  toolCallId: ToolCall['id'],
+  toolName: string,
+  result: ToolResult,
+) => void | Promise<void>;
+
+/**
+ * 工具执行期间的实时进度通知。
+ *
+ * 进度是同步入队的事实，不写入 Session、不写入诊断 Trace，也不参与模型上下文；
+ * 循环只负责转发，批处理、限额和界面投影由宿主负责。
+ */
+export type ToolProgressListener = (
+  toolCallId: ToolCall['id'],
+  event: ToolProgressEvent,
+) => void | Promise<void>;
+
 function createTurnId(): TurnId {
   // Node.js 原生 UUID 已满足唯一性需求，类型断言只负责附加编译期品牌。
   return randomUUID() as TurnId;
@@ -38,8 +57,14 @@ function createStepId(): StepId {
 
 /** 把 Session 中的未知工具输出稳定投影为模型协议要求的字符串。 */
 function formatToolResultForModel(result: ToolResult): string {
-  // 错误消息已经是稳定字符串，不再包装或序列化。
-  if (result.status === 'error') return result.message;
+  if (result.status === 'error') {
+    // 失败调用可能仍然带有结构化结果（当前是命令的退出码和有界输出），
+    // 只交回一条错误文字会让模型拿不到失败原因，因此两者一起交给模型。
+    if (result.output === undefined) return result.message;
+    const formattedOutput = JSON.stringify(result.output);
+    if (formattedOutput === undefined) throw new Error('Tool result output must be JSON-serializable');
+    return `${result.message}\n${formattedOutput}`;
+  }
   // 字符串保持原样，避免 JSON.stringify 额外添加引号。
   if (typeof result.output === 'string') return result.output;
 
@@ -104,6 +129,8 @@ async function executeToolCall(
   toolCall: ToolCall,
   trace?: ExecutionTrace,
   signal?: AbortSignal,
+  onToolResult?: ToolResultListener,
+  onToolProgress?: ToolProgressListener,
 ): Promise<void> {
   throwIfAborted(signal);
   // 查找和执行前先记录调用，即使工具不存在或抛错也保留完整起点。
@@ -134,7 +161,17 @@ async function executeToolCall(
     result = { status: 'error', message: `Tool not found: ${toolCall.name}` };
   } else {
     try {
-      result = await tool.execute(toolCall.input, signal);
+      // 执行上下文把取消信号、调用身份和进度上报收在一个值里；
+      // 进度同步入队，循环不等待界面消费，也不让 Renderer 的消费速度决定命令生命周期。
+      const context: ToolExecutionContext = {
+        toolCallId: toolCall.id,
+        reportProgress: (event) => {
+          void onToolProgress?.(toolCall.id, event);
+        },
+        // exactOptionalPropertyTypes 下，没有取消信号时必须省略字段而不是写入 undefined。
+        ...(signal === undefined ? {} : { signal }),
+      };
+      result = await tool.execute(toolCall.input, context);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw error;
       // Tool 的 Error 失败按既有契约回写结果；其他抛出值不是合法 Tool 错误，直接暴露程序错误。
@@ -143,6 +180,16 @@ async function executeToolCall(
       result = { status: 'error', message: error.message };
     }
   }
+
+  // 先把真实结果写入 Session，再写完成诊断：
+  // 诊断写入失败不能遮蔽已经发生的成功事实（例如一个已经真正发布的文件）。
+  agent.session.append({
+    type: 'tool.result',
+    turnId,
+    stepId,
+    toolCallId: toolCall.id,
+    result,
+  });
 
   const durationMs = Date.now() - startedAt;
   if (result.status === 'success') {
@@ -175,26 +222,33 @@ async function executeToolCall(
         });
   }
 
-  // 无论成功或失败都追加结果，维持 tool.called -> tool.result 的可追踪关系。
-  agent.session.append({
-    type: 'tool.result',
-    turnId,
-    stepId,
-    toolCallId: toolCall.id,
-    result,
-  });
+  // 宿主只能在结果成为 Session 事实后收到内容，避免界面先于执行历史展示未落盘结果。
+  await onToolResult?.(toolCall.id, toolCall.name, result);
   // Tool 已完成的结果先保留在 Session；取消只阻止后续 Model/Tool，不回滚已完成工作。
   throwIfAborted(signal);
+}
+
+/**
+ * 一次 Turn 的可选运行端口。
+ *
+ * 位置参数会随能力增加持续变长，因此统一收在一个选项对象里；
+ * 这里不引入事件总线，调用方仍然只提供当前真实存在的回调。
+ */
+export interface RunTurnOptions {
+  readonly trace?: ExecutionTrace;
+  readonly signal?: AbortSignal;
+  readonly onTextDelta?: (delta: string) => void;
+  readonly onToolResult?: ToolResultListener;
+  readonly onToolProgress?: ToolProgressListener;
 }
 
 /** 从用户输入开始运行一个完整 Turn，直到模型返回零个 Tool Call。 */
 export async function runTurn(
   agent: Agent,
   input: string,
-  trace?: ExecutionTrace,
-  signal?: AbortSignal,
-  onTextDelta?: (delta: string) => void,
+  options: RunTurnOptions = {},
 ): Promise<RunTurnResult> {
+  const { trace, signal, onTextDelta, onToolResult, onToolProgress } = options;
   const turnId = createTurnId();
   let stepCount = 0;
   const turnStartedAt = Date.now();
@@ -266,7 +320,7 @@ export async function runTurn(
 
       // 多个工具调用按响应顺序串行执行，保证事件顺序确定且同属当前 Step。
       for (const toolCall of response.toolCalls) {
-        await executeToolCall(agent, turnId, stepId, toolCall, trace, signal);
+        await executeToolCall(agent, turnId, stepId, toolCall, trace, signal, onToolResult, onToolProgress);
       }
 
       // 所有工具结果写入后才完成 Step，下一次模型调用才能看到完整结果。

@@ -2,7 +2,17 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
 import { SetWorkingDirectoryTool, type WorkspacePort } from '../src/index.js';
+
+/** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
+function toolContext(signal?: AbortSignal): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
 
 /** 用真实临时目录做文件系统边界，不用 mock 伪造目录是否存在。 */
 let root: string;
@@ -33,6 +43,7 @@ function createPort(options: {
     port: {
       confirmedDirectory: () => directory,
       requestApproval: async (target) => {
+        if (target.kind === 'command') throw new Error('set_working_directory 不应请求命令审批');
         log.accessRequests.push(target.path);
         return options.approve ?? true;
       },
@@ -60,7 +71,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort();
     tool = new SetWorkingDirectoryTool(port);
 
-    await expect(tool.execute({ path: target })).resolves.toEqual({
+    await expect(tool.execute({ path: target }, toolContext())).resolves.toEqual({
       status: 'success',
       output: { directory: resolved },
     });
@@ -75,7 +86,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort({ directory: await real(target) });
     tool = new SetWorkingDirectoryTool(port);
 
-    await expect(tool.execute({ path: target })).resolves.toEqual({
+    await expect(tool.execute({ path: target }, toolContext())).resolves.toEqual({
       status: 'success',
       output: { directory: await real(target) },
     });
@@ -92,7 +103,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort({ directory: await real(first) });
     tool = new SetWorkingDirectoryTool(port);
 
-    await expect(tool.execute({ path: second })).resolves.toEqual({
+    await expect(tool.execute({ path: second }, toolContext())).resolves.toEqual({
       status: 'success',
       output: { directory: await real(second) },
     });
@@ -104,7 +115,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort();
     tool = new SetWorkingDirectoryTool(port);
 
-    const result = await tool.execute({ path: join(root, 'missing') });
+    const result = await tool.execute({ path: join(root, 'missing') }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('ENOENT');
@@ -118,7 +129,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort();
     tool = new SetWorkingDirectoryTool(port);
 
-    const result = await tool.execute({ path: file });
+    const result = await tool.execute({ path: file }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('不是目录');
@@ -135,7 +146,7 @@ describe('set_working_directory', () => {
     tool = new SetWorkingDirectoryTool(port);
 
     // `link/../real/nested` 的字符串前缀指向 link，真实位置却是 real/nested。
-    await expect(tool.execute({ path: join(link, '..', 'real', 'nested') })).resolves.toEqual({
+    await expect(tool.execute({ path: join(link, '..', 'real', 'nested') }, toolContext())).resolves.toEqual({
       status: 'success',
       output: { directory: await real(nested) },
     });
@@ -150,7 +161,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort({ directory: await real(base) });
     tool = new SetWorkingDirectoryTool(port);
 
-    await expect(tool.execute({ path: 'assets' })).resolves.toEqual({
+    await expect(tool.execute({ path: 'assets' }, toolContext())).resolves.toEqual({
       status: 'success',
       output: { directory: await real(child) },
     });
@@ -161,7 +172,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort();
     tool = new SetWorkingDirectoryTool(port);
 
-    const result = await tool.execute({ path: `assets${sep}clips` });
+    const result = await tool.execute({ path: `assets${sep}clips` }, toolContext());
 
     expect(result.status).toBe('error');
     // 不能猜用户主目录或应用安装目录，因此这里必须是明确失败。
@@ -175,7 +186,7 @@ describe('set_working_directory', () => {
     const { port, log } = createPort({ approve: false });
     tool = new SetWorkingDirectoryTool(port);
 
-    const result = await tool.execute({ path: target });
+    const result = await tool.execute({ path: target }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('用户拒绝');
@@ -202,7 +213,7 @@ describe('set_working_directory', () => {
     };
     tool = new SetWorkingDirectoryTool(cancelling);
 
-    const pending = tool.execute({ path: target }, controller.signal);
+    const pending = tool.execute({ path: target }, toolContext(controller.signal));
     await waiting;
     controller.abort();
 
@@ -219,7 +230,7 @@ describe('set_working_directory', () => {
     tool = new SetWorkingDirectoryTool(port);
     controller.abort();
 
-    await expect(tool.execute({ path: target }, controller.signal))
+    await expect(tool.execute({ path: target }, toolContext(controller.signal)))
       .rejects.toHaveProperty('name', 'AbortError');
     // 从未请求确认，因此不会有一个永远等不到答复的请求。
     expect(log.accessRequests).toEqual([]);
@@ -240,7 +251,7 @@ describe('set_working_directory', () => {
     };
     tool = new SetWorkingDirectoryTool(approvingAfterCancel);
 
-    await expect(tool.execute({ path: target }, controller.signal))
+    await expect(tool.execute({ path: target }, toolContext(controller.signal)))
       .rejects.toHaveProperty('name', 'AbortError');
     expect(log.confirmed).toEqual([]);
   });
@@ -250,7 +261,7 @@ describe('set_working_directory', () => {
     tool = new SetWorkingDirectoryTool(port);
 
     for (const input of [{}, { path: '' }, { path: 7 }, null, 'clips']) {
-      const result = await tool.execute(input);
+      const result = await tool.execute(input, toolContext());
       expect(result.status).toBe('error');
     }
     expect(log.accessRequests).toEqual([]);

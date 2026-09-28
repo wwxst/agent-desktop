@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import type { Attachment } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
 
@@ -6,6 +6,8 @@ interface ComposerProps {
   readonly attachments: readonly Attachment[];
   readonly prompt: string;
   readonly isProcessing: boolean;
+  /** 当前待决审批；显示在输入框上方，不进入对话历史。 */
+  readonly approval: ReactNode;
   /** 当前会话工作目录；未设置时不渲染这一行。 */
   readonly workingDirectory?: string;
   readonly onPromptChange: (prompt: string) => void;
@@ -20,6 +22,7 @@ export function Composer({
   attachments,
   prompt,
   isProcessing,
+  approval,
   workingDirectory,
   onPromptChange,
   onSelectFiles,
@@ -33,7 +36,9 @@ export function Composer({
   };
 
   return (
-    <form className="composer" onSubmit={submit}>
+    <div className="composer-stack">
+      {approval}
+      <form className="composer" onSubmit={submit}>
       {workingDirectory !== undefined && (
         <p className="composer-directory" title={workingDirectory}>
           <span className="composer-directory-label">工作目录</span>
@@ -108,6 +113,7 @@ export function Composer({
           </button>
         </div>
       </div>
-    </form>
+      </form>
+    </div>
   );
 }

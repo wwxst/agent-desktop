@@ -69,11 +69,29 @@ function clientState(): ClientStateSnapshot {
               toolName: 'trim_video',
               status: 'completed',
               durationMs: 12,
+              detail: {
+                kind: 'file-content',
+                filePath: 'D:/videos/notes.txt',
+                startLine: 1,
+                endLine: 2,
+                totalLines: 2,
+                lines: ['第一行', '第二行'],
+              },
             }],
             result: {
               responseText: '已经记住。',
               traceId: 'trace-a',
               outputFiles: [{ path: 'D:/videos/input-a-edited.mp4', fileName: 'input-a-edited.mp4' }],
+              // 逐项交付结果与产物卡是同一批事实的两种视图，都必须随快照恢复。
+              outputs: [
+                {
+                  outputItemId: 'out-1',
+                  status: 'published',
+                  path: 'D:/videos/input-a-edited.mp4',
+                  fileName: 'input-a-edited.mp4',
+                },
+                { outputItemId: 'out-2', status: 'blocked', reason: '内容要求当前没有可靠的自动判定。' },
+              ],
             },
           },
         ],
@@ -93,6 +111,9 @@ function clientState(): ClientStateSnapshot {
           activityExpanded: false,
           // 整轮失败仍可能已有成功的产物，终态必须保留它们。
           outputFiles: [{ path: 'D:/videos/failed-part.mp4', fileName: 'failed-part.mp4' }],
+          outputs: [
+            { outputItemId: 'out-3', status: 'incomplete', reason: '尚未进入候选验收。' },
+          ],
         }, {
           id: 4,
           role: 'assistant',
@@ -115,7 +136,6 @@ function clientState(): ClientStateSnapshot {
 function persistedState(): PersistedDesktopState {
   return {
     activeSessionId: 'session-b',
-    outputSequence: 7,
     sessions: [
       {
         id: 'session-a',
@@ -154,7 +174,6 @@ describe('desktop session persistence', () => {
 
     expect(restored).toEqual(state);
     expect(restored?.activeSessionId).toBe('session-b');
-    expect(restored?.outputSequence).toBe(7);
     expect(restored?.sessions[0]?.events).toEqual(sessionEvents('731'));
     expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
     expect(restored?.clientState.conversations[0]).toMatchObject({
@@ -217,6 +236,65 @@ describe('desktop session persistence', () => {
     expect(restored?.clientState.conversations[1]?.messages[1]).toMatchObject({
       status: 'cancelled',
       outputFiles: [{ path: 'D:/videos/cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
+    });
+  });
+
+  it('restores command output details and structured failed command results', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const commandOutput = {
+      command: 'node test.cjs',
+      workingDirectory: 'D:/project',
+      exitCode: 2,
+      termination: 'exited' as const,
+      stdout: 'stdout',
+      stderr: 'stderr',
+      truncated: true,
+      droppedBytes: 128,
+      note: '命令以退出码 2 结束',
+    };
+    const commandActivity = {
+      id: 'command-call',
+      kind: 'tool' as const,
+      toolName: 'run_command',
+      status: 'failed' as const,
+      durationMs: 42,
+      detail: { kind: 'command' as const, ...commandOutput },
+    };
+    const commandEvent: SessionEvent = {
+      type: 'tool.result',
+      turnId: 'turn-731' as TurnId,
+      stepId: 'step-731' as StepId,
+      toolCallId: 'command-call' as SessionEvent extends { type: 'tool.result'; toolCallId: infer Id } ? Id : never,
+      result: { status: 'error', message: commandOutput.note, output: commandOutput },
+    };
+    const modified: PersistedDesktopState = {
+      ...state,
+      sessions: state.sessions.map((session) => session.id === 'session-a'
+        ? { ...session, events: [...session.events, commandEvent] }
+        : session),
+      clientState: {
+        ...state.clientState,
+        conversations: state.clientState.conversations.map((conversation) => conversation.id === 'session-a'
+          ? {
+              ...conversation,
+              messages: conversation.messages.map((message) => message.role === 'assistant' && message.id === 2
+                ? { ...message, activity: [...message.activity, commandActivity] }
+                : message),
+            }
+          : conversation),
+      },
+    };
+
+    await saveDesktopState(filePath, modified);
+
+    const restored = await loadDesktopState(filePath);
+    expect(restored?.sessions[0]?.events.at(-1)).toEqual(commandEvent);
+    expect(restored?.clientState.conversations[0]?.messages[1]).toMatchObject({
+      activity: expect.arrayContaining([
+        { id: 'command-call', kind: 'tool', status: 'failed', toolName: 'run_command', durationMs: 42,
+          detail: { kind: 'command', ...commandOutput } },
+      ]),
     });
   });
 
@@ -348,8 +426,7 @@ describe('desktop session persistence', () => {
 
     // 用目录占住临时文件路径，让本次写入真实失败。
     await mkdir(`${filePath}.tmp`);
-    await expect(saveDesktopState(filePath, { ...persistedState(), outputSequence: 99 }))
-      .rejects.toThrow();
+    await expect(saveDesktopState(filePath, persistedState())).rejects.toThrow();
 
     // 写入失败不能清空或改写已有历史。
     expect(await readFile(filePath, 'utf8')).toBe(before);

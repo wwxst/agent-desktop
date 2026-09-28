@@ -13,7 +13,7 @@ describe('ToolApprovalGate', () => {
 
     const pending = gate.request({ kind: 'directory', path: 'D:/videos' });
     expect(published).toHaveLength(1);
-    expect(published[0]?.target).toBe('D:/videos');
+    expect(published[0]).toMatchObject({ kind: 'directory', target: 'D:/videos' });
 
     gate.decide(published[0]!.requestId, true);
     await expect(pending).resolves.toBe(true);
@@ -38,6 +38,30 @@ describe('ToolApprovalGate', () => {
     });
     gate.decide(published[0]!.requestId, true);
     await expect(pending).resolves.toBe(true);
+  });
+
+  it('publishes the exact command, interpreter, directory and timeout', async () => {
+    const { gate, published } = createGate();
+
+    const pending = gate.request({
+      kind: 'command',
+      interpreter: 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+      command: 'npm test',
+      workingDirectory: 'D:/videos',
+      timeoutMs: 120_000,
+    });
+
+    expect(published[0]).toEqual({
+      requestId: expect.any(String),
+      kind: 'command',
+      interpreter: 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+      command: 'npm test',
+      workingDirectory: 'D:/videos',
+      timeoutMs: 120_000,
+    });
+    // 拒绝命令不启动任何进程，也不改写待执行的操作参数。
+    gate.decide(published[0]!.requestId, false);
+    await expect(pending).resolves.toBe(false);
   });
 
   it('reports a refusal without any side effect', async () => {
@@ -123,7 +147,7 @@ describe('ToolApprovalGate', () => {
 
     // 取消只结束这一次等待，不会让下一次审批永久失效。
     const second = gate.request({ kind: 'directory', path: 'D:/second' });
-    expect(published[1]?.target).toBe('D:/second');
+    expect(published[1]).toMatchObject({ kind: 'directory', target: 'D:/second' });
     gate.decide(published[1]!.requestId, true);
     await expect(second).resolves.toBe(true);
   });

@@ -1,6 +1,16 @@
-import { runTurn, type ExecutionTrace } from '@agent-desktop/agent-loop';
+import {
+  runTurn,
+  type ExecutionTrace,
+  type ToolProgressListener,
+  type ToolResultListener,
+} from '@agent-desktop/agent-loop';
 import type { AttachmentRole } from '@agent-desktop/client';
 import type { SessionEvent, TurnId } from '@agent-desktop/session';
+import {
+  projectOutputItemResults,
+  readVideoDeliveryFacts,
+  type OutputItemResult,
+} from '@agent-desktop/video-agent';
 
 /** 提示词里使用的附件：路径是模型实际调用工具的值，角色决定它被描述成什么。 */
 export interface PromptAttachment {
@@ -15,20 +25,19 @@ function toPromptPath(filePath: string): string {
 
 /**
  * 把 Renderer 的用户意图与 Main 持有的附件组合成一次 Agent 输入。
- * 这里只描述本次真实存在的事实：选了哪些附件、有没有预设的最终输出路径。
- * 「没有主视频就一律禁止媒体工具」这类策略不在用户消息里追加——它会让用户在需求里
+ *
+ * 这里只描述本次真实存在的事实：选了哪些附件。最终交付路径不再由宿主预设——
+ * 输出项由模型按用户要求声明，候选写在应用层给出的工作目录里，最终名称在发布时确定。
+ * 「没有主视频就一律禁止媒体工具」这类策略同样不在用户消息里追加：它会让用户在需求里
  * 直接给出视频路径时也无法调用探测工具；工具可见性与使用规则统一由系统指令描述。
  */
 export function buildAgentPrompt(
   prompt: string,
   attachments?: readonly PromptAttachment[],
-  outputPath?: string,
 ): string {
   const videos = attachments?.filter((attachment) => attachment.role === 'video') ?? [];
   const audios = attachments?.filter((attachment) => attachment.role === 'audio') ?? [];
 
-  // 没有主视频时既没有可剪辑的主输入，也没有合法的输出目标（输出路径由主视频推导），
-  // 所以调用方即使传了输出路径也不提供给模型，只如实说明用户给了音轨还是什么都没给。
   if (videos.length === 0) {
     return [
       prompt,
@@ -40,7 +49,6 @@ export function buildAgentPrompt(
             ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
             '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
           ]),
-      '本次没有预设的最终输出路径。',
     ].join('\n');
   }
 
@@ -54,9 +62,6 @@ export function buildAgentPrompt(
       '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
       ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
     ]),
-    outputPath === undefined
-      ? '本次没有预设的最终输出路径。'
-      : `最终输出文件：${toPromptPath(outputPath)}`,
   ].join('\n');
 }
 
@@ -102,24 +107,51 @@ export function findTurnArtifacts(
   return artifacts;
 }
 
+/**
+ * 一轮任务需要的运行端口。
+ * 它们全部属于宿主：诊断追踪、取消信号和三条展示通道都不进入 Agent Core。
+ */
+export interface DesktopTaskOptions {
+  readonly trace: ExecutionTrace;
+  readonly signal?: AbortSignal;
+  readonly onTextDelta?: (delta: string) => void;
+  readonly onToolResult?: ToolResultListener;
+  readonly onToolProgress?: ToolProgressListener;
+}
+
+/**
+ * 本轮视频交付的逐项结果。
+ *
+ * 只有本轮真的声明过输出项时才产生结果：普通问答、只读分析和通用文本任务不创建输出项，
+ * 它们的视频交付结论是不适用，而不是「零项全部完成」。
+ */
+export function projectTurnOutputs(
+  events: readonly SessionEvent[],
+  turnId: TurnId,
+): readonly OutputItemResult[] {
+  const facts = readVideoDeliveryFacts(events);
+  if (facts.declarationTurnId !== turnId) return [];
+  return projectOutputItemResults(facts);
+}
+
 /** 在窗口持有的同一个 Agent 上执行一轮任务，让 Session 成为跨轮模型上下文的唯一来源。 */
 export async function runDesktopAgentTask(
   agent: Parameters<typeof runTurn>[0],
   prompt: string,
   attachments: readonly PromptAttachment[],
-  outputPath: string | undefined,
-  trace: ExecutionTrace,
-  signal?: AbortSignal,
-  onTextDelta?: (delta: string) => void,
+  options: DesktopTaskOptions,
 ) {
-  const result = await runTurn(
-    agent,
-    buildAgentPrompt(prompt, attachments, outputPath),
-    trace,
-    signal,
+  const result = await runTurn(agent, buildAgentPrompt(prompt, attachments), {
+    trace: options.trace,
+    // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
     // 文本增量只用于实时展示，不改变 Session 事实和返回值。
-    onTextDelta,
-  );
+    ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
+    // 工具结果内容走独立回调，不写入只承载诊断元数据的 Execution Trace。
+    ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
+    // 实时进度同样走独立通道，不写入 Session，也不进入模型上下文。
+    ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
+  });
   if (result.response.text === undefined) {
     throw new Error('Agent 未返回最终文本回复。');
   }

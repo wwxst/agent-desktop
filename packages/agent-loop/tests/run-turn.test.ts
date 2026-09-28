@@ -75,7 +75,7 @@ describe('runTurn', () => {
     const tools = new TestToolRegistry();
     tools.register({
       name: 'pending', description: 'Waits until cancelled.', inputSchema: {},
-      execute: async (_input, signal) => new Promise((_resolve, reject) => {
+      execute: async (_input, { signal }) => new Promise((_resolve, reject) => {
         expect(signal).toBe(controller.signal);
         signal?.addEventListener('abort', () => {
           reject(new DOMException('The operation was aborted', 'AbortError'));
@@ -86,7 +86,10 @@ describe('runTurn', () => {
     const session = new InMemorySession();
     const agent = createTestAgent(model, session, tools);
 
-    const cancelledTurn = runTurn(agent, 'cancel during tool', createTestTrace(traceEvents), controller.signal);
+    const cancelledTurn = runTurn(agent, 'cancel during tool', {
+      trace: createTestTrace(traceEvents),
+      signal: controller.signal,
+    });
     await toolStarted;
     controller.abort();
 
@@ -126,7 +129,7 @@ describe('runTurn', () => {
     const tools = new TestToolRegistry();
     tools.register({
       name: 'clip', description: 'clip', inputSchema: {},
-      execute: async (_input, signal) => {
+      execute: async (_input, { signal }) => {
         toolCalls += 1;
         controller.abort();
         expect(signal?.aborted).toBe(true);
@@ -135,7 +138,7 @@ describe('runTurn', () => {
     });
     const session = new InMemorySession();
 
-    await expect(runTurn(createTestAgent(model, session, tools), 'cancel', undefined, controller.signal))
+    await expect(runTurn(createTestAgent(model, session, tools), 'cancel', { signal: controller.signal }))
       .rejects.toMatchObject({ name: 'AbortError' });
     expect(toolCalls).toBe(1);
     expect(modelCalls).toBe(1);
@@ -156,7 +159,10 @@ describe('runTurn', () => {
       },
     };
 
-    await expect(runTurn(createTestAgent(model), 'cancel', createTestTrace(traceEvents), controller.signal))
+    await expect(runTurn(createTestAgent(model), 'cancel', {
+      trace: createTestTrace(traceEvents),
+      signal: controller.signal,
+    }))
       .rejects.toMatchObject({ name: 'AbortError' });
     expect(traceEvents.map((event) => event.type)).toEqual([
       'turn.started', 'model.started', 'turn.cancelled',
@@ -196,9 +202,7 @@ describe('runTurn', () => {
     const result = await runTurn(
       createTestAgent(model, session),
       'hello',
-      undefined,
-      undefined,
-      (delta) => deltas.push(delta),
+      { onTextDelta: (delta) => deltas.push(delta) },
     );
 
     expect(deltas).toEqual(['你', '好']);
@@ -237,15 +241,81 @@ describe('runTurn', () => {
     await runTurn(
       createTestAgent(model, new InMemorySession(), tools),
       'use echo',
-      undefined,
-      undefined,
-      onTextDelta,
+      { onTextDelta },
     );
 
     expect(requests).toHaveLength(2);
     expect(requests[0]?.onTextDelta).toBe(onTextDelta);
     expect(requests[1]?.onTextDelta).toBe(onTextDelta);
     expect(deltas).toEqual(['step', 'step']);
+  });
+
+  it('reports each Tool Result only after it has been appended to Session', async () => {
+    const callId = 'result-call' as ToolCallId;
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'echo', input: 'hello' }] },
+      { text: 'done', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'echo',
+      description: 'Returns its input.',
+      inputSchema: {},
+      execute: async () => ({ status: 'success', output: { value: 'hello' } }),
+    });
+    const session = new InMemorySession();
+    const reported: unknown[] = [];
+
+    await runTurn(
+      createTestAgent(model, session, tools),
+      'use echo',
+      {
+        onToolResult: (toolCallId, toolName, result) => {
+          reported.push({ toolCallId, toolName, result });
+          expect(session.events().at(-1)).toMatchObject({ type: 'tool.result', toolCallId, result });
+        },
+      },
+    );
+
+    expect(reported).toEqual([{
+      toolCallId: callId,
+      toolName: 'echo',
+      result: { status: 'success', output: { value: 'hello' } },
+    }]);
+  });
+
+  it('forwards tool progress to the host without writing it into Session', async () => {
+    const callId = 'progress-call' as ToolCallId;
+    const model = new ScriptedModel([
+      { text: 'running command', toolCalls: [{ id: callId, name: 'streaming', input: null }] },
+      { text: 'done', toolCalls: [] },
+    ]);
+    const tools = new TestToolRegistry();
+    const session = new InMemorySession();
+    const progress: unknown[] = [];
+    tools.register({
+      name: 'streaming',
+      description: 'Reports progress.',
+      inputSchema: {},
+      execute: async (_input, { reportProgress }) => {
+        reportProgress({ kind: 'command.output', stream: 'stdout', sequence: 0, text: 'chunk-1' });
+        reportProgress({ kind: 'command.output', stream: 'stderr', sequence: 1, text: 'chunk-2' });
+        return { status: 'success', output: 'streamed' };
+      },
+    });
+
+    await runTurn(
+      createTestAgent(model, session, tools),
+      'stream',
+      { onToolProgress: (toolCallId, event) => { progress.push({ toolCallId, event }); } },
+    );
+
+    expect(progress).toEqual([
+      { toolCallId: callId, event: { kind: 'command.output', stream: 'stdout', sequence: 0, text: 'chunk-1' } },
+      { toolCallId: callId, event: { kind: 'command.output', stream: 'stderr', sequence: 1, text: 'chunk-2' } },
+    ]);
+    // 进度只用于实时展示：Session 只保留最终工具结果，不保存输出片段。
+    expect(JSON.stringify(session.events())).not.toContain('chunk-1');
   });
 
   it('omits the text delta callback when the caller does not provide one', async () => {
@@ -373,7 +443,7 @@ describe('runTurn', () => {
     await runTurn(
       createTestAgent(model),
       'use missing',
-      createTestTrace(traceEvents),
+      { trace: createTestTrace(traceEvents) },
     );
 
     expect(traceEvents.map((event) => event.type)).toEqual([
@@ -550,7 +620,7 @@ describe('runTurn', () => {
     const result = await runTurn(
       createTestAgent(model, new InMemorySession(), tools),
       'private user input',
-      createTestTrace(traceEvents),
+      { trace: createTestTrace(traceEvents) },
     );
 
     expect(traceEvents.map((event) => event.type)).toEqual([
@@ -617,7 +687,7 @@ describe('runTurn', () => {
     const result = await runTurn(
       createTestAgent(model, session, tools),
       'run failing tool',
-      createTestTrace(traceEvents),
+      { trace: createTestTrace(traceEvents) },
     );
 
     expect(result.response.text).toBe('handled failure');
@@ -642,7 +712,7 @@ describe('runTurn', () => {
     await expect(runTurn(
       createTestAgent(model),
       'private user input',
-      createTestTrace(traceEvents),
+      { trace: createTestTrace(traceEvents) },
     )).rejects.toBe(failure);
 
     expect(traceEvents.map((event) => event.type)).toEqual([
@@ -708,7 +778,7 @@ describe('runTurn', () => {
       name: 'pending',
       description: 'Waits until cancelled.',
       inputSchema: {},
-      execute: async (_input, signal) => new Promise((_resolve, reject) => {
+      execute: async (_input, { signal }) => new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => {
           reject(new DOMException('The operation was aborted', 'AbortError'));
         }, { once: true });
@@ -718,9 +788,12 @@ describe('runTurn', () => {
 
     const session = new InMemorySession();
     const agent = createTestAgent(model, session, tools);
-    await runTurn(agent, '把视频裁掉前 3 秒', undefined, undefined, (delta) => deltas.push(delta));
+    await runTurn(agent, '把视频裁掉前 3 秒', { onTextDelta: (delta) => deltas.push(delta) });
 
-    const cancelledTurn = runTurn(agent, '再裁一次', undefined, controller.signal, (delta) => deltas.push(delta));
+    const cancelledTurn = runTurn(agent, '再裁一次', {
+      signal: controller.signal,
+      onTextDelta: (delta) => deltas.push(delta),
+    });
     await cancelledToolStarted;
     controller.abort();
     await expect(cancelledTurn).rejects.toMatchObject({ name: 'AbortError' });

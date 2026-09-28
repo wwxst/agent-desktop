@@ -1,7 +1,12 @@
-import type { AgentTaskOutputFile, ClientAssistantMessage } from '../api.js';
+import type {
+  AgentTaskOutputFile,
+  AgentTaskOutputItemResult,
+  ClientAssistantMessage,
+} from '../api.js';
 import { AgentActivity } from './AgentActivity.js';
 import { ArtifactCard } from './ArtifactCard.js';
 import { Markdown } from './Markdown.js';
+import { OutputResults } from './OutputResults.js';
 
 interface AssistantMessageProps {
   readonly message: ClientAssistantMessage;
@@ -21,6 +26,12 @@ function renderArtifacts(
       onOpen={() => onRevealFile(file.path)}
     />
   ));
+}
+
+/** 按声明集合展示逐项交付结果；没有声明过输出项时不渲染。 */
+function renderOutputResults(results: readonly AgentTaskOutputItemResult[] | undefined) {
+  if (results === undefined || results.length === 0) return null;
+  return <OutputResults results={results} />;
 }
 
 /**
@@ -56,6 +67,7 @@ export function AssistantMessage({
             <strong>已停止</strong>
           </div>
           {/* 取消前已完成的工具产出仍然存在，必须继续可见可定位。 */}
+          {renderOutputResults(message.outputs)}
           {renderArtifacts(message.outputFiles, onRevealFile)}
         </>
       ) : message.status === 'failed' ? (
@@ -65,7 +77,8 @@ export function AssistantMessage({
             <strong>任务失败</strong>
           </div>
           <div className="message-content"><p>{message.errorMessage}</p></div>
-          {/* 整轮失败不等于此前没有产出：已成功的文件照常展示。 */}
+          {/* 整轮失败不等于此前没有产出：已交付项与已成功文件照常展示。 */}
+          {renderOutputResults(message.outputs)}
           {renderArtifacts(message.outputFiles, onRevealFile)}
         </>
       ) : message.status === 'processing' ? (
@@ -85,6 +98,7 @@ export function AssistantMessage({
           <Markdown text={message.result.responseText} />
         </div>
       )}
+      {message.status === 'completed' && renderOutputResults(message.result.outputs)}
       {message.status === 'completed' && renderArtifacts(message.result.outputFiles, onRevealFile)}
     </article>
   );

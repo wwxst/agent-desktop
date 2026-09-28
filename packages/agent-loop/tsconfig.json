@@ -9,6 +9,7 @@
   "references": [
     { "path": "../agent" },
     { "path": "../model" },
-    { "path": "../session" }
+    { "path": "../session" },
+    { "path": "../tools" }
   ]
 }

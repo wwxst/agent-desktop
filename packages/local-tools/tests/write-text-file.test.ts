@@ -3,7 +3,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolResult } from '@agent-desktop/model';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
 import { WriteTextFileTool, type ApprovalTarget, type WorkspacePort } from '../src/index.js';
+
+/** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
+function toolContext(signal?: AbortSignal): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
 
 /** 真实目录与真实写入：审批后的副作用必须能在磁盘上核对。 */
 let base: string;
@@ -73,7 +83,7 @@ describe('write_text_file', () => {
     const { port, requested } = portFor({ directory: resolved });
     const target = join(resolved, '剪辑清单.txt');
 
-    const result = await toolFor(port).execute({ filePath: '剪辑清单.txt', content: '第一段\n第二段\n' });
+    const result = await toolFor(port).execute({ filePath: '剪辑清单.txt', content: '第一段\n第二段\n' }, toolContext());
 
     expect(write(result)).toEqual({
       filePath: target,
@@ -91,7 +101,7 @@ describe('write_text_file', () => {
     const { port } = portFor({ directory: resolved, approve: false });
     const target = join(resolved, '不要创建.txt');
 
-    const result = await toolFor(port).execute({ filePath: '不要创建.txt', content: '内容' });
+    const result = await toolFor(port).execute({ filePath: '不要创建.txt', content: '内容' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('用户拒绝');
@@ -104,7 +114,7 @@ describe('write_text_file', () => {
     await writeFile(target, '原有内容', 'utf8');
     const { port, requested } = portFor({ directory: resolved });
 
-    const result = await toolFor(port).execute({ filePath: '已有.txt', content: '新内容' });
+    const result = await toolFor(port).execute({ filePath: '已有.txt', content: '新内容' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('不会覆盖');
@@ -120,7 +130,7 @@ describe('write_text_file', () => {
     const result = await toolFor(port).execute({
       filePath: join(outside, '越界.txt'),
       content: '内容',
-    });
+    }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('不在当前会话的工作目录内');
@@ -132,7 +142,7 @@ describe('write_text_file', () => {
     const resolved = await real(root);
     const { port } = portFor({ directory: resolved });
 
-    const result = await toolFor(port).execute({ filePath: '还没有的目录/文件.txt', content: '内容' });
+    const result = await toolFor(port).execute({ filePath: '还没有的目录/文件.txt', content: '内容' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('ENOENT');
@@ -144,7 +154,7 @@ describe('write_text_file', () => {
     await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
     const { port } = portFor({ directory: resolved });
 
-    const result = await toolFor(port).execute({ filePath: '联接目录/越界.txt', content: '内容' });
+    const result = await toolFor(port).execute({ filePath: '联接目录/越界.txt', content: '内容' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('不在当前会话的工作目录内');
@@ -154,7 +164,7 @@ describe('write_text_file', () => {
   it('tells the model how to get a working directory when the session has none', async () => {
     const { port, requested } = portFor();
 
-    const result = await toolFor(port).execute({ filePath: '文件.txt', content: '内容' });
+    const result = await toolFor(port).execute({ filePath: '文件.txt', content: '内容' }, toolContext());
 
     expect(result.status).toBe('error');
     expect(result.status === 'error' && result.message).toContain('set_working_directory');
@@ -177,7 +187,7 @@ describe('write_text_file', () => {
       }),
     };
 
-    const pending = toolFor(cancelling).execute({ filePath: '半途.txt', content: '内容' }, controller.signal);
+    const pending = toolFor(cancelling).execute({ filePath: '半途.txt', content: '内容' }, toolContext(controller.signal));
     await waiting;
     controller.abort();
 
@@ -192,7 +202,7 @@ describe('write_text_file', () => {
     const { port, requested } = portFor({ directory: resolved });
     controller.abort();
 
-    await expect(toolFor(port).execute({ filePath: '取消.txt', content: '内容' }, controller.signal))
+    await expect(toolFor(port).execute({ filePath: '取消.txt', content: '内容' }, toolContext(controller.signal)))
       .rejects.toHaveProperty('name', 'AbortError');
     expect(requested).toEqual([]);
   });
@@ -201,7 +211,7 @@ describe('write_text_file', () => {
     const resolved = await real(root);
     const { port } = portFor({ directory: resolved });
 
-    const result = await toolFor(port).execute({ filePath: '空.txt', content: '' });
+    const result = await toolFor(port).execute({ filePath: '空.txt', content: '' }, toolContext());
 
     expect(write(result)).toMatchObject({ bytes: 0 });
     await expect(readFile(join(resolved, '空.txt'), 'utf8')).resolves.toBe('');
@@ -213,7 +223,7 @@ describe('write_text_file', () => {
     const tool = toolFor(port);
 
     for (const input of [null, '文件名', { filePath: '' }, { filePath: 'a.txt' }, { filePath: 7, content: 'x' }]) {
-      const result = await tool.execute(input);
+      const result = await tool.execute(input, toolContext());
       expect(result.status).toBe('error');
     }
     expect(requested).toEqual([]);

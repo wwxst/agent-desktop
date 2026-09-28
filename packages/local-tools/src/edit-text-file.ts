@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolveScopedPath } from './path-scope.js';
@@ -71,7 +71,7 @@ export class EditTextFileTool implements Tool {
 
   public constructor(private readonly workspace: WorkspacePort) {}
 
-  async execute(input: unknown, signal?: AbortSignal): Promise<ToolResult> {
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input)) return errorResult('edit_text_file requires an object input');
     const { filePath, expectedSha256, oldText, newText } = input;
     if (typeof filePath !== 'string' || filePath.length === 0) {

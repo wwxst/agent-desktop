@@ -18,6 +18,8 @@ describe('createVideoAgent', () => {
     expect(agent.session).toBeInstanceOf(InMemorySession);
     expect(agent.tools.list().map((tool) => tool.name)).toEqual([
       'probe_media',
+      'decode_video',
+      'detect_black_segments',
       'extract_video_frames',
       'extract_video_range_frames',
       'extract_audio',
@@ -30,6 +32,9 @@ describe('createVideoAgent', () => {
       'resize_video',
       'crop_video',
       'set_speed',
+      'declare_video_outputs',
+      'validate_video_candidate',
+      'publish_video_output',
     ]);
 
     const systemPrompt = agent.systemPrompt.build();
@@ -42,17 +47,25 @@ describe('createVideoAgent', () => {
     expect(systemPrompt).toContain('多个不连续保留区间应分别从原视频裁剪');
     expect(systemPrompt).toContain('如果用户提供多个输入视频');
     expect(systemPrompt).toContain('固定秒数裁剪可以直接使用 trim_video');
+    expect(systemPrompt).toContain('明确要求不要黑帧');
+    expect(systemPrompt).toContain('detect_black_segments');
+    expect(systemPrompt).toContain('不能声称已避免黑帧');
+    // 交付流程：声明 → 候选 → 真实验收 → 发布，缺一步都不算交付。
+    expect(systemPrompt).toContain('declare_video_outputs');
+    expect(systemPrompt).toContain('validate_video_candidate');
+    expect(systemPrompt).toContain('publish_video_output');
+    expect(systemPrompt).toContain('所有视频写出 Tool 的 outputPath 都必须写在该目录内');
+    expect(systemPrompt).toContain('只有 validate_video_candidate 返回的检查全部通过时');
   });
 
   it('scopes the write rules to tasks that actually ask for a file', () => {
     const agent = createVideoAgent({ deepSeekApiKey: 'test-deepseek-key' });
     const systemPrompt = agent.systemPrompt.build();
 
-    // 「最后一个 Tool 必须写入 outputPath」只在用户确实要求产出文件时成立；
+    // 写文件规则只在用户确实要求产出文件时成立；
     // 否则普通问答、读取和搜索会被迫生成多余文件。
     expect(systemPrompt).toContain('只有在用户确实要求产出文件时才写文件');
-    expect(systemPrompt).toContain('提示中给出最终 outputPath 时，合并结果必须写入它');
-    expect(systemPrompt).not.toContain('最后一个 Tool 必须写入用户要求的最终 outputPath');
+    expect(systemPrompt).not.toContain('最后一个 Tool 必须写入提示中给出的最终 outputPath');
   });
 
   it('can assemble a text-only Agent without registering media transcription', () => {

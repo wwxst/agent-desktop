@@ -43,13 +43,21 @@ describe('desktop agent task', () => {
     expect(buildAgentPrompt(
       '删除无关内容，只保留核心部分',
       [{ path: 'D:\\videos\\sintel-trailer.mp4', role: 'video' }],
-      'D:\\videos\\sintel-trailer-edited.mp4',
     )).toBe([
       '删除无关内容，只保留核心部分',
       '',
       '输入视频 1：D:/videos/sintel-trailer.mp4',
-      '最终输出文件：D:/videos/sintel-trailer-edited.mp4',
     ].join('\n'));
+  });
+
+  it('does not preset a final output path for the model', () => {
+    // 最终交付路径不再由宿主预设：输出项由模型按用户要求声明，名称在发布时按真实占用确定。
+    const composed = buildAgentPrompt(
+      '把这段视频裁剪一下',
+      [{ path: 'D:\\videos\\sintel-trailer.mp4', role: 'video' }],
+    );
+    expect(composed).not.toContain('最终输出文件');
+    expect(composed).not.toContain('本次没有预设的最终输出路径');
   });
 
   it('states the missing attachments as a fact instead of forbidding media tools', () => {
@@ -58,7 +66,6 @@ describe('desktop agent task', () => {
       '介绍一下这个客户端的能力。',
       '',
       '本次没有选择输入附件。',
-      '本次没有预设的最终输出路径。',
     ].join('\n'));
   });
 
@@ -72,7 +79,6 @@ describe('desktop agent task', () => {
       task,
       '',
       '本次没有选择输入附件。',
-      '本次没有预设的最终输出路径。',
     ].join('\n'));
     expect(composed).not.toContain('不要调用');
     expect(composed).not.toContain('只根据文字需求回答');
@@ -86,7 +92,6 @@ describe('desktop agent task', () => {
         { path: 'D:\\videos\\main.mp4', role: 'video' },
         { path: 'D:\\audio\\bgm.mp3', role: 'audio' },
       ],
-      'D:\\videos\\main-edited.mp4',
     )).toBe([
       '把这段音乐换成新的',
       '',
@@ -94,24 +99,21 @@ describe('desktop agent task', () => {
       '',
       '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
       '音轨 1：D:/audio/bgm.mp3',
-      '最终输出文件：D:/videos/main-edited.mp4',
     ].join('\n'));
   });
 
   it('does not treat a lone audio track as a video input', () => {
-    // 只有音轨时没有主视频，也就没有最终输出路径：不能把音轨当输入视频，也不能虚构输出。
+    // 只有音轨时没有主视频：不能把音轨当输入视频，也不能虚构输出。
     // 但同样不追加「不要调用需要主视频的 Tool」——用户可能在文字里给出主视频路径。
     expect(buildAgentPrompt(
       '把这段音频转成文字',
       [{ path: 'D:\\audio\\only.mp3', role: 'audio' }],
-      'D:\\videos\\only-edited.mp4',
     )).toBe([
       '把这段音频转成文字',
       '',
       '本次没有选择主视频，只有音轨文件：',
       '音轨 1：D:/audio/only.mp3',
       '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
-      '本次没有预设的最终输出路径。',
     ].join('\n'));
   });
 
@@ -122,13 +124,11 @@ describe('desktop agent task', () => {
         { path: 'D:\\videos\\intro.mp4', role: 'video' },
         { path: 'D:\\videos\\main.mp4', role: 'video' },
       ],
-      'D:\\videos\\intro-edited.mp4',
     )).toBe([
       '把两个视频拼接起来',
       '',
       '输入视频 1：D:/videos/intro.mp4',
       '输入视频 2：D:/videos/main.mp4',
-      '最终输出文件：D:/videos/intro-edited.mp4',
     ].join('\n'));
   });
 
@@ -495,13 +495,12 @@ describe('desktop agent task', () => {
     };
     const trace = () => undefined;
 
-    await runDesktopAgentTask(agent, '请记住数字 731。', [], undefined, trace);
+    await runDesktopAgentTask(agent, '请记住数字 731。', [], { trace });
     const second = await runDesktopAgentTask(
       agent,
       '我刚才让你记住的数字是多少？',
       [],
-      undefined,
-      trace,
+      { trace },
     );
 
     expect(second.responseText).toBe('你刚才让我记住的数字是 731。');
@@ -555,8 +554,7 @@ describe('desktop agent task', () => {
       agent,
       '我之前让你记住的数字是多少？',
       [],
-      undefined,
-      () => undefined,
+      { trace: () => undefined },
     );
 
     expect(result.responseText).toContain('731');

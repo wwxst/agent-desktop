@@ -5,6 +5,13 @@
  * 需要宿主决定的操作（当前是目录访问、创建文件与修改文件）一律通过调用方注入的端口回调，
  * 读取范围由 `resolveScopedPath` 统一解析，工具自己不做字符串前缀判断。
  */
+export {
+  BoundedTextBuffer,
+  createCommandOutputBuffer,
+  RunCommandTool,
+  type CommandOutcome,
+  type CommandPort,
+} from './command.js';
 export { EditTextFileTool } from './edit-text-file.js';
 export { ListDirectoryTool } from './list-directory.js';
 export { resolveCreatablePath, resolveScopedPath, type ScopedPath } from './path-scope.js';

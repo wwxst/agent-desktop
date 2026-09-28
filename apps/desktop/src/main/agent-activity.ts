@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
-import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
-import type { AgentActivityFile, AgentActivityItem } from '@agent-desktop/client';
+import type { ExecutionTraceEvent, ToolResultListener } from '@agent-desktop/agent-loop';
+import type { AgentActivityDetail, AgentActivityFile, AgentActivityItem } from '@agent-desktop/client';
 import type { SessionEvent } from '@agent-desktop/session';
+
+type ToolResult = Parameters<ToolResultListener>[2];
 
 /**
  * 当前本地工具输入里真实表示文件的字段。
@@ -23,6 +25,120 @@ const OUTPUT_DIRECTORY_FIELDS = ['outputDir'] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+/**
+ * 命令的最终展示详情。
+ *
+ * 成功与失败分支都携带命令的真实终态，因此失败时同样保留退出码和有界输出；
+ * 读不到终态结构时退回通用失败投影，不编造退出码。
+ */
+function projectCommandDetail(result: ToolResult): AgentActivityDetail | undefined {
+  if (!isRecord(result.output)) {
+    return result.status === 'error' ? { kind: 'error', message: result.message } : undefined;
+  }
+
+  const { command, workingDirectory, exitCode, termination, stdout, stderr, truncated, droppedBytes } = result.output;
+  if (typeof command !== 'string'
+    || typeof workingDirectory !== 'string'
+    || typeof stdout !== 'string'
+    || typeof stderr !== 'string'
+    || typeof truncated !== 'boolean'
+    || typeof droppedBytes !== 'number'
+    || (termination !== 'exited' && termination !== 'timed-out')
+    || (exitCode !== null && typeof exitCode !== 'number')) {
+    return result.status === 'error' ? { kind: 'error', message: result.message } : undefined;
+  }
+
+  return {
+    kind: 'command',
+    command,
+    workingDirectory,
+    exitCode,
+    termination,
+    stdout,
+    stderr,
+    truncated,
+    droppedBytes,
+    // 失败原因与退出码、输出一起展示；成功的命令没有额外的失败说明。
+    ...(result.status === 'error' ? { note: result.message } : {}),
+  };
+}
+
+/** 只投影当前三个有界本地工具和真实失败消息；其他工具结果仍由模型消费，不进入界面快照。 */
+export function projectAgentActivityDetail(
+  toolName: string,
+  result: ToolResult,
+): AgentActivityDetail | undefined {
+  // 命令的失败分支同样携带退出码和有界输出，因此先按工具契约投影，再走通用失败投影。
+  if (toolName === 'run_command') return projectCommandDetail(result);
+  if (result.status === 'error') return { kind: 'error', message: result.message };
+  if (!isRecord(result.output)) return undefined;
+  const output = result.output;
+  const note = typeof output.note === 'string' ? { note: output.note } : {};
+
+  if (toolName === 'read_file'
+    && typeof output.filePath === 'string'
+    && typeof output.startLine === 'number'
+    && typeof output.endLine === 'number'
+    && typeof output.totalLines === 'number'
+    && isStringArray(output.lines)) {
+    return {
+      kind: 'file-content',
+      filePath: output.filePath,
+      startLine: output.startLine,
+      endLine: output.endLine,
+      totalLines: output.totalLines,
+      lines: output.lines,
+      ...note,
+    };
+  }
+
+  if (toolName === 'list_directory'
+    && typeof output.directory === 'string'
+    && typeof output.total === 'number'
+    && Array.isArray(output.entries)) {
+    const entries = output.entries.filter((entry): entry is {
+      readonly name: string;
+      readonly path: string;
+      readonly type: 'file' | 'directory';
+    } => isRecord(entry)
+      && typeof entry.name === 'string'
+      && typeof entry.path === 'string'
+      && (entry.type === 'file' || entry.type === 'directory'));
+    if (entries.length !== output.entries.length) return undefined;
+    return { kind: 'directory', directory: output.directory, total: output.total, entries, ...note };
+  }
+
+  if (toolName === 'search_text'
+    && typeof output.directory === 'string'
+    && typeof output.pattern === 'string'
+    && typeof output.total === 'number'
+    && Array.isArray(output.matches)) {
+    const matches = output.matches.filter((match): match is {
+      readonly filePath: string;
+      readonly lineNumber: number;
+      readonly line: string;
+    } => isRecord(match)
+      && typeof match.filePath === 'string'
+      && typeof match.lineNumber === 'number'
+      && typeof match.line === 'string');
+    if (matches.length !== output.matches.length) return undefined;
+    return {
+      kind: 'search',
+      directory: output.directory,
+      pattern: output.pattern,
+      total: output.total,
+      matches,
+      ...note,
+    };
+  }
+
+  return undefined;
 }
 
 /** 只读取当前工具契约里声明的字符串路径；其他形状不产生文件引用。 */
@@ -82,6 +198,12 @@ export function findToolCallInput(events: readonly SessionEvent[], toolCallId: s
     if (event?.type === 'tool.called' && event.toolCallId === toolCallId) return event.input;
   }
   return undefined;
+}
+
+/** 命令的完整原文来自 Session 的 tool.called 事实；实时进度只携带输出片段。 */
+export function findCommandText(events: readonly SessionEvent[], toolCallId: string): string {
+  const input = findToolCallInput(events, toolCallId);
+  return isRecord(input) && typeof input.command === 'string' ? input.command : '';
 }
 
 /** 成功结果里的 filePath 是工具解析并实际操作的真实路径，优先于模型输入的相对路径。 */

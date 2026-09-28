@@ -3,6 +3,16 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AnalyzeImagesTool } from '../src/index.js';
+import type { ToolExecutionContext } from '@agent-desktop/tools';
+
+/** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
+function toolContext(signal?: AbortSignal): ToolExecutionContext {
+  return {
+    toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
+    reportProgress: () => {},
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
 
 const analysis = {
   summary: 'A person walks through a room.',
@@ -34,7 +44,7 @@ describe('AnalyzeImagesTool', () => {
 
       await new AnalyzeImagesTool({ apiKey: 'test-key' }).execute({
         images: [{ path: imagePath, timestamp: 1.5 }],
-      }, controller.signal);
+      }, toolContext(controller.signal));
 
       expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
     } finally {
@@ -62,7 +72,7 @@ describe('AnalyzeImagesTool', () => {
           { path: firstPath, timestamp: 1.5 },
           { path: secondPath, timestamp: 3 },
         ],
-      })).resolves.toEqual({ status: 'success', output: analysis });
+      }, toolContext())).resolves.toEqual({ status: 'success', output: analysis });
 
       const [url, request] = fetchMock.mock.calls[0] ?? [];
       expect(url).toBe('https://api.openai.com/v1/responses');
@@ -126,7 +136,7 @@ describe('AnalyzeImagesTool', () => {
         baseUrl: 'http://relay.example/v1/',
       });
 
-      await tool.execute({ images: [{ path: imagePath, timestamp: 1 }] });
+      await tool.execute({ images: [{ path: imagePath, timestamp: 1 }] }, toolContext());
 
       expect(fetchMock).toHaveBeenCalledWith(
         'http://relay.example/v1/responses',
@@ -142,15 +152,15 @@ describe('AnalyzeImagesTool', () => {
     vi.stubGlobal('fetch', fetchMock);
     const tool = new AnalyzeImagesTool({ apiKey: 'test-key' });
 
-    await expect(tool.execute({ images: [] })).resolves.toEqual({
+    await expect(tool.execute({ images: [] }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'analyze_images requires between 1 and 6 images',
     });
-    await expect(tool.execute({ images: Array.from({ length: 7 }, () => ({ path: 'x.jpg', timestamp: 1 })) })).resolves.toEqual({
+    await expect(tool.execute({ images: Array.from({ length: 7 }, () => ({ path: 'x.jpg', timestamp: 1 })) }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'analyze_images requires between 1 and 6 images',
     });
-    await expect(tool.execute({ images: [{ path: 42, timestamp: 1 }] })).resolves.toEqual({
+    await expect(tool.execute({ images: [{ path: 42, timestamp: 1 }] }, toolContext())).resolves.toEqual({
       status: 'error',
       message: 'analyze_images requires image path strings and finite timestamps',
     });
@@ -164,13 +174,13 @@ describe('AnalyzeImagesTool', () => {
     await writeFile(imagePath, Buffer.from([0xff, 0xd8]));
     try {
       vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response('nope', { status: 500 })));
-      await expect(tool.execute({ images: [{ path: imagePath, timestamp: 1 }] })).resolves.toEqual({
+      await expect(tool.execute({ images: [{ path: imagePath, timestamp: 1 }] }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'OpenAI Vision API request failed: 500',
       });
 
       vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ output: [] }), { status: 200 })));
-      await expect(tool.execute({ images: [{ path: imagePath, timestamp: 1 }] })).resolves.toEqual({
+      await expect(tool.execute({ images: [{ path: imagePath, timestamp: 1 }] }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'OpenAI Vision API response is missing output_text',
       });
@@ -178,7 +188,7 @@ describe('AnalyzeImagesTool', () => {
       vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
         output: [{ type: 'message', content: [{ type: 'output_text', text: '{invalid' }] }],
       }), { status: 200 })));
-      await expect(tool.execute({ images: [{ path: imagePath, timestamp: 1 }] })).resolves.toEqual({
+      await expect(tool.execute({ images: [{ path: imagePath, timestamp: 1 }] }, toolContext())).resolves.toEqual({
         status: 'error',
         message: 'OpenAI Vision API returned invalid JSON',
       });
