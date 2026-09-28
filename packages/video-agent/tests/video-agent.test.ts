@@ -56,6 +56,9 @@ describe('createVideoAgent', () => {
     expect(systemPrompt).toContain('publish_video_output');
     expect(systemPrompt).toContain('所有视频写出 Tool 的 outputPath 都必须写在该目录内');
     expect(systemPrompt).toContain('只有 validate_video_candidate 返回的检查全部通过时');
+    expect(systemPrompt).toContain('start、duration、保留区间、拼接顺序、输出路径和编码等是生成候选时的操作参数');
+    expect(systemPrompt).toContain('不要把它们转换成 semantic');
+    expect(systemPrompt).toContain('只有用户明确提出成片必须包含或排除某种画面、内容或语义时，才声明 semantic');
   });
 
   it('scopes the write rules to tasks that actually ask for a file', () => {
