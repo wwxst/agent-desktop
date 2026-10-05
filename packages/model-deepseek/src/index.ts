@@ -7,15 +7,119 @@ import type {
   ToolCall,
   ToolCallId,
 } from '@agent-desktop/model';
+import { ModelRequestError } from '@agent-desktop/model';
 
 const DEFAULT_MODEL = 'deepseek-v4-pro';
 const DEFAULT_BASE_URL = 'https://api.deepseek.com';
+
+/** 两种模型协议复用同一错误分类，交给现有 Agent Loop 的有限重试处理。 */
+function responseHttpError(response: Response, label: string): ModelRequestError {
+  const kind = [429, 502, 503, 504].includes(response.status) ? 'transient-service'
+    : [401, 403].includes(response.status) ? 'authentication' : 'invalid-request';
+  const header = response.headers.get('retry-after');
+  const parsed = header === null ? undefined : /^\d+(\.\d+)?$/.test(header)
+    ? Number(header) * 1000 : Date.parse(header) - Date.now();
+  const waitMs = parsed !== undefined && Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  return new ModelRequestError(`${label} request failed: ${response.status}`, kind, response.status, waitMs);
+}
+
+/** 只识别 Node fetch 实际报告的临时连接错误；其他错误原样传播。 */
+function classifyConnectionError(error: unknown, partial: boolean): unknown {
+  if (!(error instanceof Error) || error.name === 'AbortError' || partial) return error;
+  const code = (error.cause as { code?: string } | undefined)?.code;
+  if (code !== undefined && ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(code)) {
+    return new ModelRequestError(`Model connection failed: ${code}`, 'transient-service');
+  }
+  return error;
+}
+
+function responseRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function responseResult(value: unknown): ModelResponse {
+  if (!responseRecord(value) || value.status !== 'completed' || !Array.isArray(value.output)) throw new Error('Responses API 未返回完整结果。');
+  let text = ''; const toolCalls: ToolCall[] = [];
+  for (const item of value.output) {
+    if (!responseRecord(item)) throw new Error('Responses API 输出条目无效。');
+    if (item.type === 'message') {
+      if (!Array.isArray(item.content)) throw new Error('Responses API 消息缺少 content。');
+      for (const part of item.content) {
+        if (responseRecord(part) && part.type === 'output_text') {
+          if (typeof part.text !== 'string') throw new Error('Responses API 文本无效。');
+          text += part.text;
+        }
+        if (responseRecord(part) && part.type === 'refusal') throw new Error(typeof part.refusal === 'string' ? part.refusal : '模型拒绝了请求。');
+      }
+    } else if (item.type === 'function_call') {
+      if (typeof item.call_id !== 'string' || typeof item.name !== 'string' || typeof item.arguments !== 'string') throw new Error('Responses API 工具调用缺少必要字段。');
+      toolCalls.push({ id: item.call_id as ToolCallId, name: item.name, input: JSON.parse(item.arguments) as unknown });
+    }
+  }
+  return text ? { text, toolCalls } : { toolCalls };
+}
+
+/** Responses 的会话输入由供应商边界转换；Core 继续只保存完整文本和工具事实。 */
+async function completeResponses(request: ModelRequest, options: { apiKey: string; baseUrl: string; model: string; maxOutputTokens?: number }): Promise<ModelResponse> {
+  const input = request.messages.flatMap<Record<string, unknown>>(message => {
+    if (message.role === 'tool') return [{ type: 'function_call_output', call_id: message.toolCallId, output: message.content }];
+    if (message.role === 'user') return [{ role: 'user', content: message.content }];
+    return [
+      ...(message.content === undefined ? [] : [{ role: 'assistant', content: message.content }]),
+      ...message.toolCalls.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.input) })),
+    ];
+  });
+  const response = await fetch(`${options.baseUrl}/responses`, {
+    method: 'POST', headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: options.model, instructions: request.systemPrompt, input, stream: true, store: false,
+      tools: request.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })),
+      ...(options.maxOutputTokens === undefined ? {} : { max_output_tokens: options.maxOutputTokens }) }),
+    ...(request.signal === undefined ? {} : { signal: request.signal }),
+  }).catch((error: unknown) => { throw classifyConnectionError(error, false); });
+  if (!response.ok) throw responseHttpError(response, 'Responses API');
+  if (response.body === null) throw new Error('Responses API 响应缺少 body。');
+  const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let partial = false;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+      let separator: RegExpExecArray | null;
+      while ((separator = /\r?\n\r?\n/.exec(buffer)) !== null) {
+        const event = buffer.slice(0, separator.index); buffer = buffer.slice(separator.index + separator[0].length);
+        const data = event.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+        if (!data || data === '[DONE]') continue;
+        const payload: unknown = JSON.parse(data);
+        if (!responseRecord(payload)) throw new Error('Responses API 流式事件无效。');
+        if (payload.type === 'response.output_text.delta') {
+          partial = true;
+          if (typeof payload.delta !== 'string') throw new Error('Responses API 文本增量无效。');
+          request.onTextDelta?.(payload.delta);
+        } else if (payload.type === 'response.output_item.added' || payload.type === 'response.function_call_arguments.delta') {
+          partial = true;
+        } else if (payload.type === 'response.completed') {
+          request.signal?.throwIfAborted();
+          return responseResult(payload.response);
+        } else if (['response.failed', 'response.incomplete', 'error'].includes(String(payload.type))) {
+          throw new Error(`Responses API 执行失败：${JSON.stringify(payload.error ?? payload.response)}`);
+        }
+      }
+      if (chunk.done) throw new Error('Responses API 流在完成事件之前结束。');
+    }
+  } catch (error) {
+    throw classifyConnectionError(error, partial);
+  } finally {
+    await reader.cancel().catch(() => {}); reader.releaseLock();
+  }
+}
 
 /** DeepSeek Provider 的最小配置，不提前加入采样或重试选项。 */
 export interface DeepSeekModelOptions {
   readonly apiKey: string;
   readonly model?: string;
   readonly baseUrl?: string;
+  readonly protocol?: 'chat-completions' | 'responses';
+  readonly maxOutputTokens?: number;
+  readonly disableThinking?: boolean;
 }
 
 interface DeepSeekFunctionCall {
@@ -283,7 +387,10 @@ async function readStreamedResponse(
   let buffer = '';
 
   while (!receivedDone) {
-    const { done, value } = await reader.read();
+    const { done, value } = await reader.read().catch((error: unknown) => {
+      // 已有正文或工具分片时禁止重试，防止重复展示或执行。
+      throw classifyConnectionError(error, text.length > 0 || streamedToolCalls.size > 0);
+    });
     // 流结束时必须 flush 解码器，取回可能保留的最后一个多字节序列，避免静默丢字节。
     buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
 
@@ -371,8 +478,10 @@ export class DeepSeekModel implements Model {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly options: DeepSeekModelOptions;
 
   public constructor(options: DeepSeekModelOptions) {
+    this.options = options;
     this.apiKey = options.apiKey;
     this.model = options.model ?? DEFAULT_MODEL;
     // 去掉末尾斜线，确保自定义 baseUrl 与固定 endpoint 拼接结果唯一。
@@ -380,6 +489,8 @@ export class DeepSeekModel implements Model {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    if (this.options.protocol === 'responses') return completeResponses(request, { apiKey: this.apiKey, baseUrl: this.baseUrl,
+      model: this.model, ...(this.options.maxOutputTokens === undefined ? {} : { maxOutputTokens: this.options.maxOutputTokens }) });
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -391,16 +502,17 @@ export class DeepSeekModel implements Model {
         messages: mapMessages(request),
         tools: request.tools.map(mapToolDefinition),
         // 第一版关闭 thinking，保持 Tool Call 往返与 MVP 行为一致。
-        thinking: { type: 'disabled' },
+        ...(this.options.disableThinking === false ? {} : { thinking: { type: 'disabled' } }),
+        ...(this.options.maxOutputTokens === undefined ? {} : { max_tokens: this.options.maxOutputTokens }),
         // 始终使用 SSE 流式响应，让文本增量能在 Turn 执行期间实时展示。
         stream: true,
       }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
-    });
+    }).catch((error: unknown) => { throw classifyConnectionError(error, false); });
 
     // HTTP 状态属于 Provider 边界；直接抛出清晰错误并交给现有调用链传播。
     if (!response.ok) {
-      throw new Error(`DeepSeek API request failed: ${response.status}`);
+      throw responseHttpError(response, 'DeepSeek API');
     }
     // 200 响应必须带 body；缺失说明响应不符合 HTTP 契约，直接暴露程序错误。
     if (response.body === null) {

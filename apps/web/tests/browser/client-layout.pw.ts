@@ -11,30 +11,49 @@ async function expectContained(locator: Locator, container: Locator) {
 }
 
 async function expectNoHorizontalScroll(page: Page) {
-  for (const locator of [page.locator('body'), page.getByRole('navigation', { name: '会话列表' }), ...await page.getByRole('main').all()]) {
+  for (const locator of [page.locator('body'), ...await page.getByRole('navigation', { name: '会话列表' }).all(), ...await page.getByRole('main').all()]) {
     expect(await locator.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
   }
 }
 
 test('keeps session actions reachable at the end of a long list', async ({ page }, testInfo) => {
+  const snapshot: ClientStateSnapshot = {
+    activeSessionId: 'web-session-40',
+    conversations: Array.from({ length: 40 }, (_, index) => ({ id: `web-session-${index + 1}`, title: `历史任务 ${index + 1}`, titleManuallyRenamed: false,
+      prompt: '', attachments: [], messages: [{ id: index + 1, role: 'user' as const, text: `历史任务 ${index + 1}`, attachments: [] }] })),
+  };
+  await page.route('**/webClientApi.ts', route => route.fulfill({ contentType: 'application/javascript', body: `
+    import { createWebClientApi as createHost } from '/webClientApi.ts?history-fixture';
+    export function createWebClientApi() {
+      const host = createHost();
+      for (let i = 1; i < 40; i++) void host.newSession();
+      return { ...host, loadClientState: async () => (${JSON.stringify(snapshot)}) };
+    }
+  ` }));
   await page.goto('/');
   const sessions = page.getByRole('navigation', { name: '会话列表' });
   const settings = page.getByRole('button', { name: '设置', exact: true });
+  const navigation = page.getByRole('navigation', { name: '主导航', exact: true });
+  const railBounds = (await navigation.boundingBox())!;
+  const sidebarBounds = (await page.getByRole('complementary', { name: '工作区导航' }).boundingBox())!;
+  expect(railBounds.x).toBe(0);
+  expect(railBounds.width).toBe(52);
+  expect(sidebarBounds.x).toBe(52);
+  await expectContained(settings, navigation);
+  await expect(page.getByRole('button', { name: '对话', exact: true })).toHaveAttribute('aria-current', 'page');
   const originalSettings = (await settings.boundingBox())!;
   expect(originalSettings.y + originalSettings.height).toBe((page.viewportSize()?.height ?? 0) - 14);
-  for (let i = 0; i < 39; i += 1) {
-    await page.locator('.sidebar-new-session').click();
-  }
   await expect(sessions.locator('.sidebar-session')).toHaveCount(40);
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('many-sessions.png') });
   expect.soft((await settings.boundingBox())!.y).toBe(originalSettings.y);
   await expectNoHorizontalScroll(page);
-  const lastSession = sessions.getByRole('button', { name: '会话 40', exact: true });
+  const lastSession = sessions.getByRole('button', { name: '历史任务 40', exact: true });
   await expectContained(lastSession, sessions);
-  const lastActions = page.getByRole('button', { name: '会话操作：会话 40', exact: true });
+  const lastActions = page.getByRole('button', { name: '会话操作：历史任务 40', exact: true });
   const actionBounds = (await lastActions.boundingBox())!;
   const scrollbarStart = await sessions.evaluate((element) => element.getBoundingClientRect().left + element.clientWidth);
-  expect(actionBounds.x + actionBounds.width).toBeLessThan(scrollbarStart);
+  // 窄侧栏隐藏滚动条，按钮可贴齐内容边界；有滚动条时仍不能进入它的占用区域。
+  expect(actionBounds.x + actionBounds.width).toBeLessThanOrEqual(scrollbarStart);
   await lastActions.click();
   const rename = page.getByRole('button', { name: '重命名', exact: true });
   // trial 检查命中区域，避免“存在且可见”漏掉被滚动容器裁切的按钮。
@@ -47,10 +66,23 @@ test('keeps session actions reachable at the end of a long list', async ({ page 
   await expect(sessions.getByRole('button', { name: longTitle, exact: true })).toHaveAttribute('aria-current', 'page');
   await page.getByRole('button', { name: `会话操作：${longTitle}`, exact: true }).click();
   await page.getByRole('button', { name: '删除', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '删除会话确认' });
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('.sidebar-session-menu')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
   await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('delete-confirmation.png') });
-  await expectContained(page.getByLabel('删除会话确认'), page.locator('body'));
+  await expectContained(dialog, page.locator('body'));
+  const dialogBounds = (await dialog.boundingBox())!;
+  expect(Math.abs(dialogBounds.x + dialogBounds.width / 2 - page.viewportSize()!.width / 2)).toBeLessThan(2);
   await page.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: `会话操作：${longTitle}`, exact: true })).toBeFocused();
+  await expect(sessions.locator('.sidebar-session')).toHaveCount(40);
+  await page.getByRole('button', { name: `会话操作：${longTitle}`, exact: true }).click();
+  await page.getByRole('button', { name: '删除', exact: true }).click();
   await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(sessions.locator('.sidebar-session')).toHaveCount(40);
   await expect(page.getByRole('button', { name: '重命名', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: `会话操作：${longTitle}`, exact: true }).click();
   await rename.click();
@@ -71,7 +103,34 @@ test('keeps session actions reachable at the end of a long list', async ({ page 
   await expectNoHorizontalScroll(page);
   await settings.click();
   await expect(page.getByRole('main', { name: '设置' })).toBeVisible();
-  await expect(sessions.locator('[aria-current="page"]')).toHaveCount(0);
+  await expect(page.getByRole('complementary', { name: '工作区导航' })).toHaveCount(0);
+  await expect(settings).toHaveAttribute('aria-current', 'page');
+  await page.keyboard.press('Escape');
+  await expect(settings).toBeFocused();
+  await page.getByRole('button', { name: '对话', exact: true }).click();
+  await expect(sessions.getByRole('button', { name: '失焦保存', exact: true })).toHaveAttribute('aria-current', 'page');
+});
+
+test('deletes only the confirmed conversation from a modal', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await page.getByLabel('剪辑需求').fill('检查字幕');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '新会话', exact: true }).click();
+  await page.getByLabel('剪辑需求').fill('检查时长');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '会话操作：检查字幕', exact: true }).click();
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '删除会话确认' });
+  await expect(dialog).toContainText('确定删除“检查字幕”？');
+  await expect(dialog).toContainText('不会删除已经生成的视频文件');
+  await page.screenshot({ animations: 'disabled', path: testInfo.outputPath('delete-modal.png') });
+  await dialog.getByRole('button', { name: '删除会话', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '检查字幕', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '检查时长', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '检查时长', exact: true })).toBeFocused();
 });
 
 test('fits long attachments, expanded activity, failures and settings across window sizes', async ({ page }, testInfo) => {
@@ -100,14 +159,17 @@ test('fits long attachments, expanded activity, failures and settings across win
     await route.fulfill({ contentType: 'text/javascript', body: `
       import { createWebClientApi as createHost } from '/webClientApi.ts?layout-fixture';
       export function createWebClientApi() {
+        const host = createHost();
+        // 环境密钥状态在加载和自动保存返回中一致，普通字段仍使用真实开发宿主保存。
+        const withEnvironmentKeys = settings => ({
+          ...settings,
+          modelProviders: settings.modelProviders.map(provider => ({...provider, apiKey: {configured: true, source: 'environment'}})),
+        });
         return {
-          ...createHost(),
+          ...host,
           loadClientState: async () => (${JSON.stringify(snapshot)}),
-          loadRuntimeSettings: async () => ({
-            deepSeek: {apiKey: {configured: true, source: 'environment'}, baseUrl: '', model: ''},
-            vision: {apiKey: {configured: true, source: 'environment'}, baseUrl: ''},
-            whisper: {modelPath: '', cliPath: ''},
-          }),
+          loadRuntimeSettings: async () => withEnvironmentKeys(await host.loadRuntimeSettings()),
+          saveRuntimeSettings: async update => withEnvironmentKeys(await host.saveRuntimeSettings(update)),
         };
       }
     ` });
@@ -128,15 +190,25 @@ test('fits long attachments, expanded activity, failures and settings across win
     await page.getByRole('region', { name: '执行过程' }).scrollIntoViewIfNeeded();
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`content-${width}x${height}.png`) });
     await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+    const returnButton = page.getByRole('button', { name: '关闭设置', exact: true });
+    await expect(page.getByRole('button', { name: '保存设置' })).toHaveCount(0);
+    await expectContained(returnButton, page.locator('.settings-layout'));
+    await returnButton.click({ trial: true });
+    const returnBounds = (await returnButton.boundingBox())!;
     await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeAttached();
-    const secretInputs = page.getByLabel('接口密钥', { exact: true });
-    await expect(secretInputs).toHaveCount(2);
-    await expect(secretInputs.first()).toHaveValue('********');
-    await expect(secretInputs.nth(1)).toHaveValue('********');
-    await page.getByLabel('服务地址', { exact: true }).first().fill('https://example.test/' + 'a'.repeat(250));
+    await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
+    await expect(page.getByLabel('DeepSeek API 密钥')).toHaveValue('*'.repeat(64));
+    await expect(page.getByLabel('DeepSeek API 密钥')).toHaveAttribute('type', 'password');
+    await page.getByLabel('API 地址', { exact: true }).fill('https://example.test/' + 'a'.repeat(250));
     await expectNoHorizontalScroll(page);
-    await page.getByRole('button', { name: '保存设置', exact: true }).scrollIntoViewIfNeeded();
-    await expectContained(page.getByRole('button', { name: '保存设置', exact: true }), page.locator('body'));
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '本地工具', exact: true }).click();
+    await page.getByText('通过系统环境变量查找视频处理程序').scrollIntoViewIfNeeded();
+    await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeInViewport();
+    expect((await returnButton.boundingBox())!.y).toBe(returnBounds.y);
+    await returnButton.click({ trial: true });
+    await expectContained(returnButton, page.locator('body'));
     await page.screenshot({ animations: 'disabled', path: testInfo.outputPath(`settings-${width}x${height}.png`) });
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await expect(page.getByRole('textbox', { name: '剪辑需求' })).toHaveValue(snapshot.conversations[0]!.prompt);

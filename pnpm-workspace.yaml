@@ -4,4 +4,6 @@ packages:
   - apps/*
 allowBuilds:
   electron: true
+  electron-winstaller: false
   esbuild: true
+  node-pty: true

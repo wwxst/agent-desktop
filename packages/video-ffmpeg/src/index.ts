@@ -1,7 +1,7 @@
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 import { execFile } from 'node:child_process';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** 命令执行结果只保留 FFmpeg Tool 需要的标准输出和标准错误。 */
@@ -65,6 +65,31 @@ export const executeFileCommand: CommandExecutor = (command, args, signal) => (
 );
 
 /** probe_media 返回给模型的稳定结构，不把完整 ffprobe JSON 暴露给 Session。 */
+/** 逐帧语义检查使用全片帧时间轴，超过预算受阻而不降为采样。 */
+export async function extractFullVideoFrames(inputPath: string, outputDir: string, signal?: AbortSignal): Promise<
+  { readonly complete: false; readonly reason: string } |
+  { readonly complete: true; readonly frames: readonly { readonly path: string; readonly timestamp: number }[] }
+> {
+  const { stdout } = await executeFileCommand('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_frames',
+    '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', inputPath], signal);
+  const payload: unknown = JSON.parse(stdout);
+  if (!isRecord(payload) || !Array.isArray(payload.frames)) throw new Error('ffprobe 未返回帧时间轴。');
+  const raw = payload.frames as Array<{ best_effort_timestamp_time?: unknown }>;
+  if (raw.length === 0) throw new Error('候选没有视频帧。');
+  if (raw.length > 600) return { complete: false, reason: `候选包含 ${raw.length} 帧，超过首期逐帧语义验收的 600 帧预算；没有降为采样检查。` };
+  const timestamps = raw.map((frame) => {
+    const value = Number(frame.best_effort_timestamp_time);
+    if (!Number.isFinite(value) || value < 0) throw new Error('ffprobe 帧时间戳无效。');
+    return value;
+  });
+  await mkdir(outputDir, { recursive: true });
+  await executeFileCommand('ffmpeg', ['-n', '-hide_banner', '-loglevel', 'error', '-i', inputPath,
+    '-map', '0:v:0', '-fps_mode', 'passthrough', '-q:v', '2', join(outputDir, 'frame-%06d.jpg')], signal);
+  const files = (await readdir(outputDir)).filter((file) => /^frame-\d{6}\.jpg$/.test(file)).sort();
+  if (files.length !== timestamps.length) throw new Error('实际抽帧数量与全片时间轴不一致，不能确认完整覆盖。');
+  return { complete: true, frames: files.map((file, index) => ({ path: join(outputDir, file), timestamp: timestamps[index]! })) };
+}
+
 interface MediaInfo {
   readonly duration: number | null;
   readonly width: number | null;

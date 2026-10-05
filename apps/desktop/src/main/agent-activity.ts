@@ -79,6 +79,13 @@ export function projectAgentActivityDetail(
   if (result.status === 'error') return { kind: 'error', message: result.message };
   if (!isRecord(result.output)) return undefined;
   const output = result.output;
+  if (toolName === 'delegate_tasks' && Array.isArray(output.tasks)) {
+    return { kind: 'subagents', tasks: output.tasks as Extract<AgentActivityDetail, { kind: 'subagents' }>['tasks'] };
+  }
+  if (toolName === 'ask_user' && typeof output.question === 'string') {
+    return { kind: 'interaction', question: output.question,
+      answer: output.outcome === 'skipped' ? '已跳过' : String(output.answer) };
+  }
   const note = typeof output.note === 'string' ? { note: output.note } : {};
 
   if (toolName === 'read_file'
@@ -228,6 +235,9 @@ export function projectAgentActivity(
   switch (event.type) {
     case 'model.started':
       return { id: `model:${event.stepId}`, kind: 'analysis', status: 'running' };
+    case 'model.retrying':
+      return { id: `model:${event.stepId}`, kind: 'analysis', status: 'running',
+        retryNote: `服务暂时不可用，${event.waitMs / 1000} 秒后进行第 ${event.attempt} 次尝试。` };
     case 'model.completed':
       return {
         id: `model:${event.stepId}`,

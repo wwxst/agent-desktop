@@ -38,6 +38,7 @@ const mainMocks = vi.hoisted(() => {
     windowHandlers,
     onceHandlers,
     openExternal: vi.fn(),
+    openPath: vi.fn(async () => ''),
     setWindowOpenHandler: vi.fn((handler: (details: { readonly url: string }) => { readonly action: string }) => {
       windowHandlers.open = handler;
     }),
@@ -60,12 +61,15 @@ const mainMocks = vi.hoisted(() => {
     }) => {
       const agent = {
         session: options.session,
+        tools: { list: () => [], register: () => undefined },
+        model: { complete: async () => ({ text: '测试任务标题', toolCalls: [] }) },
       };
       agents.push(agent);
       agentOptions.push(options);
       return agent;
     }),
     runDesktopAgentTask: vi.fn(),
+    extensionRuntimes: [] as Array<{ runHooks: (event: string, input: Readonly<Record<string, unknown>>) => Promise<void> }>,
     showOpenDialog: vi.fn(),
     showErrorBox: vi.fn(),
     showItemInFolder: vi.fn(),
@@ -95,11 +99,23 @@ const mainMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('node:fs/promises', () => ({
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs/promises')>()),
   mkdir: mainMocks.mkdir,
   readFile: mainMocks.readFile,
   writeFile: mainMocks.writeFile,
 }));
+
+vi.mock('../src/main/desktop-database.js', async (importOriginal) => {
+  const documents = new Map<string, object>();
+  return {
+    ...(await importOriginal<typeof import('../src/main/desktop-database.js')>()),
+    readDesktopDocument: (_path: string, name: string) => documents.get(name) ?? null,
+    writeDesktopDocuments: (_path: string, updates: readonly { name: string; value: object }[]) => {
+      for (const update of updates) documents.set(update.name, update.value);
+    },
+  };
+});
 
 vi.mock('electron', () => ({
   app: {
@@ -137,7 +153,7 @@ vi.mock('electron', () => ({
     encryptString: (value: string) => Buffer.from(`encrypted:${value}`),
     decryptString: (value: Buffer) => value.toString().replace(/^encrypted:/, ''),
   },
-  shell: { showItemInFolder: mainMocks.showItemInFolder, openExternal: mainMocks.openExternal },
+  shell: { showItemInFolder: mainMocks.showItemInFolder, openExternal: mainMocks.openExternal, openPath: mainMocks.openPath },
 }));
 
 vi.mock('@agent-desktop/video-agent', async (importOriginal) => ({
@@ -155,6 +171,17 @@ vi.mock('../src/main/agent-task.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/main/agent-task.js')>()),
   runDesktopAgentTask: mainMocks.runDesktopAgentTask,
 }));
+
+vi.mock('../src/main/extension-runtime.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../src/main/extension-runtime.js')>();
+  return { ...original, prepareExtensions: async (...args: Parameters<typeof original.prepareExtensions>) => {
+    // 保留真实运行时，只观察宿主调度事件的次数与来源。
+    const runtime = await original.prepareExtensions(...args);
+    vi.spyOn(runtime, 'runHooks');
+    mainMocks.extensionRuntimes.push(runtime);
+    return runtime;
+  } };
+});
 
 describe('desktop main session lifecycle', () => {
   const previousDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
@@ -185,12 +212,25 @@ describe('desktop main session lifecycle', () => {
       await expect(runAgentTask!({}, '测试任务')).resolves.toEqual({
         status: 'error',
         errorName: 'Error',
-        errorMessage: '请先在设置中配置 DeepSeek API Key。',
+        errorMessage: '请先在设置中配置当前对话模型的 API 密钥。',
       });
       expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
     } finally {
       if (configuredKey !== undefined) process.env.DEEPSEEK_API_KEY = configuredKey;
     }
+  });
+  it('opens only a secret-free model configuration snapshot through the host', async () => {
+    const open = mainMocks.handlers.get('desktop:open-model-config')!;
+    await open({});
+    const write = mainMocks.writeFile.mock.calls.at(-1) as unknown as [string, string];
+    expect(write[0]).toMatch(/agent-desktop-model-config\.json$/);
+    const snapshot = JSON.parse(write[1]) as { modelProviders: object[] };
+    expect(snapshot.modelProviders).toHaveLength(2);
+    expect(snapshot.modelProviders.every(provider => !('apiKey' in provider))).toBe(true);
+    expect(write[1]).not.toContain('test-deepseek-key');
+    expect(mainMocks.openPath).toHaveBeenCalledWith(write[0]);
+    mainMocks.openPath.mockResolvedValueOnce('无法打开文件');
+    await expect(open({})).rejects.toThrow('无法打开文件');
   });
 
   it('keeps independent Agent, Session, attachment, and output state for each desktop session', async () => {
@@ -231,9 +271,9 @@ describe('desktop main session lifecycle', () => {
     const runningTask = runAgentTask!({}, '记住数字 731');
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask).toHaveBeenCalledOnce());
 
-    expect(() => deleteSession!({}, firstSessionId)).toThrow('Agent 正在执行');
+    await expect(deleteSession!({}, firstSessionId)).rejects.toThrow('Agent 正在执行');
 
-    expect(() => newSession!({})).toThrow('Agent 正在执行');
+    await expect(newSession!({})).rejects.toThrow('Agent 正在执行');
     expect(() => switchSession!({}, 'missing-session')).toThrow('Agent 正在执行');
     await expect(saveRuntimeSettings!({}, { deepSeekModel: 'next-model' })).rejects.toThrow(
       'Agent 正在执行，无法保存设置。',
@@ -288,7 +328,7 @@ describe('desktop main session lifecycle', () => {
       expect.objectContaining({
         trace: expect.any(Function),
         signal: expect.any(AbortSignal),
-        onTextDelta: expect.any(Function),
+        onModelText: expect.any(Function),
         onToolResult: expect.any(Function),
         onToolProgress: expect.any(Function),
       }),
@@ -310,7 +350,7 @@ describe('desktop main session lifecycle', () => {
       expect.objectContaining({
         trace: expect.any(Function),
         signal: expect.any(AbortSignal),
-        onTextDelta: expect.any(Function),
+        onModelText: expect.any(Function),
         onToolResult: expect.any(Function),
         onToolProgress: expect.any(Function),
       }),
@@ -477,10 +517,10 @@ describe('desktop main session lifecycle', () => {
     expect(deleteSession).toBeTypeOf('function');
 
     const onlySessionId = await getActiveSessionId!({});
-    const replacementId = deleteSession!({}, onlySessionId);
+    const replacementId = await deleteSession!({}, onlySessionId);
     expect(replacementId).not.toBe(onlySessionId);
     expect(await getActiveSessionId!({})).toBe(replacementId);
-    expect(() => deleteSession!({}, onlySessionId)).toThrow('找不到对应的会话');
+    await expect(deleteSession!({}, onlySessionId)).rejects.toThrow('找不到对应的会话');
   });
 
   it('deletes runtime sessions without deleting artifact files and returns the Host active id', async () => {
@@ -508,8 +548,8 @@ describe('desktop main session lifecycle', () => {
     secondExtraAgent.session.append({ type: 'user.message', content: '只属于被删除会话' });
 
     await switchSession!({}, baseSessionId);
-    expect(deleteSession!({}, firstExtraSessionId)).toBe(baseSessionId);
-    expect(deleteSession!({}, secondExtraSessionId)).toBe(baseSessionId);
+    expect(await deleteSession!({}, firstExtraSessionId)).toBe(baseSessionId);
+    expect(await deleteSession!({}, secondExtraSessionId)).toBe(baseSessionId);
     expect(secondExtraAgent.session.events()).toContainEqual({
       type: 'user.message',
       content: '只属于被删除会话',
@@ -548,7 +588,7 @@ describe('desktop main session lifecycle', () => {
       await selectVideo!({});
       await runAgentTask!({}, '生成第一个视频');
       const deletedSessionId = await getActiveSessionId!({});
-      const replacementSessionId = deleteSession!({}, deletedSessionId);
+      const replacementSessionId = await deleteSession!({}, deletedSessionId);
 
       expect(replacementSessionId).not.toBe(deletedSessionId);
       // 删除会话不删除已经真实交付的视频文件。
@@ -571,8 +611,8 @@ describe('desktop main session lifecycle', () => {
       _attachments: unknown,
       options: DesktopTaskOptions,
     ) => {
-      options.onTextDelta?.('实时');
-      options.onTextDelta?.('增量');
+      options.onModelText?.('step-delta' as never, '实时', 'delta');
+      options.onModelText?.('step-delta' as never, '增量', 'delta');
       return { responseText: '完成', turnId: 'turn-delta', artifacts: [] };
     });
 
@@ -584,10 +624,12 @@ describe('desktop main session lifecycle', () => {
     expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
       type: 'text.delta',
       delta: '实时',
+      stepId: 'step-delta',
     });
     expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
       type: 'text.delta',
       delta: '增量',
+      stepId: 'step-delta',
     });
   });
 
@@ -879,7 +921,7 @@ describe('desktop main session lifecycle', () => {
       await expect(runAgentTask!({}, '下一轮任务')).resolves.toEqual({
         status: 'error',
         errorName: 'Error',
-        errorMessage: '请先在设置中配置 DeepSeek API Key。',
+        errorMessage: '请先在设置中配置当前对话模型的 API 密钥。',
       });
     } finally {
       if (configuredKey !== undefined) process.env.DEEPSEEK_API_KEY = configuredKey;
@@ -967,8 +1009,10 @@ describe('desktop main session lifecycle', () => {
     // 提交失败后保留窗口，用户可以再次尝试关闭。
     mainMocks.showErrorBox.mockClear();
     const retryEvent = { preventDefault: vi.fn() };
+    mainMocks.webContentsSend.mockClear();
     mainMocks.windowHandlers.window.get('close')!(retryEvent);
     expect(retryEvent.preventDefault).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:prepare-close'));
     mainMocks.onceHandlers.get('desktop:close-prepared')!({}, null);
     await vi.waitFor(() => expect(mainMocks.windowDestroy).toHaveBeenCalledOnce());
   });
@@ -1066,4 +1110,54 @@ describe('desktop main session lifecycle', () => {
     expect(decision).toBe('refused');
     expect(() => decideApproval({}, requestId, true)).toThrow('该审批请求已失效。');
   });
+  it('uses a project folder only for the explicitly created session and rejects missing folders before creating a runtime', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agent-desktop-project-'));
+    const getActive = mainMocks.handlers.get('desktop:get-active-session-id')!;
+    const create = mainMocks.handlers.get('desktop:new-session')!;
+    const run = mainMocks.handlers.get('desktop:run-agent-task')!;
+    const switchSession = mainMocks.handlers.get('desktop:switch-session')!;
+    const previousId = await getActive({});
+    try {
+      await expect(create({}, join(directory, 'missing'))).rejects.toThrow('ENOENT');
+      expect(await getActive({})).toBe(previousId);
+      const projectSessionId = await create({}, directory);
+      expect(projectSessionId).not.toBe(previousId);
+      mainMocks.runDesktopAgentTask.mockResolvedValueOnce({ responseText: '项目任务', turnId: 'project-turn', artifacts: [] });
+      await run({}, '查看项目文件');
+      expect(mainMocks.agentOptions.at(-1)?.workspace?.confirmedDirectory()).toBe(directory);
+      await switchSession({}, previousId);
+      expect(await getActive({})).toBe(previousId);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('dispatches session startup once across turns and again for a new session', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session')!;
+    const run = mainMocks.handlers.get('desktop:run-agent-task')!;
+    await newSession({});
+    const count = mainMocks.extensionRuntimes.length;
+    for (let index = 0; index < 2; index += 1) {
+      mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+        const turnId = `hook-turn-${index}`;
+        mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId });
+        mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId });
+        return { responseText: '完成', turnId, artifacts: [] };
+      });
+      await expect(run({}, '继续任务')).resolves.toMatchObject({ status: 'success' });
+    }
+    const first = mainMocks.extensionRuntimes[count]!;
+    const second = mainMocks.extensionRuntimes[count + 1]!;
+    expect(first.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
+    expect(second.runHooks).not.toHaveBeenCalledWith('SessionStart', expect.anything());
+    expect(second.runHooks).toHaveBeenCalledWith('UserPromptSubmit', expect.objectContaining({ prompt: '继续任务' }));
+    await newSession({});
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+      mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId: 'hook-new-session' });
+      mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId: 'hook-new-session' });
+      return { responseText: '完成', turnId: 'hook-new-session', artifacts: [] };
+    });
+    await expect(run({}, '新会话任务')).resolves.toMatchObject({ status: 'success' });
+    expect(mainMocks.extensionRuntimes[count + 2]!.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
+    await newSession({});
+  });
+
 });

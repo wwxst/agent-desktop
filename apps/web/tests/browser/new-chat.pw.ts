@@ -1,0 +1,110 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+import { _electron, expect, test } from '@playwright/test';
+
+test('keeps new-chat drafts out of history and preserves them when the last chat is deleted', async ({ page }, info) => {
+  await page.goto('/');
+  const history = page.locator('section[aria-label="最近"] .sidebar-session');
+  const input = page.getByLabel('剪辑需求');
+  await expect(history).toHaveCount(0);
+  await input.fill('整理视频讲解');
+  await page.getByRole('button', { name: '选择输入文件' }).click();
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: '新会话', exact: true }).click();
+  await expect(history).toHaveCount(0);
+  await expect(input).toHaveValue('整理视频讲解');
+  await expect(page.getByLabel('视频附件：web-test-video.mp4')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('new-chat-draft.png') });
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+  await expect(history).toHaveCount(1);
+  await page.getByRole('button', { name: '新会话', exact: true }).click();
+  await input.fill('稍后处理字幕');
+  await page.getByRole('button', { name: '会话操作：整理视频讲解' }).click();
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '删除会话', exact: true }).click();
+  await expect(history).toHaveCount(0);
+  await expect(input).toHaveValue('稍后处理字幕');
+  await expect(page.getByRole('region', { name: '开始视频任务' })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('history-empty-after-delete.png') });
+});
+
+test('restores empty history, project drafts and model-generated titles through real Desktop IPC and SQLite', async ({}, info) => {
+  test.skip(info.project.name !== 'chromium-desktop', '桌面重启只验证一次，宽窄窗口由共享客户端测试覆盖。');
+  const root = resolve('../..');
+  const evidence = resolve(root, 'logs/new-chat-20261002');
+  const profile = resolve(evidence, `electron-profile-${Date.now()}`);
+  const folder = resolve(evidence, 'project-folder');
+  const attachment = resolve(folder, 'draft.mp4');
+  await mkdir(profile, { recursive: true });
+  await mkdir(folder, { recursive: true });
+  await writeFile(attachment, '仅用于附件保存验收，不用于媒体处理。');
+  const requests: Array<{ tools: unknown[]; messages: { role: string; content: string }[] }> = [];
+  const server = createServer(async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    const input = JSON.parse(body) as (typeof requests)[number];
+    requests.push(input);
+    const content = input.tools.length === 0 ? '概括项目配置' : '任务完成';
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    response.end(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('模型夹具端口不可用');
+  const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  delete env.DESKTOP_RENDERER_URL; delete env.ELECTRON_RUN_AS_NODE;
+  env.DEEPSEEK_API_KEY = 'local-title-fixture';
+  env.DEEPSEEK_BASE_URL = `http://127.0.0.1:${address.port}`;
+  const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+  let app: Awaited<ReturnType<typeof launch>> | undefined;
+  try {
+    app = await launch();
+    let page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+    await page.getByLabel('剪辑需求').fill('普通入口草稿');
+    await app.evaluate(({ dialog }, directory) => { Object.assign(dialog, { showOpenDialog: async () => ({ canceled: false, filePaths: [directory] }) }); }, folder);
+    await page.getByRole('button', { name: '添加项目', exact: true }).click();
+    await page.getByRole('button', { name: '在 project-folder 中新建会话' }).click();
+    await page.getByLabel('剪辑需求').fill('你好，请帮我概括这个项目配置的职责，不要调用工具。');
+    await app.evaluate(({ dialog }, path) => { Object.assign(dialog, { showOpenDialog: async () => ({ canceled: false, filePaths: [path] }) }); }, attachment);
+    await page.getByRole('button', { name: '选择输入文件' }).click();
+    await expect(page.getByLabel('视频附件：draft.mp4')).toBeVisible();
+    await page.getByRole('button', { name: '新会话', exact: true }).click();
+    await expect(page.getByLabel('剪辑需求')).toHaveValue('普通入口草稿');
+    await page.getByRole('button', { name: '在 project-folder 中新建会话' }).click();
+    await expect(page.locator('.sidebar-session')).toHaveCount(0);
+    await app.close();
+    app = await launch(); page = await app.firstWindow();
+    await expect(page.getByLabel('剪辑需求')).toHaveValue('你好，请帮我概括这个项目配置的职责，不要调用工具。');
+    await expect(page.getByLabel('视频附件：draft.mp4')).toBeVisible();
+    await expect(page.getByRole('button', { name: '项目目录：project-folder', exact: true })).toHaveAttribute('title', folder);
+    const savedDraft = await page.evaluate(() => window.agentDesktop.loadClientState());
+    expect(savedDraft?.conversations).toEqual([]);
+    expect(savedDraft?.drafts).toHaveLength(2);
+    await page.screenshot({ path: resolve(evidence, 'desktop-restored-draft.png') });
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const recent = page.locator('section[aria-label="最近"]');
+    await expect(recent.getByRole('button', { name: '概括项目配置', exact: true })).toBeVisible();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.tools).toEqual([]);
+    expect(requests[1]?.messages.filter(message => message.role !== 'system')).toHaveLength(1);
+    await page.screenshot({ path: resolve(evidence, 'desktop-generated-title.png') });
+    await recent.getByRole('button', { name: '会话操作：概括项目配置' }).click();
+    await page.getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByRole('dialog').getByRole('button', { name: '删除会话', exact: true }).click();
+    await expect(page.locator('.sidebar-session')).toHaveCount(0);
+    await expect(page.getByLabel('剪辑需求')).toHaveValue('普通入口草稿');
+    await app.close();
+    app = await launch(); page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+    await expect(page.locator('.sidebar-session')).toHaveCount(0);
+    await expect(page.getByLabel('剪辑需求')).toHaveValue('普通入口草稿');
+    await page.screenshot({ path: resolve(evidence, 'desktop-empty-history.png') });
+  } finally {
+    try { if (app !== undefined) await app.close(); }
+    finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  }
+});

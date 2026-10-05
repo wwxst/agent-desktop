@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 // @vitest-environment jsdom
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -21,16 +22,40 @@ afterEach(() => {
 });
 
 const persistenceMethods = {
+  extensions: {
+    manage: async () => ({ plugins: [], skills: [] }),
+    list: async () => ({ plugins: [], skills: [] }), importLocal: async () => null,
+    install: async () => ({ plugins: [], skills: [] }), setEnabled: async () => ({ plugins: [], skills: [] }),
+    uninstall: async () => ({ plugins: [], skills: [] }), readDetail: async () => '',
+    listSkills: async () => [], readSkill: async () => '', reconcile: async () => ({ plugins: [], skills: [] }), onChanged: () => () => undefined,
+  },
+  answerQuestion: async () => undefined,
+  closeTerminal: async () => undefined,
+  resizeTerminal: async () => undefined,
+  selectProjectDirectory: async () => null,
+  openProjectDirectory: async () => undefined,
+  listProviderModels: async () => [],
+  openModelConfig: async () => undefined,
   loadRuntimeSettings: async () => ({
-    deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
-    vision: { apiKey: { configured: false }, baseUrl: '' },
+    modelProviders: DEFAULT_MODEL_PROVIDERS,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
     whisper: { modelPath: '', cliPath: '' },
+    memoryEnabled: true,
+    memoryFromToolChatsEnabled: true,
   }),
   saveRuntimeSettings: async () => ({
-    deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
-    vision: { apiKey: { configured: false }, baseUrl: '' },
+    modelProviders: DEFAULT_MODEL_PROVIDERS,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
     whisper: { modelPath: '', cliPath: '' },
+    memoryEnabled: true,
+    memoryFromToolChatsEnabled: true,
   }),
+  loadMemories: async () => [],
+  deleteMemories: async () => undefined,
+  loadCustomInstructions: async () => ({ path: 'AGENTS.md', content: '' }),
+  saveCustomInstructions: async (content: string) => ({ path: 'AGENTS.md', content }),
   loadClientState: async () => null,
   saveClientState: async () => undefined,
   onPrepareClose: () => () => undefined,
@@ -57,7 +82,7 @@ describe('App', () => {
 
     expect(screen.getByRole('complementary', { name: '工作区导航' })).toBeTruthy();
     expect(screen.queryByText('视频剪辑')).toBeNull();
-    expect(screen.getByRole('button', { name: '会话 1' })).toBeTruthy();
+    expect(document.querySelectorAll('.sidebar-session')).toHaveLength(0);
     expect(screen.getByText('Agent Desktop')).toBeTruthy();
     expect(screen.queryByText('视频智能剪辑')).toBeNull();
     expect(screen.queryByLabelText('品牌 Logo')).toBeNull();
@@ -97,7 +122,8 @@ describe('App', () => {
     await act(async () => resolveInitialSession?.('session-a'));
     expect(newSessionButton).toHaveProperty('disabled', false);
     fireEvent.click(newSessionButton);
-    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    expect(newSession).not.toHaveBeenCalled();
+    expect(document.querySelectorAll('.sidebar-session')).toHaveLength(0);
   });
 
   it('removes one pending video from the Composer and Main selection', async () => {
@@ -191,11 +217,11 @@ describe('App', () => {
       target: { value: '删除无关内容，只保留核心部分' },
     });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    expect(screen.getByText('进行中')).toBeTruthy();
+    expect(screen.getByRole('status', { name: '进行中' })).toBeTruthy();
 
     await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('删除无关内容，只保留核心部分'));
     expect(await screen.findByText('剪辑已经完成。')).toBeTruthy();
-    expect(screen.queryByText('进行中')).toBeNull();
+    expect(screen.queryByRole('status', { name: '进行中' })).toBeNull();
     expect(screen.queryByRole('region', { name: '开始视频任务' })).toBeNull();
     expect(within(screen.getByRole('region', { name: '任务输入' })).getByLabelText('剪辑需求')).toBeTruthy();
     expect(screen.getAllByLabelText('剪辑需求')).toHaveLength(1);
@@ -632,7 +658,7 @@ describe('App', () => {
     } satisfies DesktopApi;
 
     render(<App />);
-    expect((await screen.findByRole('button', { name: '会话 1' })).getAttribute('aria-current')).toBe('page');
+    await waitFor(() => expect(screen.getByRole('button', { name: '新会话' })).toHaveProperty('disabled', false));
     fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
     expect(await screen.findByLabelText('视频附件：video-a.mp4')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '用户 A' } });
@@ -649,7 +675,7 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: 'draft A' } });
 
     fireEvent.click(screen.getByRole('button', { name: '新会话' }));
-    expect((await screen.findByRole('button', { name: '会话 2' })).getAttribute('aria-current')).toBe('page');
+    await waitFor(() => expect(screen.getByRole('region', { name: '开始视频任务' })).toBeTruthy());
     expect(screen.getByRole('button', { name: '用户 A' })).toBeTruthy();
     expect(screen.queryByText('assistant A')).toBeNull();
     expect(screen.queryByLabelText('视频附件：video-a.mp4')).toBeNull();
@@ -703,6 +729,7 @@ describe('App', () => {
     const switchSession = vi.fn(async () => undefined);
     window.agentDesktop = {
       ...persistenceMethods,
+      loadClientState: async () => ({ activeSessionId: 'session-a', conversations: [{ id: 'session-a', title: '已有任务', titleManuallyRenamed: false, prompt: '', attachments: [], messages: [{ role: 'user', id: 1, text: '已有任务', attachments: [] }] }] }),
       getActiveSessionId: async () => 'session-a',
       selectAttachmentFiles: async () => null,
       removeAttachment: async () => undefined,
@@ -718,8 +745,8 @@ describe('App', () => {
     const newSessionButton = screen.getByRole('button', { name: '新会话' });
     await waitFor(() => expect(newSessionButton).toHaveProperty('disabled', false));
     fireEvent.click(newSessionButton);
-    expect((await screen.findByRole('button', { name: '会话 2' })).getAttribute('aria-current')).toBe('page');
-    const previousSessionButton = await screen.findByRole('button', { name: '会话 1' });
+    await waitFor(() => expect(newSession).toHaveBeenCalledOnce());
+    const previousSessionButton = await screen.findByRole('button', { name: '已有任务' });
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '处理中任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 

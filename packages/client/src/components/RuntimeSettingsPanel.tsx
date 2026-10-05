@@ -1,56 +1,66 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentClientApi, RuntimeSecretStatus, RuntimeSettings } from '../api.js';
+import { ModelProvidersSettings } from './ModelProvidersSettings.js';
+import { ExtensionsPage } from './ExtensionsPage.js';
+import { Archive, ArchiveRestore, ArrowLeft, ChevronRight, Cpu, Laptop, Monitor, Moon, Puzzle, Settings, Sun, Trash2, UserRound, Wrench, X } from 'lucide-react';
+import type { AgentClientApi, ClientConversation, RuntimeSettings, RuntimeSettingsUpdate } from '../api.js';
 
 interface RuntimeSettingsPanelProps {
   readonly api: AgentClientApi;
   readonly isProcessing: boolean;
+  readonly isOpen: boolean;
   readonly onClose: () => void;
+  readonly onOpenExtensions: (view: 'plugins' | 'skills') => void;
+  readonly archivedConversations: readonly ClientConversation[];
+  readonly onOpenConversation: (id: string) => Promise<void>;
+  readonly onRestoreConversation: (id: string) => Promise<void>;
+  readonly onRequestDelete: (id: string, trigger: HTMLElement) => void;
 }
 
-const MASKED_SECRET = '********';
+const sections = [
+  { id: 'general', label: '常规', icon: Settings, group: '个人' },
+  { id: 'personalization', label: '个性化', icon: UserRound },
+  { id: 'appearance', label: '外观', icon: Sun },
+  { id: 'models', label: '模型与执行', icon: Cpu, group: '运行' },
+  { id: 'tools', label: '本地工具', icon: Wrench },
+  { id: 'extensions', label: '插件与技能', icon: Puzzle, group: '扩展' },
+  { id: 'archives', label: '已归档的对话', icon: Archive, group: '已归档' },
+] as const;
 
-function sourceLabel(status: RuntimeSecretStatus): string | null {
-  if (status.source === 'saved') return '本机设置';
-  if (status.source === 'environment') return '环境变量';
-  return null;
-}
-
-function SecretStatus({ status }: { readonly status: RuntimeSecretStatus }) {
-  const source = sourceLabel(status);
-  return (
-    <div className="settings-secret-status" aria-live="polite">
-      <span>{status.configured ? '已配置' : '未配置'}</span>
-      {source !== null && <small>来源：{source}</small>}
-    </div>
-  );
-}
-
-export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSettingsPanelProps) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [section, setSection] = useState('deepseek');
+export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpenExtensions, archivedConversations, onOpenConversation, onRestoreConversation, onRequestDelete }: RuntimeSettingsPanelProps) {
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const page = useRef<HTMLElement>(null);
+  // 失焦和主题点击可以连续触发保存；按用户操作顺序写入，避免宿主的读取后写入互相覆盖。
+  const pendingSave = useRef(Promise.resolve());
+  const [section, setSection] = useState('general');
+  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
   const [settings, setSettings] = useState<RuntimeSettings | null>(null);
-  // null 表示沿用 Host 返回的脱敏显示；string 只保存用户本次输入的新密钥。
-  const [deepSeekApiKey, setDeepSeekApiKey] = useState<string | null>(null);
-  const [visionApiKey, setVisionApiKey] = useState<string | null>(null);
-  const [deepSeekBaseUrl, setDeepSeekBaseUrl] = useState('');
-  const [deepSeekModel, setDeepSeekModel] = useState('');
-  const [visionBaseUrl, setVisionBaseUrl] = useState('');
   const [whisperModelPath, setWhisperModelPath] = useState('');
   const [whisperCliPath, setWhisperCliPath] = useState('');
   const [message, setMessage] = useState<string | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState('');
+  const [instructions, setInstructions] = useState<{ path: string; content: string } | null>(null);
+  const [instructionDraft, setInstructionDraft] = useState('');
+  const instructionDialog = useRef<HTMLDialogElement>(null);
+
+  const runArchiveAction = async (action: () => Promise<void>) => {
+    setArchiveBusy(true);
+    setArchiveError('');
+    try { await action(); }
+    catch (error) { if (!(error instanceof Error)) throw error; setArchiveError(error.message); }
+    finally { setArchiveBusy(false); }
+  };
 
   useEffect(() => {
-    // 原生模态框负责焦点圈定、Escape 关闭和背景不可交互，避免自建焦点管理。
-    dialog.current!.showModal();
-  }, []);
+    if (isOpen) closeButton.current!.focus();
+
+  }, [isOpen]);
 
   const applySettings = (next: RuntimeSettings) => {
     setSettings(next);
-    setDeepSeekBaseUrl(next.deepSeek.baseUrl);
-    setDeepSeekModel(next.deepSeek.model);
-    setVisionBaseUrl(next.vision.baseUrl);
+    setTheme(next.theme ?? 'system');
+    document.documentElement.dataset.theme = next.theme ?? 'system';
     setWhisperModelPath(next.whisper.modelPath);
     setWhisperCliPath(next.whisper.cliPath);
   };
@@ -68,156 +78,163 @@ export function RuntimeSettingsPanel({ api, isProcessing, onClose }: RuntimeSett
     return () => { mounted = false; };
   }, [api]);
 
-  const save = async () => {
-    if (isProcessing || isSaving) return;
-    setIsSaving(true);
+  useEffect(() => {
+    if (section !== 'personalization' || !isOpen) return;
+    let mounted = true;
+    void api.loadCustomInstructions().then(next => { if (mounted) { setInstructions(next); setInstructionDraft(next.content); } }).catch(error => {
+      if (mounted) { setHasError(true); setMessage(error instanceof Error ? error.message : '无法读取 Codex 指令。'); }
+    });
+    return () => { mounted = false; };
+  }, [api, isOpen, section]);
+
+  const save = (update: RuntimeSettingsUpdate) => {
+    if (isProcessing) return;
     setMessage(null);
     setHasError(false);
-    try {
-      const next = await api.saveRuntimeSettings({
-        ...(deepSeekApiKey === null || deepSeekApiKey.length === 0 ? {} : { deepSeekApiKey }),
-        deepSeekBaseUrl: deepSeekBaseUrl.length === 0 ? null : deepSeekBaseUrl,
-        deepSeekModel: deepSeekModel.length === 0 ? null : deepSeekModel,
-        ...(visionApiKey === null || visionApiKey.length === 0 ? {} : { visionApiKey }),
-        visionBaseUrl: visionBaseUrl.length === 0 ? null : visionBaseUrl,
-        whisperModelPath: whisperModelPath.length === 0 ? null : whisperModelPath,
-        whisperCliPath: whisperCliPath.length === 0 ? null : whisperCliPath,
-      });
-      applySettings(next);
-      // 新 Key 只在当前输入控件中短暂存在，保存后立即丢弃并恢复 Host 的星号掩码。
-      setDeepSeekApiKey(null);
-      setVisionApiKey(null);
-      setMessage('设置已保存，将从下一次任务开始生效。');
-    } catch (error) {
-      setHasError(true);
-      setMessage(error instanceof Error ? error.message : '无法保存设置。');
-    } finally {
-      setIsSaving(false);
-    }
+    const request = pendingSave.current.then(async () => {
+      try {
+        const next = await api.saveRuntimeSettings(update);
+        // 仅刷新宿主状态；其他输入可能正在编辑，不能被较早的保存响应覆盖。
+        setSettings(next);
+        if (update.theme !== undefined) {
+          setTheme(next.theme ?? 'system');
+          document.documentElement.dataset.theme = next.theme ?? 'system';
+        }
+        setHasError(false);
+      } catch (error) {
+        setHasError(true);
+        setMessage(error instanceof Error ? error.message : '无法自动保存设置。');
+      }
+    });
+    pendingSave.current = request;
   };
 
-  const clearSecret = async (name: 'deepSeekApiKey' | 'visionApiKey') => {
-    if (isProcessing || isSaving) return;
-    setIsSaving(true);
-    setMessage(null);
-    setHasError(false);
-    try {
-      const next = await api.saveRuntimeSettings({ [name]: null });
-      applySettings(next);
-      if (name === 'deepSeekApiKey') setDeepSeekApiKey(null);
-      else setVisionApiKey(null);
-      setMessage('已清除本机保存的接口密钥。');
-    } catch (error) {
-      setHasError(true);
-      setMessage(error instanceof Error ? error.message : '无法清除接口密钥。');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const disabled = isProcessing || isSaving;
+  const disabled = isProcessing;
   return (
-    <dialog ref={dialog} className="settings-dialog" aria-label="运行时设置" onCancel={onClose} onClose={onClose}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="settings-layout" hidden={!isOpen} onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || (event.target instanceof HTMLElement && event.target.closest('.model-provider-editor'))) return;
+      if (event.target instanceof HTMLInputElement && (event.key === 'Enter' || event.key === 'Escape')) {
+        event.target.blur();
+        event.preventDefault();
+        if (event.key === 'Escape') onClose();
+      } else if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); onClose(); }
+    }}>
       <nav className="settings-nav" aria-label="设置分区">
         <h1>设置</h1>
-        {['deepseek', 'vision', 'whisper', 'ffmpeg'].map((id) => (
-          <button key={id} type="button" aria-current={section === id ? 'location' : undefined}
-            disabled={settings === null} onClick={() => {
-              setSection(id);
-              document.getElementById(`settings-${id}`)!.scrollIntoView({ block: 'start' });
-            }}>
-            {{ deepseek: '对话模型', vision: '视觉模型', whisper: '语音识别', ffmpeg: '视频处理' }[id]}
-          </button>
+        {sections.map((item) => (
+          <div key={item.id}>
+            {'group' in item && <p className="settings-group">{item.group}</p>}
+            <button type="button" title={item.label} aria-label={item.label} aria-current={section === item.id ? 'page' : undefined}
+              onClick={() => { setSection(item.id); page.current!.scrollTop = 0; }}>
+              <item.icon size={17} aria-hidden="true" /><span>{item.label}</span>
+            </button>
+          </div>
         ))}
       </nav>
       <div className="settings-body">
         <div className="settings-topbar">
-          <button type="button" className="icon-button settings-close" aria-label="关闭设置" onClick={onClose} autoFocus>
-            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+          <p>{sections.find(item => item.id === section)!.label}</p>
+          {settings !== null && section !== 'archives' && (hasError || isProcessing) && <p className={`settings-message${hasError ? ' settings-error' : ''}`} role={hasError ? 'alert' : 'status'}>
+            {message ?? '任务执行中，暂时无法修改设置。'}
+          </p>}
+          <button ref={closeButton} type="button" className="icon-button settings-close" aria-label="关闭设置" title="返回对话" onClick={onClose}>
+            <ArrowLeft size={18} />
           </button>
         </div>
-        <main className="settings-page" aria-label="设置">
-          {settings === null ? (
+        <main ref={page} className="settings-page" aria-label="设置">
+          {section === 'archives' ? (
+            <div className="settings-content">
+              <h1>已归档的对话</h1>
+              <p className="settings-readonly">归档的对话保留历史与文件。恢复后可继续原来的对话。</p>
+              {archiveError && <p className="settings-error" role="alert">{archiveError}</p>}
+              {archiveBusy && <p role="status">正在处理…</p>}
+              <ul className="settings-archive-list" aria-label="已归档对话列表">
+                {archivedConversations.map(conversation => <li key={conversation.id}>
+                  <button className="settings-archive-title" type="button" title={conversation.title} disabled={isProcessing || archiveBusy}
+                    onClick={() => void runArchiveAction(() => onOpenConversation(conversation.id))}>{conversation.title}</button>
+                  <button className="icon-button" type="button" title="恢复对话" aria-label={`恢复对话：${conversation.title}`} disabled={isProcessing || archiveBusy}
+                    onClick={() => void runArchiveAction(() => onRestoreConversation(conversation.id))}><ArchiveRestore size={16} /></button>
+                  <button className="icon-button" type="button" title="删除对话" aria-label={`删除对话：${conversation.title}`} disabled={isProcessing || archiveBusy}
+                    onClick={event => onRequestDelete(conversation.id, event.currentTarget)}><Trash2 size={16} /></button>
+                </li>)}
+              </ul>
+              {archivedConversations.length === 0 && <p className="settings-readonly">没有已归档的对话。</p>}
+            </div>
+          ) : settings === null ? (
             <p role={hasError ? 'alert' : 'status'} className={hasError ? 'settings-error' : undefined}>{message ?? '正在加载设置…'}</p>
           ) : (
             <div className="settings-content">
-              <header className="settings-header">
-                <p>运行时设置会在下一次任务开始时生效。</p>
-              </header>
-
-              <section className="settings-section" aria-labelledby="settings-deepseek">
-                <h2 id="settings-deepseek">对话模型</h2>
-                <label>
-                  <span>接口密钥</span>
-                  <input
-                    type={deepSeekApiKey === null ? 'text' : 'password'}
-                    value={deepSeekApiKey ?? (settings.deepSeek.apiKey.configured ? MASKED_SECRET : '')}
-                    disabled={disabled}
-                    autoComplete="off"
-                    placeholder="输入新密钥"
-                    onFocus={() => { if (deepSeekApiKey === null) setDeepSeekApiKey(''); }}
-                    onBlur={() => { if (deepSeekApiKey === '') setDeepSeekApiKey(null); }}
-                    onChange={(event) => setDeepSeekApiKey(event.target.value)}
-                  />
-                </label>
-                <div className="settings-secret-row">
-                  <SecretStatus status={settings.deepSeek.apiKey} />
-                  <button
-                    type="button"
-                    disabled={disabled || settings.deepSeek.apiKey.source !== 'saved'}
-                    onClick={() => void clearSecret('deepSeekApiKey')}
-                  >清除本机密钥</button>
-                </div>
-                <label><span>服务地址</span><input placeholder="留空时使用环境变量或服务默认值" value={deepSeekBaseUrl} disabled={disabled} onChange={(event) => setDeepSeekBaseUrl(event.target.value)} /></label>
-                <label><span>模型名称</span><input placeholder="留空时使用环境变量或服务默认值" value={deepSeekModel} disabled={disabled} onChange={(event) => setDeepSeekModel(event.target.value)} /></label>
-              </section>
-
-              <section className="settings-section" aria-labelledby="settings-vision">
-                <h2 id="settings-vision">视觉模型</h2>
-                <label>
-                  <span>接口密钥</span>
-                  <input
-                    type={visionApiKey === null ? 'text' : 'password'}
-                    value={visionApiKey ?? (settings.vision.apiKey.configured ? MASKED_SECRET : '')}
-                    disabled={disabled}
-                    autoComplete="off"
-                    placeholder="输入新密钥"
-                    onFocus={() => { if (visionApiKey === null) setVisionApiKey(''); }}
-                    onBlur={() => { if (visionApiKey === '') setVisionApiKey(null); }}
-                    onChange={(event) => setVisionApiKey(event.target.value)}
-                  />
-                </label>
-                <div className="settings-secret-row">
-                  <SecretStatus status={settings.vision.apiKey} />
-                  <button
-                    type="button"
-                    disabled={disabled || settings.vision.apiKey.source !== 'saved'}
-                    onClick={() => void clearSecret('visionApiKey')}
-                  >清除本机密钥</button>
-                </div>
-                <label><span>服务地址</span><input placeholder="留空时使用环境变量或服务默认值" value={visionBaseUrl} disabled={disabled} onChange={(event) => setVisionBaseUrl(event.target.value)} /></label>
-              </section>
-
+              <div hidden={section !== 'general'}>
+                <h1>常规</h1>
+                <section className="settings-section">
+                  <h2>会话</h2>
+                  <div className="settings-info-row"><div><strong>历史与设置</strong><p>保存在当前电脑，启动时恢复会话。</p></div><span>本机数据库</span></div>
+                  <div className="settings-info-row"><div><strong>发送方式</strong><p>按回车发送，按 Shift + 回车换行。</p></div><span>回车发送</span></div>
+                </section>
+                <section className="settings-section">
+                  <h2>执行权限</h2>
+                  <div className="settings-info-row"><div><strong>本地操作审批</strong><p>目录授权、文件写入、终端和插件操作在对话中请求批准。</p></div><span>按操作请求</span></div>
+                </section>
+              </div>
+              <div hidden={section !== 'appearance'}>
+                <h1>外观</h1>
+                <section className="settings-section">
+                  <h2>模式</h2>
+                  <div className="settings-theme-options" role="group" aria-label="外观模式">
+                    {([{ value: 'system', label: '跟随系统', icon: Monitor }, { value: 'light', label: '浅色', icon: Sun }, { value: 'dark', label: '深色', icon: Moon }] as const).map(item => (
+                      <button key={item.value} type="button" className={`settings-theme-option ${item.value}`} disabled={disabled} aria-pressed={theme === item.value} onClick={() => save({ theme: item.value })}>
+                        <item.icon size={22} aria-hidden="true" /><span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
+              <div hidden={section !== 'personalization'}>
+                <h1>个性化</h1>
+                <section className="settings-section personalization-section">
+                  <div className="personalization-heading"><div><h2>Codex 记忆</h2><p>配置 Codex 在本地主机上管理记忆的方式。<a href="https://help.openai.com" target="_blank" rel="noreferrer">了解更多</a></p></div><button className="host-selector" type="button" disabled><Laptop size={15} />本地主机<span>⌄</span></button></div>
+                  <div className="memory-options">
+                    <div className="memory-row"><div><strong>启用 Codex 记忆功能</strong><p>根据本地聊天记录生成记忆，并使用这些记忆为后续聊天提供个性化体验</p></div><label className="memory-switch"><input type="checkbox" role="switch" checked={settings.memoryEnabled} disabled={disabled} onChange={event => save({ memoryEnabled: event.target.checked })} /><span /></label></div>
+                    <div className="memory-row"><div><strong>允许从使用工具的聊天中生成记忆</strong><p>从使用过 MCP 或网页预览工具的聊天生成记忆</p></div><label className="memory-switch"><input type="checkbox" role="switch" checked={settings.memoryFromToolChatsEnabled} disabled={disabled || !settings.memoryEnabled} onChange={event => save({ memoryFromToolChatsEnabled: event.target.checked })} /><span /></label></div>
+                    <div className="memory-row"><div><strong>删除 Codex 记忆</strong><p>删除本地主机上的全部 Codex 记忆</p></div><button className="memory-delete" type="button" disabled={disabled} onClick={() => { if (window.confirm('删除全部 Codex 记忆？')) void api.deleteMemories().catch(error => { setHasError(true); setMessage(error instanceof Error ? error.message : '无法删除记忆。'); }); }}>删除</button></div>
+                  </div>
+                </section>
+                <section className="settings-section personalization-section">
+                  <h2>自定义指令</h2>
+                  <button className="instructions-entry" type="button" disabled={disabled} onClick={() => { if (instructions !== null) instructionDialog.current?.showModal(); }}><span><strong>Codex 指令</strong><small>Edit the AGENTS.md file on the selected machine. Repository instructions may also apply. <a href="https://help.openai.com" target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}>Learn more</a></small></span><ChevronRight size={17} /></button>
+                </section>
+                <dialog ref={instructionDialog} className="instructions-dialog" onCancel={event => { event.preventDefault(); instructionDialog.current?.close(); }}>
+                  <header><h2>Codex 指令</h2><button className="icon-button" type="button" aria-label="关闭" onClick={() => instructionDialog.current?.close()}><X size={18} /></button></header>
+                  <p className="instructions-path">{instructions?.path}</p>
+                  <textarea aria-label="AGENTS.md 内容" value={instructionDraft} disabled={disabled} onChange={event => setInstructionDraft(event.target.value)} />
+                  <footer><button type="button" className="extension-back" onClick={() => instructionDialog.current?.close()}>取消</button><button type="button" className="extension-add" disabled={disabled} onClick={() => void api.saveCustomInstructions(instructionDraft).then(next => { setInstructions(next); instructionDialog.current?.close(); }).catch(error => { setHasError(true); setMessage(error instanceof Error ? error.message : '无法保存 Codex 指令。'); })}>保存</button></footer>
+                </dialog>
+              </div>
+              <div hidden={section !== 'models'}>
+                <ModelProvidersSettings api={api} settings={settings} isProcessing={isProcessing} isOpen={isOpen} onSettings={setSettings} />
+              </div>
+              <div hidden={section !== 'tools'}>
+              <h1>本地工具</h1>
               <section className="settings-section" aria-labelledby="settings-whisper">
                 <h2 id="settings-whisper">语音识别</h2>
-                <label><span>模型文件路径</span><input value={whisperModelPath} disabled={disabled} onChange={(event) => setWhisperModelPath(event.target.value)} /></label>
-                <label><span>命令行路径</span><input value={whisperCliPath} disabled={disabled} onChange={(event) => setWhisperCliPath(event.target.value)} /></label>
+                <div className="settings-info-row"><div><strong>本机配置</strong><p>读取本机设置或环境变量中的语音程序和模型路径。</p></div><span>{settings.whisper.modelPath ? '模型路径已配置' : '使用环境配置'}</span></div>
+                <details className="settings-advanced"><summary>高级路径设置</summary>
+                <label><span>模型文件路径</span><input value={whisperModelPath} disabled={disabled} onChange={(event) => setWhisperModelPath(event.target.value)} onBlur={() => { if (whisperModelPath !== settings.whisper.modelPath) save({ whisperModelPath: whisperModelPath || null }); }} /></label>
+                <label><span>命令行路径</span><input value={whisperCliPath} disabled={disabled} onChange={(event) => setWhisperCliPath(event.target.value)} onBlur={() => { if (whisperCliPath !== settings.whisper.cliPath) save({ whisperCliPath: whisperCliPath || null }); }} /></label>
+                </details>
               </section>
-
               <section className="settings-section" aria-labelledby="settings-ffmpeg">
                 <h2 id="settings-ffmpeg">视频处理</h2>
                 <p className="settings-readonly">通过系统环境变量查找视频处理程序</p>
               </section>
-
-              {message !== null && <p className={`settings-message${hasError ? ' settings-error' : ''}`} role={hasError ? 'alert' : 'status'}>{message}</p>}
-              <button className="settings-save" type="button" disabled={disabled} onClick={() => void save()}>
-                {isSaving ? '正在保存…' : '保存设置'}
-              </button>
+              </div>
+              <div hidden={section !== 'extensions'}>
+                {section === 'extensions' && <ExtensionsPage api={api.extensions} view="plugins" isProcessing={isProcessing} onBrowse={onOpenExtensions} />}
+              </div>
             </div>
           )}
         </main>
       </div>
-    </dialog>
+    </div>
   );
 }

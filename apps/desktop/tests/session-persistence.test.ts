@@ -1,4 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { readDesktopDocument } from '../src/main/desktop-database.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,7 +20,23 @@ const temporaryDirectories: string[] = [];
 async function temporaryStatePath(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-session-'));
   temporaryDirectories.push(directory);
-  return join(directory, 'session-state.json');
+  return join(directory, 'agent-desktop.sqlite');
+}
+
+/** 直接写入原始记录，验证磁盘数据解析边界，不绕过真实 SQLite。 */
+async function writeStoredJson(filePath: string, source: string): Promise<void> {
+  readDesktopDocument(filePath, 'session-state');
+  const database = new DatabaseSync(filePath);
+  try {
+    database.prepare('INSERT INTO desktop_documents (name, value) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value').run('session-state', source);
+  } finally { database.close(); }
+}
+
+async function readStoredJson(filePath: string): Promise<string> {
+  const database = new DatabaseSync(filePath);
+  try {
+    return database.prepare('SELECT value FROM desktop_documents WHERE name = ?').get('session-state')!.value as string;
+  } finally { database.close(); }
 }
 
 function sessionEvents(number: string): readonly SessionEvent[] {
@@ -160,7 +178,37 @@ afterEach(async () => {
 });
 
 describe('desktop session persistence', () => {
-  it('treats only a missing state file as first launch', async () => {
+  it('persists an empty chat history with a pending draft and restores its directory and attachment', async () => {
+    const source = persistedState();
+    const draft = { ...source.clientState.conversations[0]!, title: '新聊天', titleManuallyRenamed: false, messages: [], prompt: '稍后发送', workingDirectory: 'D:/draft-project' };
+    const state = parseDesktopState({
+      activeSessionId: draft.id,
+      sessions: [{ ...source.sessions[0]!, events: [], workingDirectory: 'D:/draft-project' }],
+      clientState: { activeSessionId: draft.id, conversations: [], drafts: [draft] },
+    });
+    const filePath = await temporaryStatePath();
+    await saveDesktopState(filePath, state);
+    const restored = await loadDesktopState(filePath);
+    expect(restored?.clientState.conversations).toEqual([]);
+    expect(restored?.clientState.drafts).toEqual([draft]);
+    expect(restored?.sessions[0]?.workingDirectory).toBe('D:/draft-project');
+  });
+
+  it('round-trips sidebar projects, archived chats, pins and timestamps without changing runtime directories', async () => {
+    const filePath = await temporaryStatePath();
+    const state = persistedState();
+    const snapshot: ClientStateSnapshot = { ...state.clientState,
+      sidebar: { projects: [{ id: 'project-a', name: '工作项目', directory: 'D:/another-project', pinned: true, collapsed: true }], projectsCollapsed: true, recentCollapsed: false, grouped: true },
+      conversations: state.clientState.conversations.map(conversation => ({ ...conversation, projectId: 'project-a', pinned: true, archived: true, updatedAt: 12345 })),
+    };
+    await saveDesktopState(filePath, { ...state, clientState: snapshot });
+    const restored = await loadDesktopState(filePath);
+    expect(restored?.clientState).toEqual(snapshot);
+    expect(restored?.sessions).toEqual(state.sessions);
+    expect(() => parseDesktopState({ ...state, clientState: { ...snapshot, sidebar: { ...snapshot.sidebar, projects: [] } } })).toThrow('projectId');
+  });
+
+  it('treats a missing session record as first launch', async () => {
     const filePath = await temporaryStatePath();
     await expect(loadDesktopState(filePath)).resolves.toBeNull();
   });
@@ -203,7 +251,7 @@ describe('desktop session persistence', () => {
         ),
       },
     };
-    await writeFile(filePath, JSON.stringify(legacy), 'utf8');
+    await writeStoredJson(filePath, JSON.stringify(legacy));
 
     const restored = await loadDesktopState(filePath);
 
@@ -214,10 +262,10 @@ describe('desktop session persistence', () => {
   it('rejects a working directory that is not a string', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [{ ...state.sessions[0]!, workingDirectory: 7 }, state.sessions[1]!],
-    }), 'utf8');
+    }));
 
     await expect(loadDesktopState(filePath)).rejects.toThrowError(/workingDirectory/);
   });
@@ -302,7 +350,7 @@ describe('desktop session persistence', () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     const [failedMessage, cancelledMessage] = state.clientState.conversations[1]!.messages;
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       // 旧快照没有 outputFiles：不能凭空造出产物。
       clientState: {
@@ -318,7 +366,7 @@ describe('desktop session persistence', () => {
           },
         ],
       },
-    }), 'utf8');
+    }));
 
     const restored = await loadDesktopState(filePath);
     const failed = restored?.clientState.conversations[1]?.messages[0];
@@ -356,11 +404,11 @@ describe('desktop session persistence', () => {
       },
     ];
     const diskEvents = [...sessionEvents('731'), ...cancelledEvents];
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [{ ...state.sessions[0]!, events: diskEvents }, state.sessions[1]!],
-    }), 'utf8');
-    const sourceBeforeLoad = await readFile(filePath, 'utf8');
+    }));
+    const sourceBeforeLoad = await readStoredJson(filePath);
 
     const restored = await loadDesktopState(filePath);
 
@@ -368,7 +416,7 @@ describe('desktop session persistence', () => {
     expect(restored?.sessions[0]?.events).toEqual(diskEvents);
     expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
     // 读取只读取磁盘事实，不改写已经追加的历史。
-    expect(await readFile(filePath, 'utf8')).toBe(sourceBeforeLoad);
+    expect(await readStoredJson(filePath)).toBe(sourceBeforeLoad);
 
     // 模拟 restoreDesktopState：磁盘事件原样注入 InMemorySession。
     const session = new InMemorySession(restored!.sessions[0]!.events);
@@ -381,7 +429,7 @@ describe('desktop session persistence', () => {
     }));
 
     // 重启后的首次保存必须完整保留磁盘上已经追加的事件。
-    const saved = JSON.parse(await readFile(filePath, 'utf8')) as PersistedDesktopState;
+    const saved = JSON.parse(await readStoredJson(filePath)) as PersistedDesktopState;
     expect(saved.sessions[0]?.events).toEqual(diskEvents);
 
     // 在同一个 Session 上发起新 Turn，模型上下文仍然只由 Session 事件重建。
@@ -411,25 +459,26 @@ describe('desktop session persistence', () => {
     expect(session.events().slice(0, diskEvents.length)).toEqual(diskEvents);
   });
 
-  it('replaces the state file through a temporary file and leaves no temporary file behind', async () => {
+  it('writes a real SQLite database', async () => {
     const filePath = await temporaryStatePath();
     await saveDesktopState(filePath, persistedState());
 
-    expect(await readFile(filePath, 'utf8')).toContain('session-a');
-    await expect(readFile(`${filePath}.tmp`, 'utf8')).rejects.toThrow();
+    expect((await readFile(filePath)).subarray(0, 16).toString()).toBe('SQLite format 3\0');
   });
 
   it('keeps the previous history when the state write fails', async () => {
     const filePath = await temporaryStatePath();
     await saveDesktopState(filePath, persistedState());
-    const before = await readFile(filePath, 'utf8');
+    const before = await readStoredJson(filePath);
 
-    // 用目录占住临时文件路径，让本次写入真实失败。
-    await mkdir(`${filePath}.tmp`);
+    // 数据库触发器拒绝本次更新，验证失败时原记录仍完整保留。
+    const database = new DatabaseSync(filePath);
+    database.exec("CREATE TRIGGER reject_session BEFORE UPDATE ON desktop_documents BEGIN SELECT RAISE(ABORT, 'write blocked'); END");
+    database.close();
     await expect(saveDesktopState(filePath, persistedState())).rejects.toThrow();
 
     // 写入失败不能清空或改写已有历史。
-    expect(await readFile(filePath, 'utf8')).toBe(before);
+    expect(await readStoredJson(filePath)).toBe(before);
   });
 
   it('keeps same-named artifacts of one reply apart after a restart', async () => {
@@ -480,7 +529,7 @@ describe('desktop session persistence', () => {
       },
     };
 
-    await writeFile(filePath, JSON.stringify(legacyState), 'utf8');
+    await writeStoredJson(filePath, JSON.stringify(legacyState));
     const restored = await loadDesktopState(filePath);
 
     expect(restored?.clientState.conversations[0]?.titleManuallyRenamed).toBe(false);
@@ -490,7 +539,7 @@ describe('desktop session persistence', () => {
   it('rejects a non-boolean titleManuallyRenamed value', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       clientState: {
         ...state.clientState,
@@ -499,7 +548,7 @@ describe('desktop session persistence', () => {
           titleManuallyRenamed: 'yes',
         }, state.clientState.conversations[1]],
       },
-    }), 'utf8');
+    }));
 
     await expect(loadDesktopState(filePath)).rejects.toThrow(
       'clientState.conversations[0].titleManuallyRenamed',
@@ -508,18 +557,18 @@ describe('desktop session persistence', () => {
 
   it('fails explicitly for corrupt JSON and invalid structure', async () => {
     const corruptPath = await temporaryStatePath();
-    await writeFile(corruptPath, '{not json', 'utf8');
-    await expect(loadDesktopState(corruptPath)).rejects.toThrow('无法解析本地会话');
+    await writeStoredJson(corruptPath, '{not json');
+    await expect(loadDesktopState(corruptPath)).rejects.toThrow(SyntaxError);
 
     const invalidPath = await temporaryStatePath();
-    await writeFile(invalidPath, JSON.stringify({ sessions: [] }), 'utf8');
+    await writeStoredJson(invalidPath, JSON.stringify({ sessions: [] }));
     await expect(loadDesktopState(invalidPath)).rejects.toThrow('本地会话结构无效');
   });
 
   it('rejects an incomplete Renderer turn instead of persisting processing state', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       clientState: {
         ...state.clientState,
@@ -534,7 +583,7 @@ describe('desktop session persistence', () => {
           }],
         }, state.clientState.conversations[1]],
       },
-    }), 'utf8');
+    }));
 
     await expect(loadDesktopState(filePath)).rejects.toThrow('clientState.conversations[0].messages[0].status');
   });
@@ -563,11 +612,11 @@ describe('desktop session persistence', () => {
       },
       state.clientState.conversations[1]!,
     ];
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: storedSessions,
       clientState: { ...state.clientState, conversations: storedConversations },
-    }), 'utf8');
+    }));
 
     const restored = await loadDesktopState(filePath);
 
@@ -629,7 +678,7 @@ describe('desktop session persistence', () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     // 移除视频后只剩音轨：这是「单独音频附件」的真实磁盘形状，不能被换算成别的角色。
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [{
         ...state.sessions[0]!,
@@ -643,7 +692,7 @@ describe('desktop session persistence', () => {
           attachments: [{ path: 'D:\\audio\\背景音乐.mp3', name: '背景音乐.mp3', role: 'audio' }],
         }, state.clientState.conversations[1]!],
       },
-    }), 'utf8');
+    }));
 
     const restored = await loadDesktopState(filePath);
 
@@ -656,7 +705,7 @@ describe('desktop session persistence', () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     // Commit 37 之前的真实格式：会话只存一组视频路径，没有角色字段；换算后必须是 video。
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [
         { id: 'session-a', selectedVideoPaths: ['D:\\videos\\input-a.mp4'], events: sessionEvents('731') },
@@ -669,7 +718,7 @@ describe('desktop session persistence', () => {
           selectedVideos: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4' }],
         }, state.clientState.conversations[1]!],
       },
-    }), 'utf8');
+    }));
 
     const restored = await loadDesktopState(filePath);
 
@@ -792,7 +841,7 @@ describe('desktop session persistence', () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     const turnId = 'turn-bad' as TurnId;
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [{
         ...state.sessions[0]!,
@@ -815,7 +864,7 @@ describe('desktop session persistence', () => {
           },
         ],
       }, state.sessions[1]!],
-    }), 'utf8');
+    }));
 
     await expect(loadDesktopState(filePath)).rejects.toThrowError(/artifacts/);
   });
@@ -824,7 +873,7 @@ describe('desktop session persistence', () => {
     const filePath = await temporaryStatePath();
     // Commit 35 之前的真实格式：产物路径存在会话的 outputFilePaths 表里，消息只记 outputFileName。
     const [userMessage, replyMessage] = clientState().conversations[0]!.messages;
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       activeSessionId: 'session-a',
       outputSequence: 3,
       sessions: [{
@@ -850,7 +899,7 @@ describe('desktop session persistence', () => {
           ],
         }],
       },
-    }), 'utf8');
+    }));
 
     const restored = await loadDesktopState(filePath);
     expect(restored?.clientState.conversations[0]?.messages[1]).toMatchObject({
@@ -866,7 +915,7 @@ describe('desktop session persistence', () => {
   it('keeps a legacy reply without a matching path as a reply with no artifact', async () => {
     const filePath = await temporaryStatePath();
     const [userMessage, replyMessage] = clientState().conversations[0]!.messages;
-    await writeFile(filePath, JSON.stringify({
+    await writeStoredJson(filePath, JSON.stringify({
       activeSessionId: 'session-a',
       outputSequence: 3,
       sessions: [{
@@ -893,7 +942,7 @@ describe('desktop session persistence', () => {
           ],
         }],
       },
-    }), 'utf8');
+    }));
 
     const restored = await loadDesktopState(filePath);
     const reply = restored?.clientState.conversations[0]?.messages[1];
@@ -906,7 +955,7 @@ describe('desktop session persistence', () => {
     process.env.DEEPSEEK_API_KEY = 'must-not-be-persisted-secret';
     try {
       await saveDesktopState(filePath, persistedState());
-      const source = await readFile(filePath, 'utf8');
+      const source = await readStoredJson(filePath);
       expect(source).not.toContain('must-not-be-persisted-secret');
       expect(source).not.toContain('DEEPSEEK_API_KEY');
       expect(source).toContain('session-a');

@@ -1,19 +1,44 @@
+import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 import { describe, expect, it } from 'vitest';
 import type { AgentClientApi } from '../src/index.js';
 
 describe('AgentClientApi', () => {
   it('defines the host boundary used by the shared client', () => {
     const api: AgentClientApi = {
-      loadRuntimeSettings: async () => ({
-        deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
-        vision: { apiKey: { configured: false }, baseUrl: '' },
+      extensions: {
+        manage: async () => ({ plugins: [], skills: [] }),
+        list: async () => ({ plugins: [], skills: [] }), importLocal: async () => null,
+        install: async () => ({ plugins: [], skills: [] }), setEnabled: async () => ({ plugins: [], skills: [] }),
+        uninstall: async () => ({ plugins: [], skills: [] }), readDetail: async () => '',
+        listSkills: async () => [], readSkill: async () => '', reconcile: async () => ({ plugins: [], skills: [] }), onChanged: () => () => undefined,
+      },
+      answerQuestion: async () => undefined,
+      closeTerminal: async () => undefined,
+      resizeTerminal: async () => undefined,
+      selectProjectDirectory: async () => null,
+      openProjectDirectory: async () => undefined,
+      listProviderModels: async () => [],
+  openModelConfig: async () => undefined,
+  loadRuntimeSettings: async () => ({
+        modelProviders: DEFAULT_MODEL_PROVIDERS,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
         whisper: { modelPath: '', cliPath: '' },
+        memoryEnabled: true,
+        memoryFromToolChatsEnabled: true,
       }),
       saveRuntimeSettings: async () => ({
-        deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
-        vision: { apiKey: { configured: false }, baseUrl: '' },
+        modelProviders: DEFAULT_MODEL_PROVIDERS,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
         whisper: { modelPath: '', cliPath: '' },
+        memoryEnabled: true,
+        memoryFromToolChatsEnabled: true,
       }),
+      loadMemories: async () => [],
+      deleteMemories: async () => undefined,
+      loadCustomInstructions: async () => ({ path: 'AGENTS.md', content: '' }),
+      saveCustomInstructions: async content => ({ path: 'AGENTS.md', content }),
       loadClientState: async () => null,
       saveClientState: async () => undefined,
       onPrepareClose: () => () => undefined,
@@ -31,21 +56,33 @@ describe('AgentClientApi', () => {
     };
 
     expect(Object.keys(api).sort()).toEqual([
+      'answerQuestion',
       'cancelTask',
+      'closeTerminal',
       'decideApproval',
+      'deleteMemories',
       'deleteSession',
+      'extensions',
       'getActiveSessionId',
+      'listProviderModels',
       'loadClientState',
+      'loadCustomInstructions',
+      'loadMemories',
       'loadRuntimeSettings',
       'newSession',
       'onAgentEvent',
       'onPrepareClose',
+      'openModelConfig',
+      'openProjectDirectory',
       'removeAttachment',
+      'resizeTerminal',
       'revealFile',
       'runAgentTask',
       'saveClientState',
+      'saveCustomInstructions',
       'saveRuntimeSettings',
       'selectAttachmentFiles',
+      'selectProjectDirectory',
       'switchSession',
     ]);
   });

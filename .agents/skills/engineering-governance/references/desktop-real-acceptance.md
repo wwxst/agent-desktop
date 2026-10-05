@@ -55,8 +55,8 @@ node --experimental-transform-types logs/diag-parse.ts <夹具路径>
 
 `parseDesktopState` 会拒绝「会话列表与 clientState 会话列表不一致」的快照，报 `本地会话结构无效：activeSessionId`：
 
-- `sessions[].id` 与 `clientState.conversations[].id` 必须**一一对应且数量相同**；
-- `activeSessionId` 必须同时出现在两侧。
+- `sessions[].id` 与 `clientState.conversations[].id`、可选 `clientState.drafts[].id` 的合集必须**一一对应且数量相同**；历史可为空，输入草稿仍有宿主会话。
+- `activeSessionId` 必须属于宿主会话及客户端两组合集；具体草稿约束以 `parseClientState` 和 `docs/architecture.md` 为准。
 
 只想改一个会话的夹具时，**必须把另一个会话原样保留**，否则整个快照被拒。另外 `clientState.activeSessionId` 也必须与顶层一致。
 

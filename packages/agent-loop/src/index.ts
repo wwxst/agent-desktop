@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Agent } from '@agent-desktop/agent';
+import { ModelRequestError } from '@agent-desktop/model';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelMessage, ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
 import { recoverSessionEvents, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
@@ -15,6 +17,7 @@ export interface RunTurnResult {
 export type ExecutionTraceEvent =
   | { readonly type: 'turn.started'; readonly turnId: TurnId }
   | { readonly type: 'model.started'; readonly turnId: TurnId; readonly stepId: StepId; readonly messageCount: number; readonly toolDefinitionCount: number }
+  | { readonly type: 'model.retrying'; readonly turnId: TurnId; readonly stepId: StepId; readonly attempt: number; readonly waitMs: number; readonly reason: 'transient-service' }
   | { readonly type: 'model.completed'; readonly turnId: TurnId; readonly stepId: StepId; readonly durationMs: number; readonly toolCallCount: number; readonly hasText: boolean }
   | { readonly type: 'model.failed'; readonly turnId: TurnId; readonly stepId: StepId; readonly durationMs: number; readonly errorName: string; readonly errorMessage: string }
   | { readonly type: 'tool.started'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCall['id']; readonly toolName: string }
@@ -240,6 +243,14 @@ export interface RunTurnOptions {
   readonly onTextDelta?: (delta: string) => void;
   readonly onToolResult?: ToolResultListener;
   readonly onToolProgress?: ToolProgressListener;
+  readonly onModelText?: (stepId: StepId, text: string, purpose: 'delta' | 'commentary' | 'final') => void;
+  /** 当前只读子任务的真实预算；父任务不默认设置上限。 */
+  readonly maxSteps?: number;
+}
+
+export class StepBudgetError extends Error {
+  override readonly name = 'StepBudgetError';
+  constructor() { super('子任务已达到模型步骤上限，尚未完成。'); }
 }
 
 /** 从用户输入开始运行一个完整 Turn，直到模型返回零个 Tool Call。 */
@@ -248,9 +259,10 @@ export async function runTurn(
   input: string,
   options: RunTurnOptions = {},
 ): Promise<RunTurnResult> {
-  const { trace, signal, onTextDelta, onToolResult, onToolProgress } = options;
+  const { trace, signal, onTextDelta, onToolResult, onToolProgress, onModelText, maxSteps } = options;
   const turnId = createTurnId();
   let stepCount = 0;
+  let extraRequests = 0;
   const turnStartedAt = Date.now();
 
   await trace?.({ type: 'turn.started', turnId });
@@ -262,6 +274,7 @@ export async function runTurn(
 
     while (true) {
       throwIfAborted(signal);
+      if (maxSteps !== undefined && stepCount >= maxSteps) throw new StepBudgetError();
       // 一次 Model.complete 调用严格对应一个新 Step。
       const stepId = createStepId();
       stepCount += 1;
@@ -281,14 +294,30 @@ export async function runTurn(
       const modelStartedAt = Date.now();
       let response: ModelResponse;
       try {
-        response = await agent.model.complete({
+        const request = {
           systemPrompt: agent.systemPrompt.build(),
           messages,
           tools,
           ...(signal === undefined ? {} : { signal }),
           // 文本增量只向上转发给实时展示，不会写入 Session。
-          ...(onTextDelta === undefined ? {} : { onTextDelta }),
-        });
+          ...(onModelText === undefined ? (onTextDelta === undefined ? {} : { onTextDelta }) : { onTextDelta: (delta: string) => {
+            onTextDelta?.(delta);
+            onModelText?.(stepId, delta, 'delta');
+          } }),
+        };
+        try {
+          response = await agent.model.complete(request);
+        } catch (error) {
+          // 只重试当前尚未产生有效响应的请求；工具与既有步骤不重放。
+          if (!(error instanceof ModelRequestError) || error.kind !== 'transient-service'
+            || extraRequests >= 2 || (error.retryAfterMs ?? 1000) > 10_000) throw error;
+          const waitMs = error.retryAfterMs ?? 1000;
+          extraRequests += 1;
+          await trace?.({ type: 'model.retrying', turnId, stepId, attempt: 2, waitMs, reason: 'transient-service' });
+          await delay(waitMs, undefined, { signal });
+          throwIfAborted(signal);
+          response = await agent.model.complete(request);
+        }
       } catch (error) {
         // 非 Error 抛出值继续直接传播，不为 Trace 制造默认错误文本。
         if (!(error instanceof Error)) throw error;
@@ -317,6 +346,9 @@ export async function runTurn(
       agent.session.append(response.text === undefined
         ? { type: 'assistant.message', turnId, stepId, toolCalls: response.toolCalls }
         : { type: 'assistant.message', turnId, stepId, content: response.text, toolCalls: response.toolCalls });
+
+      // 完整响应才能确认文字用途；临时片段不成为历史事实。
+      onModelText?.(stepId, response.text ?? '', response.toolCalls.length === 0 ? 'final' : 'commentary');
 
       // 多个工具调用按响应顺序串行执行，保证事件顺序确定且同属当前 Step。
       for (const toolCall of response.toolCalls) {

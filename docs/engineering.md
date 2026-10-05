@@ -16,6 +16,8 @@ Decision    决策    重要取舍必须记录唯一来源，避免同一规则�
 
 Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；Node.js 27 及以上版本暂不声明兼容。
 
+Desktop 的 SQLite（本地嵌入式数据库）使用 Node.js 自带的 `node:sqlite`；当前 Electron 44 的主进程运行时已验证提供该模块，不引入第三方数据库依赖或额外原生模块重建步骤。数据库只由 Desktop Main（桌面主进程）访问，渲染层与 Agent Core（智能体核心）不持有数据库连接。
+
 ## Package Manager（包管理器）
 
 项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*`、`examples/*` 和 `apps/*`；当前应用入口为 `apps/desktop` 与 `apps/web`，共享产品客户端为 `packages/client`。
@@ -130,6 +132,8 @@ apps/desktop/
 
 ## Source Rules（源码规则）
 
+当前终端依赖：桌面宿主固定 `node-pty@1.1.0`，唯一职责是 Windows ConPTY 伪终端，负责原生交互进程；共享客户端固定 `@xterm/xterm@6.0.0`，唯一职责是展示终端输出。主进程构建保留 `node-pty` 外部模块，pnpm 允许其原生构建。已在 Electron 44.0.0、应用二进制接口 ABI 149 验证启动、中文、尺寸变化和进程树回收；安装包资源分发仍属于独立打包验收，不由源码构建替代。
+
 源码只放在 `src/`，测试只放在 `tests/`，不要把测试混入 `src/`。每个 workspace project 使用 Project References（项目引用）接入根 `tsconfig.json`。
 
 ## Dependency Rules（依赖规则）
@@ -224,7 +228,7 @@ Impact scope     影响范围    允许修改的模块、接口和行为
 Non-goals        不做什么    本阶段明确排除的能力
 ```
 
-除非当前需求已经证明确实需要，否则不得引入未来抽象、Plugin Runtime（插件运行时）、Provider Factory（供应商工厂）、Manager（管理器）或 Framework（框架）。
+本轮已明确采用 Codex 风格本地插件运行时，因此允许在 `apps/desktop` 维护其直接消费者需要的 catalog（目录）、authority（来源权威）、递归发现和原子安装；仍不得把这些边界提前扩散到 Core、Loop、Provider Factory（供应商工厂）、Manager（管理器）或 Framework（框架）。
 
 ### Step 2 Implementation（实现）
 
@@ -396,9 +400,13 @@ Main status:
 
 ## Test Runner（测试框架）
 
-项目使用 Vitest 4.1.11。当前已有 Agent Runtime 和 FFmpeg Tool 行为测试，`pnpm test` 运行现有测试套件。
+项目使用 Vitest 4.1.11。当前已有 Agent Runtime 和 FFmpeg Tool 行为测试，`pnpm test` 运行现有测试套件，排除 `logs/**` 中的原始证据与真实市场检出；第三方插件自带测试不属于本仓库门禁。
 
 ## Dependencies（依赖）
+
+本地插件和技能新增三个真实消费者依赖，精确固定版本：`apps/desktop` 使用 `@modelcontextprotocol/sdk` 1.31.0 处理工具协议、连接及进程关闭，`yaml` 2.9.1 解析技能元数据；`packages/client` 使用 `lucide-react` 1.49.0 提供管理图标。依赖均不进入 Core，没有新 package 或通用插件框架。
+
+内置资源位于 `apps/desktop/resources/{plugins,skills}`，由 `app.getAppPath()/resources` 读取。当前构建后的本地桌面入口随应用目录提供资源；生成安装包时必须一起打包，不能只复制 `dist`。`pnpm client:web:test` 先构建桌面产物，再运行浏览器与 Electron 验收。验证包括 SDK 子进程、SQLite 安装迁移、界面和 Electron 重启；本地模型协议夹具不能声明真实 DeepSeek 服务验收。
 
 根开发依赖保持最小：
 
@@ -410,6 +418,24 @@ vitest           4.1.11    测试运行器
 ```
 
 根与 Core package 不引入 ESLint、Prettier、模型供应商 SDK、第三方 FFmpeg SDK、Tool schema library 或 Agent Framework。`apps/desktop` 是当前明确的应用消费者，只在该 package 使用 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4；`apps/web` 只在自身开发依赖中使用 Playwright Test（Playwright 浏览器测试运行器）1.63.0，以 Chromium 执行 Web Browser E2E（浏览器端到端测试）。这些应用依赖不得进入 Core。根 workspace 的 `allowBuilds` 只允许 `electron` 和 `esbuild`。
+
+## Windows 安装包与更新
+
+```text
+NSIS Installer           Windows 安装器   生成当前用户安装包，支持直接安装更新并重新启动应用。
+Electron Builder         应用打包工具     汇集桌面产物、运行依赖和资源，生成安装包与更新元数据。
+Electron Updater         应用更新工具     从正式发布源下载、校验更新，并按用户点击启动安装器。
+```
+
+桌面包固定 `electron-updater@6.8.9`，唯一职责是检查、下载、校验和安装应用更新；开发依赖固定 `electron-builder@26.15.3`，唯一职责是生成 Windows 安装包。两者只属于桌面宿主，不进入 Agent Core（智能体核心）。`electron-winstaller` 是打包工具的传递依赖，本项目使用 NSIS（Windows 安装器），因此明确禁止它的安装脚本。
+
+运行 `corepack pnpm desktop:package:win` 先构建正式桌面产物，再生成 `apps/desktop/dist/installer/Agent-Desktop-Setup-<版本>-x64.exe`、对应 `.blockmap` 与 `latest.yml`。配置由 `apps/desktop/electron-builder.yml` 唯一维护，安装位置为当前用户，卸载保留用户数据。包名及会话存储目录保持已有身份。
+
+安装包使用已安装的 Electron（桌面运行时）44.0.0；`node-pty@1.1.0` 提供 Windows x64 的 Node-API（原生模块稳定接口）预编译二进制，已在真实打包运行时验证，因此不要求本机重新编译。应用文件直接落在 `resources/app`，保持 `spawn`（子进程启动）所需的真实磁盘路径；资源、插件、技能、ripgrep 和终端依赖随包提供，不在 Agent 工具中加入 Electron 路径判断。
+
+发布源固定为当前公开仓库的 GitHub 正式发布。发布新版本时增加桌面包的 `version`，生成同版本安装包，将安装包、`.blockmap` 和 `latest.yml` 一起上传到正式发布附件；仅推送代码或标签不构成可安装更新。本地打包命令使用 `--publish never`，不会自动发布，也没有额外的更新地址设置。
+
+源码开发模式不检查或安装更新；正式安装版启动检查一次。当前仓库尚无正式安装包发布，本地 SDK（软件开发工具包）下载、摘要校验、会话保存与安装调用验收不能代替线上覆盖安装和重启验收。签名与线上完整升级以实际发布包为准，不把缺少线上发布物记录为通过。
 
 ## 0.x Policy（0.x 策略）
 

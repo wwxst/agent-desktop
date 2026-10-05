@@ -1,21 +1,46 @@
+import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/index.js';
-import type { AgentClientApi, AgentRuntimeEvent, AgentTaskResult, ClientStateSnapshot } from '../src/index.js';
+import type { AgentClientApi, AgentRuntimeEvent, AgentTaskResult, AppUpdateState, ClientStateSnapshot } from '../src/index.js';
 
 const api: AgentClientApi = {
+  extensions: {
+    manage: async () => ({ plugins: [], skills: [] }),
+    list: async () => ({ plugins: [], skills: [] }), importLocal: async () => null,
+    install: async () => ({ plugins: [], skills: [] }), setEnabled: async () => ({ plugins: [], skills: [] }),
+    uninstall: async () => ({ plugins: [], skills: [] }), readDetail: async () => '',
+    listSkills: async () => [], readSkill: async () => '', reconcile: async () => ({ plugins: [], skills: [] }), onChanged: () => () => undefined,
+  },
+  answerQuestion: async () => undefined,
+  closeTerminal: async () => undefined,
+  resizeTerminal: async () => undefined,
+  selectProjectDirectory: async () => null,
+  openProjectDirectory: async () => undefined,
+  listProviderModels: async () => [],
+  openModelConfig: async () => undefined,
   loadRuntimeSettings: async () => ({
-    deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
-    vision: { apiKey: { configured: false }, baseUrl: '' },
+    modelProviders: DEFAULT_MODEL_PROVIDERS,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
     whisper: { modelPath: '', cliPath: '' },
+    memoryEnabled: true,
+    memoryFromToolChatsEnabled: true,
   }),
   saveRuntimeSettings: async () => ({
-    deepSeek: { apiKey: { configured: false }, baseUrl: '', model: '' },
-    vision: { apiKey: { configured: false }, baseUrl: '' },
+    modelProviders: DEFAULT_MODEL_PROVIDERS,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
     whisper: { modelPath: '', cliPath: '' },
+    memoryEnabled: true,
+    memoryFromToolChatsEnabled: true,
   }),
+  loadMemories: async () => [],
+  deleteMemories: async () => undefined,
+  loadCustomInstructions: async () => ({ path: 'AGENTS.md', content: '' }),
+  saveCustomInstructions: async content => ({ path: 'AGENTS.md', content }),
   loadClientState: async () => null,
   saveClientState: async () => undefined,
   onPrepareClose: () => () => undefined,
@@ -31,6 +56,11 @@ const api: AgentClientApi = {
   decideApproval: async () => undefined,
   revealFile: async () => undefined,
 };
+
+function savedConversation(id: string, title: string): ClientStateSnapshot['conversations'][number] {
+  return { id, title, titleManuallyRenamed: false, prompt: '', attachments: [],
+    messages: [{ id: 1, role: 'user', text: title, attachments: [] }] };
+}
 
 // jsdom 不实现布局滚动与顶层浮层；命中区域和关闭行为由真实浏览器测试验证。
 beforeAll(() => {
@@ -48,6 +78,81 @@ function artifactTypeText(fileName: string): string {
 }
 
 describe('shared App', () => {
+  it('installs directly from above Settings without a version dialog and displays save failures', async () => {
+    const install = vi.fn(async () => { throw new Error('无法保存本地会话：磁盘不可写'); });
+    render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'ready' }), onStateChanged: () => () => {}, install, retry: async () => {} } }} />);
+    const button = await screen.findByRole('button', { name: '安装更新' });
+    await waitFor(() => expect(button).toHaveProperty('disabled', false));
+    expect(button.nextElementSibling).toBe(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(button);
+    await screen.findByText('无法保存本地会话：磁盘不可写');
+    expect(install).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('follows download and readiness events, hides absent updates and unsubscribes', async () => {
+    let receive!: (state: AppUpdateState) => void;
+    const unsubscribe = vi.fn();
+    const view = render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'idle' }), onStateChanged: listener => { receive = listener; return unsubscribe; }, install: async () => {}, retry: async () => {} } }} />);
+    await screen.findByLabelText('剪辑需求');
+    expect(screen.queryByRole('button', { name: '安装更新' })).toBeNull();
+    act(() => receive({ status: 'downloading', percent: 45 }));
+    expect(screen.getByRole('button', { name: '正在下载更新 45%' })).toHaveProperty('disabled', true);
+    act(() => receive({ status: 'ready' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '安装更新' })).toHaveProperty('disabled', false));
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('retries a failed update rather than invoking the installer', async () => {
+    const retry = vi.fn(async () => {});
+    const install = vi.fn(async () => {});
+    render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'error', message: '下载失败：HTTP 503' }), onStateChanged: () => () => {}, install, retry } }} />);
+    await screen.findByText('下载失败：HTTP 503');
+    const button = screen.getByRole('button', { name: '重试更新' });
+    await waitFor(() => expect(button).toHaveProperty('disabled', false));
+    fireEvent.click(button);
+    await waitFor(() => expect(retry).toHaveBeenCalledOnce());
+    expect(install).not.toHaveBeenCalled();
+  });
+  it('reuses a pending new-chat draft without adding history or losing its input and attachment', async () => {
+    const newSession = vi.fn(api.newSession);
+    const saveClientState = vi.fn(api.saveClientState);
+    render(<App api={{ ...api, newSession, saveClientState, selectAttachmentFiles: async () => [{ path: 'D:/draft.mp4', name: 'draft.mp4', role: 'video' }] }} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '新会话' })).toHaveProperty('disabled', false));
+    const input = screen.getByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '尚未发送的任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
+    await screen.findByLabelText('视频附件：draft.mp4');
+    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole('button', { name: '新会话' }));
+    expect(newSession).not.toHaveBeenCalled();
+    expect(document.querySelectorAll('.sidebar-session')).toHaveLength(0);
+    expect(input).toHaveProperty('value', '尚未发送的任务');
+    await waitFor(() => expect(saveClientState.mock.calls.at(-1)?.[0]).toMatchObject({ conversations: [], drafts: [{ id: 'session-a', prompt: '尚未发送的任务', attachments: [{ path: 'D:/draft.mp4' }] }] }));
+  });
+
+  it('restores a draft with empty history and promotes it on the first send using the generated title', async () => {
+    const state: ClientStateSnapshot = { activeSessionId: 'draft-session', conversations: [], drafts: [{ ...savedConversation('draft-session', '新聊天'), messages: [], prompt: '你好，请帮我删除视频前面的广告，只保留讲解。', attachments: [{ path: 'D:/draft.mp4', name: 'draft.mp4', role: 'video' }] }] };
+    const saveClientState = vi.fn(api.saveClientState);
+    render(<App api={{ ...api, loadClientState: async () => state, saveClientState,
+      runAgentTask: async () => ({ responseText: '处理完成', traceId: 'trace-title', conversationTitle: '删除片头广告' }),
+    }} />);
+    await screen.findByLabelText('视频附件：draft.mp4');
+    expect(document.querySelectorAll('.sidebar-session')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByRole('button', { name: '删除片头广告' });
+    await waitFor(() => expect(saveClientState.mock.calls.at(-1)?.[0]).toMatchObject({ drafts: [], conversations: [{ id: 'draft-session', title: '删除片头广告' }] }));
+  });
+
+  it('keeps the successful reply when automatic naming fails and explains how to rename', async () => {
+    render(<App api={{ ...api, runAgentTask: async () => ({ responseText: '任务已完成', traceId: 'trace-title-error', conversationTitleError: '服务不可用' }) }} />);
+    fireEvent.change(await screen.findByLabelText('剪辑需求'), { target: { value: '检查项目配置' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByText('任务已完成');
+    expect(screen.getByRole('button', { name: '检查项目配置' })).toBeTruthy();
+    expect(screen.getByText('自动命名失败：服务不可用。可在会话菜单中重命名。')).toBeTruthy();
+  });
+
   it('sends with Enter but leaves Shift+Enter and IME confirmation to the editor', async () => {
     const runAgentTask = vi.fn(api.runAgentTask);
     render(<App api={{ ...api, runAgentTask }} />);
@@ -107,52 +212,33 @@ describe('shared App', () => {
     expect(screen.queryByText('本地运行')).toBeNull();
   });
 
-  it('loads and saves runtime settings without receiving or echoing saved API keys', async () => {
-    const saveRuntimeSettings = vi.fn(async (_update: Parameters<AgentClientApi['saveRuntimeSettings']>[0]) => ({
-      deepSeek: {
-        apiKey: { configured: true as const, source: 'saved' as const },
-        baseUrl: 'https://deepseek.saved.test',
-        model: 'runtime-model',
-      },
-      vision: {
-        apiKey: { configured: true as const, source: 'environment' as const },
-        baseUrl: 'https://vision.saved.test/v1',
-      },
-      whisper: { modelPath: 'D:\\models\\whisper.bin', cliPath: 'whisper-cli.exe' },
-    }));
+  it('saves the appearance preference through the host and restores it on startup', async () => {
+    const base = await api.loadRuntimeSettings();
+    const saveRuntimeSettings = vi.fn(async () => ({ ...base, theme: 'dark' as const }));
     render(<App api={{ ...api, saveRuntimeSettings }} />);
-
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
-    const deepSeekKey = (await screen.findAllByLabelText('接口密钥', { selector: 'input' }))[0]!;
-    expect((deepSeekKey as HTMLInputElement).value).toBe('');
-    expect(screen.getAllByText('未配置')).toHaveLength(2);
-    expect(screen.getByText('通过系统环境变量查找视频处理程序')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '对话模型' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '视觉模型' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '语音识别' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '视频处理' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '外观' }));
+    fireEvent.click(await screen.findByRole('button', { name: '深色' }));
+    expect(screen.queryByRole('button', { name: '保存设置' })).toBeNull();
+    await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ theme: 'dark' })));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
+    cleanup();
+    document.documentElement.dataset.theme = 'light';
+    render(<App api={{ ...api, loadRuntimeSettings: async () => ({ ...base, theme: 'dark' }) }} />);
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
+  });
 
-    fireEvent.change(deepSeekKey, { target: { value: 'renderer-only-new-key' } });
-    fireEvent.change(screen.getByLabelText('模型名称', { exact: true }), { target: { value: 'runtime-model' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
-
-    await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({
-      deepSeekApiKey: 'renderer-only-new-key',
-      deepSeekModel: 'runtime-model',
-    })));
-    await screen.findByText('设置已保存，将从下一次任务开始生效。');
-    expect((deepSeekKey as HTMLInputElement).value).toBe('********');
-    const visionKey = screen.getAllByLabelText('接口密钥', { selector: 'input' })[1]!;
-    expect((visionKey as HTMLInputElement).value).toBe('********');
-    expect(screen.queryByDisplayValue('renderer-only-new-key')).toBeNull();
-    expect(screen.getAllByText('已配置')).toHaveLength(2);
-    expect(screen.getByText('来源：本机设置')).toBeTruthy();
-    expect(screen.getByText('来源：环境变量')).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
-    await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledTimes(2));
-    expect(saveRuntimeSettings.mock.calls[1]![0]).not.toHaveProperty('deepSeekApiKey');
-    expect(saveRuntimeSettings.mock.calls[1]![0]).not.toHaveProperty('visionApiKey');
+  it('opens extension management from settings and keeps the conversation draft', async () => {
+    render(<App api={api} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '跨页面草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '插件与技能' }));
+    fireEvent.click(await screen.findByRole('button', { name: '浏览目录' }));
+    expect(await screen.findByRole('main', { name: '插件管理' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '对话' }));
+    expect(screen.getByLabelText('剪辑需求')).toBe(input);
+    expect(input).toHaveProperty('value', '跨页面草稿');
   });
 
   it('restores the persisted UI snapshot without rebuilding model context in the Client', async () => {
@@ -215,9 +301,34 @@ describe('shared App', () => {
     expect(screen.getByRole('button', { name: '历史会话 A' })).toBeTruthy();
   });
 
+  it('shows the latest real turn and step counts below the composer', async () => {
+    const state: ClientStateSnapshot = {
+      activeSessionId: 'session-a',
+      conversations: [{
+        id: 'session-a', title: '已有任务', titleManuallyRenamed: false, prompt: '', attachments: [],
+        messages: [
+          { id: 1, role: 'user', text: '处理视频', attachments: [] },
+          {
+            id: 2, role: 'assistant', activityExpanded: false,
+            activity: [
+              { id: 'model:step-1', kind: 'analysis', status: 'completed', plannedToolCallCount: 1 },
+              { id: 'model:step-2', kind: 'analysis', status: 'completed', plannedToolCallCount: 0 },
+            ],
+            status: 'completed', result: { responseText: '完成', traceId: 'trace-status' },
+          },
+        ],
+      }],
+      drafts: [],
+    };
+    render(<App api={{ ...api, loadClientState: async () => state }} />);
+    const status = await screen.findByLabelText('执行状态');
+    expect(status.textContent).toContain('1 轮 2 步');
+    expect(status.closest('form')).toBeNull();
+  });
+
   it('renames a session, persists the manual title, and does not replace it after the next prompt', async () => {
     let savedState: ClientStateSnapshot | undefined;
-    const runAgentTask = async () => ({ responseText: '完成', traceId: 'trace-rename' });
+    const runAgentTask = async () => ({ responseText: '完成', traceId: 'trace-rename', conversationTitle: '初始任务' });
     const renameApi: AgentClientApi = {
       ...api,
       runAgentTask,
@@ -225,8 +336,10 @@ describe('shared App', () => {
     };
 
     render(<App api={renameApi} />);
-    await screen.findByRole('button', { name: '会话 1' });
-    fireEvent.click(screen.getByRole('button', { name: '会话操作：会话 1' }));
+    fireEvent.change(await screen.findByLabelText('剪辑需求'), { target: { value: '初始任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByText('完成');
+    fireEvent.click(screen.getByRole('button', { name: '会话操作：初始任务' }));
     fireEvent.click(screen.getByRole('button', { name: '重命名' }));
     const titleInput = screen.getByRole('textbox', { name: '会话标题' });
     fireEvent.change(titleInput, { target: { value: '  重要项目  ' } });
@@ -251,11 +364,11 @@ describe('shared App', () => {
       ...api,
       newSession: async () => 'session-b',
       deleteSession,
+      loadClientState: async () => ({ activeSessionId: 'session-b', conversations: [savedConversation('session-a', '会话 1'), savedConversation('session-b', '会话 2')] }),
     };
 
     render(<App api={deleteApi} />);
     await screen.findByRole('button', { name: '会话 1' });
-    fireEvent.click(screen.getByRole('button', { name: '新会话' }));
     await screen.findByRole('button', { name: '会话 2' });
     fireEvent.click(screen.getByRole('button', { name: '会话操作：会话 2' }));
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
@@ -268,7 +381,23 @@ describe('shared App', () => {
     expect(screen.getByRole('main', { name: '对话工作区' })).toBeTruthy();
   });
 
-  it('creates exactly one Client conversation from the Host id when deleting the last session', async () => {
+  it('keeps a failed deletion in the dialog and lets the user cancel without losing the session', async () => {
+    const deleteSession = vi.fn(async () => { throw new Error('会话删除失败'); });
+    render(<App api={{ ...api, deleteSession, loadClientState: async () => ({ activeSessionId: 'session-a', conversations: [savedConversation('session-a', '会话 1')] }) }} />);
+    await screen.findByRole('button', { name: '会话 1' });
+    fireEvent.click(screen.getByRole('button', { name: '会话操作：会话 1' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    const dialog = screen.getByRole('dialog', { name: '删除会话确认' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '删除会话' }));
+    await within(dialog).findByRole('alert');
+    expect(within(dialog).getByRole('alert').textContent).toBe('会话删除失败');
+    expect(screen.getByRole('button', { name: '会话 1' })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(deleteSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps history empty and saves the Host replacement as a draft when deleting the last session', async () => {
     const deleteSession = vi.fn(async () => 'host-created-session');
     const newSession = vi.fn(async () => 'unexpected-client-session');
     let persistedState: ClientStateSnapshot | undefined;
@@ -299,10 +428,11 @@ describe('shared App', () => {
     await waitFor(() => expect(deleteSession).toHaveBeenCalledWith('session-a'));
     expect(newSession).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: '会话 1' })).toBeNull();
-    expect(screen.getByRole('button', { name: '会话 2' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('region', { name: '开始视频任务' })).toBeTruthy();
     await waitFor(() => expect(persistedState).toMatchObject({
       activeSessionId: 'host-created-session',
-      conversations: [{ id: 'host-created-session' }],
+      conversations: [],
+      drafts: [{ id: 'host-created-session' }],
     }));
   });
 
@@ -312,6 +442,7 @@ describe('shared App', () => {
       ...api,
       runAgentTask: () => new Promise((resolve) => { resolveTask = resolve; }),
       deleteSession: vi.fn(async () => 'session-a'),
+      loadClientState: async () => ({ activeSessionId: 'session-a', conversations: [savedConversation('session-a', '会话 1')] }),
     };
 
     render(<App api={processingApi} />);
@@ -322,7 +453,7 @@ describe('shared App', () => {
     fireEvent.change(composer, { target: { value: '执行中任务' } });
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
-    const menuButton = screen.getByRole('button', { name: '会话操作：执行中任务' });
+    const menuButton = screen.getByRole('button', { name: '会话操作：会话 1' });
     expect(menuButton).toHaveProperty('disabled', true);
     expect(screen.queryByRole('button', { name: '重命名' })).toBeNull();
     expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
@@ -666,7 +797,7 @@ describe('shared App', () => {
     const flush = prepareClose!();
     await act(async () => { await Promise.resolve(); });
     expect(saved).toHaveLength(1);
-    expect(saved[0]?.conversations[0]?.prompt).toBe('关闭前的草稿');
+    expect(saved[0]?.drafts?.[0]?.prompt).toBe('关闭前的草稿');
     await flush;
   });
 
@@ -729,7 +860,7 @@ describe('shared App', () => {
     await act(async () => { resolveFirstSave?.(); });
     await flush;
     expect(saved).toHaveLength(2);
-    expect(saved[1]?.conversations[0]?.prompt).toBe('关闭时的最终草稿');
+    expect(saved[1]?.drafts?.[0]?.prompt).toBe('关闭时的最终草稿');
   });
 
   it('waits for the running turn to settle before submitting the closing state', async () => {
@@ -843,6 +974,7 @@ describe('shared App', () => {
   it('keeps every session draft and attachment and reuses the same composer node when switching', async () => {
     const switchApi: AgentClientApi = {
       ...api,
+      loadClientState: async () => ({ activeSessionId: 'session-a', conversations: [savedConversation('session-a', '会话 1'), savedConversation('session-b', '会话 2')] }),
       selectAttachmentFiles: async () => [
         { path: 'D:\\videos\\a.mp4', name: 'a.mp4', role: 'video' },
       ],
@@ -852,7 +984,7 @@ describe('shared App', () => {
     const input = await screen.findByLabelText('剪辑需求');
     fireEvent.change(input, { target: { value: '会话一草稿' } });
 
-    fireEvent.click(screen.getByRole('button', { name: '新会话' }));
+    fireEvent.click(await screen.findByRole('button', { name: '会话 2' }));
     await screen.findByRole('button', { name: '会话 2' });
     expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe('');
     fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '会话二草稿' } });
@@ -907,8 +1039,11 @@ describe('shared App', () => {
     expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
 
     act(() => receiveEvent?.({ type: 'workspace.confirmed', workingDirectory: 'D:/videos' }));
-    expect(await screen.findByText('工作目录')).toBeTruthy();
-    expect(screen.getByText('D:/videos')).toBeTruthy();
+    expect(await screen.findByText('videos')).toBeTruthy();
+    expect(screen.queryByText('D:/videos')).toBeNull();
+    const directoryButton = screen.getByLabelText('项目目录：videos');
+    expect(directoryButton.getAttribute('title')).toBe('D:/videos');
+    expect(directoryButton.closest('form')).toBeNull();
 
     await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-approval' }));
     expect(await screen.findByText('完成')).toBeTruthy();
@@ -1157,9 +1292,153 @@ describe('shared App', () => {
     expect(screen.queryByText('工作目录')).toBeNull();
 
     act(() => receiveEvent?.({ type: 'workspace.confirmed', workingDirectory: 'D:/videos' }));
-    expect(await screen.findByText('工作目录')).toBeTruthy();
-    expect(screen.getByText('D:/videos')).toBeTruthy();
+    expect(await screen.findByText('videos')).toBeTruthy();
+    expect(screen.queryByText('D:/videos')).toBeNull();
 
     await act(async () => resolveTask?.({ responseText: '完成', traceId: 'trace-ws' }));
   });
+  it('creates a project session with its directory and moves existing chats without changing their working directory', async () => {
+    const saved: ClientStateSnapshot = { activeSessionId: 'session-a', conversations: [{
+      id: 'session-a', title: '已有聊天', titleManuallyRenamed: true, messages: [], prompt: '原草稿', attachments: [], workingDirectory: 'D:/old',
+    }] };
+    const saveClientState = vi.fn(api.saveClientState);
+    const newSession = vi.fn(async () => 'session-b');
+    render(<App api={{ ...api, loadClientState: async () => saved, selectProjectDirectory: async () => 'D:/projects/demo', newSession, saveClientState }} />);
+    await screen.findByRole('button', { name: '已有聊天' });
+    fireEvent.click(screen.getByRole('button', { name: '添加项目' }));
+    fireEvent.click(await screen.findByRole('button', { name: '在 demo 中新建会话' }));
+    await waitFor(() => expect(newSession).toHaveBeenCalledWith('D:/projects/demo'));
+    await waitFor(() => expect(screen.getByLabelText('项目目录：demo').getAttribute('title')).toBe('D:/projects/demo'));
+    fireEvent.click(screen.getByRole('button', { name: '会话操作：已有聊天' }));
+    fireEvent.click(screen.getByRole('button', { name: /移到项目/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'demo' }));
+    await waitFor(() => {
+      const snapshot = saveClientState.mock.calls.at(-1)?.[0];
+      expect(snapshot?.conversations.find(item => item.id === 'session-a')).toMatchObject({ projectId: snapshot?.sidebar?.projects[0]?.id, workingDirectory: 'D:/old', prompt: '原草稿' });
+      expect(snapshot?.drafts?.find(item => item.id === 'session-b')).toMatchObject({ workingDirectory: 'D:/projects/demo' });
+    });
+    fireEvent.click(screen.getByRole('button', { name: '项目操作：demo' }));
+    fireEvent.click(screen.getByRole('button', { name: '移除项目' }));
+    fireEvent.click(screen.getByRole('button', { name: '移除项目' }));
+    await waitFor(() => {
+      const snapshot = saveClientState.mock.calls.at(-1)?.[0];
+      expect(snapshot?.sidebar?.projects).toEqual([]);
+      expect(snapshot?.conversations).toHaveLength(1);
+      expect(snapshot?.drafts).toHaveLength(1);
+      expect(snapshot?.conversations[0]?.workingDirectory).toBe('D:/old');
+      expect(snapshot?.conversations.every(item => item.projectId === undefined)).toBe(true);
+      expect(snapshot?.drafts?.every(item => item.projectId === undefined)).toBe(true);
+    });
+    fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '保留项目草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '添加项目' }));
+    fireEvent.click(await screen.findByRole('button', { name: '在 demo 中新建会话' }));
+    await waitFor(() => {
+      const snapshot = saveClientState.mock.calls.at(-1)?.[0];
+      expect(snapshot?.drafts?.[0]).toMatchObject({ id: 'session-b', prompt: '保留项目草稿', projectId: snapshot?.sidebar?.projects[0]?.id, workingDirectory: 'D:/projects/demo' });
+    });
+    expect(newSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the composer project menu from persisted projects and supports leaving the project', async () => {
+    const state: ClientStateSnapshot = {
+      activeSessionId: 'session-a',
+      conversations: [{
+        id: 'session-a', title: '项目聊天', titleManuallyRenamed: true, messages: [], prompt: '', attachments: [],
+        projectId: 'project-frontend', workingDirectory: 'D:/projects/frontend',
+      }],
+      drafts: [],
+      sidebar: {
+        projects: [
+          { id: 'project-frontend', name: 'frontend', directory: 'D:/projects/frontend', pinned: false, collapsed: false },
+          { id: 'project-atlas', name: 'atlas', directory: 'D:/projects/atlas', pinned: false, collapsed: false },
+        ],
+        projectsCollapsed: false, recentCollapsed: false, grouped: true,
+      },
+    };
+    const newSession = vi.fn(async (directory?: string) => directory === 'D:/projects/atlas' ? 'session-atlas' : 'session-plain');
+    render(<App api={{ ...api, loadClientState: async () => state, newSession }} />);
+
+    const directoryButton = await screen.findByRole('button', { name: '项目目录：frontend' });
+    expect(directoryButton.getAttribute('title')).toBe('D:/projects/frontend');
+    fireEvent.click(directoryButton);
+    const menu = document.querySelector('.composer-project-menu') as HTMLElement;
+    expect(within(menu).getByRole('button', { name: 'frontend' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(menu).getByRole('button', { name: 'atlas' }).getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(within(menu).getByRole('button', { name: 'atlas' }));
+    await waitFor(() => expect(newSession).toHaveBeenCalledWith('D:/projects/atlas'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '项目目录：atlas' }).getAttribute('title')).toBe('D:/projects/atlas'));
+
+    fireEvent.click(screen.getByRole('button', { name: '项目目录：atlas' }));
+    const openMenu = document.querySelector('.composer-project-menu') as HTMLElement;
+    fireEvent.click(within(openMenu).getByRole('button', { name: '不在项目中工作' }));
+    await waitFor(() => expect(newSession).toHaveBeenCalledTimes(2));
+    expect(newSession.mock.calls.at(-1)).toEqual([]);
+    expect(screen.getByRole('button', { name: '选择项目目录' })).toBeTruthy();
+  });
+
+  it('archives the last visible chat, preserves its draft, and requires restoration before continuing', async () => {
+    const saved: ClientStateSnapshot = { activeSessionId: 'session-a', conversations: [{
+      id: 'session-a', title: '待归档', titleManuallyRenamed: true, messages: [], prompt: '保留草稿', attachments: [],
+    }] };
+    const saveClientState = vi.fn(api.saveClientState);
+    render(<App api={{ ...api, loadClientState: async () => saved, saveClientState }} />);
+    fireEvent.click(await screen.findByRole('button', { name: '归档：待归档' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '待归档' })).toBeNull());
+    expect(screen.queryByRole('button', { name: '查看已归档' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(await screen.findByRole('button', { name: '已归档的对话' }));
+    fireEvent.click(screen.getByRole('button', { name: '待归档' }));
+    await waitFor(() => expect(screen.getByLabelText('剪辑需求')).toHaveProperty('disabled', true));
+    expect(screen.getByLabelText('剪辑需求')).toHaveProperty('value', '保留草稿');
+    fireEvent.click(screen.getByRole('button', { name: '恢复会话' }));
+    await waitFor(() => expect(screen.getByLabelText('剪辑需求')).toHaveProperty('disabled', false));
+    await waitFor(() => expect(saveClientState.mock.calls.at(-1)?.[0].conversations.find(item => item.id === 'session-a')).toMatchObject({ archived: false, prompt: '保留草稿' }));
+  });
+
+  it('deletes archived chats from settings through the shared confirmation and preserves them on host failure', async () => {
+    const state: ClientStateSnapshot = { activeSessionId: 'session-a', conversations: [savedConversation('session-a', '当前任务'), { ...savedConversation('archived-session', '待删归档'), archived: true }] };
+    const deleteSession = vi.fn().mockRejectedValueOnce(new Error('数据库写入失败')).mockResolvedValue('session-a');
+    const saveClientState = vi.fn(api.saveClientState);
+    render(<App api={{ ...api, loadClientState: async () => state, deleteSession, saveClientState }} />);
+    fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '已归档的对话' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除对话：待删归档' }));
+    expect(screen.getByRole('button', { name: '取消' })).toBe(document.activeElement);
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }));
+    expect(await screen.findByText('数据库写入失败')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('button', { name: '待删归档' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '删除对话：待删归档' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByText('没有已归档的对话。')).toBeTruthy();
+    expect(deleteSession).toHaveBeenLastCalledWith('archived-session');
+    await waitFor(() => expect(saveClientState.mock.calls.at(-1)?.[0].conversations.map(item => item.id)).toEqual(['session-a']));
+  });
+
+  it('orders recent chats by updates with pins first and persists grouping and collapse independently of chat visits', async () => {
+    const saved: ClientStateSnapshot = { activeSessionId: 'session-a', conversations: [
+      { id: 'session-a', title: '较旧', titleManuallyRenamed: true, messages: [], prompt: '', attachments: [], updatedAt: 100 },
+      { id: 'session-b', title: '较新', titleManuallyRenamed: true, messages: [], prompt: '', attachments: [], updatedAt: 200 },
+    ] };
+    const saveClientState = vi.fn(api.saveClientState);
+    render(<App api={{ ...api, loadClientState: async () => saved, saveClientState }} />);
+    const titles = () => Array.from(document.querySelectorAll('.sidebar-session')).map(button => button.getAttribute('aria-label'));
+    await waitFor(() => expect(titles()).toEqual(['较新', '较旧']));
+    fireEvent.click(screen.getByRole('button', { name: '较新' }));
+    fireEvent.click(screen.getByRole('button', { name: '较旧' }));
+    await waitFor(() => expect(titles()).toEqual(['较新', '较旧']));
+    fireEvent.click(screen.getByRole('button', { name: '置顶：较旧' }));
+    expect(titles()).toEqual(['较旧', '较新']);
+    fireEvent.click(screen.getByRole('button', { name: '折叠最近会话' }));
+    fireEvent.click(screen.getByRole('button', { name: '项目侧栏选项' }));
+    fireEvent.click(screen.getByRole('button', { name: '合并显示' }));
+    await waitFor(() => {
+      const snapshot = saveClientState.mock.calls.at(-1)?.[0];
+      expect(snapshot?.sidebar).toMatchObject({ recentCollapsed: true, grouped: false });
+      expect(snapshot?.conversations[0]).toMatchObject({ pinned: true, updatedAt: 100 });
+    });
+  });
+
 });

@@ -48,8 +48,8 @@ test('renders processing, cancellation, completion and failure without losing th
   await expect(input).toBeDisabled();
   await page.screenshot({ animations: 'disabled', path: info.outputPath('processing.png') });
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await expect(page.getByLabel('模型名称', { exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '保存设置' })).toBeDisabled();
+  await expect(page.getByText('任务执行中，暂时无法修改设置。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存设置' })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '设置', exact: true })).toBeFocused();
@@ -73,7 +73,7 @@ test('renders processing, cancellation, completion and failure without losing th
   expect(await originalInput!.evaluate(element => element.isConnected)).toBe(true);
 });
 
-test('shows settings errors and keeps dialog controls reachable with keyboard', async ({ page }, info) => {
+test('shows settings errors and keeps page controls reachable with keyboard', async ({ page }, info) => {
   // 暂停宿主响应，先检查真实加载态，再释放为失败结果。
   let releaseSettings!: () => void;
   const settingsReady = new Promise<void>((resolve) => { releaseSettings = resolve; });
@@ -96,16 +96,16 @@ test('shows settings errors and keeps dialog controls reachable with keyboard', 
   await page.goto('/');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('正在加载设置…');
-  await expect(page.getByRole('button', { name: '对话模型', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '保存设置', exact: true })).toHaveCount(0);
   await page.screenshot({ animations: 'disabled', path: info.outputPath('settings-loading.png') });
   releaseSettings();
   await expect(page.getByRole('alert')).toHaveText('测试状态：设置文件无法读取。');
   await page.screenshot({ animations: 'disabled', path: info.outputPath('settings-error.png') });
   await expect(page.getByRole('button', { name: '关闭设置' })).toBeFocused();
   await page.getByRole('button', { name: '关闭设置' }).press('Enter');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('main', { name: '设置' })).toBeHidden();
   await page.getByRole('button', { name: '设置', exact: true }).press('Enter');
   await expect(page.getByRole('alert')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('main', { name: '设置' })).toBeHidden();
 });

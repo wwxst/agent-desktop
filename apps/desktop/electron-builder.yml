@@ -1,0 +1,25 @@
+appId: com.agentdesktop.app
+productName: Agent Desktop
+# node-pty 1.1.0 自带已验证的 Windows x64 Node-API 二进制，无需本机 C++ 工具链重建。
+npmRebuild: false
+electronDist: node_modules/electron/dist
+# ripgrep 与插件进程需要真实磁盘路径，直接分发应用文件，避免把归档路径传给 spawn。
+asar: false
+directories:
+  output: dist/installer
+files:
+  - dist/main/**/*
+  - dist/preload/**/*
+  - dist/renderer/**/*
+  - resources/**/*
+win:
+  target: nsis
+  artifactName: Agent-Desktop-Setup-${version}-${arch}.${ext}
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+publish:
+  provider: github
+  owner: wwxst
+  repo: agent-desktop

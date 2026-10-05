@@ -35,6 +35,7 @@ describe('createVideoAgent', () => {
       'declare_video_outputs',
       'validate_video_candidate',
       'publish_video_output',
+      'check_video_semantics',
     ]);
 
     const systemPrompt = agent.systemPrompt.build();

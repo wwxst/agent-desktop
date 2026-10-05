@@ -72,3 +72,14 @@ export interface ModelResponse {
 export interface Model {
   complete(request: ModelRequest): Promise<ModelResponse>;
 }
+
+/** 供应商在真实网络边界分类失败；循环只消费分类与等待时间，不依赖 HTTP 实现。 */
+export class ModelRequestError extends Error {
+  override readonly name = 'ModelRequestError';
+  constructor(
+    message: string,
+    readonly kind: 'transient-service' | 'authentication' | 'invalid-request' | 'protocol' | 'cancelled',
+    readonly statusCode?: number,
+    readonly retryAfterMs?: number,
+  ) { super(message); }
+}

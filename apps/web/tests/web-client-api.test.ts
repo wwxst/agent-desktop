@@ -67,13 +67,12 @@ describe('Web Dev API', () => {
   it('keeps runtime settings in memory and returns only secret status', async () => {
     const api = createWebClientApi();
     const saved = await api.saveRuntimeSettings({
-      deepSeekApiKey: 'web-only-secret',
-      deepSeekModel: 'web-model',
+      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', images: false }] },
     });
 
-    expect(saved.deepSeek).toMatchObject({
+    expect(saved.modelProviders.find(provider => provider.id === 'custom-web')).toMatchObject({
       apiKey: { configured: true, source: 'saved' },
-      model: 'web-model',
+      models: [{ id: 'web-model' }],
     });
     expect(JSON.stringify(await api.loadRuntimeSettings())).not.toContain('web-only-secret');
   });

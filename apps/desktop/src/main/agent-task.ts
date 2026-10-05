@@ -117,6 +117,7 @@ export interface DesktopTaskOptions {
   readonly onTextDelta?: (delta: string) => void;
   readonly onToolResult?: ToolResultListener;
   readonly onToolProgress?: ToolProgressListener;
+  readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
 }
 
 /**
@@ -143,6 +144,7 @@ export async function runDesktopAgentTask(
 ) {
   const result = await runTurn(agent, buildAgentPrompt(prompt, attachments), {
     trace: options.trace,
+    ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
     // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     // 文本增量只用于实时展示，不改变 Session 事实和返回值。

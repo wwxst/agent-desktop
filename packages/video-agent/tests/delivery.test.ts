@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ToolCallId, ToolResult } from '@agent-desktop/model';
+import { candidateDigest } from '../src/candidate-digest.js';
 import { InMemorySession, type StepId, type TurnId } from '@agent-desktop/session';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import {
@@ -205,6 +206,29 @@ function resultsOf(session: InMemorySession): readonly OutputItemResult[] {
 }
 
 describe('video delivery declaration and write boundary', () => {
+  it('binds semantic evidence to the declared item, complete coverage, and unchanged bytes', async () => {
+    const directory = await temporaryDirectory();
+    const tools = createDeliveryTools();
+    const item = await declareItem(tools, join(directory, 'source.mp4'), { kind: 'automatic' }, [{ kind: 'semantic', description: '只保留讲解' }]);
+    const candidate = await produceCandidate(tools, item.workingDirectory, 'attempt.mp4', item.sourcePath);
+    appendCheck(tools.session, 'decode_video', candidate.path, decodableEvidence(candidate.path));
+    const requirement = readVideoDeliveryFacts(tools.session.events()).items[0]!.requirements.find((entry) => entry.kind === 'semantic')!;
+    const evidence = { inputPath: candidate.path, outputItemId: item.outputItemId, candidateSha256: await candidateDigest(candidate.path),
+      coverage: 'all-frames-and-transcript', checks: [{ requirementId: requirement.id, outcome: 'passed', detail: '全片为讲解画面' }] };
+    for (const incorrect of [{ ...evidence, outputItemId: 'another-item' }, { ...evidence, coverage: 'incomplete' }, { ...evidence, checks: null }]) {
+      appendCheck(tools.session, 'check_video_semantics', candidate.path, incorrect);
+      const result = await validateCandidate(tools, item.outputItemId, candidate.path);
+      expect(result.checks.at(-1)).toMatchObject({ outcome: 'blocked' });
+    }
+    appendCheck(tools.session, 'check_video_semantics', candidate.path, evidence);
+    const passed = await validateCandidate(tools, item.outputItemId, candidate.path);
+    expect(passed.checks.every((check) => check.outcome === 'passed')).toBe(true);
+    await writeFile(candidate.path, 'changed after validation');
+    expect(await runTool(tools.session, tools.publish, { validationId: passed.validationId })).toMatchObject({ status: 'error' });
+    expect(readVideoDeliveryFacts(tools.session.events()).published).toEqual([]);
+    const changed = await validateCandidate(tools, item.outputItemId, candidate.path);
+    expect(changed.checks.at(-1)).toMatchObject({ outcome: 'blocked' });
+  });
   it('refuses to write a candidate before any output item is declared', async () => {
     const directory = await temporaryDirectory();
     const session = newSession();

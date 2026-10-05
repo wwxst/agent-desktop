@@ -1,15 +1,32 @@
-import type { FormEvent, ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Check, ChevronDown, Folder, Plus, X } from 'lucide-react';
 import type { Attachment } from '../api.js';
+import type { ClientProject } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
+
+function finalDirectoryName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
 
 interface ComposerProps {
   readonly attachments: readonly Attachment[];
   readonly prompt: string;
   readonly isProcessing: boolean;
+  readonly isArchived?: boolean;
   /** 当前待决审批；显示在输入框上方，不进入对话历史。 */
   readonly approval: ReactNode;
-  /** 当前会话工作目录；未设置时不渲染这一行。 */
+  /** 当前会话工作目录；未设置时不渲染项目目录项。 */
   readonly workingDirectory?: string;
+  /** 当前宿主已登记的项目列表；项目选择器不维护自己的目录清单。 */
+  readonly projects: readonly ClientProject[];
+  readonly activeProjectId?: string;
+  readonly onSelectProject: (project?: ClientProject) => Promise<void>;
+  readonly onCreateProject: () => Promise<void>;
+  /** 当前会话最近一轮的真实执行摘要；没有历史任务时不渲染状态条。 */
+  readonly executionStatus?: {
+    readonly turnCount: number;
+    readonly stepCount: number;
+  };
   readonly onPromptChange: (prompt: string) => void;
   readonly onSelectFiles: () => void;
   readonly onRemoveAttachment: (index: number) => void;
@@ -22,8 +39,14 @@ export function Composer({
   attachments,
   prompt,
   isProcessing,
+  isArchived = false,
   approval,
   workingDirectory,
+  projects,
+  activeProjectId,
+  onSelectProject,
+  onCreateProject,
+  executionStatus,
   onPromptChange,
   onSelectFiles,
   onRemoveAttachment,
@@ -34,18 +57,68 @@ export function Composer({
     event.preventDefault();
     onSend();
   };
+  const directoryName = workingDirectory === undefined ? undefined : finalDirectoryName(workingDirectory);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectError, setProjectError] = useState('');
+  const projectMenu = useRef<HTMLDivElement>(null);
+  const projectTrigger = useRef<HTMLButtonElement>(null);
+  const activeProject = projects.find(project => project.id === activeProjectId);
+  const projectLabel = activeProject?.name ?? directoryName;
+  const projectDisabled = isProcessing || isArchived;
+
+  useLayoutEffect(() => {
+    if (projectMenuOpen) projectMenu.current?.showPopover({ source: projectTrigger.current! });
+  }, [projectMenuOpen]);
+
+  const closeProjectMenu = () => {
+    projectMenu.current?.hidePopover();
+    setProjectMenuOpen(false);
+    setProjectError('');
+  };
+
+  const runProjectAction = async (action: () => Promise<void>) => {
+    setProjectBusy(true);
+    setProjectError('');
+    try {
+      await action();
+      closeProjectMenu();
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setProjectError(error.message);
+    } finally {
+      setProjectBusy(false);
+    }
+  };
 
   return (
     <div className="composer-stack">
       {approval}
+      <div className="composer-project-picker">
+        <button ref={projectTrigger} className="composer-directory" type="button"
+          aria-label={projectLabel === undefined ? '选择项目目录' : `项目目录：${projectLabel}`}
+          aria-expanded={projectMenuOpen} disabled={projectDisabled} title={workingDirectory ?? '选择项目目录'}
+          onClick={() => { setProjectError(''); setProjectMenuOpen(open => !open); }}>
+          <Folder className="composer-directory-icon" size={15} />
+          <span className="composer-directory-path">{projectLabel ?? '选择项目目录'}</span>
+          <ChevronDown className="composer-directory-chevron" size={10} />
+        </button>
+        <div ref={projectMenu} className="composer-project-menu" popover="auto" aria-label="项目目录选择"
+          onToggle={event => { if (event.newState === 'closed') setProjectMenuOpen(false); }}>
+          {projects.map(project => (
+            <button key={project.id} type="button" disabled={projectBusy} aria-pressed={project.id === activeProjectId}
+              onClick={() => void runProjectAction(() => onSelectProject(project))}>
+              <Folder size={15} /><span>{project.name}</span>
+              {project.id === activeProjectId && <Check className="composer-project-check" size={15} />}
+            </button>
+          ))}
+          {projects.length > 0 && <hr />}
+          <button type="button" disabled={projectBusy} onClick={() => void runProjectAction(onCreateProject)}><Plus size={15} /><span>新建项目</span></button>
+          <button type="button" disabled={projectBusy} onClick={() => void runProjectAction(() => onSelectProject(undefined))}><X size={15} /><span>不在项目中工作</span></button>
+          {projectError && <p className="composer-project-error" role="alert">{projectError}</p>}
+        </div>
+      </div>
       <form className="composer" onSubmit={submit}>
-      {workingDirectory !== undefined && (
-        <p className="composer-directory" title={workingDirectory}>
-          <span className="composer-directory-label">工作目录</span>
-          <span className="composer-directory-path">{workingDirectory}</span>
-        </p>
-      )}
-
       {attachments.length > 0 && (
         <div className="composer-attachments" aria-label="已选择的输入附件">
           {attachments.map((attachment, index) => (
@@ -53,7 +126,7 @@ export function Composer({
               key={`${attachment.path}-${index}`}
               name={attachment.name}
               role={attachment.role}
-              {...isProcessing ? {} : { onRemove: () => onRemoveAttachment(index) }}
+              {...isProcessing || isArchived ? {} : { onRemove: () => onRemoveAttachment(index) }}
             />
           ))}
         </div>
@@ -63,7 +136,7 @@ export function Composer({
       <textarea
         id="agent-prompt"
         value={prompt}
-        disabled={isProcessing}
+        disabled={isProcessing || isArchived}
         placeholder="告诉 Agent 你想做什么…"
         rows={1}
         onChange={(event) => onPromptChange(event.target.value)}
@@ -71,7 +144,7 @@ export function Composer({
           // 输入法确认和 Shift+Enter 留给文本框，只有普通 Enter 提交真实任务。
           if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
-          if (!isProcessing && prompt.trim()) onSend();
+          if (!isProcessing && !isArchived && prompt.trim()) onSend();
         }}
       />
 
@@ -81,7 +154,7 @@ export function Composer({
           type="button"
           aria-label="选择输入文件"
           title="选择输入文件"
-          disabled={isProcessing}
+          disabled={isProcessing || isArchived}
           onClick={onSelectFiles}
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
@@ -95,7 +168,7 @@ export function Composer({
             type="submit"
             aria-label={isProcessing ? '停止' : '发送'}
             title={isProcessing ? '停止' : '发送'}
-            disabled={!isProcessing && !prompt.trim()}
+            disabled={isArchived || (!isProcessing && !prompt.trim())}
             onClick={isProcessing ? (event) => { event.preventDefault(); onCancel(); } : undefined}
           >
             {isProcessing ? (
@@ -114,6 +187,17 @@ export function Composer({
         </div>
       </div>
       </form>
+      {executionStatus !== undefined && (
+        <div className="composer-status" aria-label="执行状态">
+          <span className="composer-status-item">
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+              <path d="M8 2.25a5.75 5.75 0 1 0 5.75 5.75" />
+              <path d="M8 1.25v3.5l2.5 1.5" />
+            </svg>
+            <span>{executionStatus.turnCount} 轮 {executionStatus.stepCount} 步</span>
+          </span>
+        </div>
+      )}
     </div>
   );
 }

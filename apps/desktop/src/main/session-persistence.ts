@@ -1,4 +1,4 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import type {
   AgentActivityDetail,
   AgentActivityDirectoryEntry,
@@ -11,14 +11,17 @@ import type {
   ClientConversation,
   ClientConversationMessage,
   ClientStateSnapshot,
+  ClientSidebarState,
   Attachment,
   AttachmentRole,
+  TerminalSnapshot,
 } from '@agent-desktop/client';
 import type { SessionEvent } from '@agent-desktop/session';
-
-export const SESSION_STATE_FILE_NAME = 'session-state.json';
+import type { SubagentRecord } from './subagent.js';
 
 export interface PersistedDesktopSession {
+  readonly terminalHistory?: TerminalSnapshot;
+  readonly subagentHistory?: readonly SubagentRecord[];
   readonly id: string;
   readonly attachments: readonly PersistedAttachment[];
   /** 会话工作目录；旧快照没有这个字段时按「尚未确认目录」读取。 */
@@ -131,6 +134,12 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
         name: readString(value.name, `${field}.name`),
         input: value.input,
       } as SessionEvent;
+    case 'tool.interaction.closed': {
+      if (value.reason !== 'cancelled' && value.reason !== 'window-closed') invalid(`${field}.reason`);
+      return { type, turnId, stepId: readString(value.stepId, `${field}.stepId`),
+        toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
+        requestId: readString(value.requestId, `${field}.requestId`), reason: value.reason } as SessionEvent;
+    }
     case 'tool.result': {
       if (!isRecord(value.result)) invalid(`${field}.result`);
       const status = readString(value.result.status, `${field}.result.status`);
@@ -220,6 +229,16 @@ function readActivityDetail(value: unknown, field: string): AgentActivityDetail 
   if (!isRecord(value)) invalid(field);
   const kind = readString(value.kind, `${field}.kind`);
   switch (kind) {
+    case 'subagents': {
+      if (!Array.isArray(value.tasks)) invalid(`${field}.tasks`);
+      return { kind, tasks: value.tasks.map((task, index) => {
+        if (!isRecord(task)) invalid(`${field}.tasks[${index}]`);
+        return { taskId: readString(task.taskId, field), title: readString(task.title, field),
+          status: readString(task.status, field), summary: readString(task.summary, field) };
+      }) };
+    }
+    case 'interaction':
+      return { kind: 'interaction', question: readString(value.question, `${field}.question`), answer: readString(value.answer, `${field}.answer`) };
     case 'error':
       return { kind, message: readString(value.message, `${field}.message`) };
     case 'file-content':
@@ -294,7 +313,7 @@ function readActivityDetail(value: unknown, field: string): AgentActivityDetail 
 function readActivityItem(value: unknown, field: string): AgentActivityItem {
   if (!isRecord(value)) invalid(field);
   const kind = readString(value.kind, `${field}.kind`);
-  if (kind !== 'analysis' && kind !== 'tool') invalid(`${field}.kind`);
+  if (kind !== 'analysis' && kind !== 'tool' && kind !== 'commentary') invalid(`${field}.kind`);
   const status = readString(value.status, `${field}.status`);
   if (status !== 'running' && status !== 'completed'
     && status !== 'failed' && status !== 'cancelled') {
@@ -322,6 +341,8 @@ function readActivityItem(value: unknown, field: string): AgentActivityItem {
     id: readString(value.id, `${field}.id`),
     kind,
     status,
+    ...(value.text === undefined ? {} : { text: readString(value.text, `${field}.text`) }),
+    ...(value.retryNote === undefined ? {} : { retryNote: readString(value.retryNote, `${field}.retryNote`) }),
     ...(toolName === undefined ? {} : { toolName }),
     ...(files === undefined
       ? {}
@@ -424,10 +445,15 @@ function readTaskResult(
   const outputFiles = value.outputFiles;
   if (outputFiles !== undefined && !Array.isArray(outputFiles)) invalid(`${field}.outputFiles`);
   const outputs = readOptionalOutputResults(value.outputs, `${field}.outputs`);
+  const titleFields = {
+    ...(value.conversationTitle === undefined ? {} : { conversationTitle: readString(value.conversationTitle, `${field}.conversationTitle`) }),
+    ...(value.conversationTitleError === undefined ? {} : { conversationTitleError: readString(value.conversationTitleError, `${field}.conversationTitleError`) }),
+  };
   if (outputFiles !== undefined) {
     return {
       responseText: readString(value.responseText, `${field}.responseText`),
       traceId: readString(value.traceId, `${field}.traceId`),
+      ...titleFields,
       ...(outputFiles.length === 0 ? {} : {
         outputFiles: outputFiles.map((item, index) => readOutputFile(item, `${field}.outputFiles[${index}]`)),
       }),
@@ -438,6 +464,7 @@ function readTaskResult(
   const base = {
     responseText: readString(value.responseText, `${field}.responseText`),
     traceId: readString(value.traceId, `${field}.traceId`),
+    ...titleFields,
     ...(outputs === undefined ? {} : { outputs }),
   };
   const outputFileName = value.outputFileName;
@@ -561,6 +588,10 @@ function readClientConversation(
     invalid(`${field}.workingDirectory`);
   }
   return {
+    ...(value.projectId === undefined ? {} : { projectId: readString(value.projectId, `${field}.projectId`) }),
+    ...(value.pinned === undefined ? {} : { pinned: readBoolean(value.pinned, `${field}.pinned`) }),
+    ...(value.archived === undefined ? {} : { archived: readBoolean(value.archived, `${field}.archived`) }),
+    ...(value.updatedAt === undefined ? {} : { updatedAt: readNonNegativeInteger(value.updatedAt, `${field}.updatedAt`) }),
     id: readString(value.id, `${field}.id`),
     title: readString(value.title, `${field}.title`),
     titleManuallyRenamed: value.titleManuallyRenamed === undefined
@@ -573,6 +604,7 @@ function readClientConversation(
     )),
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
+    ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
     ...(workingDirectory === undefined ? {} : { workingDirectory }),
   };
 }
@@ -581,12 +613,34 @@ function readClientConversation(
  * IPC 与磁盘都属于外部边界，进入应用状态前只校验当前真实使用的字段。
  * 传入按会话查询旧产物表的函数：旧快照的产物路径存在会话侧，客户端消息只记文件名。
  */
+/** 只解析实际使用的侧栏字段；项目归属与会话工作目录是独立事实。 */
+function readSidebar(value: unknown): ClientSidebarState {
+  if (!isRecord(value) || !Array.isArray(value.projects)) invalid('clientState.sidebar');
+  const projects = value.projects.map((project, index) => {
+    const field = `clientState.sidebar.projects[${index}]`;
+    if (!isRecord(project)) invalid(field);
+    return {
+      id: readString(project.id, `${field}.id`),
+      name: readString(project.name, `${field}.name`),
+      directory: readString(project.directory, `${field}.directory`),
+      pinned: readBoolean(project.pinned, `${field}.pinned`),
+      collapsed: readBoolean(project.collapsed, `${field}.collapsed`),
+    };
+  });
+  if (new Set(projects.map(project => project.id)).size !== projects.length) invalid('clientState.sidebar.projects.id');
+  return { projects,
+    projectsCollapsed: readBoolean(value.projectsCollapsed, 'clientState.sidebar.projectsCollapsed'),
+    recentCollapsed: readBoolean(value.recentCollapsed, 'clientState.sidebar.recentCollapsed'),
+    grouped: readBoolean(value.grouped, 'clientState.sidebar.grouped'),
+  };
+}
+
 export function parseClientState(
   value: unknown,
   legacyOutputFilePathsFor: (sessionId: string) => Readonly<Record<string, string>> = () => ({}),
 ): ClientStateSnapshot {
   if (!isRecord(value)) invalid('clientState');
-  if (!Array.isArray(value.conversations) || value.conversations.length === 0) {
+  if (!Array.isArray(value.conversations)) {
     invalid('clientState.conversations');
   }
   const conversations = value.conversations.map((item, index) => (
@@ -596,11 +650,21 @@ export function parseClientState(
       isRecord(item) && typeof item.id === 'string' ? legacyOutputFilePathsFor(item.id) : {},
     )
   ));
+  if (value.drafts !== undefined && !Array.isArray(value.drafts)) invalid('clientState.drafts');
+  const drafts = value.drafts === undefined ? [] : (value.drafts as unknown[]).map((item, index) => (
+    readClientConversation(item, `clientState.drafts[${index}]`, {})
+  ));
+  if (drafts.some(draft => draft.messages.length > 0 || draft.archived || draft.pinned || draft.titleManuallyRenamed)) invalid('clientState.drafts');
+  const allConversations = [...conversations, ...drafts];
+  if (new Set(allConversations.map(item => item.id)).size !== allConversations.length) invalid('clientState.conversations.id');
   const activeSessionId = readString(value.activeSessionId, 'clientState.activeSessionId');
-  if (!conversations.some((conversation) => conversation.id === activeSessionId)) {
+  if (!allConversations.some((conversation) => conversation.id === activeSessionId)) {
     invalid('clientState.activeSessionId');
   }
-  return { conversations, activeSessionId };
+  const sidebar = value.sidebar === undefined ? undefined : readSidebar(value.sidebar);
+  if (allConversations.some(conversation => conversation.projectId !== undefined
+    && !sidebar?.projects.some(project => project.id === conversation.projectId))) invalid('clientState.conversations.projectId');
+  return { conversations, ...(value.drafts === undefined ? {} : { drafts }), activeSessionId, ...(sidebar === undefined ? {} : { sidebar }) };
 }
 
 function readAttachmentRole(value: unknown, field: string): AttachmentRole {
@@ -647,14 +711,40 @@ function parseDesktopSession(
     session: {
       id: readString(value.id, `${field}.id`),
       attachments: readAttachments(value, field),
+      ...(value.terminalHistory === undefined ? {} : { terminalHistory: { ...readTerminalHistory(value.terminalHistory, field), status: 'disconnected' as const } }),
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
       events: value.events.map((item, index) => readSessionEvent(item, `${field}.events[${index}]`)),
+      ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),
     },
     // 旧快照带按文件名索引的产物表；新快照没有，用空表表示「没有可还原的旧关联」。
     legacyOutputFilePaths: value.outputFilePaths === undefined
       ? {}
       : readLegacyOutputFilePaths(value.outputFilePaths, `${field}.outputFilePaths`),
   };
+}
+
+function readSubagentHistory(value: unknown, field: string): readonly SubagentRecord[] {
+  if (!Array.isArray(value)) invalid(field);
+  return value.map((record) => {
+    if (!isRecord(record) || !Array.isArray(record.events) || !isRecord(record.result)) invalid(field);
+    const result = record.result;
+    if (!['completed', 'failed', 'cancelled', 'budget-exhausted'].includes(String(result.status))) invalid(field);
+    return { parentToolCallId: readString(record.parentToolCallId, field),
+      events: record.events.map((event, index) => readSessionEvent(event, `${field}.events[${index}]`)),
+      result: { taskId: readString(result.taskId, field), title: readString(result.title, field),
+        status: result.status as SubagentRecord['result']['status'], summary: readString(result.summary, field),
+        evidence: readStringArray(result.evidence, field) } };
+  });
+}
+
+function readTerminalHistory(value: unknown, field: string): TerminalSnapshot {
+  if (!isRecord(value) || !['running', 'exited', 'disconnected'].includes(String(value.status))) invalid(`${field}.terminalHistory`);
+  if (value.exitCode !== null && (typeof value.exitCode !== 'number' || !Number.isInteger(value.exitCode))) invalid(`${field}.exitCode`);
+  const output = readString(value.output, field);
+  if (Buffer.byteLength(output, 'utf8') > 66 * 1024) invalid(`${field}.output`);
+  return { terminalId: readString(value.terminalId, field), workingDirectory: readString(value.workingDirectory, field),
+    command: readString(value.command, field), output, status: value.status as TerminalSnapshot['status'], exitCode: value.exitCode,
+    droppedBytes: readNonNegativeInteger(value.droppedBytes, field) };
 }
 
 export function parseDesktopState(value: unknown): PersistedDesktopState {
@@ -674,7 +764,7 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
     value.clientState,
     (sessionId) => legacyOutputFilePathsBySession.get(sessionId) ?? {},
   );
-  const clientSessionIds = clientState.conversations.map((conversation) => conversation.id);
+  const clientSessionIds = [...clientState.conversations, ...clientState.drafts ?? []].map((conversation) => conversation.id);
   if (!sessionIds.includes(activeSessionId)
     || clientState.activeSessionId !== activeSessionId
     || clientSessionIds.length !== sessionIds.length
@@ -686,33 +776,16 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
 }
 
 export async function loadDesktopState(filePath: string): Promise<PersistedDesktopState | null> {
-  let source: string;
-  try {
-    source = await readFile(filePath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw new Error(`无法读取本地会话：${filePath}`, { cause: error });
-  }
-
-  let value: unknown;
-  try {
-    value = JSON.parse(source);
-  } catch (error) {
-    throw new Error(`无法解析本地会话：${filePath}`, { cause: error });
-  }
+  const value = readDesktopDocument(filePath, 'session-state');
+  if (value === null) return null;
   // 磁盘历史是 append-only 事实：恢复原样读入全部事件，未完成 Step 只在重建 Model Context 时由 Session 的权威规则排除。
   return parseDesktopState(value);
 }
 
-/**
- * 先写同目录临时文件再整体替换。
- * 关闭时进程可能在写入过程中退出，直接写目标文件会把已有历史截断成空文件或半份 JSON。
- */
+/** SQLite 事务替代临时文件覆盖，成功提交后才更新持久化状态。 */
 export async function saveDesktopState(
   filePath: string,
   state: PersistedDesktopState,
 ): Promise<void> {
-  const temporaryPath = `${filePath}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  await rename(temporaryPath, filePath);
+  writeDesktopDocuments(filePath, [{ name: 'session-state', value: state }]);
 }

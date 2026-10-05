@@ -22,27 +22,24 @@ test('runs the shared client task and preserves session state', async ({ page })
 
   await page.getByRole('button', { name: '设置' }).click();
   await expect(page.getByRole('main', { name: '设置' })).toBeVisible();
-  const secretInputs = page.getByLabel('接口密钥', { exact: true });
-  await expect(secretInputs).toHaveCount(2);
-  await expect(secretInputs.first()).toHaveAttribute('type', 'text');
-  await secretInputs.first().focus();
-  await expect(secretInputs.first()).toHaveAttribute('type', 'password');
-  await secretInputs.first().fill('web-deepseek-secret');
-  await page.getByLabel('模型名称', { exact: true }).fill('web-runtime-model');
-  await page.getByRole('button', { name: '保存设置' }).click();
-  await expect(page.getByText('设置已保存，将从下一次任务开始生效。')).toBeVisible();
-  await expect(secretInputs.first()).toHaveValue('********');
-  await expect(secretInputs.first()).toHaveAttribute('type', 'text');
-  await secretInputs.first().focus();
-  await expect(secretInputs.first()).toHaveValue('');
-  await secretInputs.first().fill('pending-secret');
-  await page.getByLabel('模型名称', { exact: true }).focus();
-  await secretInputs.first().focus();
-  await expect(secretInputs.first()).toHaveValue('pending-secret');
-  await secretInputs.first().fill('');
-  await page.getByLabel('模型名称', { exact: true }).focus();
-  await expect(secretInputs.first()).toHaveValue('********');
-  await expect(page.getByText('来源：本机设置').first()).toBeVisible();
+  await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+  const provider = page.getByRole('region', { name: 'DeepSeek供应商' });
+  await provider.getByRole('button', { name: '编辑', exact: true }).click();
+  const secretInput = page.getByLabel('DeepSeek API 密钥', { exact: true });
+  await secretInput.fill('web-deepseek-secret');
+  await page.getByLabel('模型 1 ID', { exact: true }).fill('web-runtime-model');
+  await provider.getByRole('button', { name: '保存', exact: true }).click();
+  await provider.getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(secretInput).toHaveValue('*'.repeat(64));
+  await secretInput.focus();
+  await expect(secretInput).toHaveValue('');
+  await secretInput.fill('pending-secret');
+  await page.getByLabel('模型 1 ID', { exact: true }).focus();
+  await expect(secretInput).toHaveValue('pending-secret');
+  await secretInput.fill('');
+  await page.getByLabel('模型 1 ID', { exact: true }).focus();
+  await expect(secretInput).toHaveValue('*'.repeat(64));
+  await page.getByRole('button', { name: '本地工具', exact: true }).click();
   await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await page.setViewportSize({ width: 800, height: 600 });
@@ -87,8 +84,12 @@ test('runs the shared client task and preserves session state', async ({ page })
   await expect(firstSession).toHaveAttribute('aria-current', 'page');
   await newSessionButton.click();
 
+  await expect(sessionList.locator('.sidebar-session')).toHaveCount(1);
+  await composer.fill('另一项任务');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(newSessionButton).toBeEnabled();
   await expect(sessionList.locator('.sidebar-session')).toHaveCount(2);
-  const secondSession = sessionList.getByRole('button', { name: '会话 2', exact: true });
+  const secondSession = sessionList.getByRole('button', { name: '另一项任务', exact: true });
   await expect(secondSession).toHaveAttribute('aria-current', 'page');
 
   await firstSession.click();
@@ -114,17 +115,17 @@ test('runs the shared client task and preserves session state', async ({ page })
   await expect(sessionList.getByRole('button', { name: '重命名测试', exact: true })).toHaveAttribute('aria-current', 'page');
 
   await secondSession.click();
-  await page.getByRole('button', { name: '会话操作：会话 2' }).click();
+  await page.getByRole('button', { name: '会话操作：另一项任务' }).click();
   await page.getByRole('button', { name: '删除' }).click();
   await page.getByRole('button', { name: '删除会话' }).click();
-  await expect(sessionList.locator('.sidebar-session', { hasText: '会话 2' })).toHaveCount(0);
+  await expect(sessionList.locator('.sidebar-session', { hasText: '另一项任务' })).toHaveCount(0);
 
   await page.getByRole('button', { name: '重命名测试', exact: true }).click();
   await expect(page.getByText('开发测试宿主已模拟完成：测试 Web Agent')).toBeVisible();
   await page.getByRole('button', { name: '会话操作：重命名测试' }).click();
   await page.getByRole('button', { name: '删除' }).click();
   await page.getByRole('button', { name: '删除会话' }).click();
-  await expect(sessionList.locator('.sidebar-session')).toHaveCount(1);
-  await expect(sessionList.getByRole('button', { name: '会话 3', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(sessionList.locator('.sidebar-session')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '开始视频任务' })).toBeVisible();
   await expectNoHorizontalOverflow(page);
 });

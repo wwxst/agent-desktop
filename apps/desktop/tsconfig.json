@@ -15,6 +15,7 @@
     { "path": "../../packages/agent-loop" },
     { "path": "../../packages/execution-trace" },
     { "path": "../../packages/model" },
+    { "path": "../../packages/model-deepseek" },
     { "path": "../../packages/session" },
     { "path": "../../packages/video-agent" }
   ]

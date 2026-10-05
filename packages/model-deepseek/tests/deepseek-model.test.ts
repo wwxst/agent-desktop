@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ModelRequest, ToolCallId } from '@agent-desktop/model';
+import { ModelRequestError, type ModelRequest, type ToolCallId } from '@agent-desktop/model';
 import { DeepSeekModel } from '../src/index.js';
 
 const baseRequest: ModelRequest = {
@@ -72,6 +72,26 @@ afterEach(() => {
 });
 
 describe('DeepSeekModel', () => {
+  it.each([429, 502, 503, 504, 401, 400])('classifies HTTP %s at the provider boundary', async (status) => {
+    stubResponse(new Response('', { status, headers: { 'Retry-After': '2' } }));
+    await expect(new DeepSeekModel({ apiKey: 'fixture' }).complete(baseRequest)).rejects.toMatchObject({
+      kind: [429, 502, 503, 504].includes(status) ? 'transient-service' : status === 401 ? 'authentication' : 'invalid-request',
+      statusCode: status, retryAfterMs: 2000,
+    });
+  });
+  it.each(['', 'partial', 'tool'])('only classifies connection loss before any content or tool fragment (%s)', async (partial) => {
+    const failure = new TypeError('connection lost', { cause: { code: 'ECONNRESET' } });
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({ pull(controller) {
+      if (reads++ === 0 && partial) controller.enqueue(new TextEncoder().encode(sseBody([choiceEvent(partial === 'tool'
+        ? { tool_calls: [{ index: 0, id: 'x', function: { name: 'read', arguments: '' } }] } : { content: partial })])));
+      else controller.error(failure);
+    } });
+    stubResponse(new Response(body));
+    const result = new DeepSeekModel({ apiKey: 'fixture' }).complete(baseRequest);
+    if (partial) await expect(result).rejects.toBe(failure);
+    else await expect(result).rejects.toBeInstanceOf(ModelRequestError);
+  });
   it('passes the Turn AbortSignal to fetch', async () => {
     const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'ok' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const controller = new AbortController();

@@ -1,0 +1,6 @@
+interface:
+  display_name: 语义视频剪辑
+  short_description: 按对白与画面选择片段，并验收最终视频。
+  default_prompt: 使用 $semantic-editing 根据我的内容要求剪辑视频并验收。
+policy:
+  allow_implicit_invocation: true

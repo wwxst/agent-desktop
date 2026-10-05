@@ -38,6 +38,13 @@ import {
   ValidateVideoCandidateTool,
 } from './delivery-tools.js';
 import { AGENT_SYSTEM_PROMPT } from './system-prompt.js';
+import { AskUserTool, type AskUserPort } from './ask-user.js';
+import { DelegateTasksTool, type DelegateTasksPort } from './delegate-tasks.js';
+import { TerminalTool, type TerminalPort } from './terminal-tools.js';
+import { CheckVideoSemanticsTool } from './semantic-check.js';
+export type { TerminalPort } from './terminal-tools.js';
+export type { DelegateTasksPort, ReadOnlyTask, SubagentResult } from './delegate-tasks.js';
+export type { AskUserPort, UserQuestion, UserAnswer } from './ask-user.js';
 
 // 交付模型与读取投影是桌面与命令行共用的唯一权威实现，必须从包入口暴露。
 export {
@@ -64,10 +71,16 @@ export interface VideoAgentOptions {
   readonly deepSeekApiKey: string;
   readonly deepSeekBaseUrl?: string;
   readonly deepSeekModel?: string;
+  readonly modelProtocol?: 'chat-completions' | 'responses';
+  readonly modelMaxOutputTokens?: number;
+  readonly useDeepSeekThinking?: boolean;
   readonly whisperModelPath?: string;
   readonly whisperCliPath?: string;
   readonly visionApiKey?: string;
   readonly visionBaseUrl?: string;
+  readonly visionModel?: string;
+  readonly visionProtocol?: 'chat-completions' | 'responses';
+  readonly visionMaxOutputTokens?: number;
   readonly session?: Session;
   /**
    * 会话工作目录能力。只有能提供目录状态和目录访问确认的宿主才传入，
@@ -79,6 +92,9 @@ export interface VideoAgentOptions {
    * 受限子进程环境的宿主才传入；没有它时不注册 `run_command`。
    */
   readonly command?: CommandPort;
+  readonly askUser?: AskUserPort;
+  readonly delegateTasks?: DelegateTasksPort;
+  readonly terminal?: TerminalPort;
 }
 
 /** 组装当前正式能力；不读取环境、不创建 CLI 或桌面层状态。 */
@@ -87,6 +103,11 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   const session = options.session ?? new InMemorySession();
   const readEvents = () => session.events();
   const tools = new InMemoryToolRegistry();
+  if (options.askUser !== undefined) tools.register(new AskUserTool(options.askUser));
+  if (options.delegateTasks !== undefined) tools.register(new DelegateTasksTool(options.delegateTasks, session));
+  if (options.terminal !== undefined) {
+    for (const name of ['open_terminal', 'read_terminal', 'write_terminal', 'close_terminal'] as const) tools.register(new TerminalTool(name, options.terminal));
+  }
   // 先注册目录基准工具：它决定后续本地文件工具的路径解析基准。
   if (options.workspace !== undefined) {
     tools.register(new SetWorkingDirectoryTool(options.workspace));
@@ -109,9 +130,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new ExtractAudioTool());
   if (options.visionApiKey !== undefined && options.visionApiKey.length > 0) {
     tools.register(new AnalyzeImagesTool(
-      options.visionBaseUrl === undefined
-        ? { apiKey: options.visionApiKey }
-        : { apiKey: options.visionApiKey, baseUrl: options.visionBaseUrl },
+      visionOptionsFor(options, options.visionApiKey),
     ));
   }
   if (options.whisperModelPath !== undefined) {
@@ -134,12 +153,14 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new DeclareVideoOutputsTool(readEvents));
   tools.register(new ValidateVideoCandidateTool(readEvents));
   tools.register(new PublishVideoOutputTool(readEvents));
+  tools.register(new CheckVideoSemanticsTool(readEvents, {
+    model: new DeepSeekModel(modelOptionsFor(options)),
+    ...(options.visionApiKey === undefined || !options.visionApiKey ? {} : { vision: new AnalyzeImagesTool(visionOptionsFor(options, options.visionApiKey)) }),
+    ...(options.whisperModelPath === undefined ? {} : { speech: new TranscribeAudioTool({ modelPath: options.whisperModelPath,
+      ...(options.whisperCliPath === undefined ? {} : { command: options.whisperCliPath }) }) }),
+  }));
 
-  const modelOptions = {
-    apiKey: options.deepSeekApiKey,
-    ...(options.deepSeekBaseUrl === undefined ? {} : { baseUrl: options.deepSeekBaseUrl }),
-    ...(options.deepSeekModel === undefined ? {} : { model: options.deepSeekModel }),
-  };
+  const modelOptions = modelOptionsFor(options);
 
   return {
     model: new DeepSeekModel(modelOptions),
@@ -147,4 +168,21 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     tools,
     systemPrompt: new StaticSystemPrompt(AGENT_SYSTEM_PROMPT),
   };
+}
+
+/** 父模型与独立验收模型使用相同运行配置，模型会话彼此隔离。 */
+function modelOptionsFor(options: VideoAgentOptions) {
+  return { apiKey: options.deepSeekApiKey,
+    ...(options.deepSeekBaseUrl === undefined ? {} : { baseUrl: options.deepSeekBaseUrl }),
+    ...(options.deepSeekModel === undefined ? {} : { model: options.deepSeekModel }),
+    ...(options.modelProtocol === undefined ? {} : { protocol: options.modelProtocol }),
+    ...(options.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: options.modelMaxOutputTokens }),
+    ...(options.useDeepSeekThinking === undefined ? {} : { disableThinking: options.useDeepSeekThinking }) };
+}
+
+function visionOptionsFor(options: VideoAgentOptions, apiKey: string) {
+  return { apiKey, ...(options.visionBaseUrl === undefined ? {} : { baseUrl: options.visionBaseUrl }),
+    ...(options.visionModel === undefined ? {} : { model: options.visionModel }),
+    ...(options.visionProtocol === undefined ? {} : { protocol: options.visionProtocol }),
+    ...(options.visionMaxOutputTokens === undefined ? {} : { maxOutputTokens: options.visionMaxOutputTokens }) };
 }

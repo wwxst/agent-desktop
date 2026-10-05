@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, open, realpath, stat, unlink } from 'node:fs/promises';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { candidateDigest } from './candidate-digest.js';
 import type { ToolCallId, ToolResult } from '@agent-desktop/model';
 import type { SessionEvent } from '@agent-desktop/session';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
@@ -85,7 +86,7 @@ async function resolveThroughExistingParent(filePath: string): Promise<string> {
   }
 }
 
-async function isInsideDirectory(childPath: string, parentPath: string): Promise<boolean> {
+export async function isInsideDirectory(childPath: string, parentPath: string): Promise<boolean> {
   const [realChildPath, realParentPath] = await Promise.all([
     resolveThroughExistingParent(childPath),
     realpath(resolve(parentPath)),
@@ -448,6 +449,8 @@ function checkRequirement(
   events: readonly SessionEvent[],
   toolNames: Map<string, string>,
   producerResultIndex: number,
+  digest: string,
+  outputItemId: string,
 ): RequirementCheck {
   switch (requirement.kind) {
     case 'decodable-video': {
@@ -509,13 +512,21 @@ function checkRequirement(
           : '在声明的检测参数下检出了黑段区间。',
       };
     }
-    case 'semantic':
-      // 当前没有获认可的判定与覆盖方法：保留要求本身，明确记为受阻，不用采样结果冒充通过。
-      return blocked(
-        requirement.id,
-        'capability-unavailable',
-        `内容要求「${requirement.description}」当前没有可靠的自动判定与覆盖方法，尚不能确认。`,
-      );
+    case 'semantic': {
+      const found = findCheckEvidence(events, toolNames, 'check_video_semantics', candidatePath, producerResultIndex);
+      if (found === undefined) return blocked(requirement.id, 'insufficient-evidence', `内容要求「${requirement.description}」缺少本候选的语义检查。`);
+      if (found.output.outputItemId !== outputItemId) return blocked(requirement.id, 'insufficient-evidence', '语义证据不属于当前输出项。');
+      if (found.output.candidateSha256 !== digest) return blocked(requirement.id, 'insufficient-evidence', '语义证据对应的候选内容已经改变。');
+      const checks = found.output.checks;
+      const check: unknown = Array.isArray(checks) ? checks.find((entry: unknown) => isRecord(entry) && entry.requirementId === requirement.id) : undefined;
+      if (!isRecord(check) || !['passed', 'failed', 'blocked'].includes(String(check.outcome))
+        || typeof check.detail !== 'string' || !check.detail.trim()
+        || (check.outcome === 'passed' && found.output.coverage !== 'all-frames-and-transcript')) {
+        return blocked(requirement.id, 'insufficient-evidence', '语义证据没有覆盖完整候选与本项要求。');
+      }
+      return { requirementId: requirement.id, evidenceToolCallIds: [found.toolCallId], detail: check.detail,
+        ...(check.outcome === 'blocked' ? { outcome: 'blocked', reason: 'insufficient-evidence' } : { outcome: check.outcome as 'passed' | 'failed' }) };
+    }
   }
 }
 
@@ -590,13 +601,15 @@ export class ValidateVideoCandidateTool implements Tool {
       producerToolCallId: producer.toolCallId,
     };
 
+    const digest = await candidateDigest(candidatePath);
     const checks = item.requirements.map((requirement) => (
-      checkRequirement(requirement, candidatePath, events, toolNames, producer.resultIndex)
+      checkRequirement(requirement, candidatePath, events, toolNames, producer.resultIndex, digest, item.id)
     ));
 
     const validation: CandidateValidation = {
       id: `validation-${randomUUID().slice(0, 8)}`,
       candidateId: candidate.id,
+      candidateSha256: digest,
       checks,
     };
 
@@ -700,6 +713,10 @@ export class PublishVideoOutputTool implements Tool {
       const candidateStat = await stat(candidate.path);
       if (!candidateStat.isFile()) {
         return { status: 'error', message: `候选路径不是文件：${candidate.path}` };
+      }
+
+      if (validation.candidateSha256 === undefined || await candidateDigest(candidate.path, signal) !== validation.candidateSha256) {
+        return { status: 'error', message: '候选内容与验收时不一致，必须重新验收后发布。' };
       }
 
       let publishedPath: string;

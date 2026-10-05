@@ -4,7 +4,7 @@
 
 视频剪辑是当前配置最完整、验证最充分的能力，继续保护其已有行为；但普通问答、文本任务和本地文件任务不以视频附件为执行前提。
 
-Agent Core 保持通用。新增能力、抽象和架构必须有当前已确认的需求和真实生产调用方，不得为了“通用 Agent 平台”、插件市场、多运行时或未来可能的其他业务提前增加设计。
+Agent Core 保持通用。插件平台能力已进入当前里程碑，但新增抽象仍必须有 Desktop 真实消费者，不把插件协议泄漏到 Agent Core。
 
 # Current Phase（当前阶段）
 
@@ -32,6 +32,14 @@ Text File Reading                 文本文件读取                Commit 40 �
 Text Content Search               文本内容搜索                Commit 41 已完成（ripgrep 由 `@vscode/ripgrep` 随包提供）。
 Text File Creation                经审批创建文本文件          Commit 42 已完成。
 Text File Editing                 经审批修改已有文本          Commit 43 已完成。
+Execution User Questions           执行中提问并继续            已实现，问题答复继续同一轮。
+Public Process Commentary          真实公开过程说明            已实现，不展示内部推理。
+Bounded Model Retry                有限模型请求重试            已实现，不重放工具。
+Read-only Subagents                受限只读子智能体            已实现，每轮最多两项、一层委派。
+Session Persistent Terminal        会话持久终端                已实现，重启只恢复已断开的历史。
+Semantic Candidate Acceptance      候选视频语义验收            已实现，逐帧预算与不可确认边界见架构文档。
+Codex-style Plugin Runtime         Codex 风格插件运行时       已实现真实公开市场、完整清单、技能缓存与懒加载、版本更新回滚、原子安装、stdio/HTTP/SSE MCP、OAuth 和命令钩子，当前在功能分支；Codex 私有账号云同步及完整应用服务器协议边界见架构文档。
+Local Project Sidebar              本地项目与会话侧栏          已实现项目分区、折叠、置顶、归档恢复与自动保存，当前在功能分支。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。

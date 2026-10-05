@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AnalyzeImagesTool } from '../src/index.js';
 import type { ToolExecutionContext } from '@agent-desktop/tools';
+import { createServer } from 'node:http';
 
 /** 测试用的最小执行上下文：只提供当前用例真正使用的取消信号。 */
 function toolContext(signal?: AbortSignal): ToolExecutionContext {
@@ -31,6 +32,29 @@ afterEach(() => {
 });
 
 describe('AnalyzeImagesTool', () => {
+  it.each(['chat-completions', 'responses'] as const)('uses the configured vision model and token limit over real HTTP: %s', async protocol => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-provider-'));
+    const imagePath = join(directory, 'frame.png');
+    // 真实可解码的小 PNG，文件读取与 data URL 仍走正式实现。
+    await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64'));
+    let body!: Record<string, unknown>;
+    const server = createServer(async (request, response) => {
+      let raw = ''; for await (const chunk of request) raw += chunk;
+      body = JSON.parse(raw) as Record<string, unknown>;
+      expect(request.url).toBe(`/v1/${protocol === 'responses' ? 'responses' : 'chat/completions'}`);
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(protocol === 'responses' ? { output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(analysis) }] }] } : { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(analysis) } }] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing port');
+    try {
+      expect(await new AnalyzeImagesTool({ apiKey: 'test-key', baseUrl: `http://127.0.0.1:${address.port}/v1`, model: 'chosen-vision', protocol, maxOutputTokens: 2048 }).execute({ images: [{ path: imagePath, timestamp: 1.5 }] }, toolContext())).toEqual({ status: 'success', output: analysis });
+      expect(body).toHaveProperty('model', 'chosen-vision');
+      expect(body).toHaveProperty(protocol === 'responses' ? 'max_output_tokens' : 'max_tokens', 2048);
+      expect(JSON.stringify(body)).toContain('data:image/png;base64,');
+      expect(body).toHaveProperty(protocol === 'responses' ? 'text.format.type' : 'response_format.type', 'json_schema');
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); }
+  });
   it('passes the Turn AbortSignal to fetch', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-signal-'));
     try {

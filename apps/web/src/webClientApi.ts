@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 import type {
   AgentActivityItem,
   AgentClientApi,
@@ -5,6 +6,8 @@ import type {
   AgentTaskResult,
   RuntimeSettings,
   Attachment,
+  ExtensionItem,
+  ExtensionSnapshot,
 } from '@agent-desktop/client';
 
 /** Web Host 仅用于 UI 开发和自动化测试，不连接真实 Agent Runtime。 */
@@ -13,58 +16,90 @@ export function createWebClientApi(): AgentClientApi {
   let nextSession = 2;
   const sessionIds = new Set([activeSessionId]);
   const listeners = new Set<(event: AgentRuntimeEvent) => void>();
+  const extensionListeners = new Set<() => void>();
   let settings: RuntimeSettings = {
-    deepSeek: {
-      apiKey: { configured: false },
-      baseUrl: '',
-      model: '',
-    },
-    vision: {
-      apiKey: { configured: false },
-      baseUrl: '',
-    },
+    modelProviders: structuredClone(DEFAULT_MODEL_PROVIDERS),
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
     whisper: { modelPath: '', cliPath: '' },
+    memoryEnabled: true,
+    memoryFromToolChatsEnabled: true,
   };
+  let customInstructions = { path: 'D:/Users/web/AGENTS.md', content: '' };
+  let memories: import('@agent-desktop/client').MemoryEntry[] = [];
   let activeTaskController: AbortController | undefined;
+  // 浏览器预览使用内存夹具；本地复制、SQLite 和 MCP 的实际实现由 Desktop 宿主提供。
+  let plugins: ExtensionItem[] = [{ id: 'plugin:video-editing', kind: 'plugin', name: '语义视频剪辑', description: '按对白与画面选择片段，并逐项验收最终视频。', longDescription: '按对白与画面选择片段，并逐项验收最终视频。', developerName: 'Agent Desktop', category: 'Productivity', capabilities: ['Local', 'Video editing'], source: 'builtin', installed: false, enabled: false, version: '1.1.0', skillNames: ['semantic-editing', 'short-drama-editing'], serverNames: [] }];
+  let skills: ExtensionItem[] = [{ id: 'skill:local-file-review', kind: 'skill', name: 'local-file-review', description: '检查本地项目文件、比较配置或分析代码问题时使用。', source: 'builtin', installed: false, enabled: false }];
+  const snapshot = (): ExtensionSnapshot => ({ plugins: [...plugins], skills: [...skills] });
 
   return {
+    extensions: {
+      manage: async () => { throw new Error('市场与账户管理需要在桌面应用中进行。'); },
+      list: async () => snapshot(),
+      listSkills: async () => [...skills],
+      importLocal: async () => { throw new Error('导入本地目录需要在桌面应用中进行。'); },
+      install: async id => {
+        plugins = plugins.map(item => item.id === id ? { ...item, installed: true, enabled: true } : item);
+        skills = skills.map(item => item.id === id ? { ...item, installed: true, enabled: true } : item);
+        if (id === 'plugin:video-editing' && !skills.some(item => item.pluginId === id)) {
+          skills.push(
+            { id: `${id}/semantic-editing`, kind: 'skill', name: 'semantic-editing', displayName: '语义视频剪辑', shortDescription: '按对白与画面选择片段，并验收最终视频。', description: '按讲解内容、对白或画面要求剪辑视频并验收候选成片时使用。', defaultPrompt: '使用 $semantic-editing 根据我的内容要求剪辑视频并验收。', source: 'plugin', pluginId: id, installed: true, enabled: true },
+            { id: `${id}/short-drama-editing`, kind: 'skill', name: 'short-drama-editing', displayName: '短剧剪辑', shortDescription: '按剧情冲突与对白剪辑，逐项验收候选成片。', description: '按剧情节奏、对白和画面整理短剧片段并验收候选成片时使用。', defaultPrompt: '使用 $short-drama-editing 整理短剧素材，先确认画幅、时长与剧情重点。', source: 'plugin', pluginId: id, installed: true, enabled: true },
+          );
+        }
+        return snapshot();
+      },
+      setEnabled: async (id, enabled) => {
+        plugins = plugins.map(item => item.id === id ? { ...item, enabled } : item);
+        skills = skills.map(item => item.id === id || item.pluginId === id ? { ...item, enabled } : item);
+        return snapshot();
+      },
+      uninstall: async id => {
+        plugins = plugins.map(item => item.id === id ? { ...item, installed: false, enabled: false } : item);
+        skills = skills.filter(item => item.pluginId !== id).map(item => item.id === id ? { ...item, installed: false, enabled: false } : item);
+        return snapshot();
+      },
+      readSkill: async id => `---\nname: ${skills.find(item => item.id === id)?.name ?? id}\ndescription: 本地任务技能\n---\n\n浏览器预览技能正文：${id}`,
+      reconcile: async () => { extensionListeners.forEach(listener => listener()); return snapshot(); },
+      onChanged: listener => { extensionListeners.add(listener); return () => extensionListeners.delete(listener); },
+      readDetail: async id => id.startsWith('plugin:video-editing') && !id.includes('/')
+        ? JSON.stringify({ name: 'video-editing', version: '1.1.0', skills: './skills' }, null, 2)
+        : `---\nname: ${skills.find(item => item.id === id)?.name ?? id}\ndescription: 本地任务技能\n---\n\n浏览器预览仅提供界面夹具；完整技能指令由桌面应用读取。`,
+    },
+    answerQuestion: async () => { throw new Error('Web 开发宿主没有待回答问题。'); },
+    closeTerminal: async () => { throw new Error('Web 开发宿主没有运行中的终端。'); },
+    resizeTerminal: async () => undefined,
     loadRuntimeSettings: async () => settings,
-    saveRuntimeSettings: async (update) => {
-      settings = {
-        deepSeek: {
-          apiKey: update.deepSeekApiKey === undefined
-            ? settings.deepSeek.apiKey
-            : update.deepSeekApiKey === null || update.deepSeekApiKey.length === 0
-              ? { configured: false }
-              : { configured: true, source: 'saved' },
-          baseUrl: update.deepSeekBaseUrl === undefined
-            ? settings.deepSeek.baseUrl
-            : update.deepSeekBaseUrl ?? '',
-          model: update.deepSeekModel === undefined
-            ? settings.deepSeek.model
-            : update.deepSeekModel ?? '',
-        },
-        vision: {
-          apiKey: update.visionApiKey === undefined
-            ? settings.vision.apiKey
-            : update.visionApiKey === null || update.visionApiKey.length === 0
-              ? { configured: false }
-              : { configured: true, source: 'saved' },
-          baseUrl: update.visionBaseUrl === undefined
-            ? settings.vision.baseUrl
-            : update.visionBaseUrl ?? '',
-        },
-        whisper: {
-          modelPath: update.whisperModelPath === undefined
-            ? settings.whisper.modelPath
-            : update.whisperModelPath ?? '',
-          cliPath: update.whisperCliPath === undefined
-            ? settings.whisper.cliPath
-            : update.whisperCliPath ?? '',
-        },
-      };
+    listProviderModels: async () => { throw new Error('获取模型目录需要在桌面应用中进行。'); },
+    openModelConfig: async () => { throw new Error('查看配置文件需要在桌面应用中进行。'); },
+    saveRuntimeSettings: async update => {
+      let providers = [...settings.modelProviders];
+      if (update.modelProvider) {
+        const { apiKey, ...provider } = update.modelProvider;
+        const current = providers.find(item => item.id === provider.id);
+        const next = { ...provider, builtin: current?.builtin ?? false, apiKey: apiKey === undefined ? current?.apiKey ?? { configured: false } : apiKey === null ? { configured: false } : { configured: true, source: 'saved' as const } };
+        providers = current ? providers.map(item => item.id === provider.id ? next : item) : [...providers, next];
+      }
+      if (update.deleteModelProviderId) {
+        const id = update.deleteModelProviderId;
+        if (providers.find(item => item.id === id)?.builtin) throw new Error('不能删除内置供应商。');
+        if (settings.conversationModel.providerId === id || settings.visionModel?.providerId === id) throw new Error('请先切换正在使用的模型。');
+        providers = providers.filter(item => item.id !== id);
+      }
+      settings = { ...settings, modelProviders: providers,
+        conversationModel: update.conversationModel ?? settings.conversationModel,
+        visionModel: update.visionModel === undefined ? settings.visionModel : update.visionModel,
+        ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }),
+        whisper: { modelPath: update.whisperModelPath === undefined ? settings.whisper.modelPath : update.whisperModelPath ?? '', cliPath: update.whisperCliPath === undefined ? settings.whisper.cliPath : update.whisperCliPath ?? '' } };
+      if (update.memoryEnabled !== undefined) settings = { ...settings, memoryEnabled: update.memoryEnabled };
+      if (update.memoryFromToolChatsEnabled !== undefined) settings = { ...settings, memoryFromToolChatsEnabled: update.memoryFromToolChatsEnabled };
       return settings;
     },
+    loadMemories: async () => [...memories],
+    deleteMemories: async () => { memories = []; },
+    loadCustomInstructions: async () => customInstructions,
+    saveCustomInstructions: async content => { customInstructions = { ...customInstructions, content }; return customInstructions; },
     loadClientState: async () => null,
     saveClientState: async () => undefined,
     // Web 开发宿主没有窗口关闭流程，也不保存状态，因此不会请求关闭前提交。
@@ -81,6 +116,9 @@ export function createWebClientApi(): AgentClientApi {
       sessionIds.add(activeSessionId);
       return activeSessionId;
     },
+    // 浏览器仅提供明确的界面夹具；真实系统目录选择由桌面宿主负责。
+    selectProjectDirectory: async () => 'D:/projects/web-project',
+    openProjectDirectory: async () => { throw new Error('请在桌面应用中打开项目文件夹。'); },
     switchSession: async (sessionId) => {
       if (!sessionIds.has(sessionId)) throw new Error('找不到对应的会话。');
       activeSessionId = sessionId;

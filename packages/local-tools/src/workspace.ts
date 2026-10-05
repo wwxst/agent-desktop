@@ -12,6 +12,8 @@ import { isAbsolute, resolve } from 'node:path';
  * 界面没有改写它们的通道，工具也不会在批准之后换一个解释器或目录执行。
  */
 export type ApprovalTarget =
+  | { readonly kind: 'terminal-start'; readonly interpreter: string; readonly command: string; readonly workingDirectory: string }
+  | { readonly kind: 'terminal-input'; readonly interpreter: string; readonly command: string; readonly workingDirectory: string }
   | { readonly kind: 'directory' | 'create-file'; readonly path: string }
   | {
     readonly kind: 'edit-file';

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type {
   AgentActivityItem,
@@ -12,28 +12,32 @@ import type {
   ClientConversation,
   ClientConversationMessage,
   ClientStateSnapshot,
+  ClientProject,
+  ClientSidebarState,
+  QuestionRequest,
 } from './api.js';
 import { ApprovalRequest as ApprovalRequestCard } from './components/ApprovalRequest.js';
 import { Composer } from './components/Composer.js';
 import { ConversationPanel } from './components/ConversationPanel.js';
 import { RuntimeSettingsPanel } from './components/RuntimeSettingsPanel.js';
+import { ExtensionsPage } from './components/ExtensionsPage.js';
 import { SessionSidebar } from './components/SessionSidebar.js';
+import { UserQuestion } from './components/UserQuestion.js';
+import { TerminalView } from './components/TerminalView.js';
 
 const INITIAL_RENDERER_SESSION_ID = 'initializing-session';
+const INITIAL_SIDEBAR: ClientSidebarState = { projects: [], projectsCollapsed: false, recentCollapsed: false, grouped: true };
 
-function createConversation(id: string, number: number): ClientConversation {
+function createConversation(id: string): ClientConversation {
   return {
     id,
-    title: `会话 ${number}`,
+    title: '新聊天',
     titleManuallyRenamed: false,
     messages: [],
     prompt: '',
     attachments: [],
+    updatedAt: Date.now(),
   };
-}
-
-function conversationTitle(prompt: string): string {
-  return prompt.length > 18 ? `${prompt.slice(0, 18)}…` : prompt;
 }
 
 /**
@@ -66,31 +70,38 @@ interface AppProps {
 
 /** App 只持有会话状态、运行状态和宿主调用；界面由侧栏、对话工作区和输入区三个组件承担。 */
 export function App({ api }: AppProps) {
-  const [conversations, setConversations] = useState<readonly ClientConversation[]>([
-    createConversation(INITIAL_RENDERER_SESSION_ID, 1),
-  ]);
+  const [conversations, setConversations] = useState<readonly ClientConversation[]>([]);
+  const [drafts, setDrafts] = useState<readonly ClientConversation[]>([createConversation(INITIAL_RENDERER_SESSION_ID)]);
   const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [sidebar, setSidebar] = useState<ClientSidebarState>(INITIAL_SIDEBAR);
+  // 侧栏与设置归档列表共用同一份删除确认，不改变宿主删除接口。
+  const [deleteTarget, setDeleteTarget] = useState<ClientConversation | undefined>(undefined);
+  const [deleteError, setDeleteError] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deleteDialog = useRef<HTMLDialogElement>(null);
+  const deleteCancelButton = useRef<HTMLButtonElement>(null);
+  const deleteTrigger = useRef<HTMLElement | null>(null);
   // 宿主当前待决的操作审批；一个 Turn 最多只有一个，轮次结束即失效。
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | undefined>(undefined);
-  const [activeView, setActiveView] = useState<'conversation' | 'settings'>('conversation');
+  const [pendingQuestion, setPendingQuestion] = useState<QuestionRequest | undefined>(undefined);
+  const streamedStepId = useRef<string | undefined>(undefined);
+  const [activeView, setActiveView] = useState<'conversation' | 'settings' | 'plugins' | 'skills'>('conversation');
+  const [extensionSelection, setExtensionSelection] = useState<string | undefined>();
   // 宿主关闭请求序号：即使展示状态没有变化，每次请求也重新触发一次关闭前提交。
   const [closeRequestSequence, setCloseRequestSequence] = useState(0);
   const pendingClose = useRef<((error?: Error) => void) | undefined>(undefined);
   // 常规防抖保存与关闭前强制保存共用一条队列，避免两个 IPC 同时写同一个临时文件。
   const pendingStateSave = useRef<Promise<void>>(Promise.resolve());
   const activeSessionIdRef = useRef(INITIAL_RENDERER_SESSION_ID);
-  const nextSessionNumber = useRef(2);
   const nextMessageId = useRef(1);
   const conversationScroll = useRef<HTMLDivElement>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
   // 用户是否仍停留在最新内容处：只有跟随状态才让新内容自动滚动，向上阅读时保留当前位置。
   const followsLatest = useRef(true);
 
-  const activeConversation = conversations.find((conversation) => (
-    conversation.id === activeSessionId
-  )) ?? conversations[0]!;
+  const activeConversation = [...conversations, ...drafts].find(conversation => conversation.id === activeSessionId)!;
 
   const queueClientStateSave = (snapshot: ClientStateSnapshot): Promise<void> => {
     const save = pendingStateSave.current.then(() => api.saveClientState(snapshot));
@@ -106,6 +117,7 @@ export function App({ api }: AppProps) {
     setConversations((currentConversations) => currentConversations.map((conversation) => (
       conversation.id === sessionId ? update(conversation) : conversation
     )));
+    setDrafts(current => current.map(conversation => conversation.id === sessionId ? update(conversation) : conversation));
   };
 
   useEffect(() => {
@@ -121,9 +133,10 @@ export function App({ api }: AppProps) {
           conversation.messages.map((message) => message.id)
         ));
         activeSessionIdRef.current = savedState.activeSessionId;
-        nextSessionNumber.current = savedState.conversations.length + 1;
         nextMessageId.current = Math.max(0, ...messageIds) + 1;
         setConversations(savedState.conversations);
+        setDrafts(savedState.drafts ?? []);
+        setSidebar(savedState.sidebar ?? INITIAL_SIDEBAR);
         setActiveSessionId(savedState.activeSessionId);
         setIsSessionReady(true);
         return;
@@ -133,11 +146,7 @@ export function App({ api }: AppProps) {
       if (!mounted || activeSessionIdRef.current !== INITIAL_RENDERER_SESSION_ID) return;
       activeSessionIdRef.current = sessionId;
       setActiveSessionId(sessionId);
-      setConversations((currentConversations) => currentConversations.map((conversation) => (
-        conversation.id === INITIAL_RENDERER_SESSION_ID
-          ? { ...conversation, id: sessionId }
-          : conversation
-      )));
+      updateConversation(INITIAL_RENDERER_SESSION_ID, conversation => ({ ...conversation, id: sessionId }));
       setIsSessionReady(true);
     })();
     return () => { mounted = false; };
@@ -147,12 +156,12 @@ export function App({ api }: AppProps) {
     if (!isSessionReady || isProcessing) return;
     // 关闭收尾正在提交同一份状态：取消尚未触发的防抖保存，避免关闭过程中重复写入。
     if (pendingClose.current !== undefined) return;
-    const snapshot: ClientStateSnapshot = { conversations, activeSessionId };
+    const snapshot: ClientStateSnapshot = { conversations, drafts, activeSessionId, sidebar };
     const timeout = setTimeout(() => {
       void queueClientStateSave(snapshot);
     }, 150);
     return () => clearTimeout(timeout);
-  }, [activeSessionId, api, closeRequestSequence, conversations, isProcessing, isSessionReady]);
+  }, [activeSessionId, api, closeRequestSequence, conversations, drafts, sidebar, isProcessing, isSessionReady]);
 
   useEffect(() => api.onPrepareClose(() => new Promise<void>((resolve, reject) => {
     pendingClose.current = (error) => { if (error === undefined) resolve(); else reject(error); };
@@ -174,16 +183,28 @@ export function App({ api }: AppProps) {
     pendingClose.current = undefined;
     void (async () => {
       try {
-        await queueClientStateSave({ conversations, activeSessionId });
+        await queueClientStateSave({ conversations, drafts, activeSessionId, sidebar });
         settle();
       } catch (error) {
         settle(error instanceof Error ? error : new Error('无法保存本地会话。'));
       }
     })();
-  }, [activeSessionId, api, closeRequestSequence, conversations, isProcessing, isSessionReady]);
+  }, [activeSessionId, api, closeRequestSequence, conversations, drafts, sidebar, isProcessing, isSessionReady]);
 
   useEffect(() => api.onAgentEvent((event: AgentRuntimeEvent) => {
     const sessionId = activeSessionIdRef.current;
+    if (event.type === 'terminal.updated') {
+      updateConversation(event.sessionId, (conversation) => ({ ...conversation, terminalHistory: event.terminal }));
+      return;
+    }
+    if (event.type === 'question.requested') {
+      if (event.request.sessionId === sessionId) setPendingQuestion(event.request);
+      return;
+    }
+    if (event.type === 'question.closed') {
+      setPendingQuestion((current) => current?.requestId === event.requestId ? undefined : current);
+      return;
+    }
     // 审批请求不是某一轮的消息内容：它由 App 单独持有并交给 Composer 渲染。
     if (event.type === 'approval.requested') {
       setPendingApproval(event.request);
@@ -212,12 +233,22 @@ export function App({ api }: AppProps) {
 
       // 文本增量只更新当前正在处理的 Assistant 消息，完成时由完整回复覆盖。
       if (event.type === 'text.delta') {
+        const preceding = event.stepId === undefined || event.stepId === streamedStepId.current ? activeMessage.streamedText : '';
+        streamedStepId.current = event.stepId;
         const messages: readonly ClientConversationMessage[] = conversation.messages.map((message, index) => (
           index === activeIndex
-            ? { ...activeMessage, streamedText: activeMessage.streamedText + event.delta }
+            ? { ...activeMessage, streamedText: preceding + event.delta }
             : message
         ));
         return { ...conversation, messages };
+      }
+
+      if (event.type === 'model.text') {
+        const activity = event.purpose === 'commentary' && event.text.trim()
+          ? upsertActivity(activeMessage.activity, { id: `commentary:${event.stepId}`, kind: 'commentary', status: 'completed', text: event.text })
+          : activeMessage.activity;
+        return { ...conversation, messages: conversation.messages.map((message, index) => index === activeIndex
+          ? { ...activeMessage, activity, streamedText: event.purpose === 'final' ? event.text : '' } : message) };
       }
 
       if (event.type === 'activity.detail') {
@@ -278,15 +309,89 @@ export function App({ api }: AppProps) {
     }));
   };
 
-  const startNewSession = async () => {
+  const startNewSession = async (project?: ClientProject) => {
     if (!isSessionReady || isProcessing) return;
-    const sessionId = await api.newSession();
-    const conversation = createConversation(sessionId, nextSessionNumber.current);
-    nextSessionNumber.current += 1;
-    setConversations((currentConversations) => [...currentConversations, conversation]);
+    // 普通入口与各项目各自复用待发送草稿，保留输入、附件和原工作目录。
+    // 移除项目只清除归属；重新添加原目录后也能找回尚未发送的项目草稿。
+    const existing = drafts.find(draft => draft.workingDirectory === project?.directory
+      && (draft.projectId === project?.id || (project !== undefined && draft.projectId === undefined)));
+    const sessionId = existing?.id ?? (project === undefined ? await api.newSession() : await api.newSession(project.directory));
+    if (existing === undefined) {
+      const conversation = { ...createConversation(sessionId),
+        ...(project === undefined ? {} : { projectId: project.id, workingDirectory: project.directory }),
+      };
+      setDrafts(current => [...current, conversation]);
+    } else {
+      if (sessionId !== activeSessionIdRef.current) await api.switchSession(sessionId);
+      if (project !== undefined && existing.projectId !== project.id) {
+        updateConversation(sessionId, conversation => ({ ...conversation, projectId: project.id }));
+      }
+    }
     activeSessionIdRef.current = sessionId;
     setActiveSessionId(sessionId);
     setActiveView('conversation');
+    if (project !== undefined) setSidebar(current => ({ ...current, projectsCollapsed: false,
+      projects: current.projects.map(item => item.id === project.id ? { ...item, collapsed: false } : item),
+    }));
+  };
+
+  const addProject = async (): Promise<ClientProject | undefined> => {
+    if (!isSessionReady || isProcessing) return;
+    const directory = await api.selectProjectDirectory();
+    if (directory === null) return;
+    // 同一文件夹只登记一次；添加项目本身不修改当前会话工作目录。
+    const key = (path: string) => path.replaceAll('\\', '/').replace(/\/$/, '').toLowerCase();
+    const existing = sidebar.projects.find(project => key(project.directory) === key(directory));
+    if (existing !== undefined) return existing;
+    const project: ClientProject = {
+      id: crypto.randomUUID(),
+      name: directory.split(/[\\/]/).filter(Boolean).at(-1) ?? directory,
+      directory,
+      pinned: false,
+      collapsed: false,
+    };
+    setSidebar(current => ({ ...current, projectsCollapsed: false,
+      projects: [...current.projects, project],
+    }));
+    return project;
+  };
+
+  const updateProject = (id: string, changes: Partial<Pick<ClientProject, 'name' | 'pinned' | 'collapsed'>>) => {
+    setSidebar(current => ({ ...current, projects: current.projects.map(project => project.id === id ? { ...project, ...changes } : project) }));
+  };
+
+  const removeProject = (id: string) => {
+    if (isProcessing) return;
+    setSidebar(current => ({ ...current, projects: current.projects.filter(project => project.id !== id) }));
+    setConversations(current => current.map(conversation => {
+      if (conversation.projectId !== id) return conversation;
+      const { projectId: _removed, ...rest } = conversation;
+      return rest;
+    }));
+    setDrafts(current => current.map(draft => {
+      if (draft.projectId !== id) return draft;
+      const { projectId: _removed, ...rest } = draft;
+      return rest;
+    }));
+  };
+
+  const moveSession = (id: string, projectId: string | undefined) => {
+    if (isProcessing) return;
+    updateConversation(id, conversation => {
+      const { projectId: _previous, ...rest } = conversation;
+      return { ...rest, ...(projectId === undefined ? {} : { projectId }) };
+    });
+  };
+
+  const archiveSessions = async (ids: readonly string[], archived: boolean) => {
+    if (!isSessionReady || isProcessing) return;
+    // 活动聊天归档后转向可用聊天；全部归档时由宿主创建新会话，不丢失历史。
+    if (archived && ids.includes(activeSessionIdRef.current)) {
+      const next = conversations.find(conversation => !conversation.archived && !ids.includes(conversation.id));
+      if (next !== undefined) await switchSession(next.id);
+      else await startNewSession();
+    }
+    setConversations(current => current.map(conversation => ids.includes(conversation.id) ? { ...conversation, archived } : conversation));
   };
 
   const renameSession = (sessionId: string, title: string) => {
@@ -305,13 +410,21 @@ export function App({ api }: AppProps) {
 
     const nextActiveSessionId = await api.deleteSession(sessionId);
     const remaining = conversations.filter((conversation) => conversation.id !== sessionId);
-    if (remaining.length === 0) {
-      remaining.push(createConversation(nextActiveSessionId, nextSessionNumber.current));
-      nextSessionNumber.current += 1;
+    const available = [...remaining, ...drafts];
+    let nextId = nextActiveSessionId;
+    if (!available.some(conversation => conversation.id === nextId)) {
+      // 宿主在运行态为空时返回新的输入 Session；它是草稿，历史仍可全部删除。
+      setDrafts(current => [...current, createConversation(nextId)]);
+    } else if (available.find(conversation => conversation.id === nextId)!.archived) {
+      const next = available.find(conversation => !conversation.archived);
+      if (next === undefined) {
+        nextId = await api.newSession();
+        setDrafts(current => [...current, createConversation(nextId)]);
+      } else { nextId = next.id; await api.switchSession(nextId); }
     }
     setConversations(remaining);
-    activeSessionIdRef.current = nextActiveSessionId;
-    setActiveSessionId(nextActiveSessionId);
+    activeSessionIdRef.current = nextId;
+    setActiveSessionId(nextId);
   };
 
   const switchSession = async (sessionId: string) => {
@@ -326,30 +439,70 @@ export function App({ api }: AppProps) {
     setActiveView('conversation');
   };
 
+  const selectProject = async (project?: ClientProject) => {
+    if (project === undefined) {
+      await startNewSession();
+      return;
+    }
+    const existing = [...conversations, ...drafts].find(conversation => conversation.projectId === project.id && !conversation.archived);
+    if (existing === undefined) await startNewSession(project);
+    else await switchSession(existing.id);
+  };
+
+  const requestDelete = (sessionId: string, trigger: HTMLElement) => {
+    deleteTrigger.current = trigger;
+    setDeleteError('');
+    setDeleteTarget(conversations.find(conversation => conversation.id === sessionId)!);
+  };
+  useLayoutEffect(() => {
+    if (deleteTarget !== undefined) {
+      deleteDialog.current!.showModal();
+      deleteCancelButton.current!.focus();
+    }
+  }, [deleteTarget]);
+  const closeDeleteDialog = () => {
+    // 先解除模态与等待状态，再聚焦原触发位置；删除后回到当前界面的可用入口。
+    flushSync(() => { setDeleteTarget(undefined); setDeleteError(''); setIsDeleting(false); });
+    if (deleteTrigger.current?.isConnected) deleteTrigger.current.focus();
+    else if (activeView === 'settings') document.querySelector<HTMLButtonElement>('.settings-nav button[aria-current]')!.focus();
+    else (document.querySelector<HTMLButtonElement>('.sidebar-session[aria-current]') ?? document.querySelector<HTMLButtonElement>('.sidebar-new-session'))!.focus();
+  };
+  const confirmDelete = async () => {
+    setIsDeleting(true);
+    setDeleteError('');
+    try {
+      await deleteSession(deleteTarget!.id);
+      closeDeleteDialog();
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      setDeleteError(error.message);
+      setIsDeleting(false);
+    }
+  };
+
   const sendTask = async () => {
     const sessionId = activeSessionIdRef.current;
-    const conversation = conversations.find((item) => item.id === sessionId);
+    const conversation = activeConversation;
     if (conversation === undefined) return;
     const taskPrompt = conversation.prompt.trim();
-    if (!taskPrompt || isProcessing) return;
+    if (!taskPrompt || isProcessing || conversation.archived) return;
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
     followsLatest.current = true;
     const assistantMessageId = nextMessageId.current + 1;
-    updateConversation(sessionId, (currentConversation) => ({
-      ...currentConversation,
-      title: !currentConversation.titleManuallyRenamed && currentConversation.messages.length === 0
-        ? conversationTitle(taskPrompt)
-        : currentConversation.title,
+    const startedConversation: ClientConversation = {
+      ...conversation,
+      updatedAt: Date.now(),
+      title: !conversation.titleManuallyRenamed && conversation.messages.length === 0 ? taskPrompt : conversation.title,
       messages: [
-        ...currentConversation.messages,
+        ...conversation.messages,
         {
           id: nextMessageId.current,
           role: 'user',
           text: taskPrompt,
-          attachments: currentConversation.attachments.map((attachment) => attachment.name),
-          ...(currentConversation.attachments.length === 0 ? {} : {
-            attachmentRoles: currentConversation.attachments.map((attachment) => attachment.role),
+          attachments: conversation.attachments.map((attachment) => attachment.name),
+          ...(conversation.attachments.length === 0 ? {} : {
+            attachmentRoles: conversation.attachments.map((attachment) => attachment.role),
           }),
         },
         {
@@ -361,7 +514,12 @@ export function App({ api }: AppProps) {
           activityExpanded: true,
         },
       ],
-    }));
+    };
+    // 首次发送把草稿转成历史；失败或取消仍保留已提交的任务和执行事实。
+    setDrafts(current => current.filter(draft => draft.id !== sessionId));
+    setConversations(current => current.some(item => item.id === sessionId)
+      ? current.map(item => item.id === sessionId ? startedConversation : item)
+      : [...current, startedConversation]);
     nextMessageId.current += 2;
     setIsProcessing(true);
 
@@ -370,6 +528,7 @@ export function App({ api }: AppProps) {
       // 执行期间禁止切换会话，因此异步结果仍属于当前活动会话；这里也避开初始 ID 查询完成时的占位 ID 变化。
       updateConversation(activeSessionIdRef.current, (currentConversation) => ({
         ...currentConversation,
+        ...(!currentConversation.titleManuallyRenamed && taskResult.conversationTitle !== undefined ? { title: taskResult.conversationTitle } : {}),
         prompt: '',
         messages: currentConversation.messages.map((message) => (
           message.role === 'assistant' && message.id === assistantMessageId
@@ -420,8 +579,11 @@ export function App({ api }: AppProps) {
         )),
       }));
     } finally {
+      updateConversation(sessionId, current => ({ ...current, updatedAt: Date.now() }));
       // 轮次结束（成功、失败或取消）后宿主也会结束等待，界面上不能再留下待决审批。
       setPendingApproval(undefined);
+      setPendingQuestion(undefined);
+      streamedStepId.current = undefined;
       setIsProcessing(false);
     }
   };
@@ -466,19 +628,43 @@ export function App({ api }: AppProps) {
   };
 
   const { messages, prompt, attachments, workingDirectory } = activeConversation;
+  const titleFailure = !activeConversation.titleManuallyRenamed
+    ? messages.find(message => message.role === 'assistant' && message.status === 'completed' && message.result.conversationTitleError !== undefined)
+    : undefined;
   const hasConversation = messages.length > 0;
-  const approval = pendingApproval === undefined ? null : (
+  // 状态条只投影当前会话已经产生的真实轮次和最近一轮模型步骤，不推测 token 或缓存数据。
+  const latestAssistant = [...messages].reverse().find((message): message is Extract<ClientConversationMessage, { role: 'assistant' }> => message.role === 'assistant');
+  const executionStatus = hasConversation ? {
+    turnCount: messages.filter(message => message.role === 'user').length,
+    stepCount: latestAssistant?.activity.filter(item => item.kind === 'analysis').length ?? 0,
+  } : undefined;
+  const approval = pendingQuestion !== undefined ? (
+    <UserQuestion key={pendingQuestion.requestId} request={pendingQuestion} onAnswer={async (answer) => {
+      await api.answerQuestion(pendingQuestion.requestId, answer);
+      setPendingQuestion(undefined);
+    }} />
+  ) : pendingApproval === undefined ? null : (
     <ApprovalRequestCard
       request={pendingApproval}
       onDecide={(approved) => void decideApproval(approved)}
     />
   );
   const composer = (
+    <>
+    {activeConversation.archived && <div className="conversation-archive-notice">此会话已归档，可查看历史。<button type="button" onClick={() => void archiveSessions([activeSessionId], false)}>恢复会话</button></div>}
+    {titleFailure?.role === 'assistant' && titleFailure.status === 'completed' && <p className="conversation-title-notice" role="status">自动命名失败：{titleFailure.result.conversationTitleError}。可在会话菜单中重命名。</p>}
+    {activeConversation.terminalHistory !== undefined && <TerminalView snapshot={activeConversation.terminalHistory} api={api} />}
     <Composer
       attachments={attachments}
       prompt={prompt}
       isProcessing={isProcessing}
+      isArchived={!!activeConversation.archived}
       approval={approval}
+      projects={sidebar.projects}
+      {...(activeConversation.projectId === undefined ? {} : { activeProjectId: activeConversation.projectId })}
+      onSelectProject={selectProject}
+      onCreateProject={async () => { const project = await addProject(); if (project !== undefined) await selectProject(project); }}
+      {...(executionStatus === undefined ? {} : { executionStatus })}
       {...(workingDirectory === undefined ? {} : { workingDirectory })}
       onPromptChange={(nextPrompt) => updateConversation(
         activeSessionIdRef.current,
@@ -489,31 +675,61 @@ export function App({ api }: AppProps) {
       onSend={() => void sendTask()}
       onCancel={() => void cancelTask()}
     />
+    </>
   );
   return (
-    <div className="app-shell">
+    <div className={`app-shell${activeView === 'plugins' || activeView === 'skills' ? ' customization-shell' : ''}`}>
       <SessionSidebar
+        appUpdates={api.appUpdates}
+        sidebar={sidebar}
+        onSidebarChange={setSidebar}
+        onAddProject={async () => { await addProject(); }}
+        onUpdateProject={updateProject}
+        onRemoveProject={removeProject}
+        onOpenProjectDirectory={directory => api.openProjectDirectory(directory)}
+        onMoveSession={moveSession}
+        onPinSession={id => updateConversation(id, conversation => ({ ...conversation, pinned: !conversation.pinned }))}
+        onArchiveSessions={archiveSessions}
         conversations={conversations}
         activeSessionId={activeSessionId}
         activeView={activeView}
         isSessionReady={isSessionReady}
         isProcessing={isProcessing}
         settingsButtonRef={settingsButton}
-        onNewSession={() => void startNewSession()}
-        onSwitchSession={(sessionId) => void switchSession(sessionId)}
+        onNewSession={startNewSession}
+        onSwitchSession={switchSession}
         onRenameSession={renameSession}
-        onDeleteSession={(sessionId) => void deleteSession(sessionId)}
+        onRequestDelete={requestDelete}
         onOpenSettings={() => setActiveView('settings')}
+        extensionsApi={api.extensions}
+        onSelectPlugin={id => { setExtensionSelection(id); setActiveView('plugins'); }}
+        onOpenExtensions={view => { setExtensionSelection(undefined); setActiveView(view); }}
+        onOpenConversation={() => setActiveView('conversation')}
       />
 
-      <div className="app-main">
-        {activeView === 'settings' && (
-          <RuntimeSettingsPanel api={api} isProcessing={isProcessing} onClose={() => {
-            // 卸载模态框后再还原键盘焦点，避免焦点仍被原生模态层圈定。
+      <div className={`app-main${activeView === 'settings' ? ' settings-main' : ''}`}>
+        {(activeView === 'plugins' || activeView === 'skills') && <ExtensionsPage api={api.extensions} view={activeView} isProcessing={isProcessing} {...(extensionSelection === undefined ? {} : { requestedId: extensionSelection })}
+          onTrySkill={(skill, suggestedPrompt) => {
+            const invocation = `$${skill.name}`;
+            // 试用只准备输入，已有草稿保留；发送仍由用户决定。
+            flushSync(() => {
+              updateConversation(activeSessionIdRef.current, conversation => ({ ...conversation,
+                prompt: conversation.prompt.trim() !== '' ? `${suggestedPrompt ?? invocation}\n${conversation.prompt}`
+                  : skill.defaultPrompt === undefined ? invocation : skill.defaultPrompt.includes(invocation) ? skill.defaultPrompt : `${invocation} ${skill.defaultPrompt}`,
+              }));
+              setActiveView('conversation');
+            });
+            document.querySelector<HTMLTextAreaElement>('#agent-prompt')!.focus();
+          }} />}
+          <RuntimeSettingsPanel api={api} isProcessing={isProcessing} isOpen={activeView === 'settings'}
+            archivedConversations={conversations.filter(conversation => conversation.archived)}
+            onOpenConversation={switchSession} onRestoreConversation={id => archiveSessions([id], false)} onRequestDelete={requestDelete}
+            onOpenExtensions={view => { setExtensionSelection(undefined); setActiveView(view); }} onClose={() => {
+            // 设置页隐藏后将焦点还给常驻入口，对话节点和草稿始终保留。
             flushSync(() => setActiveView('conversation'));
             settingsButton.current!.focus();
           }} />
-        )}
+        <div className="conversation-view" hidden={activeView !== 'conversation'}>
         <ConversationPanel
           messages={messages}
           hasConversation={hasConversation}
@@ -523,7 +739,19 @@ export function App({ api }: AppProps) {
           onToggleActivity={toggleActivity}
           onRevealFile={(path) => api.revealFile(path)}
         />
+        </div>
       </div>
+      {deleteTarget !== undefined && <dialog ref={deleteDialog} className="session-delete-dialog" aria-labelledby="session-delete-title" aria-describedby="session-delete-description"
+        onCancel={event => { event.preventDefault(); if (!isDeleting) closeDeleteDialog(); }}>
+        <h2 id="session-delete-title">删除会话确认</h2>
+        <p className="session-delete-name">确定删除“{deleteTarget.title}”？</p>
+        <p id="session-delete-description">删除会话将清除聊天记录和会话上下文，但不会删除已经生成的视频文件。</p>
+        {deleteError && <p className="sidebar-error" role="alert">{deleteError}</p>}
+        <div className="session-delete-actions">
+          <button ref={deleteCancelButton} type="button" disabled={isDeleting} onClick={closeDeleteDialog}>取消</button>
+          <button className="session-delete-confirm" type="button" disabled={isDeleting || isProcessing || !isSessionReady} onClick={() => void confirmDelete()}>{isDeleting ? '正在删除…' : '删除会话'}</button>
+        </div>
+      </dialog>}
     </div>
   );
 }

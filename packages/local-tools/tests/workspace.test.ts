@@ -43,7 +43,7 @@ function createPort(options: {
     port: {
       confirmedDirectory: () => directory,
       requestApproval: async (target) => {
-        if (target.kind === 'command') throw new Error('set_working_directory 不应请求命令审批');
+        if (!('path' in target)) throw new Error('set_working_directory 不应请求命令或终端审批');
         log.accessRequests.push(target.path);
         return options.approve ?? true;
       },

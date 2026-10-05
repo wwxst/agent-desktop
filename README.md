@@ -2,15 +2,64 @@
 
 这是一个从零开发的通用智能体客户端：能回答问题、使用工具完成任务并持续推进工作，以视频自动剪辑为重点应用场景。
 
+## 插件和技能
+
+左侧入口提供按 Codex 参考图实现的插件与技能管理页：分类双列、搜索、详情、技能来源及已安装导航。默认进入个人插件，展示内置资源与实际安装；已撤下未接通服务的官方推荐目录。支持主动添加市场、本地导入、安装、启停、更新、回滚和卸载。已启用技能按任务描述匹配，也可输入 `$local-file-review` 指定。内置“语义视频剪辑”插件包含 `semantic-editing` 与 `short-drama-editing`。
+
+技能支持 `agents/openai.yaml` 的图标、展示信息、工具依赖与显式调用策略，元数据缓存、正文按需加载。外部改文件后管理页自动刷新；“刷新”同步内置资源与市场目录，详情可检查更新并回滚。远程工具支持 HTTP/SSE 传输、加密配置和浏览器账户授权；命令钩子执行前审批。实现与外部服务边界见 [三轮核对记录](docs/acceptance/codex-extensions-three-reviews-20261004.md)。
+
+```text
+Plugin                    插件包          包含技能、工具服务、应用连接或钩子的目录。
+Skill                     任务技能        SKILL.md 中的描述与操作指令。
+MCP                       工具协议        为智能体提供可审批调用的本地或远程工具。
+```
+
+单独技能目录提供 `SKILL.md`：
+
+```markdown
+---
+name: config-review
+description: 检查项目配置文件时使用。
+---
+
+先确认工作目录，再阅读配置并报告实际发现。
+```
+
+已确认目录中的 `.agents/skills/**/SKILL.md` 自动发现；扫描只保留 frontmatter 元数据，正文在模型调用 `load_skill` 或打开详情时读取。安装先进入暂存目录校验，再原子移动到应用数据目录，版本和启停状态存 SQLite；迁移电脑需复制数据库与 `extensions` 目录，无需保留原导入目录。
+
+插件目录支持 `.codex-plugin/plugin.json` 或 Agent Plugins v1（标准插件格式）的根 `plugin.json`。前者示例：
+
+```json
+{"name":"local-tools","description":"本地工具与技能","skills":"./skills","mcpServers":"./.mcp.json"}
+```
+
+可以只提供技能或只提供服务；显式声明的路径必须存在。`.mcp.json` 示例：
+
+```json
+{"mcpServers":{"local":{"command":"node","args":["${PLUGIN_ROOT}/server.mjs"],"type":"stdio"}}}
+```
+
+脚本需随包提供服务依赖，`node` 使用 Electron 自带运行时。远程服务可声明 `{"type":"http","url":"https://example.com/mcp"}`，也支持 `sse`。请求头或环境变量中的 `${TOKEN}` 在详情“配置”中填写并加密保存；任务中的启动和每次工具调用继续独立审批，结束或取消关闭连接。应用清单的 ID 可配置实际账户网关，命令钩子按任务生命周期执行。
+
+默认不提供第三方推荐目录；用户主动添加 Git 市场需要网络和本机 Git，npm 包解包需要本机 tar。账号、云端安装同步与分享发布服务按产品要求对接自有后端，当前尚未接入；现有接口使用 Electron 进程通信，不宣称完整兼容 Codex 应用服务器协议。浏览器只有界面夹具，真实安装、授权和调用由桌面应用提供。
+
+服务端接入按用户要求留待后续实施，接口建议、认证、安装同步、分享权限及联调验收见 [插件与技能自有后端对接文档](docs/plugin-backend-integration.md)。
+
 # Current Status（当前状态）
 
 项目处于非常早期的 `0.x` 开发阶段。
+
+Windows 安装版已接入应用更新：自动检查并下载正式发布版本，下载完成后在左下设置上方显示蓝色入口，点击直接保存会话并安装。源码开发模式不显示更新入口。安装包使用 `corepack pnpm desktop:package:win` 生成；发布附件要求与当前线上验收限制见 `docs/engineering.md` 的 Windows 安装包与更新章节。
+
+新会话在首次发送前只保存为草稿，不增加历史条目；重复点击复用输入，历史可全部删除。桌面首轮成功后由模型概括任务标题，手动名称保留。交互细节见 `docs/desktop-ui.md`。
 
 当前优先级是让桌面入口跑通通用任务闭环，视频剪辑作为配置最完整的能力继续可用。
 
 普通问答和文字任务不以视频附件为前提。模型可以用 `set_working_directory` 请求会话工作目录，经用户确认后，用 `list_directory` 发现文件、用 `read_file` 按行读取文本、用 `search_text` 按字面文本搜索内容，并用 `write_text_file` 经用户逐次确认后创建新的文本文件。对已经读取的 UTF-8 文本，`edit_text_file` 会展示确切文件、原内容和新内容，只在用户批准且文件版本未变化时完成一次唯一匹配的精确替换。新建文件会显示为本轮产物，修改已有文件只记录为活动，不冒充新产物。所有本地文件操作只限已确认的目录，越界会明确要求重新指定工作目录。
 
 文本搜索由随包提供的 ripgrep 执行（`@vscode/ripgrep`），不依赖运行环境 PATH 上是否安装 `rg`。安装包内的资源落地由打包阶段验收。
+
+Desktop 现已支持执行中提问后继续同一轮、真实公开过程说明、有限模型请求重试、最多两个并行只读子任务，以及逐次审批的会话终端。视频语义验收对候选全部帧与完整语音证据独立判定，并与发布前文件摘要绑定；首期最多 600 帧，缺少服务、超过预算或无法确认的内容要求仍阻止发布。终端只在当前应用运行期间持久，重启只显示已断开的输出历史。具体边界见 `docs/architecture.md`，本次证据见 `docs/acceptance/six-capabilities-20261001.md`。
 
 当前已经完成：
 
@@ -37,7 +86,7 @@ Runtime Session List            运行期会话列表          Desktop 保存多
 
 # Current Engineering Foundation（当前工程基础）
 
-项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`packages/client` 提供 Web 与 Electron Desktop 共用的 Agent Client UI，`apps/web` 是 UI 开发与自动化测试宿主，`apps/desktop` 继续承载真实本地 Agent。Desktop 会话数据保存在本机 Electron `userData/session-state.json`，不上传且不包含 API Key；Web Dev Host 不做持久化。
+项目采用 Node.js 24 LTS、pnpm workspace、TypeScript ESM 和 Vitest。当前 Agent Runtime 已具备核心接口、最小 Agent Loop、可运行 Echo Agent、DeepSeek 真实模型适配器、FFmpeg 视频处理、视觉理解、本地语音时间轴和基于内容的剪辑能力；`packages/client` 提供 Web 与 Electron Desktop 共用的 Agent Client UI，`apps/web` 是 UI 开发与自动化测试宿主，`apps/desktop` 继续承载真实本地 Agent。Desktop 会话、设置和加密密钥统一保存在本机 Electron `userData/agent-desktop.sqlite`，使用 SQLite（本地嵌入式数据库）且不上传；API Key 只以系统安全存储加密后的密文保存。旧 JSON 文件首次启动时自动导入并保留原文件；Web Dev Host 不做持久化。
 
 # Run Agents（运行 Agent）
 
@@ -88,7 +137,7 @@ pnpm ffmpeg-agent
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可新建、切换、重命名和删除会话。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
+Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
 
 ```text
 Layer                 中文名称         职责

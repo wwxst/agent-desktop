@@ -68,6 +68,7 @@ export type RequirementCheck = {
 export interface CandidateValidation {
   readonly id: string;
   readonly candidateId: string;
+  readonly candidateSha256?: string;
   readonly checks: readonly RequirementCheck[];
 }
 
@@ -236,7 +237,9 @@ function readValidation(value: unknown): CandidateValidation | null {
     if (check === null) return null;
     checks.push(check);
   }
-  return { id: value.id, candidateId: value.candidateId, checks };
+  if (value.candidateSha256 !== undefined && typeof value.candidateSha256 !== 'string') return null;
+  return { id: value.id, candidateId: value.candidateId, checks,
+    ...(value.candidateSha256 === undefined ? {} : { candidateSha256: value.candidateSha256 }) };
 }
 
 function readPublishedOutput(value: unknown): PublishedOutput | null {

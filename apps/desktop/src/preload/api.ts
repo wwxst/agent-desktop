@@ -6,6 +6,7 @@ import type {
   DesktopApi,
 } from '../shared/ipc.js';
 import { DESKTOP_CHANNELS } from '../shared/ipc.js';
+import type { AppUpdateState } from '@agent-desktop/client';
 
 type IpcListener = (event: unknown, payload: unknown) => void;
 
@@ -44,7 +45,7 @@ async function invokeAgentTask(
  */
 function unwrapRemoteError(error: unknown): unknown {
   if (!(error instanceof Error)) return error;
-  const remoteError = /^Error invoking remote method '.+?': (Error|AbortError): (.+)$/.exec(error.message);
+  const remoteError = /^Error invoking remote method '.+?': (Error|AbortError): ([\s\S]+)$/.exec(error.message);
   if (remoteError === null) return error;
   const [, errorName, message] = remoteError;
   const normalized = new Error(message) as Error & {
@@ -104,7 +105,37 @@ function readErrorOutputFiles(error: Error): readonly AgentTaskOutputFile[] | un
 
 /** 把当前桌面闭环需要的宿主操作暴露给 Renderer。 */
 export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
+  const invokeExtension = (channel: string, ...args: unknown[]) => ipc.invoke(channel, ...args).catch((error: unknown) => { throw unwrapRemoteError(error); });
   return {
+    listProviderModels: provider => invokeExtension(DESKTOP_CHANNELS.listProviderModels, provider) as ReturnType<DesktopApi['listProviderModels']>,
+    openModelConfig: async () => { await invokeExtension(DESKTOP_CHANNELS.openModelConfig); },
+    appUpdates: {
+      getState: () => invokeExtension(DESKTOP_CHANNELS.getUpdateState) as Promise<AppUpdateState>,
+      install: async () => { await invokeExtension(DESKTOP_CHANNELS.installUpdate); },
+      retry: async () => { await invokeExtension(DESKTOP_CHANNELS.retryUpdate); },
+      onStateChanged: (listener) => {
+        const receive: IpcListener = (_event, payload) => listener(payload as AppUpdateState);
+        ipc.on(DESKTOP_CHANNELS.updateState, receive);
+        return () => ipc.removeListener(DESKTOP_CHANNELS.updateState, receive);
+      },
+    },
+    extensions: {
+      list: () => invokeExtension(DESKTOP_CHANNELS.listExtensions) as ReturnType<DesktopApi['extensions']['list']>,
+      manage: request => invokeExtension(DESKTOP_CHANNELS.manageExtensions, request) as ReturnType<DesktopApi['extensions']['manage']>,
+      listSkills: (forceReload = false) => invokeExtension(DESKTOP_CHANNELS.listSkills, forceReload) as ReturnType<DesktopApi['extensions']['listSkills']>,
+      importLocal: (kind) => invokeExtension(DESKTOP_CHANNELS.importExtension, kind) as ReturnType<DesktopApi['extensions']['importLocal']>,
+      install: (id) => invokeExtension(DESKTOP_CHANNELS.installExtension, id) as ReturnType<DesktopApi['extensions']['install']>,
+      setEnabled: (id, enabled) => invokeExtension(DESKTOP_CHANNELS.enableExtension, id, enabled) as ReturnType<DesktopApi['extensions']['setEnabled']>,
+      uninstall: (id) => invokeExtension(DESKTOP_CHANNELS.uninstallExtension, id) as ReturnType<DesktopApi['extensions']['uninstall']>,
+      readDetail: (id) => invokeExtension(DESKTOP_CHANNELS.readExtension, id) as ReturnType<DesktopApi['extensions']['readDetail']>,
+      readSkill: (id) => invokeExtension(DESKTOP_CHANNELS.readSkill, id) as ReturnType<DesktopApi['extensions']['readSkill']>,
+      reconcile: () => invokeExtension(DESKTOP_CHANNELS.reconcileExtensions) as ReturnType<DesktopApi['extensions']['reconcile']>,
+      onChanged: (listener) => {
+        const receive: IpcListener = () => listener();
+        ipc.on(DESKTOP_CHANNELS.extensionsChanged, receive);
+        return () => ipc.removeListener(DESKTOP_CHANNELS.extensionsChanged, receive);
+      },
+    },
     loadRuntimeSettings: () => ipc.invoke(
       DESKTOP_CHANNELS.loadRuntimeSettings,
     ) as ReturnType<DesktopApi['loadRuntimeSettings']>,
@@ -112,6 +143,10 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       DESKTOP_CHANNELS.saveRuntimeSettings,
       update,
     ) as ReturnType<DesktopApi['saveRuntimeSettings']>,
+    loadMemories: () => ipc.invoke(DESKTOP_CHANNELS.loadMemories) as ReturnType<DesktopApi['loadMemories']>,
+    deleteMemories: async () => { await ipc.invoke(DESKTOP_CHANNELS.deleteMemories); },
+    loadCustomInstructions: () => ipc.invoke(DESKTOP_CHANNELS.loadCustomInstructions) as ReturnType<DesktopApi['loadCustomInstructions']>,
+    saveCustomInstructions: (content) => ipc.invoke(DESKTOP_CHANNELS.saveCustomInstructions, content) as ReturnType<DesktopApi['saveCustomInstructions']>,
     loadClientState: () => ipc.invoke(
       DESKTOP_CHANNELS.loadClientState,
     ) as ReturnType<DesktopApi['loadClientState']>,
@@ -147,9 +182,11 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     removeAttachment: async (index) => {
       await ipc.invoke(DESKTOP_CHANNELS.removeAttachment, index);
     },
-    newSession: () => ipc.invoke(
-      DESKTOP_CHANNELS.newSession,
-    ) as ReturnType<DesktopApi['newSession']>,
+    newSession: (directory) => (directory === undefined
+      ? ipc.invoke(DESKTOP_CHANNELS.newSession)
+      : invokeExtension(DESKTOP_CHANNELS.newSession, directory)) as ReturnType<DesktopApi['newSession']>,
+    selectProjectDirectory: () => invokeExtension(DESKTOP_CHANNELS.selectProjectDirectory) as ReturnType<DesktopApi['selectProjectDirectory']>,
+    openProjectDirectory: async (directory) => { await invokeExtension(DESKTOP_CHANNELS.openProjectDirectory, directory); },
     switchSession: async (sessionId) => {
       await ipc.invoke(DESKTOP_CHANNELS.switchSession, sessionId);
     },
@@ -162,6 +199,12 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     decideApproval: async (requestId, approved) => {
       await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);
     },
+    answerQuestion: async (requestId, answer) => {
+      try { await ipc.invoke(DESKTOP_CHANNELS.answerQuestion, requestId, answer); }
+      catch (error) { throw unwrapRemoteError(error); }
+    },
+    closeTerminal: async (id) => { await ipc.invoke(DESKTOP_CHANNELS.closeTerminal, id); },
+    resizeTerminal: async (id, cols, rows) => { await ipc.invoke(DESKTOP_CHANNELS.resizeTerminal, id, cols, rows); },
     onAgentEvent: (listener) => {
       const receive: IpcListener = (_event, payload) => listener(payload as AgentRuntimeEvent);
       ipc.on(DESKTOP_CHANNELS.agentEvent, receive);

@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { extname } from 'node:path';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 
@@ -13,6 +14,9 @@ interface AnalyzeImageInput {
 export interface AnalyzeImagesToolOptions {
   readonly apiKey: string;
   readonly baseUrl?: string;
+  readonly model?: string;
+  readonly protocol?: 'chat-completions' | 'responses';
+  readonly maxOutputTokens?: number;
 }
 
 const VISUAL_ANALYSIS_SCHEMA = {
@@ -100,10 +104,11 @@ function readOutputText(payload: unknown): string {
   return texts.join('\n');
 }
 
-/** 读取本地 JPG 并转成 Responses API 可直接接收的 data URL，不上传到 Files API。 */
+/** 读取本地 JPG / PNG 并按文件类型生成图片 data URL，不上传到 Files API。 */
 async function imageDataUrl(path: string): Promise<string> {
   const image = await readFile(path);
-  return `data:image/jpeg;base64,${image.toString('base64')}`;
+  const mime = extname(path).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
+  return `data:${mime};base64,${image.toString('base64')}`;
 }
 
 export class AnalyzeImagesTool implements Tool {
@@ -133,8 +138,10 @@ export class AnalyzeImagesTool implements Tool {
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly options: AnalyzeImagesToolOptions;
 
   public constructor(options: AnalyzeImagesToolOptions) {
+    this.options = options;
     this.apiKey = options.apiKey;
     // 统一去掉末尾斜线，让官方地址与 OpenAI-compatible 中转站使用同一拼接规则。
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
@@ -172,23 +179,23 @@ export class AnalyzeImagesTool implements Tool {
         });
       }
 
-      const response = await fetch(`${this.baseUrl}/responses`, {
+      const chat = this.options.protocol === 'chat-completions';
+      const format = { type: 'json_schema', name: 'visual_media_analysis', strict: true, schema: VISUAL_ANALYSIS_SCHEMA };
+      const response = await fetch(`${this.baseUrl}/${chat ? 'chat/completions' : 'responses'}`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: VISION_MODEL,
-          input: [{ role: 'user', content }],
-          text: {
-            format: {
-              type: 'json_schema',
-              name: 'visual_media_analysis',
-              strict: true,
-              schema: VISUAL_ANALYSIS_SCHEMA,
-            },
-          },
+        body: JSON.stringify(chat ? {
+          model: this.options.model ?? VISION_MODEL,
+          messages: [{ role: 'user', content: content.map(part => part.type === 'input_image'
+            ? { type: 'image_url', image_url: { url: part.image_url, detail: part.detail } } : { type: 'text', text: part.text }) }],
+          response_format: { type: 'json_schema', json_schema: { name: format.name, strict: format.strict, schema: format.schema } },
+          ...(this.options.maxOutputTokens === undefined ? {} : { max_tokens: this.options.maxOutputTokens }),
+        } : {
+          model: this.options.model ?? VISION_MODEL, input: [{ role: 'user', content }], text: { format },
+          ...(this.options.maxOutputTokens === undefined ? {} : { max_output_tokens: this.options.maxOutputTokens }),
         }),
         ...(signal === undefined ? {} : { signal }),
       });
@@ -199,12 +206,16 @@ export class AnalyzeImagesTool implements Tool {
 
       let parsed: unknown;
       try {
-        parsed = JSON.parse(readOutputText(await response.json())) as unknown;
+        const payload: unknown = await response.json();
+        if (chat) {
+          if (!isRecord(payload) || !Array.isArray(payload.choices) || !isRecord(payload.choices[0])
+            || !isRecord(payload.choices[0].message) || typeof payload.choices[0].message.content !== 'string') throw new Error('OpenAI Vision API response is missing message content');
+          if (payload.choices[0].finish_reason !== 'stop') throw new Error(`视觉模型未完成：${String(payload.choices[0].finish_reason)}`);
+          parsed = JSON.parse(payload.choices[0].message.content) as unknown;
+        } else parsed = JSON.parse(readOutputText(payload)) as unknown;
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith('OpenAI Vision API response is missing')) {
-          throw error;
-        }
-        throw new Error('OpenAI Vision API returned invalid JSON');
+        if (error instanceof SyntaxError) throw new Error('OpenAI Vision API returned invalid JSON');
+        throw error;
       }
 
       return { status: 'success', output: parsed };

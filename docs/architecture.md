@@ -2,6 +2,68 @@
 
 本文档定义 Agent Runtime MVP（智能体运行时最小可行版本）及当前视频智能体应用层的核心边界。它描述职责、事实流和依赖方向，不预先设计当前范围之外的系统。
 
+## 本机记忆与自定义指令
+
+```text
+Memory                 记忆              保存用户明确偏好或长期事实，供后续任务使用。
+Memory Store           记忆存储          Desktop 通过 SQLite memories 文档读写记忆条目。
+Custom Instructions    自定义指令        用户主目录 AGENTS.md 的可编辑系统指令。
+Save Memory Tool       保存记忆工具      Agent 在启用记忆时按模型判断写入一条长期记忆。
+```
+
+记忆属于 Desktop 宿主能力，不进入 Agent Core 或 Session 历史。每轮创建 Agent 前，宿主读取已保存记忆和用户主目录的 `AGENTS.md`，追加到系统指令；关闭记忆时不读取、不注册 `save_memory`。记忆通过 `save_memory` 工具生成，来源按本轮是否已经调用其他工具区分为普通对话或工具聊天；第二个设置关闭时，工具聊天的写入被拒绝。设置页的删除动作只清空本机 SQLite 记忆文档，不删除 `AGENTS.md`。
+
+## 桌面插件平台与技能
+
+```text
+Plugin Platform           插件平台        管理本地与市场插件的安装、版本和运行。
+Skill                     任务技能        通过 SKILL.md 提供描述与操作指令。
+MCP                       工具协议        连接本地或远程服务并列举、调用工具。
+Standalone MCP            独立工具服务    用户直接配置服务器，不依赖插件安装。
+stdio                     标准输入输出    通过子进程文本通道传输协议消息。
+OAuth                     账户授权        在系统浏览器授权后加密保存令牌。
+Hook                      事件钩子        在任务生命周期中经审批执行插件命令。
+Marketplace               插件市场        从实际清单发现、下载和安装插件。
+```
+
+Desktop 是当前消费者：`extensions.ts` 解析 Codex 风格清单、建立 catalog（目录）和 authority（来源权威）、发现技能并激活安装；`extension-marketplaces.ts` 管理市场清单与来源检出；`extension-connections.ts` 管理操作系统加密凭据及授权；`extension-runtime.ts` 每轮准备技能、工具及钩子；`index.ts` 注册到现有 Agent 并追加技能目录。Core、Loop 和 CLI 不引入插件协议。界面通过 `AgentClientApi.extensions` 消费宿主事实。
+
+```text
+Desktop → enabled skill metadata → system prompt
+Model → load_skill → SKILL.md → Tool Result → Session → next Model
+Desktop → start approval → MCP Client → listTools → Tool Registry
+Model → plugin tool → call approval → callTool → Tool Result → Session
+Turn finally / cancellation → shared close promise → MCP process exit
+```
+
+技能来自安装目录与已确认工作目录的 `.agents/skills/**/SKILL.md`；扫描阶段只读取 YAML frontmatter（元数据），模型先获得 catalog 条目，匹配任务或 `$技能名` 指定后才由 `load_skill` 懒加载正文。扫描跳过隐藏目录并受目录/条目预算限制。引用资源仍走已有目录与文件授权。停用插件同时停用附带技能；项目与附带技能不能独立卸载。技能指令不能覆盖系统边界和审批。
+
+插件详情中的附带技能由 Desktop 渲染层显示为可点击的单列条目；技能对话框单独通过 `readSkill` 读取并排版正文，文件菜单只调用宿主解析后的真实路径。试用动作复用当前对话草稿，仅准备 `$技能名` 调用，不自动启动新的 Turn。
+
+插件详情的建议指令来自附带技能的 `defaultPrompt`，点击时将完整指令放在现有草稿前；顶部试用选择第一个已启用的附带技能。详情中的信息直接展示清单声明的字段；缺少字段不生成虚构内容。按用户要求移除详情的钩子展示，宿主对命令钩子的解析、执行审批与取消语义保持现有实现。
+
+支持 `.codex-plugin/plugin.json` 与 Agent Plugins v1（标准插件格式）的根 `plugin.json`、`com.openai` 扩展及旧格式补充清单。实际消费完整 `interface` 展示字段、图片、网站、技能目录、MCP 配置、应用 ID 与命令钩子；根目录无关的 `plugin.json` 不覆盖有效旧清单。资源真实路径不能超出插件目录，复制前校验链接。技能图标允许引用插件内共享资源，渲染层收到图片数据地址，不获得任意本机文件读取能力。
+
+市场支持四种 Codex 清单布局、本地目录及 Git 来源，以及本地、Git 子目录与 npm 插件包。按用户要求已撤下官方公开仓库的默认推荐目录，不随包提供未接通服务的应用条目。只有用户主动添加的市场参与目录展示，安装不会自动注册官方来源；移除来源保留已有安装。Git 禁用仓库钩子并启用 Windows 长路径；npm 下载只解包，不执行安装脚本。显式更新重新检出已注册来源。Git 和 tar 使用本机程序，未随安装包分发。
+
+安装先复制到 `userData/extensions/.staging`，解析清单并重新扫描通过后再原子移动到 `userData/extensions/{plugins,skills}`；失败只清理暂存目录，保留原有安装。SQLite 的 `extensions` 文档保存类型、名称、来源、版本、安装标识与停用标识，不存旧电脑绝对安装位置。`${PLUGIN_ROOT}` / `${CODEX_PLUGIN_ROOT}` 每轮解析到当前安装目录，`node` 使用 Electron 自带运行时，其它程序需插件自带或系统可用。插件自身硬编码路径仍需作者修正。
+
+`listSkills` 单独返回技能元数据，`readSkill` 单独读取正文；元数据以文件时间和大小缓存，`forceReload` 与文件通知清缓存，正文保持按需读取。模型目录最多 64 项、8000 字符，显式指定技能优先排序。扫描流读到第二个 `---` 分隔符后关闭，不构建正文字符串。`agents/openai.yaml` 提供图标、显示名称、简述、建议指令、结构化工具依赖和自动调用策略；禁止自动调用的技能只有被 `$名称` 显式指定时才进入模型目录。有 URL 或用户配置地址的 MCP 依赖走真实工具连接与审批，缺少服务的依赖明确写入指令，不自动假设已授权。
+
+安装、启停、卸载与同步通过 `desktop:extensions-changed` 通知界面重新读取。宿主同时监视安装目录和当前项目技能目录；技能目录不存在时监视最近存在的父目录，界面重读时重新绑定。外部文件变化合并后发出失效通知，窗口关闭释放监视句柄。`reconcile` 同步内置资源、修复缺失目录并刷新已添加市场。市场插件更新由用户显式执行，保留旧安装及版本历史供回滚；失败不覆盖当前安装，停用标识保持。发布失败时恢复旧目录，恢复失败明确保留备份位置。
+
+MCP 运行时支持 stdio、Streamable HTTP（可流式 HTTP 传输）和 SSE（服务器推送传输），以及经过加密配置的环境变量与请求头。OAuth 使用 SDK 进行资源发现、动态客户端注册、PKCE（授权码校验）、令牌刷新及发行者隔离；新授权只从详情页显式发起，执行中缺授权要求回到详情连接。等待授权可以取消，窗口关闭也取消并释放本机回调端口。凭据按插件、服务和地址隔离，渲染层只看到变量名称及连接状态。
+
+独立 MCP 服务器由设置页通过现有扩展管理接口新增、编辑、启停与删除，支持本地命令、HTTP 和 SSE。名称必须唯一；默认启用，编辑保留当前启停状态。独立配置整体保存在 `extension-secret:standalone-mcp/configuration` 加密文档中，一次提交包含公开参数和秘密；列表只返回命令、参数、地址与变量名称，不回显环境变量或请求头的值。编辑提交空值保留同名已保存秘密，移除键则删除该变量。`extensions.ts` 向每轮宿主投影独立服务器，`extension-runtime.ts` 复用现有 SDK、启动与调用审批、账户授权、取消和关闭路径，不写入插件安装列表，也不改变 Core 或 Loop。启动目录使用当前已授权会话目录，没有目录时使用当前本机数据目录；服务不会在保存时启动。远程账户授权由独立服务器配置对话框显式发起，等待时可取消。
+
+`.app.json` 的真实应用 ID 可配置账户网关的 MCP 地址，之后走相同授权与工具调用路径；这不是 OpenAI 私有 Apps 账户服务接入。命令钩子接入 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop，逐项展示确切命令并审批。取消及超时结束整个进程树，输出错误保留失败语义。
+
+这些是本项目 Electron 宿主接口，并非 Codex JSON-RPC（应用服务器通信协议）的完整线协议。账号安装同步、云技能来源、插件分享发布按用户明确要求对接自有后端，目前尚未接入；不以 OpenAI 私有服务作为交付前提。SessionStart 在宿主创建或恢复会话后首次执行任务时消费一次，分别携带 startup 或 resume 来源；普通后续轮次及会话切换不重放启动命令。公开源码核对和本次三轮验证见 `docs/acceptance/codex-extensions-three-reviews-20261004.md`。
+
+用户已将实际服务端接入留待后续实施；对接交接见 [插件与技能自有后端对接文档](plugin-backend-integration.md)，其中待实现契约不表示当前已有接口或部署。
+
+每轮服务启动需审批，各次调用另行审批，SDK 和钩子只继承基础系统环境，不传递模型设置密钥。工具名以插件、服务及工具标识组成，特殊字符或超过 64 字符时附加摘要避免身份冲突。取消与收尾等待同一个关闭操作，进程不写入恢复数据。复制或卸载期间宿主拒绝新任务，防止使用正在修改的目录。
+
 ## Core Relationship（核心关系）
 
 ```text
@@ -51,7 +113,11 @@ Published Output       已交付文件  必要检查全部通过并成功复制�
 
 候选只能写进所属输出项的工作目录。该约束由应用层组装时套在写出型视频工具外层（`ScopedVideoOutputTool`）落实，因此它作用在真实写出调用上而不是提示词里：没有声明就写出会被拒绝，直接写最终目标或跨输出项目录写出同样被拒绝。写出型视频工具因此只报告结构化生产事实 `{ outputPath }`，不再直接登记 `artifacts`。
 
-`validate_video_candidate` 只接受输出项与候选路径：应用层按这条路径反查写出它的成功生产调用，并逐条计算检查结论——`decode_video` 提供全文件解码事实，`probe_media` 提供真实时长，`detect_black_segments` 提供该参数下的黑段区间。证据必须来自真实检查结果且其实际输入路径与候选路径一致，因此源视频、别的候选或别的输出项的检查不能批准当前候选；缺少证据的要求记为 `blocked`，明确不满足记为 `failed`，`semantic` 要求在没有合格判定方法前统一为 `blocked`。检查不通过是验收工具成功执行后的业务结果，不是外层工具错误。
+`validate_video_candidate` 只接受输出项与候选路径：应用层按这条路径反查写出它的成功生产调用，并逐条计算检查结论——`decode_video` 提供全文件解码事实，`probe_media` 提供真实时长，`detect_black_segments` 提供该参数下的黑段区间，`check_video_semantics` 提供独立内容判定。证据必须对应实际候选；语义证据还必须匹配输出项与候选的 SHA-256 内容摘要。缺少证据记为 `blocked`，明确不满足记为 `failed`。检查不通过是验收工具成功执行后的业务结果，不是外层工具错误。
+
+`check_video_semantics` 由应用层读取已声明的内容要求，父模型不能填写结论。FFprobe 提供全部解码帧时间戳，FFmpeg 按原始帧率抽取每帧；每批六帧通过已有 Vision 视觉服务观察。有音轨时提取完整音频并调用 whisper.cpp，再由独立 DeepSeek 请求逐项判定。观察、转录和结论存入成功工具结果供核对；临时媒体在检查后删除。首期上限为 600 帧和 250 KB 视觉观察，超过预算不能降成采样。有明确反例时失败；服务缺失、观察遗漏、判据不清、非语言声音或音画同步等现有证据无法确认时受阻。模型观察与转录仍有识别误差，逐帧覆盖不等于证明任意自然语言要求。
+
+新验收保存候选的 SHA-256 内容摘要。语义检查前后复核文件内容一致，发布前再次复核验收摘要；候选字节改变后必须重新验收。旧历史没有摘要时仍可阅读，但不能直接使用旧验收发布。
 
 模型不提交工具调用标识：真实运行表明模型无法可靠引用不透明的调用标识，因此归属由应用层按路径核对。这比让模型提交标识更严格，也去掉了模型伪造归属的可能。
 
@@ -112,13 +178,45 @@ Video Agent Application
 
 ### Desktop Application Boundary（桌面应用边界）
 
+本地项目与会话管理直接消费现有 `ClientStateSnapshot`：`sidebar.projects` 保存独立项目名称、单个目录、置顶与折叠；会话的 `projectId`、`pinned`、`archived`、`updatedAt` 只负责组织和排序，不进入模型事件。侧栏分组与折叠随 `session-state` 的同一 SQLite 快照保存，旧快照没有这些字段时保持原聊天历史。当前不增加关系表或独立项目运行时。
+
+`ClientStateSnapshot.conversations` 保存已提交的历史，可选 `drafts` 保存未提交的输入会话。每个草稿仍有真实的宿主会话，承载输入、附件和已确认目录，但没有消息、归档、置顶或手动标题。持久化校验两组标识的合集与宿主 `sessions` 一一对应，活动标识属于其中任意一组；因此历史可以为空，而宿主保留至少一个可输入的会话。旧快照缺少 `drafts` 时沿用既有历史，不自动删除编号条目。
+
+项目由用户通过系统目录选择器添加。`newSession(directory)` 只在显式项目内新建时调用，主进程验证目录存在并把它记录为新会话的已确认工作目录；普通新会话仍没有目录。添加项目、移动已有聊天、编辑项目名称和移除项目都不改变已有会话目录或授权。项目移除只清除归属，保留历史与产物；目录不可用时新建失败，不创建半成品运行态。系统文件管理器打开由宿主 `openProjectDirectory` 负责。
+
+项目移除后的未提交草稿保留原目录；重新添加该目录并进入项目内新会话时，客户端复用同目录且无项目归属的草稿并重新关联项目，不调用宿主创建重复会话。
+
+归档保留完整会话与运行历史，不调用删除；当前聊天归档后切换到其他未归档聊天，全部归档时进入或创建输入草稿。归档聊天可阅读，恢复后继续原上下文。创建与任务起止记录更新时间；切换、草稿、置顶和归档不改排序时间，最近列表先按置顶再按更新时间排列。界面布局与交互状态只以 `docs/desktop-ui.md` 为准。
+
+归档管理入口位于共享客户端设置页，直接消费 `App` 持有的已归档会话集合，通过已有切换、归档恢复和删除调用操作；侧栏只呈现未归档项目与最近会话。`App` 持有唯一删除确认状态，供侧栏菜单与设置列表共用，确认成功后才更新历史。当前不增加归档数据库记录、宿主接口或另一份会话列表状态。
+
+Desktop 使用 SQLite（本地嵌入式数据库）保存现有状态，驱动为 Node.js 自带的 `node:sqlite`。`apps/desktop/src/main/desktop-database.ts` 只负责 `desktop_documents` 表的读取与事务写入；三个记录键为 `session-state`、`runtime-settings`、`runtime-secrets`，值沿用各模块已有的 JSON 状态结构。会话仍以完整快照保存，字段解析分别由会话持久化与运行时设置模块负责；当前没有逐条消息查询需求，因此不增加关系表、索引或数据库配置界面。每次数据库调用结束即关闭连接，数据库句柄不进入 Agent Core（智能体核心）。
+
+外观模式 `theme` 与当前运行时设置一起保存在 `runtime-settings` 记录；未设置时跟随系统。客户端启动时加载并设置根节点主题，点选后自动保存并即时应用；`loadRuntimeConfiguration` 不返回该字段，主题不进入智能体或模型上下文。本地工具路径失焦时提交单字段更新，客户端按用户操作顺序调用现有保存接口；模型供应商使用完整草稿显式保存。完整设置页的分类、尺寸、字段布局和视觉验收以 `docs/desktop-ui.md` 为准。
+
+模型设置的唯一目录类型和内置默认项位于 `@agent-desktop/client`；`runtime-settings` 保存供应商地址、协议、模型目录和对话/视觉选择，`runtime-secrets` 按供应商 ID 保存由 Electron `safeStorage`（系统安全存储）加密的密钥。目录与密钥一次 SQLite 事务提交；客户端只接收配置状态与来源。旧固定供应商字段在读取边界转换为新目录，保留原地址、模型、密钥与语音路径。
+
+```text
+Model Provider           模型供应商        保存 API 地址、协议和模型目录，密钥由桌面宿主加密。
+Model Catalog            模型目录          保存 ID、名称、上下文窗口、输出上限和图片能力。
+Model Selection          模型选择          使用供应商 ID 与模型 ID 引用目录，视觉选择要求图片能力。
+Chat Completions         对话补全协议      使用消息与工具调用的流式请求，输出上限进入 max_tokens。
+Responses                响应协议          将通用消息转换为输入与函数结果，输出上限进入 max_output_tokens。
+```
+
+`loadRuntimeConfiguration` 解析所选供应商与模型，供主任务、语义验收和只读子智能体消费；协议转换只位于现有具体模型/视觉包，Agent Core（智能体核心）不持有供应商清单和协议字段。Chat 请求只向 DeepSeek 官方地址发送原有 thinking（思考开关）扩展。Responses（响应协议）以完成事件为完整结果，支持公开文本增量、函数往返和取消；截断、失败和不完整响应不能作为成功回复。视觉工具按所选协议发送结构化图片观察请求。上下文窗口仅为目录信息，不新增本地上下文裁剪；最大输出上限进入实际请求。
+
+模型发现经宿主实际请求 `/models`，只消费供应商返回的 ID 与可选名称，不推断图片能力或 token 上限。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源；浏览器开发宿主用内存目录夹具，目录网络获取和打开本地快照明确要求桌面应用。
+
+启动恢复前，`legacy-storage-migration.ts` 读取同一目录内尚未导入的 `session-state.json`、`runtime-settings.json` 与 `runtime-secrets.json`，先按现有规则解析，再由一个事务导入。旧文件保留且不再写入；已有数据库记录始终优先。任何旧文件解析失败都不提交部分迁移，数据库损坏也不会用空状态覆盖。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）仍使用现有写入链路。
+
 `@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Runtime Settings UI（运行时设置界面）、Agent Activity、Artifact Card 和样式实现。`cancelTask`（取消任务）与 `revealFile`（定位文件）由同一接口提供；`apps/desktop` 通过 preload API 提供真实 Electron 宿主，`apps/web` 提供可取消的内存模拟 Turn，不执行本地视频 Agent，也不使用浏览器存储。
 
 `apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的桌面宿主。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交的输入附件、提交自然语言剪辑任务、按轮展示由共享 Execution Trace（执行追踪）与 Session 事实投影的 Agent Activity（活动轨迹）、执行期间的实时助手文本、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
 
 输入附件用统一的 `Attachment`（附件）表达，字段只有 `path`（身份，也是模型实际使用的路径）、`name`（界面展示名）和 `role`（用途）。`role` 当前只有 `video`（主视频）和 `audio`（外加音轨）两种取值，它决定提示词把该文件描述成什么，而不是决定工具调用顺序——顺序仍由模型根据提示词与已注册工具自行判断。角色按扩展名判定（`.mp3` 等归 `audio`，其余归 `video`），且必须对应一个已注册的工具消费者：`audio` 的消费者是 `add_audio`。共同的文件对话框按这两类扩展名过滤，因此「用户能选到」与「有工具能用」始终是同一份来源。宿主不再为视频任务预设最终输出路径：输出项由模型按用户要求声明，最终名称在发布时按真实磁盘占用确定，因此单独添加音轨与缺少主视频都不会改变任何命名事实。
 
-每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/session-state.json`。每个会话只长期持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot 里的附件只是发给 Renderer 的展示副本；重启恢复时按会话附件重建一次界面副本，避免旧格式快照里「只有名称、没有路径」的副本被继续沿用。旧快照里的全局输出序号不再参与任何命名，读取时直接忽略：新命名只依赖发布时的真实磁盘占用。
+每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/agent-desktop.sqlite`。每个会话只长期持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot 里的附件只是发给 Renderer 的展示副本；重启恢复时按会话附件重建一次界面副本，避免旧格式快照里「只有名称、没有路径」的副本被继续沿用。旧快照里的全局输出序号不再参与任何命名，读取时直接忽略：新命名只依赖发布时的真实磁盘占用。
 
 产物由所属会话、轮次、工具调用和真实路径识别，文件名只是界面标签。识别规则只有一个权威实现（`apps/desktop/src/main/agent-task.ts` 的 `findTurnArtifacts`）：以成功结果自己报告的 `artifacts` 为准（见「成功结果的产物事实」），不因为磁盘上存在同名文件就登记产物，也不把 `outputDir` 当成视频文件。产物路径随轮次写入 Client Snapshot，因此同名文件位于不同目录、或同一轮次产生多个产物都能分别定位；宿主不再维护按文件名索引的产物表，`revealFile` 用会话事件与附件路径校验来路后才交给系统文件管理器。
 
@@ -136,13 +234,17 @@ Agent 回复按最小 Markdown（轻量标记文本）子集渲染，链接只�
 
 Electron Main 同时只保存一个 `{ sessionId, controller, finished }` 活动任务。`AbortController` 产生的同一个 AbortSignal（取消信号）依次传入 `runTurn`、Model 请求和 Tool 执行；Agent Loop 在 Model 前、Tool 前和 Tool 后检查它，Provider 将它交给 `fetch`，FFmpeg 与 whisper.cpp 的进程执行边界在 abort 时终止 child process（子进程）。取消不清空 Session，不回滚已完成 Tool 结果，也不删除已生成 Artifact（产物）；旧 controller 只清理自身对应的活动任务。`finished` 只表示该轮已经结束，供关闭收尾等待终态。
 
-用户点击“新会话”时，Main 只创建新的 InMemorySession 并保留旧会话；点击侧栏会话时切换 `activeSessionId` 并恢复对应界面历史。执行中的 Turn 不允许新建、切换会话或保存设置，当前仍只有一个前台任务。应用重启时从状态文件恢复会话、SessionEvent、附件路径和 Client Snapshot（其中包含各轮产物的真实路径）；Web Dev Host 返回空快照且不做持久化。
+用户点击“新会话”时，客户端复用相同项目及目录的输入草稿；没有匹配草稿才请求 Main 创建新的 InMemorySession，并保留旧会话。首次提交把草稿转入历史；删除全部历史后，宿主剩余或新建的输入会话仍保存在草稿中。点击侧栏历史会话时切换 `activeSessionId` 并恢复对应界面历史。执行中的 Turn 不允许新建、切换会话或保存设置，当前仍只有一个前台任务。应用重启时从 SQLite 数据库恢复会话、SessionEvent、附件路径和 Client Snapshot（其中包含各轮产物的真实路径）；Web Dev Host 返回空快照且不做持久化。
+
+桌面首轮成功且开始前没有会话事件时，Main 用本轮已有 `agent.model` 独立请求任务标题：只提供命名指令与用户任务，工具列表为空，沿用本轮取消信号，不追加 Session 事件。有效标题随 `AgentTaskResult.conversationTitle` 返回；命名错误通过 `conversationTitleError` 单独展示，已完成任务与产物保持成功。客户端只替换未经手动重命名的标题。失败或取消的首轮保留首条任务作为临时标题，不承诺后续轮次补做模型命名。
+
+纯数字首条消息不发起独立命名请求，直接返回用户原文；模型边界拒绝实际出现的“未提供任务内容 / 无法生成标题”说明，避免把命名失败写成正常会话名称。
 
 关闭窗口时 Main 先完成收尾再真正退出：运行中的 Turn 先收到取消信号并等待该轮结束，再由 Main 沿 `desktop:prepare-close` 请求 Renderer 提交当前展示状态，Renderer 保存完成后用 `desktop:close-prepared` 回告结果。Renderer 的常规保存仍是 150ms 防抖，只有关闭请求要求立即提交；轮次未结算前不提交，避免把临时流式文本写成历史。提交失败时 Main 显示失败并保留窗口，不用伪成功覆盖磁盘历史。
 
 `close` 事件必须先 `preventDefault()` 再判断该窗口是否已在收尾：收尾期间用户再次点关闭时，前一次收尾尚未结束，若先判断再阻止，第二次关闭就会直接销毁窗口，跳过等待落盘并留下半份状态。重复关闭不重复进入收尾流程，真正的关闭只发生在收尾通过后的 `window.destroy()`，它不会再触发 `close` 事件。
 
-非敏感设置写入 `app.getPath('userData')/runtime-settings.json`。DeepSeek 与 Vision API Key（接口密钥）由 Electron `safeStorage` 加密后以密文写入 `runtime-secrets.json`；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；缺少 Vision Key 或 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。FFmpeg 继续只使用系统 PATH。
+非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。DeepSeek 与 Vision API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；缺少 Vision Key 或 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。FFmpeg 继续只使用系统 PATH。
 
 ```text
 Layer                 中文名称         职责
@@ -153,7 +255,21 @@ createVideoAgent      组装视频智能体   每个 Turn 创建 Model、System 
 runTurn               执行任务轮次     驱动一次 Turn 的 Model 与 Tool 执行
 ```
 
-Desktop 不把 Agent Core（智能体核心）逻辑放入 UI；当前取消只扩展 Model、Tool、Agent Loop 和 Trace 的最小信号契约，不实现 Pause / Resume（暂停恢复）、Task Queue（任务队列）、多任务并发、自动重试、已完成 Tool 回滚、云同步、Provider Registry（提供商注册表）或复杂状态机。
+Desktop 不把 Agent Core（智能体核心）逻辑放入 UI；取消沿 Model、Tool、Agent Loop 和 Trace 的信号契约传播。当前支持有限模型请求重试和父任务等待的只读子任务，不实现暂停恢复、任务队列、已完成工具回滚、云同步或供应商注册框架。
+
+## 桌面应用更新
+
+```text
+Application Updater     应用更新器      桌面主进程检查、下载并启动 Windows 安装包更新。
+Update State            更新状态        宿主将检查、下载、就绪、安装及错误事实投影给渲染层。
+Update Installation     更新安装        用户点击入口后保存会话并退出，安装器覆盖应用并重新启动。
+```
+
+`apps/desktop/src/main/app-updater.ts` 使用 `electron-updater` 的 Windows 安装包更新器，发布源固定为当前公开仓库 `wwxst/agent-desktop` 的 GitHub 正式发布。只有 Windows 已打包应用创建更新器；源码模式返回空闲状态，浏览器宿主没有安装能力。启动时检查一次，发现新版本自动下载并由软件开发工具包校验摘要，完成后等待用户点击；普通退出不会自动安装，不提供版本详情页或供应商设置。
+
+更新状态经独立 `desktop:update-state` 通道到达预加载桥接，共享客户端的可选 `appUpdates` 能力只展示状态与发送安装、重试请求。更新不进入模型上下文、执行追踪或 Agent Core（智能体核心）。宿主拒绝任务或扩展操作未完成时的安装；就绪更新进入安装状态后，复用窗口关闭的终端收尾和客户端快照提交，SQLite（本地嵌入式数据库）保存成功才调用安装器。保存失败保留已下载更新与窗口，安装器失败保留真实错误；保存过程中不允许重复关闭握手或开始新任务。
+
+打包与发布命令、资源路径及线上验收边界见 `docs/engineering.md` 的 Windows 安装包与更新章节。
 
 ## Core Concepts（核心概念）
 
@@ -570,7 +686,7 @@ Agent Activity（活动轨迹）是 Desktop 唯一的活动展示契约：`@agen
 ```text
 Field                  中文名称      来源
 id                     活动标识      模型步骤用 stepId，工具调用用 toolCallId
-kind                   活动类型      analysis（模型步骤）或 tool（工具调用）
+kind                   活动类型      analysis（模型步骤）、tool（工具调用）或 commentary（公开说明）
 status                 执行状态      running、completed、failed 或 cancelled
 toolName               技术工具名    来自 tool.started / tool.completed / tool.failed
 files                  文件引用      来自 Session 的 tool.called input 中当前工具契约声明的路径字段
@@ -588,4 +704,25 @@ Agent Loop 在每个 `tool.result` 已经追加到 Session 之后调用可选的
 
 文件引用可以点击，由 `AgentClientApi.revealFile(path)` 交给宿主。Desktop 的 Main 在定位前必须确认该路径属于当前会话真实使用过的文件（会话附件或 Session 中真实的工具输入），并确认文件仍然存在；任一条件不满足时抛出真实错误，由界面在该活动行内展示，不使用弹窗，也不静默失败。Renderer 传来的路径属于真实边界，因此该校验放在 Main，而不是 Client。
 
-活动轨迹不引入假进度、假命令、假文件操作或编造的测试数量：界面只显示 Execution Trace 与 Session 中真实存在的事实。当前产品实际执行视频工具，因此展示的就是真实视频处理活动；本项目不为示例新增通用文件读写或 Shell 能力。诊断 JSONL 的职责不变，活动投影不写回 Trace。
+活动轨迹只显示 Execution Trace 与 Session 中真实存在的事实，不引入假进度或编造的说明。公开说明来自完整模型回复，诊断 JSONL 的职责不变，活动正文不写回 Trace。
+
+## Execution Interactions（执行交互）
+
+```text
+Concept                  中文术语          职责
+User Question            执行中提问        收集用户决定后继续同一轮，回答不等于操作授权。
+Public Commentary        公开过程说明      完整模型回复含工具调用时，显示它的公开文字。
+Bounded Model Retry      有限模型重试      只追加失败的模型请求，不重放工具或整个轮次。
+Read-only Subagent       只读子智能体      父任务明确委派的一层独立文件检查。
+Session Terminal         会话持久终端      应用运行期间跨轮保留终端，重启只恢复历史。
+```
+
+Desktop 注入 `askUser` 端口后注册 `ask_user`。宿主按问题请求、会话和轮次标识接收选项、自由文本或跳过，结果作为同一轮工具结果进入下一次模型请求。停止或关闭产生 `tool.interaction.closed` 事实，不能伪装成回答；恢复模型上下文时排除该事件和未完成步骤，恢复界面也没有可操作的旧问题。
+
+模型增量携带 `stepId`，仅作临时展示。循环确认完整回复后发布 `onModelText`：伴随工具调用的公开文字成为工具前的说明，没有工具调用的文字成为最终回复。空文字不补造说明，失败或取消不保存未完成片段为确认说明；不读取供应商内部推理字段。
+
+DeepSeek 将 HTTP 429、502、503、504 和已识别临时连接错误转换为供应商无关的 `ModelRequestError`。循环每步骤最多追加一次、每轮最多追加两次请求；等待可取消。默认等待一秒，服务端 `Retry-After` 超过十秒则不重试。认证、参数、协议、取消、截断响应以及已产生正文或工具分片的流不重试。`model.retrying` 只记录身份、原因、次数和等待时间，不记录正文或密钥。
+
+Desktop 注入 `delegateTasks`，每轮合计最多两个子任务并行执行，父任务等待全部收尾。每个子任务有独立会话和模型实例，只注册 `list_directory`、`read_file`、`search_text`，继承已经确认的目录读取范围；没有写入、命令、终端、目录变更、审批或递归委派。每项最多八步骤和 120 秒，耗尽预算明确未完成。子活动嵌套在父工具内，完整子历史按父工具调用标识保存；父模型只接收摘要、状态与文件依据。父取消必须等待所有子请求终止，恢复不继续子任务。
+
+Desktop Main 每会话持有一个 ConPTY 终端，由 `node-pty` 创建。`open_terminal` 经审批启动 PowerShell，`write_terminal` 每次重新审批准确输入，`read_terminal` 最多等待两秒读取有界输出，`close_terminal` 结束进程树。归属按当前会话和宿主生成的终端标识校验。输出最多保留 64 KiB，约 50 毫秒合批推送，Shared Client 使用 xterm 展示控制序列；终端事件携带会话身份，完成当前轮次后仍可更新输出。取消本轮使用的终端、删除会话和正常关闭时等待进程树回收。快照不保存 PID 或句柄，重启统一显示连接已结束、不重连、不重跑；不承诺强杀宿主或崩溃后的回收。

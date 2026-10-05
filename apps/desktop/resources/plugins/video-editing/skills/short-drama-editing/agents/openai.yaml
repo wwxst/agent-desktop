@@ -1,0 +1,6 @@
+interface:
+  display_name: 短剧剪辑
+  short_description: 按剧情冲突与对白剪辑，逐项验收候选成片。
+  default_prompt: 使用 $short-drama-editing 整理短剧素材，先确认画幅、时长与剧情重点。
+policy:
+  allow_implicit_invocation: true

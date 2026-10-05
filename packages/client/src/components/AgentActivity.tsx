@@ -17,6 +17,9 @@ interface AgentActivityProps {
 }
 
 const TOOL_LABELS: Readonly<Record<string, string>> = {
+  load_skill: '加载技能',
+  ask_user: '询问用户',
+  delegate_tasks: '委派只读任务',
   set_working_directory: '设置工作目录',
   list_directory: '列出目录',
   read_file: '读取文件',
@@ -55,7 +58,7 @@ function formatDuration(durationMs: number): string {
 
 /** 分析行显示模型这一步的真实结果；工具行显示 Trace 里的中文动作名。 */
 function activityLabel(item: AgentActivityItem): string {
-  if (item.kind === 'tool') return TOOL_LABELS[item.toolName ?? ''] ?? '执行工具';
+  if (item.kind === 'tool') return TOOL_LABELS[item.toolName ?? ''] ?? (item.toolName?.startsWith('p_') ? '调用插件工具' : '执行工具');
   return '分析任务';
 }
 
@@ -143,6 +146,10 @@ function CommandStreams({ detail }: {
 }
 
 function ActivityResultDetail({ detail }: { readonly detail: AgentActivityDetail }) {
+  if (detail.kind === 'subagents') return <div className="activity-result">{detail.tasks.map((task) => (
+    <div key={task.taskId}><strong>{task.title}</strong><span> {{ running: '执行中', completed: '已完成', failed: '失败', cancelled: '已停止', 'budget-exhausted': '预算耗尽，未完成' }[task.status] ?? task.status}</span><p>{task.summary}</p></div>
+  ))}</div>;
+  if (detail.kind === 'interaction') return <div className="activity-result"><p>{detail.question}</p><p>{detail.answer}</p></div>;
   if (detail.kind === 'error') {
     return <p className="activity-result-error" role="status">{detail.message}</p>;
   }
@@ -295,6 +302,7 @@ export function AgentActivity({
       {expanded && (
         <ol className="activity-list">
           {items.map((item) => {
+            if (item.kind === 'commentary') return <li key={item.id} className="activity-commentary">{item.text}</li>;
             const detail = activityDetail(item);
             const inputFiles = item.files?.filter((file) => file.role === 'input') ?? [];
             const outputFiles = item.files?.filter((file) => file.role === 'output') ?? [];
@@ -319,6 +327,7 @@ export function AgentActivity({
                       <FileButton key={file.path} file={file} onReveal={() => reveal(item.id, file.path)} />
                     ))}
                   </div>
+                  {item.retryNote !== undefined && <span className="activity-note">{item.retryNote}</span>}
                   <span className={`activity-status state-${item.status}`}>
                     <span>{STATUS_LABELS[item.status]}</span>
                     {item.durationMs !== undefined && <span>{formatDuration(item.durationMs)}</span>}

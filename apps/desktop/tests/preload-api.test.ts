@@ -2,6 +2,55 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDesktopApi } from '../src/preload/api.js';
 
 describe('createDesktopApi', () => {
+  it('forwards update state, direct installation, retry and subscription cleanup', async () => {
+    const invoke = vi.fn(async () => ({ status: 'ready' }));
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const removeListener = vi.fn();
+    const api = createDesktopApi({ invoke, send: () => {}, on: (channel, listener) => listeners.set(channel, listener), removeListener });
+    expect(await api.appUpdates!.getState()).toEqual({ status: 'ready' });
+    const changed = vi.fn();
+    const cleanup = api.appUpdates!.onStateChanged(changed);
+    listeners.get('desktop:update-state')!({}, { status: 'downloading', percent: 25 });
+    expect(changed).toHaveBeenCalledWith({ status: 'downloading', percent: 25 });
+    await api.appUpdates!.install();
+    await api.appUpdates!.retry();
+    expect(invoke.mock.calls).toEqual([['desktop:get-update-state'], ['desktop:install-update'], ['desktop:retry-update']]);
+    cleanup();
+    expect(removeListener).toHaveBeenCalledWith('desktop:update-state', listeners.get('desktop:update-state'));
+  });
+  it('forwards extension operations and displays the host error without the IPC prefix', async () => {
+    const invoke = vi.fn(async () => ({ plugins: [], skills: [] }));
+    const api = createDesktopApi({ invoke, send: () => {}, on: () => {}, removeListener: () => {} });
+    await api.extensions.list();
+    await api.extensions.importLocal('plugin');
+    await api.extensions.install('plugin:test');
+    await api.extensions.setEnabled('plugin:test', false);
+    await api.extensions.uninstall('plugin:test');
+    await api.extensions.readDetail('skill:test');
+    await api.extensions.listSkills(true);
+    await api.extensions.readSkill('skill:test');
+    await api.extensions.reconcile();
+    expect(invoke.mock.calls).toEqual([
+      ['desktop:list-extensions'], ['desktop:import-extension', 'plugin'], ['desktop:install-extension', 'plugin:test'],
+      ['desktop:enable-extension', 'plugin:test', false], ['desktop:uninstall-extension', 'plugin:test'], ['desktop:read-extension', 'skill:test'],
+      ['desktop:list-skills', true], ['desktop:read-skill', 'skill:test'], ['desktop:reconcile-extensions'],
+    ]);
+    invoke.mockRejectedValueOnce(new Error("Error invoking remote method 'desktop:install-extension': Error: 扩展操作正在进行。"));
+    await expect(api.extensions.install('plugin:test')).rejects.toThrow(/^扩展操作正在进行。$/);
+    invoke.mockRejectedValueOnce(new Error("Error invoking remote method 'desktop:install-extension': Error: 下载失败\nfatal: 无法连接仓库"));
+    await expect(api.extensions.install('plugin:test')).rejects.toThrow(/^下载失败\nfatal: 无法连接仓库$/);
+  });
+  it('delivers extension invalidation notifications and removes its IPC listener', () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const removeListener = vi.fn();
+    const api = createDesktopApi({ invoke: async () => undefined, send: () => {}, on: (channel, listener) => listeners.set(channel, listener), removeListener });
+    const changed = vi.fn();
+    const cleanup = api.extensions.onChanged(changed);
+    listeners.get('desktop:extensions-changed')!({}, undefined);
+    expect(changed).toHaveBeenCalledOnce();
+    cleanup();
+    expect(removeListener).toHaveBeenCalledWith('desktop:extensions-changed', listeners.get('desktop:extensions-changed'));
+  });
   it('exposes the desktop IPC operations', async () => {
     const invocations: Array<{ channel: string; args: readonly unknown[] }> = [];
     const listeners = new Map<string, (...args: unknown[]) => void>();
@@ -24,27 +73,42 @@ describe('createDesktopApi', () => {
 
     const api = createDesktopApi(ipc);
     expect(Object.keys(api).sort()).toEqual([
+      'answerQuestion',
+      'appUpdates',
       'cancelTask',
+      'closeTerminal',
       'decideApproval',
+      'deleteMemories',
       'deleteSession',
+      'extensions',
       'getActiveSessionId',
+      'listProviderModels',
       'loadClientState',
+      'loadCustomInstructions',
+      'loadMemories',
       'loadRuntimeSettings',
       'newSession',
       'onAgentEvent',
       'onPrepareClose',
+      'openModelConfig',
+      'openProjectDirectory',
       'removeAttachment',
+      'resizeTerminal',
       'revealFile',
       'runAgentTask',
       'saveClientState',
+      'saveCustomInstructions',
       'saveRuntimeSettings',
       'selectAttachmentFiles',
+      'selectProjectDirectory',
       'switchSession',
     ]);
 
     await api.getActiveSessionId();
     await api.loadRuntimeSettings();
-    await api.saveRuntimeSettings({ deepSeekModel: 'test-model' });
+    await api.listProviderModels({ id: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'chat-completions' });
+    await api.openModelConfig();
+    await api.saveRuntimeSettings({ conversationModel: { providerId: 'deepseek', modelId: 'test-model' } });
     await api.loadClientState();
     await api.saveClientState({ activeSessionId: 'session-a', conversations: [] });
     await api.selectAttachmentFiles();
@@ -60,7 +124,9 @@ describe('createDesktopApi', () => {
     expect(invocations).toEqual([
       { channel: 'desktop:get-active-session-id', args: [] },
       { channel: 'desktop:load-runtime-settings', args: [] },
-      { channel: 'desktop:save-runtime-settings', args: [{ deepSeekModel: 'test-model' }] },
+      { channel: 'desktop:list-provider-models', args: [{ id: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'chat-completions' }] },
+      { channel: 'desktop:open-model-config', args: [] },
+      { channel: 'desktop:save-runtime-settings', args: [{ conversationModel: { providerId: 'deepseek', modelId: 'test-model' } }] },
       { channel: 'desktop:load-client-state', args: [] },
       { channel: 'desktop:save-client-state', args: [{ activeSessionId: 'session-a', conversations: [] }] },
       { channel: 'desktop:select-attachment-files', args: [] },

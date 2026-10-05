@@ -20,6 +20,11 @@ export interface ToolResultEvent { readonly type: 'tool.result'; readonly turnId
 export interface StepCompletedEvent { readonly type: 'step.completed'; readonly turnId: TurnId; readonly stepId: StepId; }
 /** 记录 Turn 已经自然结束。 */
 export interface TurnCompletedEvent { readonly type: 'turn.completed'; readonly turnId: TurnId; }
+/** 待回答问题结束的历史事实，不是模型可见的工具结果。 */
+export interface InteractionClosedEvent {
+  readonly type: 'tool.interaction.closed'; readonly turnId: TurnId; readonly stepId: StepId;
+  readonly toolCallId: ToolCallId; readonly requestId: string; readonly reason: 'cancelled' | 'window-closed';
+}
 
 // type 字段组成可辨识联合，消费方可以通过 switch 获得精确的事件类型收窄。
 export type SessionEvent =
@@ -29,6 +34,7 @@ export type SessionEvent =
   | AssistantMessageEvent
   | ToolCalledEvent
   | ToolResultEvent
+  | InteractionClosedEvent
   | StepCompletedEvent
   | TurnCompletedEvent;
 
@@ -69,6 +75,7 @@ export function recoverSessionEvents(events: readonly SessionEvent[]): SessionEv
   );
 
   return events.filter((event) => {
+    if (event.type === 'tool.interaction.closed') return false;
     // Turn 级事件没有 stepId，保留它们不改变任何 Step 的完成状态。
     if (event.type === 'turn.started' || event.type === 'user.message' || event.type === 'turn.completed') {
       return true;

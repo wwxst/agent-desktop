@@ -1,15 +1,16 @@
-import type { ReactNode } from 'react';
+import { createElement, type ReactNode } from 'react';
 
 /**
  * Agent 正文的 Markdown 渲染。
  *
- * 这里只实现视频 Agent 实际会输出的最小子集：段落、无序/有序列表、围栏代码块、
+ * 这里只实现 Agent 回复与技能正文实际使用的最小子集：标题、段落、无序/有序列表、围栏代码块、
  * 行内代码、加粗和链接。工程基线要求保持最小依赖，`pnpm-lock.yaml` 又是安装契约，
  * 因此不引入第三方 Markdown 解析器；这一份实现覆盖当前真实输出，并且可以被单元测试固定。
- * 未支持的形式（标题、表格、引用、图片）保持原文展示，不猜测语义，也不生成额外结构。
+ * 未支持的形式（表格、引用、图片）保持原文展示，不猜测语义，也不生成额外结构。
  */
 
 type MarkdownBlock =
+  | { readonly kind: 'heading'; readonly level: number; readonly text: string }
   | { readonly kind: 'paragraph'; readonly lines: readonly string[] }
   | { readonly kind: 'list'; readonly ordered: boolean; readonly items: readonly string[] }
   | { readonly kind: 'code'; readonly code: string };
@@ -69,6 +70,15 @@ function parseBlocks(text: string): readonly MarkdownBlock[] {
       continue;
     }
 
+    // 逐字符识别标题，避免把正文交给额外的正则解析，也让架构扫描器能稳定跳过渲染代码。
+    let headingLevel = 0;
+    while (headingLevel < line.length && headingLevel < 6 && line[headingLevel] === '#') headingLevel += 1;
+    const headingText = headingLevel > 0 && line[headingLevel] === ' ' ? line.slice(headingLevel + 1).trim() : undefined;
+    if (headingText !== undefined && headingText !== '') {
+      flushParagraph(); flushList();
+      blocks.push({ kind: 'heading', level: headingLevel, text: headingText });
+      continue;
+    }
     const item = LIST_ITEM.exec(line);
     if (item !== null) {
       flushParagraph();
@@ -131,6 +141,7 @@ export function Markdown({ text }: MarkdownProps) {
   return (
     <>
       {parseBlocks(text).map((block, index) => {
+        if (block.kind === 'heading') return createElement(`h${block.level}`, { key: index, className: 'markdown-heading' }, renderInline(block.text, String(index)));
         if (block.kind === 'code') {
           return (
             <pre key={index} className="markdown-code">

@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import type { ApprovalRequest } from '@agent-desktop/client';
 import type { ApprovalTarget } from '@agent-desktop/local-tools';
 
+export type PluginApproval = Omit<Extract<ApprovalRequest, { kind: 'plugin-start' }>, 'requestId'>
+  | Omit<Extract<ApprovalRequest, { kind: 'plugin-tool' }>, 'requestId'>;
+
 interface PendingApproval {
   readonly requestId: string;
   settle(approved: boolean): void;
@@ -29,7 +32,7 @@ export class ToolApprovalGate {
    * 取消、关闭或请求失效都必须结束等待：取消继续走既有 AbortSignal，以 AbortError 结束，
    * 不能伪装成普通工具失败，否则模型会把一次取消当成一次失败的工具调用继续推理。
    */
-  request(target: ApprovalTarget, signal?: AbortSignal): Promise<boolean> {
+  request(target: ApprovalTarget | PluginApproval, signal?: AbortSignal): Promise<boolean> {
     return new Promise<boolean>((resolve, reject) => {
       // 轮次在请求之前就取消了：这里不能登记一个永远等不到答复的待决请求。
       if (signal?.aborted === true) {
@@ -53,7 +56,9 @@ export class ToolApprovalGate {
         },
       };
       // 审批卡只展示宿主算出的确切操作参数；客户端能做的只有批准或拒绝。
-      this.publish(target.kind === 'edit-file'
+      this.publish(target.kind === 'plugin-start' || target.kind === 'plugin-tool'
+        ? { requestId, ...target }
+        : target.kind === 'edit-file'
         ? {
           requestId,
           kind: target.kind,
@@ -61,6 +66,8 @@ export class ToolApprovalGate {
           before: target.before,
           after: target.after,
         }
+        : target.kind === 'terminal-start' || target.kind === 'terminal-input'
+          ? { requestId, ...target }
         : target.kind === 'command'
           ? {
             requestId,
