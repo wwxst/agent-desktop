@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
 import type { ToolExecutionContext } from '@agent-desktop/tools';
 import { terminalPortFor, type SessionTerminal } from '../src/main/terminal-host.js';
@@ -6,7 +6,12 @@ import { terminalPortFor, type SessionTerminal } from '../src/main/terminal-host
 const native = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock('node-pty', () => native);
 const context: ToolExecutionContext = { toolCallId: 'input' as never, reportProgress: () => {} };
-beforeEach(() => native.spawn.mockReset());
+beforeEach(() => {
+  native.spawn.mockReset();
+  // 本文件替换原生 PTY，只验证审批和归属；真实 PowerShell 由 Windows 进程测试覆盖。
+  vi.stubEnv('SystemRoot', process.env.SystemRoot ?? 'C:/Windows');
+});
+afterEach(() => vi.unstubAllEnvs());
 
 describe('terminal authorization and ownership', () => {
   it('does not create a PTY before or after rejected start authorization', async () => {

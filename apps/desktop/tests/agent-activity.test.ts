@@ -34,12 +34,14 @@ afterAll(async () => {
 
 describe('readActivityFiles', () => {
   it('separates real input and output paths declared by the video tools', () => {
+    const inputPath = join(tmpdir(), 'videos', 'input.mp4');
+    const outputPath = join(tmpdir(), 'videos', 'edited.mp4');
     expect(readActivityFiles({
-      videoPath: 'D:\\videos\\input.mp4',
-      outputPath: 'D:\\videos\\edited.mp4',
+      videoPath: inputPath,
+      outputPath,
     })).toEqual([
-      { path: 'D:\\videos\\input.mp4', label: 'input.mp4', role: 'input' },
-      { path: 'D:\\videos\\edited.mp4', label: 'edited.mp4', role: 'output' },
+      { path: inputPath, label: 'input.mp4', role: 'input' },
+      { path: outputPath, label: 'edited.mp4', role: 'output' },
     ]);
   });
 

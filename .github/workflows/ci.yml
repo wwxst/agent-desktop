@@ -6,7 +6,11 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,10 +31,18 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install real media test tools
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Windows media test tools
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
 
       - name: Run engineering gate
         run: pnpm check
+
+      - name: Build Desktop
+        run: pnpm desktop:build
 
       - name: Check committed diff formatting
         shell: bash

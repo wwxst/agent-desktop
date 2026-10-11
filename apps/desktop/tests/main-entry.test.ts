@@ -123,8 +123,8 @@ vi.mock('electron', () => ({
   app: {
     whenReady: () => Promise.resolve(),
     on: mainMocks.appOn,
-    getAppPath: () => 'E:\\repo\\apps\\desktop',
-    getPath: () => 'E:\\user-data',
+    getAppPath: () => 'E:/repo/apps/desktop',
+    getPath: () => 'E:/user-data',
     quit: vi.fn(),
   },
   BrowserWindow: class {
@@ -190,8 +190,10 @@ describe('desktop main session lifecycle', () => {
   const previousWhisperModelPath = process.env.WHISPER_MODEL_PATH;
 
   beforeAll(async () => {
+    // 生命周期夹具不启动系统进程，但宿主仍需明确的 Windows 解释器环境。
+    vi.stubEnv('SystemRoot', process.env.SystemRoot ?? 'C:/Windows');
     delete process.env.DEEPSEEK_API_KEY;
-    process.env.WHISPER_MODEL_PATH = 'D:\\models\\whisper.bin';
+    process.env.WHISPER_MODEL_PATH = 'D:/models/whisper.bin';
     await import('../src/main/index.js');
     await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
     expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
@@ -199,6 +201,7 @@ describe('desktop main session lifecycle', () => {
   });
 
   afterAll(() => {
+    vi.unstubAllEnvs();
     if (previousDeepSeekApiKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = previousDeepSeekApiKey;
     if (previousWhisperModelPath === undefined) delete process.env.WHISPER_MODEL_PATH;
@@ -258,7 +261,7 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.showOpenDialog.mockResolvedValue({
       canceled: false,
-      filePaths: ['D:\\videos\\input.mp4'],
+      filePaths: ['D:/videos/input.mp4'],
     });
     await selectVideo!({});
 
@@ -350,7 +353,7 @@ describe('desktop main session lifecycle', () => {
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
       followUpAgent,
       '我刚才让你记住什么数字？',
-      [{ path: 'D:\\videos\\input.mp4', role: 'video' }],
+      [{ path: 'D:/videos/input.mp4', role: 'video' }],
       expect.objectContaining({
         trace: expect.any(Function),
         signal: expect.any(AbortSignal),
@@ -404,16 +407,16 @@ describe('desktop main session lifecycle', () => {
             items: [
               {
                 id: 'out-1',
-                sourcePaths: ['D:\\videos\\a.mp4'],
-                target: { kind: 'explicit', path: 'D:\\videos\\a-result.mp4' },
-                workingDirectory: 'D:\\videos\\.agent-output-out-1',
+                sourcePaths: ['D:/videos/a.mp4'],
+                target: { kind: 'explicit', path: 'D:/videos/a-result.mp4' },
+                workingDirectory: 'D:/videos/.agent-output-out-1',
                 requirements: [{ id: 'r1', kind: 'decodable-video' }],
               },
               {
                 id: 'out-2',
-                sourcePaths: ['D:\\videos\\b.mp4'],
-                target: { kind: 'explicit', path: 'D:\\videos\\b-result.mp4' },
-                workingDirectory: 'D:\\videos\\.agent-output-out-2',
+                sourcePaths: ['D:/videos/b.mp4'],
+                target: { kind: 'explicit', path: 'D:/videos/b-result.mp4' },
+                workingDirectory: 'D:/videos/.agent-output-out-2',
                 requirements: [{ id: 'r1', kind: 'decodable-video' }],
               },
             ],
@@ -437,22 +440,22 @@ describe('desktop main session lifecycle', () => {
           status: 'success',
           output: {
             kind: 'video.output.published',
-            output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:\\videos\\a-result.mp4' },
+            output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:/videos/a-result.mp4' },
           },
-          artifacts: ['D:\\videos\\a-result.mp4'],
+          artifacts: ['D:/videos/a-result.mp4'],
         },
       });
       return {
         responseText: '第一项已交付。',
         turnId,
-        artifacts: [{ toolCallId: 'call-publish', path: 'D:\\videos\\a-result.mp4' }],
+        artifacts: [{ toolCallId: 'call-publish', path: 'D:/videos/a-result.mp4' }],
       };
     });
 
     await expect(runAgentTask!({}, '分别输出两个视频')).resolves.toMatchObject({
       status: 'success',
       result: {
-        outputFiles: [{ path: 'D:\\videos\\a-result.mp4', fileName: 'a-result.mp4' }],
+        outputFiles: [{ path: 'D:/videos/a-result.mp4', fileName: 'a-result.mp4' }],
         // 总数来自声明列表：一项已交付，另一项保留未完成，不能删掉失败项后变成全部完成。
         outputs: [
           { outputItemId: 'out-1', status: 'published', fileName: 'a-result.mp4' },
@@ -492,12 +495,12 @@ describe('desktop main session lifecycle', () => {
       await newSession!({});
       mainMocks.showOpenDialog.mockResolvedValue({
         canceled: false,
-        filePaths: ['D:\\videos\\fixed-time.mp4'],
+        filePaths: ['D:/videos/fixed-time.mp4'],
       });
       mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
         responseText: '已裁掉开头 1 秒。',
         turnId: 'turn-fixed-time',
-        artifacts: [{ toolCallId: 'call-artifact', path: 'D:\\videos\\fixed-time-edited.mp4' }],
+        artifacts: [{ toolCallId: 'call-artifact', path: 'D:/videos/fixed-time-edited.mp4' }],
       });
       await selectVideo!({});
 
@@ -505,7 +508,7 @@ describe('desktop main session lifecycle', () => {
         status: 'success',
         result: {
           responseText: '已裁掉开头 1 秒。',
-          outputFiles: [{ path: 'D:\\videos\\fixed-time-edited.mp4', fileName: 'fixed-time-edited.mp4' }],
+          outputFiles: [{ path: 'D:/videos/fixed-time-edited.mp4', fileName: 'fixed-time-edited.mp4' }],
         },
       });
     } finally {
@@ -844,7 +847,7 @@ describe('desktop main session lifecycle', () => {
     await newSession!({});
     mainMocks.showOpenDialog.mockResolvedValueOnce({
       canceled: false,
-      filePaths: ['D:\\videos\\input.mp4'],
+      filePaths: ['D:/videos/input.mp4'],
     });
     await selectVideo!({});
 
@@ -859,7 +862,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-failed',
         toolCallId: 'call-done',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\done.mp4' },
+        input: { outputPath: 'D:/videos/done.mp4' },
       });
       agent.session.append({
         type: 'tool.result',
@@ -868,8 +871,8 @@ describe('desktop main session lifecycle', () => {
         toolCallId: 'call-done',
         result: {
           status: 'success',
-          output: 'Video created: D:\\videos\\done.mp4',
-          artifacts: ['D:\\videos\\done.mp4'],
+          output: 'Video created: D:/videos/done.mp4',
+          artifacts: ['D:/videos/done.mp4'],
         },
       });
       throw new Error('第二个工具执行失败。');
@@ -879,7 +882,7 @@ describe('desktop main session lifecycle', () => {
       status: 'error',
       errorName: 'Error',
       errorMessage: '第二个工具执行失败。',
-      outputFiles: [{ path: 'D:\\videos\\done.mp4', fileName: 'done.mp4' }],
+      outputFiles: [{ path: 'D:/videos/done.mp4', fileName: 'done.mp4' }],
     });
   });
 
@@ -898,7 +901,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-earlier-success',
         toolCallId: 'call-earlier-success',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\earlier.mp4' },
+        input: { outputPath: 'D:/videos/earlier.mp4' },
       });
       agent.session.append({
         type: 'tool.result',
@@ -907,14 +910,14 @@ describe('desktop main session lifecycle', () => {
         toolCallId: 'call-earlier-success',
         result: {
           status: 'success',
-          output: 'Video created: D:\\videos\\earlier.mp4',
-          artifacts: ['D:\\videos\\earlier.mp4'],
+          output: 'Video created: D:/videos/earlier.mp4',
+          artifacts: ['D:/videos/earlier.mp4'],
         },
       });
       return {
         responseText: '上一轮完成。',
         turnId: 'turn-earlier-success',
-        artifacts: [{ toolCallId: 'call-earlier-success', path: 'D:\\videos\\earlier.mp4' }],
+        artifacts: [{ toolCallId: 'call-earlier-success', path: 'D:/videos/earlier.mp4' }],
       };
     });
     await runAgentTask!({}, '上一轮任务');
@@ -939,7 +942,7 @@ describe('desktop main session lifecycle', () => {
     await newSession!({});
     mainMocks.showOpenDialog.mockResolvedValueOnce({
       canceled: false,
-      filePaths: ['D:\\videos\\input.mp4'],
+      filePaths: ['D:/videos/input.mp4'],
     });
     await selectVideo!({});
 
@@ -953,7 +956,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-cancelled',
         toolCallId: 'call-cancelled-done',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\cancelled-done.mp4' },
+        input: { outputPath: 'D:/videos/cancelled-done.mp4' },
       });
       agent.session.append({
         type: 'tool.result',
@@ -962,8 +965,8 @@ describe('desktop main session lifecycle', () => {
         toolCallId: 'call-cancelled-done',
         result: {
           status: 'success',
-          output: 'Video created: D:\\videos\\cancelled-done.mp4',
-          artifacts: ['D:\\videos\\cancelled-done.mp4'],
+          output: 'Video created: D:/videos/cancelled-done.mp4',
+          artifacts: ['D:/videos/cancelled-done.mp4'],
         },
       });
       // 取消发生在下一个工具执行中：只有 tool.called，没有结果。
@@ -973,7 +976,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-cancelled',
         toolCallId: 'call-in-flight',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\never-finished.mp4' },
+        input: { outputPath: 'D:/videos/never-finished.mp4' },
       });
       const abortError = new Error('The operation was aborted');
       abortError.name = 'AbortError';
@@ -985,7 +988,7 @@ describe('desktop main session lifecycle', () => {
       status: 'error',
       errorName: 'AbortError',
       errorMessage: 'The operation was aborted',
-      outputFiles: [{ path: 'D:\\videos\\cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
+      outputFiles: [{ path: 'D:/videos/cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
     });
   });
 
