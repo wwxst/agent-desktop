@@ -22,6 +22,20 @@ async function plugin(): Promise<PluginFiles> {
 }
 
 describe('actual extension runtime tool chain', () => {
+  it('blocks legacy bundled servers and reports dependencies whose startup was denied', async () => {
+    const bundled = await readPlugin(resolve('apps/desktop/resources/plugins/video-editing'), 'plugin:video-editing', 'builtin');
+    const fixture = await plugin();
+    const approve = vi.fn(async () => false);
+    const legacy = { ...bundled, servers: [{ name: 'ffmpeg-probe', command: 'does-not-exist', args: [] }] };
+    const denied = { ...fixture, servers: fixture.servers.map(server => ({ ...server, name: 'ffmpeg' })) };
+    const runtime = await prepareExtensions({ plugins: [legacy, denied], skills: bundled.skills }, approve);
+    try {
+      expect(approve).toHaveBeenCalledTimes(1);
+      expect(runtime.tools.map(tool => tool.name)).toEqual(['load_skill']);
+      expect(runtime.instructions).toContain('semantic-editing: ffmpeg');
+      expect(runtime.instructions).toContain('不能声称依赖已可用');
+    } finally { await runtime.close(); }
+  });
   it('discovers and loads the bundled short drama skill through a real turn', async () => {
     const bundled = await readPlugin(resolve('apps/desktop/resources/plugins/video-editing'), 'plugin:video-editing', 'builtin');
     const runtime = await prepareExtensions({ plugins: [bundled], skills: bundled.skills }, async () => false, undefined, '$short-drama-editing 剪辑冲突对白');

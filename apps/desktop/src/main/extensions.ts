@@ -24,6 +24,7 @@ export interface ExtensionReconcileResult { readonly changed: readonly string[];
 
 const catalog = [
   { id: 'plugin:video-editing', kind: 'plugin' as const, name: 'video-editing', directory: 'plugins/video-editing' },
+  { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'ffmpeg', directory: 'plugins/ffmpeg' },
   { id: 'skill:local-file-review', kind: 'skill' as const, name: 'local-file-review', directory: 'skills/local-file-review' },
 ];
 const MAX_SKILLS = 2000;
@@ -417,7 +418,7 @@ export class DesktopExtensions {
       const effectiveServers = servers.map(server => {
         const config = this.connections?.values(plugin.item.id, server.name) ?? {};
         const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original
-          : config[name] ?? (plugin.item.id === 'plugin:video-editing' && server.name === 'ffmpeg-probe' && ['FFPROBE_PATH', 'FFMPEG_PATH'].includes(name) ? process.env[name] ?? '' : original));
+          : config[name] ?? (plugin.item.id === 'plugin:ffmpeg' && server.name === 'ffmpeg' && ['FFPROBE_PATH', 'FFMPEG_PATH'].includes(name) ? process.env[name] ?? '' : original));
         return { ...server, ...(config.url ? { url: config.url } : {}), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
           ...(server.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) }) };
       });
@@ -443,8 +444,13 @@ export class DesktopExtensions {
     const files = await this.files(workingDirectory); const plugins = files.plugins.map(plugin => plugin.item); const skills = files.skills.map(skill => skill.item);
     for (const entry of catalog) {
       const items = entry.kind === 'plugin' ? plugins : skills;
-      if (items.some(item => item.id === entry.id)) continue;
       const directory = join(this.resources, entry.directory);
+      const current = items.find(item => item.id === entry.id);
+      if (current !== undefined) {
+        const available = entry.kind === 'plugin' ? (await readPlugin(directory, entry.id, 'builtin')).item : (await readSkillMetadata(directory, entry.id, 'builtin')).item;
+        if (current.source === 'builtin' && available.version !== undefined && current.version !== available.version) items[items.indexOf(current)] = { ...current, availableVersion: available.version };
+        continue;
+      }
       if (entry.kind === 'plugin') {
         const plugin = await readPlugin(directory, entry.id, 'builtin');
         plugins.push({ ...plugin.item, installed: false, enabled: false });
@@ -453,6 +459,10 @@ export class DesktopExtensions {
       } else skills.push({ ...(await readSkillMetadata(directory, entry.id, 'builtin')).item, installed: false, enabled: false });
     }
     const markets = this.markets(); const errors: string[] = [];
+    if (plugins.some(item => item.id === 'plugin:video-editing' && item.installed)
+      && !plugins.some(item => item.id === 'plugin:ffmpeg' && item.installed && item.enabled)) {
+      errors.push('视频剪辑需要安装并启用独立 FFmpeg 插件；旧版内含的探测服务已停用，请升级视频剪辑技能。会话和文件保留。');
+    }
     const remoteItems: ExtensionItem[] = [];
     for (const entry of await markets.entries()) {
       try {
@@ -572,6 +582,16 @@ export class DesktopExtensions {
   }
   async update(id: string): Promise<void> {
     const state = this.state(); const entry = state.installed.find(item => item.id === id);
+    const builtin = catalog.find(item => item.id === id);
+    if (entry?.source === 'builtin' && builtin !== undefined) {
+      const source = join(this.resources, builtin.directory);
+      const available = builtin.kind === 'plugin' ? (await readPlugin(source, id, 'builtin')).item : (await readSkillMetadata(source, id, 'builtin')).item;
+      if (available.version === entry.version) return;
+      await this.preserveVersion(entry);
+      const item = await this.atomicReplace(source, this.directory(entry.kind, entry.name), entry.kind, id, 'builtin');
+      this.save({ ...state, installed: state.installed.map(current => current.id === id ? { ...entry, ...(item.version === undefined ? {} : { version: item.version }) } : current) });
+      return;
+    }
     if (entry === undefined || entry.marketplaceId === undefined) throw new Error('此插件没有可更新的市场来源。');
     const market = this.markets().records().find(market => market.id === entry.marketplaceId);
     if (market === undefined) throw new Error('请先恢复插件的市场来源。');

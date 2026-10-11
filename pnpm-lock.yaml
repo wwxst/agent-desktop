@@ -343,12 +343,13 @@ importers:
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../tools
-      '@agent-desktop/video-ffmpeg':
-        specifier: workspace:*
-        version: link:../video-ffmpeg
       '@agent-desktop/vision-openai':
         specifier: workspace:*
         version: link:../vision-openai
+    devDependencies:
+      '@agent-desktop/video-ffmpeg':
+        specifier: workspace:*
+        version: link:../video-ffmpeg
 
   packages/video-ffmpeg:
     dependencies:

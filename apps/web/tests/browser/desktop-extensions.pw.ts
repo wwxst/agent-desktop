@@ -45,7 +45,7 @@ test('persists real Desktop extension installation and enabled state across rest
     await expect(page.getByRole('tab', { name: '公开', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('button', { name: '安装 语义视频剪辑' })).toBeVisible();
     const initial = await page.evaluate(() => window.agentDesktop.extensions.list());
-    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing']);
+    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg']);
     expect(initial.marketplaces).toEqual([]);
     await page.screenshot({ path: resolve(evidence, 'desktop-default-plugins.png') });
     await page.getByRole('button', { name: '安装 语义视频剪辑' }).click();

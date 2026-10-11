@@ -11,8 +11,10 @@
     "@agent-desktop/speech-whisper-cpp": "workspace:*",
     "@agent-desktop/system-prompt": "workspace:*",
     "@agent-desktop/tools": "workspace:*",
-    "@agent-desktop/video-ffmpeg": "workspace:*",
     "@agent-desktop/vision-openai": "workspace:*"
+  },
+  "devDependencies": {
+    "@agent-desktop/video-ffmpeg": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

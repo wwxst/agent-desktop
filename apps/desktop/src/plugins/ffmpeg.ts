@@ -23,7 +23,7 @@ const tools = [new ProbeMediaTool(execute), new DecodeVideoTool(execute), new De
   new ExtractVideoFramesTool(execute), new ExtractVideoRangeFramesTool(execute), new ExtractAudioTool(execute), new ExtractFullVideoFramesTool(execute),
   new TrimVideoTool(execute), new ConcatVideosTool(execute), new AddAudioTool(execute), new AddSubtitlesTool(execute),
   new ResizeVideoTool(execute), new CropVideoTool(execute), new SetSpeedTool(execute)];
-const server = new Server({ name: 'ffmpeg-probe', version: '1.0.0' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'ffmpeg', version: '1.0.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map(tool => ({
   name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
 })) }));

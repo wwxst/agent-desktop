@@ -75,11 +75,11 @@ Binary Distribution  二进制分发        正式可执行程序的来源与版
 
 Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映射十四项专业工具：`probe_media`、`decode_video`、`detect_black_segments`、`extract_video_frames`、`extract_video_range_frames`、`extract_audio`、`extract_full_video_frames`、`trim_video`、`concat_videos`、`add_audio`、`add_subtitles`、`resize_video`、`crop_video`、`set_speed`。冲突直接失败；第三方同名工具仍使用限定名称。宿主经 `mediaTools` 注入实际启用能力，应用层没有 FFmpeg 实现导入或自动回退；写出工具继续经过原有候选目录包装器。CLI 在自身入口显式注入本机实现。Core 和 Loop 不接触 MCP 协议。
 
-`probe-media-tool.ts` 在 MCP 调用审批前拒绝 URL、URI、UNC 网络路径和无工作目录的相对路径；路径先解析到真实文件，再验证已确认工作目录范围或精确匹配当前选择附件的真实路径。目录链接不能扩大工作目录权限。附件旁的候选只在存在成功视频生产记录、来源归属匹配、全部原始来源已授权、真实候选仍在对应输出项目录中时允许；只声明目录、未选择附件的邻居文件或伪造候选路径均不授权。生产归属复用交付工具的权威规则，不另建来源算法。
+`ffmpeg-tool.ts` 在 MCP 调用审批前拒绝 URL、URI、UNC 网络路径、备用数据流和无工作目录的相对路径；路径先解析到真实文件，再验证已确认工作目录范围或精确匹配当前选择附件的真实路径。目录链接不能扩大工作目录权限。附件旁的候选只在存在成功视频生产记录、来源归属匹配、全部原始来源已授权、真实候选仍在对应输出项目录中时允许；只声明目录、未选择附件的邻居文件或伪造候选路径均不授权。生产归属复用交付工具的权威规则，不另建来源算法。
 
 适配器把实际归一化路径送入原 MCP 调用审批，严格转换成功结果的 `inputPath`、`duration`、`width`、`height`、`videoCodec`、`audioCodec` 六字段；错误内容保留原消息，畸形结果、路径不匹配和缺失字段返回工具失败，取消继续抛出 `AbortError`。公开调用沿 Agent Loop 保存 `tool.called` 和 `tool.result`；语义验收先使用同一适配器，再抽帧、观察和判断，因此内部调用仍有审批与钩子，但不伪造独立 Session 事件。最终语义证据由 `check_video_semantics` 保存，成功判定仍绑定候选内容摘要并由原交付验收消费。
 
-随包服务由 `apps/desktop/src/plugins/probe-media.ts` 构建为自包含 CJS 资源，使用 Electron 自带 Node 运行时及原 `ProbeMediaTool`，不复制 FFmpeg 参数或解析逻辑。`FFPROBE_PATH` 必须明确指向本地绝对可执行文件；插件连接配置优先于启动环境。缺少配置在调用时失败，不下载、不搜索 PATH、不影响普通任务启动。ffprobe 协议限定为 `file`，只接受常用普通媒体容器，拒绝网络协议与播放列表间接资源。stdin 结束会关闭 SDK、取消在途请求并终止探测子进程。
+独立 `plugin:ffmpeg` 的 `ffmpeg` 服务由 `apps/desktop/src/plugins/ffmpeg.ts` 构建为自包含 CJS 资源，使用 Electron 自带 Node 运行时及原有工具，不复制媒体算法。`plugin:video-editing` 仅包含技能，由侧车元数据声明 `ffmpeg` 依赖；拒绝启动的连接不满足依赖。旧版内含的 `ffmpeg-probe` 不再启动，插件页提示升级及安装独立能力；会话、文件和设置保留。只有受控独立插件可映射既有公开工具名称，同名第三方服务仍使用限定名。服务限制本地文件协议及普通媒体容器，拒绝网络协议与播放列表间接资源。stdin 结束会关闭 SDK、取消在途请求并终止子进程。
 
 抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制。插件未安装、停用、卸载或启动被拒绝时，下一轮没有这些只读工具，依赖能力的验收明确受阻。普通任务及写出工具继续使用阶段二现有路径；完整写出迁移与独立插件分发仍在实施，记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
 

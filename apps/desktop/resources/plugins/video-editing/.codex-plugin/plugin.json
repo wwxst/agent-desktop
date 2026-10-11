@@ -1,6 +1,6 @@
 {
   "name": "video-editing",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "按对白与画面选择片段，并逐项验收最终视频。",
   "interface": {
     "displayName": "语义视频剪辑",
@@ -9,6 +9,5 @@
     "category": "Productivity",
     "capabilities": ["Local", "Video editing"]
   },
-  "skills": "./skills",
-  "mcpServers": "./.mcp.json"
+  "skills": "./skills"
 }

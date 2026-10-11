@@ -8,7 +8,7 @@ import { runTurn } from '@agent-desktop/agent-loop';
 import { InMemorySession } from '@agent-desktop/session';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import { createVideoAgent, readVideoDeliveryFacts } from '@agent-desktop/video-agent';
-import { adaptProbeMediaTool, adaptFFmpegTool, FFMPEG_READ_TOOLS, type ProbeFileAccess } from '../src/main/probe-media-tool.js';
+import { adaptProbeMediaTool, adaptFFmpegTool, FFMPEG_READ_TOOLS, type ProbeFileAccess } from '../src/main/ffmpeg-tool.js';
 import { prepareExtensions } from '../src/main/extension-runtime.js';
 import type { PluginFiles } from '../src/main/extensions.js';
 
@@ -52,10 +52,10 @@ describe('host Probe capability boundary', () => {
     const inputPath = join(workspace, '带音轨 video.mp4');
     execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=5:d=2',
       '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', inputPath]);
-    await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'read.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+    await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'read.cjs'), bundle: true, platform: 'node', format: 'cjs' });
     const executable = (name: string) => execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [name], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
-    const plugin: PluginFiles = { name: 'video-editing', directory, skills: [], item: { id: 'plugin:video-editing', kind: 'plugin', name: 'video-editing', description: '', source: 'builtin', enabled: true, installed: true },
-      servers: [{ name: 'ffmpeg-probe', command: 'node', args: [join(directory, 'read.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
+    const plugin: PluginFiles = { name: 'ffmpeg', directory, skills: [], item: { id: 'plugin:ffmpeg', kind: 'plugin', name: 'ffmpeg', description: '', source: 'builtin', enabled: true, installed: true },
+      servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'read.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
     const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
     const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
     const outputPath = join(workspace, '声音 16k.wav');
@@ -153,9 +153,9 @@ describe('host Probe capability boundary', () => {
   it('uses a real bundled server with normalized approval and stable Agent evidence', async () => {
     const inputPath = join(workspace, '真实 video.mp4');
     execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=5:d=1', '-c:v', 'libx264', inputPath]);
-    await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'probe.cjs'), bundle: true, platform: 'node', format: 'cjs' });
-    const plugin: PluginFiles = { name: 'video-editing', directory, skills: [], item: { id: 'plugin:video-editing', kind: 'plugin', name: 'video-editing', description: '', source: 'builtin', enabled: true, installed: true },
-      servers: [{ name: 'ffmpeg-probe', command: 'node', args: [join(directory, 'probe.cjs')], env: { FFPROBE_PATH: execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', ['ffprobe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]! } }] };
+    await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'probe.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+    const plugin: PluginFiles = { name: 'ffmpeg', directory, skills: [], item: { id: 'plugin:ffmpeg', kind: 'plugin', name: 'ffmpeg', description: '', source: 'builtin', enabled: true, installed: true },
+      servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'probe.cjs')], env: { FFPROBE_PATH: execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', ['ffprobe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]! } }] };
     const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
     const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
     try {

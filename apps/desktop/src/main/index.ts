@@ -23,7 +23,7 @@ import {
   projectAgentActivityDetail,
 } from './agent-activity.js';
 import { CommandOutputProjection, createCommandPort } from './command-host.js';
-import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './probe-media-tool.js';
+import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './ffmpeg-tool.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';

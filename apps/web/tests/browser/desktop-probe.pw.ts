@@ -121,7 +121,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   try {
     app = await launch(); page = await app.firstWindow(); await observeApprovals();
     await page.evaluate(async baseUrl => {
-      await window.agentDesktop.extensions.install('plugin:video-editing');
+      await window.agentDesktop.extensions.install('plugin:ffmpeg');
       await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, whisperModelPath: null,
         modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', images: true }] },
         conversationModel: { providerId: 'fixture', modelId: 'fixture' }, visionModel: { providerId: 'fixture', modelId: 'fixture' } });
@@ -144,7 +144,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('CASE:cancel');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as unknown as { held?: ApprovalRequest }).held?.kind)).toBe('plugin-tool');
-    const pids = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -like '*probe-media.cjs*' -and $_.CommandLine.Contains('${profile.replaceAll("'", "''")}') } | Select-Object -ExpandProperty ProcessId`], { encoding: 'utf8', windowsHide: true }).trim();
+    const pids = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -like '*ffmpeg.cjs*' -and $_.CommandLine.Contains('${profile.replaceAll("'", "''")}') } | Select-Object -ExpandProperty ProcessId`], { encoding: 'utf8', windowsHide: true }).trim();
     const activePids = pids(); expect(activePids).not.toBe('');
     await page.getByRole('button', { name: '停止', exact: true }).click();
     await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
@@ -164,7 +164,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     const pixels = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', published.output.path, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']);
     expect(pixels[0]).toBeGreaterThan(240); expect(pixels[1]).toBeLessThan(10); expect(pixels[2]).toBeLessThan(10);
     await page.screenshot({ path: resolve(evidence, 'published.png') });
-    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:video-editing', false));
+    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:ffmpeg', false));
     const disabled = await run('disabled'); expect(disabled.tools).not.toContain('probe_media'); expect(disabled.tools).not.toContain('trim_video');
     const blocked = await run('blocked');
     expect(JSON.parse(blocked.results[0]!)).toMatchObject({ checks: [{ outcome: 'blocked', detail: expect.stringContaining('probe_media') }] });
@@ -173,11 +173,11 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     allApprovals.push(...await approvals());
     await app.close(); app = await launch(); page = await app.firstWindow(); await observeApprovals();
     expect((await run('restart-disabled')).tools).not.toContain('probe_media');
-    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:video-editing', true));
+    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:ffmpeg', true));
     expect((await run('enabled')).tools).toContain('probe_media');
-    await page.evaluate(() => window.agentDesktop.extensions.uninstall('plugin:video-editing'));
+    await page.evaluate(() => window.agentDesktop.extensions.uninstall('plugin:ffmpeg'));
     expect((await run('uninstalled')).tools).not.toContain('probe_media');
-    await page.evaluate(() => window.agentDesktop.extensions.install('plugin:video-editing'));
+    await page.evaluate(() => window.agentDesktop.extensions.install('plugin:ffmpeg'));
     expect((await run('reinstalled')).tools).toContain('probe_media');
     allApprovals.push(...await approvals());
     await app.close(); app = await launch(); page = await app.firstWindow(); await observeApprovals();

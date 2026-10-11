@@ -9,7 +9,7 @@ import { InMemorySession } from '@agent-desktop/session';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import { createVideoAgent, projectOutputItemResults, readVideoDeliveryFacts, VIDEO_WRITE_TOOL_NAMES } from '@agent-desktop/video-agent';
 import { prepareExtensions } from '../src/main/extension-runtime.js';
-import { adaptFFmpegTool, authorizeVideoDeliveryTool, type ProbeFileAccess } from '../src/main/probe-media-tool.js';
+import { adaptFFmpegTool, authorizeVideoDeliveryTool, type ProbeFileAccess } from '../src/main/ffmpeg-tool.js';
 import type { PluginFiles } from '../src/main/extensions.js';
 
 const context = { toolCallId: 'test' as never, reportProgress: () => {} };
@@ -32,9 +32,9 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', path!]);
       await writeFile(broken, 'broken media');
       await writeFile(subtitlePath, '1\n00:00:00,000 --> 00:00:01,500\nHELLO\n');
-      await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'ffmpeg.cjs'), bundle: true, platform: 'node', format: 'cjs' });
-      const plugin: PluginFiles = { name: 'video-editing', directory, skills: [], item: { id: 'plugin:video-editing', kind: 'plugin', name: 'video-editing', description: '', source: 'builtin', enabled: true, installed: true },
-        servers: [{ name: 'ffmpeg-probe', command: 'node', args: [join(directory, 'ffmpeg.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
+      await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'ffmpeg.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+      const plugin: PluginFiles = { name: 'ffmpeg', directory, skills: [], item: { id: 'plugin:ffmpeg', kind: 'plugin', name: 'ffmpeg', description: '', source: 'builtin', enabled: true, installed: true },
+        servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'ffmpeg.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
       const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
       runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
       const original = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });

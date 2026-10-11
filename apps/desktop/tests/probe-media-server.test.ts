@@ -13,7 +13,7 @@ describe('bundled ffmpeg Probe MCP server', () => {
     const directory = await mkdtemp(join(tmpdir(), 'probe-process-'));
     const executable = join(directory, 'probe-fixture.exe');
     execFileSync(join(process.env.WINDIR!, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'), ['/nologo', `/out:${executable}`, resolve('apps/desktop/tests/fixtures/probe-process.cs')]);
-    await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'probe.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+    await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'probe.cjs'), bundle: true, platform: 'node', format: 'cjs' });
     try {
       for (const name of ['probe_media', 'trim_video']) for (const mode of ['cancel', 'disconnect']) {
         const client = new Client({ name: 'probe-test', version: '1' });
@@ -43,7 +43,7 @@ describe('bundled ffmpeg Probe MCP server', () => {
       const inputPath = join(directory, '真实 video.mp4');
       execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
         'color=c=red:s=160x120:r=5:d=1', '-c:v', 'libx264', inputPath]);
-      await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'probe.cjs'),
+      await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'probe.cjs'),
         bundle: true, platform: 'node', format: 'cjs' });
       await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(directory, 'probe.cjs')],
         cwd: directory, env: { FFPROBE_PATH: executable } }));
@@ -74,7 +74,7 @@ describe('bundled ffmpeg Probe MCP server', () => {
     const directory = await mkdtemp(join(tmpdir(), 'probe-no-config-'));
     const client = new Client({ name: 'probe-test', version: '1' });
     try {
-      await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'probe.cjs'),
+      await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'probe.cjs'),
         bundle: true, platform: 'node', format: 'cjs' });
       await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(directory, 'probe.cjs')], cwd: directory }));
       const result = await client.callTool({ name: 'probe_media', arguments: { inputPath: join(directory, 'input.mp4') } });
