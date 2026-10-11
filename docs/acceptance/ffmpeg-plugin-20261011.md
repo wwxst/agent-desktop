@@ -85,6 +85,8 @@ Non-goals     排除范围    不重写核心循环，不迁移 Whisper/Vision�
 
 真实媒体：七项写出加独立交付均经过 MCP 与 Agent，成片独立解码/ffprobe/像素验证；中文、空格、长文件名、无音轨 MPEG-4、H.264/AAC、不同分辨率、损坏输入、网络播放列表及原生取消清理通过。错误或取消输出不能产生成功生产/交付事实。新增拒绝伪造正式产物、不匹配结果及空全帧成功的用例通过；见 `stage-6-media.log`、`stage-6-review-check.log`、`stage-6-final-check.log`。
 
+额外执行已安装 FFmpeg 8.1.2 的真实 MCP 写出取消：60 秒静音输入缩放到 1920×1080，观察实际 `ffmpeg.exe` PID `33140`，取消请求后进程退出。原始 SDK 请求以 `McpError` 拒绝（宿主适配器按已取消信号转换为原取消契约，自动化用例另行覆盖）；没有把部分文件作为成片。证据 `logs/ffmpeg-plugin/real-cancel-media/evidence.json`，重复运行脚本为 `real-writer-cancel.mjs`。
+
 真实安装版：NSIS 首次和覆盖安装在隔离中文、空格目录完成，退出码均为 0。覆盖前后会话数据库及插件程序摘要相同，旧 Probe 构建文件不存在；`nsis-upgrade-evidence.json` 保存证据。使用只有 Windows 系统目录的产品 PATH 和中文配置目录，真实首次下载/安装、审批、目标授权、候选语义验收、正式发布、多轮、重启、禁用/启用、卸载/重装、更新/回滚及任务锁定通过；旧配置重启恢复会话、附件和插件状态通过。日志 `stage-6-final-installed.log`：两项通过，1.3 分钟。
 
 证据目录：`logs/ffmpeg-plugin/installed-1791720258426`（中文配置目录的 `evidence.json`、`published.png`、`requests.json`），`installed-1791720013346`（覆盖后恢复截图）。测试驱动使用开发机 ffprobe 独立复核，产品使用已安装的 8.1.2，二者分开记录。安装版更新采用隔离资源元数据 `1.0.1` 夹具，回滚到 `1.0.0`；未声称有已发布新版。
@@ -105,8 +107,9 @@ Non-goals     排除范围    不重写核心循环，不迁移 Whisper/Vision�
 - `89c1c1e`：受控 8.1.2 Windows 资源安装。
 - `a352f19`：合入已完成的主线 UI 提交 `49b8da9`，保留并行成果。
 - `d6cf128`：技能文件真实路径断言。
+- `d9c9041`：完整 Windows 安装版、媒体验收、审查修复与记录。
 
-已确认 [双平台 CI 成功运行](https://github.com/wwxst/agent-desktop/actions/runs/38137184615) 对应 `d6cf128`。最终验收提交仍需推送后核对；本段不把此前成功替代最终提交结果。
+已确认 [最终实现双平台 CI 成功运行](https://github.com/wwxst/agent-desktop/actions/runs/38138288259) 对应 `d9c9041`，Ubuntu 和 Windows 两项门禁、构建及已提交差异检查均成功。之后只追加本验收结果的文档提交；其最终远端结果随交付消息提供。
 分支：[codex/ffmpeg-plugin](https://github.com/wwxst/agent-desktop/tree/codex/ffmpeg-plugin)。未合并 `main`，未发布发行版。
 
 ## 限制与后续
@@ -117,4 +120,4 @@ Windows 已验证的是本开发机上的干净应用配置和隔离 PATH，未�
 
 ## 最终状态
 
-代码、真实 Windows 媒体、隔离安装版及三轮审查已通过；等待最终验收提交远端双平台 CI 核对。
+本轮代码实施、真实 Windows 媒体、隔离安装版、三轮审查及实现提交远端双平台 CI 均通过。Windows 全新系统虚拟机、签名和线上发行限制按上述实际范围保留，不宣称已验证。
