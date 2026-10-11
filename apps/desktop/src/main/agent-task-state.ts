@@ -71,6 +71,9 @@ export const qualifyTaskToolEvidence: QualifyToolEvidence = (source, events) => 
     case 'write_text_file': return { eligible: true, label: '文本文件已创建' };
     case 'edit_text_file': return { eligible: true, label: '文本文件已修改' };
     case 'run_command': return { eligible: true, label: '命令已退出（退出码 0）' };
+    case 'save_memory': return { eligible: true, label: '记忆已保存' };
+    case 'load_memory': return { eligible: true, label: '记忆已读取' };
+    case 'load_skill': return { eligible: true, label: '技能已加载' };
     case 'ask_user':
       return isRecord(output) && output.outcome === 'answered'
         ? { eligible: true, label: '用户问题已回答' }
@@ -78,7 +81,7 @@ export const qualifyTaskToolEvidence: QualifyToolEvidence = (source, events) => 
     case 'open_terminal': return { eligible: false, label: '终端已启动，命令结果未确认' };
     case 'write_terminal': return { eligible: false, label: '输入已发送，命令结果未确认' };
     case 'read_terminal': return { eligible: false, label: '终端输出已读取，命令结果未确认' };
-    case 'close_terminal': return { eligible: true, label: '终端已关闭' };
+    case 'close_terminal': return { eligible: false, label: '终端已关闭，命令结果未确认' };
     case DECLARE_VIDEO_OUTPUTS_TOOL: return { eligible: false, label: '视频输出集合已声明，尚未交付' };
     case VALIDATE_VIDEO_CANDIDATE_TOOL: {
       const facts = readVideoDeliveryFacts(events.slice(0, events.indexOf(source) + 1));
@@ -91,6 +94,14 @@ export const qualifyTaskToolEvidence: QualifyToolEvidence = (source, events) => 
         : { eligible: false, label: '视频候选验收未全部通过' };
     }
     case PUBLISH_VIDEO_OUTPUT_TOOL: return { eligible: true, label: '视频输出已发布' };
+    case 'probe_media': return { eligible: true, label: '媒体信息已读取' };
+    case 'decode_video': return { eligible: true, label: '视频已解码检查' };
+    case 'detect_black_segments': return { eligible: true, label: '黑帧区间已检查' };
+    case 'extract_video_frames': case 'extract_video_range_frames': return { eligible: true, label: '视频帧已提取' };
+    case 'extract_audio': return { eligible: true, label: '音频已提取' };
+    case 'transcribe_audio': return { eligible: true, label: '音频已转写' };
+    case 'analyze_images': return { eligible: true, label: '画面已分析' };
+    case 'check_video_semantics': return { eligible: true, label: '视频语义已检查' };
     // 候选、中间媒体和观察结果只证明该工具动作完成，不证明用户最终业务目标完成。
     case 'trim_video': case 'concat_videos': case 'add_audio': case 'add_subtitles':
     case 'resize_video': case 'crop_video': case 'set_speed':

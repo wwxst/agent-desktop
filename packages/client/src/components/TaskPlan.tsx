@@ -33,7 +33,7 @@ export function TaskPlan({ taskState }: TaskPlanProps) {
                 <span className="task-plan-step-description">{step.description}</span>
                 <span className="task-plan-step-status">{statusLabels[step.status]}</span>
               </div>
-              {evidence.length > 0 && <div className="task-plan-evidence">{evidence.map((label) => <span key={label}>{label}</span>)}</div>}
+              {evidence.length > 0 && <div className="task-plan-evidence">{evidence.map((label, index) => <span key={`${label}-${index}`}>{label}</span>)}</div>}
             </li>
           );
         })}
