@@ -60,6 +60,31 @@ function createTestTrace(events: ExecutionTraceEvent[]): ExecutionTrace {
 }
 
 describe('runTurn', () => {
+  it('persists a tool effect checkpoint before the tool side effect', async () => {
+    const callId = 'checkpoint-call' as ToolCallId;
+    const session = new InMemorySession();
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'write', input: { path: 'a.txt' } }] },
+      { text: 'done', toolCalls: [] },
+    ]);
+    const order: string[] = [];
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'write', description: 'write', inputSchema: {}, executionBoundary: 'checkpointed',
+      execute: async (_input, context) => {
+        context.checkpoint?.({ kind: 'test-write', path: 'a.txt' });
+        order.push('side-effect');
+        return { status: 'success', output: 'ok' };
+      },
+    });
+
+    await runTurn(createTestAgent(model, session, tools), 'checkpoint');
+    const checkpoint = session.events().find(event => event.type === 'tool.effect.prepared');
+    expect(checkpoint).toMatchObject({ type: 'tool.effect.prepared', sourceEventIndex: 4, data: { kind: 'test-write' } });
+    expect(order).toEqual(['side-effect']);
+    expect(session.events()[5]?.type).toBe('tool.effect.prepared');
+  });
+
   it('excludes a cancelled incomplete Tool Calling step from the next Turn model context', async () => {
     const callId = 'cancel-pending-tool' as ToolCallId;
     const controller = new AbortController();

@@ -40,3 +40,9 @@ SKIP                    未执行            缺少环境或尚未实施，不�
 共享 Client 展示宿主投影的计划版本、步骤状态和短证据，不提供模型可修改的 UI 操作，也不为简单任务渲染空计划。Session、Loop、Desktop 和 Client 的事实边界测试覆盖计划版本、恢复链、跨轮同名调用 ID、非法证据、候选资格和 UI 投影。
 
 阶段独立审查：Core/Tools、Context/Loop、Desktop/Client 三个范围均 PASS，无剩余修正要求。`pnpm check`：PASS，66 个测试文件、779 项测试、19 个包架构门禁通过；`pnpm install --frozen-lockfile`：PASS；相关聚焦测试 66 项 PASS。计划工具、UI 和资格回调未修改插件运行时或视频工具实现。失败恢复、任务恢复、真实 Windows 计划交互和最终联调尚未完成。
+
+## 阶段 4：失败分类与副作用检查点
+
+Loop 在每个 Tool Call 前保存调用事实，并把工具声明的 `checkpointed` 边界与同步 `tool.effect.prepared` 事件写入同一 Session；文件创建、文件编辑、命令启动和持久终端启动/输入/关闭均在真实副作用前检查点。检查点保存失败会直接阻止副作用。工具错误保留 `permanent`、`denied` 和 `unknown-outcome` 等供应商无关分类，命令非零/超时按结果未知处理，拒绝不重试。模型只对明确的临时服务错误最多追加两次请求，工具调用不会重放。
+
+阶段独立审查：Agent Loop、local-tools、terminal-host 和 model 契约复核 PASS；检查点顺序、取消传播、拒绝分类和非零命令未知结果均有聚焦测试，新增全仓总计 66 个测试文件、780 项测试，`pnpm check` PASS。持久 SQLite 保存健康、失败后的停止策略、恢复入口与崩溃验收留待阶段 5；当前检查点在 InMemory Session 的核心链路已验证，不能提前宣称应用崩溃恢复完成。

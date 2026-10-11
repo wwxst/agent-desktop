@@ -130,10 +130,12 @@ describe('RunCommandTool input and approval boundaries', () => {
 
     await expect(toolFor(port).execute({}, contextWithProgress([]))).resolves.toEqual({
       status: 'error',
+      failureKind: 'permanent',
       message: 'run_command requires command to be a non-empty string',
     });
     await expect(toolFor(port).execute({ command: '   ' }, contextWithProgress([]))).resolves.toEqual({
       status: 'error',
+      failureKind: 'permanent',
       message: 'run_command requires command to be a non-empty string',
     });
   });
@@ -146,7 +148,7 @@ describe('RunCommandTool input and approval boundaries', () => {
       contextWithProgress([]),
     );
 
-    expect(result).toEqual({ status: 'error', message: 'timeoutMs 必须是正数，且不超过 600000 毫秒。' });
+    expect(result).toEqual({ status: 'error', failureKind: 'permanent', message: 'timeoutMs 必须是正数，且不超过 600000 毫秒。' });
   });
 
   it('requires a confirmed working directory before asking for approval', async () => {
@@ -177,6 +179,7 @@ describe('RunCommandTool input and approval boundaries', () => {
     }]);
     expect(result).toEqual({
       status: 'error',
+      failureKind: 'denied',
       message: "用户拒绝执行该命令，未启动任何进程：Set-Content -LiteralPath 'denied.txt' -Value 'should-not-run'",
     });
     // 拒绝不产生任何输出。

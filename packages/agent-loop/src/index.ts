@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, TurnCancellationError, projectTurnState,
   type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
-import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
+import { ToolExecutionError, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
 import { prepareModelContext, type ContextBudget } from './context.js';
 
 export { ContextBudgetError, estimateContextTokens, createContextSourceDigest, validateContextCompactedEvent,
@@ -111,7 +111,9 @@ async function executeToolCall(
     toolCallId: toolCall.id,
     name: toolCall.name,
     input: toolCall.input,
+    ...(agent.tools.get(toolCall.name)?.executionBoundary === undefined ? {} : { boundary: agent.tools.get(toolCall.name)!.executionBoundary }),
   });
+  const sourceEventIndex = agent.session.events().length - 1;
 
   await trace?.({
     type: 'tool.started',
@@ -140,6 +142,7 @@ async function executeToolCall(
         },
         // exactOptionalPropertyTypes 下，没有取消信号时必须省略字段而不是写入 undefined。
         ...(signal === undefined ? {} : { signal }),
+        checkpoint: (data) => agent.session.append({ type: 'tool.effect.prepared', turnId, sourceEventIndex, data }),
       };
       result = await tool.execute(toolCall.input, context);
     } catch (error) {
@@ -148,7 +151,8 @@ async function executeToolCall(
       // Tool 的 Error 失败按既有契约回写结果；其他抛出值不是合法 Tool 错误，直接暴露程序错误。
       if (!(error instanceof Error)) throw error;
       errorName = error.name;
-      result = { status: 'error', message: error.message };
+      result = { status: 'error', message: error.message,
+        ...(error instanceof ToolExecutionError ? { failureKind: error.failureKind } : {}) };
     }
   }
 

@@ -10,7 +10,7 @@ import { createCommandPort } from './command-host.js';
 
 /** 一个会话的真实终端资源；快照只是历史，不能用于创建或重连进程。 */
 export class SessionTerminal {
-  readonly terminalId = randomUUID();
+  readonly terminalId: string;
   private readonly process: IPty;
   private readonly output = new BoundedTextBuffer(0, 64 * 1024);
   private status: 'running' | 'exited' = 'running';
@@ -18,7 +18,8 @@ export class SessionTerminal {
   private readonly finished: Promise<void>;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private closing: Promise<void> | undefined;
-  constructor(readonly workingDirectory: string, readonly command: string, private readonly publish: (snapshot: TerminalSnapshot) => void) {
+  constructor(readonly workingDirectory: string, readonly command: string, private readonly publish: (snapshot: TerminalSnapshot) => void, terminalId = randomUUID()) {
+    this.terminalId = terminalId;
     const port = createCommandPort();
     // 编码参数保留完整启动命令；NoExit 让同会话后续轮次仍能向 shell 输入。
     this.process = spawn(port.interpreterPath, ['-NoLogo', '-NoProfile', '-NoExit', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
@@ -79,7 +80,9 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       context.signal?.throwIfAborted();
       if (!approved) throw new Error('用户拒绝启动终端，没有创建进程。');
       touched();
-      owner.terminal = new SessionTerminal(scoped.path, command, (snapshot) => { owner.terminalHistory = snapshot; publish(snapshot); });
+      const terminalId = randomUUID();
+      context.checkpoint?.({ kind: 'terminal', terminalId, operation: 'open', command, workingDirectory: scoped.path });
+      owner.terminal = new SessionTerminal(scoped.path, command, (snapshot) => { owner.terminalHistory = snapshot; publish(snapshot); }, terminalId);
       return owner.terminal.snapshot();
     },
     read: async (id, waitMs, context) => {
@@ -93,8 +96,9 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
         workingDirectory: terminal.workingDirectory, interpreter: createCommandPort().interpreterPath }, context.signal);
       context.signal?.throwIfAborted();
       if (!approved) throw new Error('用户拒绝终端输入，没有发送。');
+      context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'input' });
       touched(); terminal.write(input); return terminal.snapshot();
     },
-    close: async (id) => { const terminal = current(id); touched(); await terminal.close(); return terminal.snapshot(); },
+    close: async (id, context) => { const terminal = current(id); context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'close' }); touched(); await terminal.close(); return terminal.snapshot(); },
   };
 }

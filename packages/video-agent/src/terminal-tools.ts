@@ -10,6 +10,7 @@ export interface TerminalPort {
 type TerminalToolName = 'open_terminal' | 'read_terminal' | 'write_terminal' | 'close_terminal';
 /** 四个明确终端操作共用宿主端口；进程资源始终属于 Desktop 会话，跨轮保持。 */
 export class TerminalTool implements Tool {
+  readonly executionBoundary = 'checkpointed' as const;
   readonly description: string;
   readonly inputSchema: unknown;
   constructor(readonly name: TerminalToolName, private readonly port: TerminalPort) {
@@ -22,21 +23,21 @@ export class TerminalTool implements Tool {
       required: name === 'open_terminal' ? ['command'] : name === 'write_terminal' ? ['terminalId', 'input'] : ['terminalId'], additionalProperties: false };
   }
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
-    if (typeof input !== 'object' || input === null) return { status: 'error', message: '终端参数必须为对象。' };
+    if (typeof input !== 'object' || input === null) return { status: 'error', failureKind: 'permanent', message: '终端参数必须为对象。' };
     const value = input as Record<string, unknown>;
     if (this.name === 'open_terminal') {
       if (typeof value.command !== 'string' || !value.command.trim() || value.command.length > 8000
-        || (value.workingDirectory !== undefined && typeof value.workingDirectory !== 'string')) return { status: 'error', message: '终端启动需要有效命令与目录。' };
+        || (value.workingDirectory !== undefined && typeof value.workingDirectory !== 'string')) return { status: 'error', failureKind: 'permanent', message: '终端启动需要有效命令与目录。' };
       return { status: 'success', output: await this.port.open(value.command, value.workingDirectory as string | undefined, context) };
     }
-    if (typeof value.terminalId !== 'string' || !value.terminalId) return { status: 'error', message: '缺少 terminalId。' };
+    if (typeof value.terminalId !== 'string' || !value.terminalId) return { status: 'error', failureKind: 'permanent', message: '缺少 terminalId。' };
     if (this.name === 'close_terminal') return { status: 'success', output: await this.port.close(value.terminalId, context) };
     if (this.name === 'read_terminal') {
       const waitMs = value.waitMs ?? 0;
-      if (typeof waitMs !== 'number' || !Number.isFinite(waitMs) || waitMs < 0 || waitMs > 2000) return { status: 'error', message: '终端等待时间必须在 0–2000 毫秒内。' };
+      if (typeof waitMs !== 'number' || !Number.isFinite(waitMs) || waitMs < 0 || waitMs > 2000) return { status: 'error', failureKind: 'permanent', message: '终端等待时间必须在 0–2000 毫秒内。' };
       return { status: 'success', output: await this.port.read(value.terminalId, waitMs, context) };
     }
-    if (typeof value.input !== 'string' || !value.input || value.input.length > 8000) return { status: 'error', message: '终端输入不能为空，最多 8000 字。' };
+    if (typeof value.input !== 'string' || !value.input || value.input.length > 8000) return { status: 'error', failureKind: 'permanent', message: '终端输入不能为空，最多 8000 字。' };
     return { status: 'success', output: await this.port.write(value.terminalId, value.input, context) };
   }
 }

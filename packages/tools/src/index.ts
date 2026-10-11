@@ -1,4 +1,5 @@
 import type { ModelToolDefinition, ToolCallId, ToolFailureKind, ToolResult } from '@agent-desktop/model';
+import type { ExecutionBoundary } from '@agent-desktop/session';
 
 export { UpdatePlanTool } from './plan.js';
 
@@ -52,6 +53,8 @@ export class ToolExecutionError extends Error {
  * Tool 只能返回执行结果，不能反向控制 Agent Loop 的生命周期。
  */
 export interface Tool extends ModelToolDefinition {
+  /** 可证明执行边界的工具才声明 checkpointed；其他工具按 opaque 处理。 */
+  readonly executionBoundary?: ExecutionBoundary;
   execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult>;
 }
 

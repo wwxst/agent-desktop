@@ -1,6 +1,7 @@
 import type { ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { resolveCreatablePath } from './path-scope.js';
 import type { WorkspacePort } from './workspace.js';
 
@@ -8,8 +9,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function errorResult(message: string): ToolResult {
-  return { status: 'error', message };
+function errorResult(message: string, failureKind: 'permanent' | 'denied' = 'permanent'): ToolResult {
+  return { status: 'error', message, failureKind };
 }
 
 /** 目标是否已经存在；ENOENT 之外的读取失败直接暴露，不当作「可以写入」。 */
@@ -42,6 +43,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
  * 只有真正写入成功才报告 `artifacts`：产物事实来自成功结果，不从回复文本或磁盘扫描推断。
  */
 export class WriteTextFileTool implements Tool {
+  readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'write_text_file';
   readonly description = '在当前会话工作目录内创建一个新的文本文件；已有文件不会被覆盖，写入前需要用户确认';
   readonly inputSchema = {
@@ -56,7 +58,8 @@ export class WriteTextFileTool implements Tool {
 
   public constructor(private readonly workspace: WorkspacePort) {}
 
-  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+  async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    const { signal } = context;
     if (!isRecord(input)) return errorResult('write_text_file requires an object input');
     const { filePath, content } = input;
     if (typeof filePath !== 'string' || filePath.length === 0) {
@@ -82,9 +85,11 @@ export class WriteTextFileTool implements Tool {
     );
     // 等待期间用户可能已经取消：批准不能重新启动一个已经失效的操作。
     if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-    if (!approved) return errorResult(`用户拒绝创建该文件，未做任何写入：${scoped.path}`);
+    if (!approved) return errorResult(`用户拒绝创建该文件，未做任何写入：${scoped.path}`, 'denied');
 
     try {
+      context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: null,
+        expectedAfterSha256: createHash('sha256').update(content, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(content, 'utf8') });
       // wx：目标已存在时直接失败。它和上面的存在性检查一起覆盖「检查后目标才出现」的情况。
       await writeFile(scoped.path, content, { encoding: 'utf8', flag: 'wx' });
     } catch (error) {
