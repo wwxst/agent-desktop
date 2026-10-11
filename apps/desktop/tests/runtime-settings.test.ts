@@ -71,12 +71,51 @@ describe('desktop runtime settings', () => {
     expect(settings.modelProviders.at(-1)).toMatchObject({ apiKey: { configured: true, source: 'saved' } });
     expect(JSON.stringify(settings)).not.toContain('plain-test-secret');
     expect((await readFile(database)).includes(Buffer.from('plain-test-secret'))).toBe(false);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'plain-test-secret', deepSeekModel: 'test-model', modelProtocol: 'responses', modelMaxOutputTokens: 4000, visionProtocol: 'responses', visionModel: 'test-model', visionMaxOutputTokens: 4000 });
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'plain-test-secret', deepSeekModel: 'test-model', modelProtocol: 'responses', modelContextWindow: 128000, modelMaxOutputTokens: 4000, visionProtocol: 'responses', visionModel: 'test-model', visionMaxOutputTokens: 4000 });
     await saveRuntimeSettings(database, { modelProvider: provider({ displayName: '修改名称' }) }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).toHaveProperty('deepSeekApiKey', 'plain-test-secret');
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: null }), visionModel: null }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('deepSeekApiKey');
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
+  });
+  it('keeps independently configured window and output limits without inventing the missing value', async () => {
+    const { database } = await paths();
+    const choice = { providerId: 'custom-test', modelId: 'test-model' };
+    const model = { id: 'test-model', displayName: '测试模型', images: false };
+    await saveRuntimeSettings(database, {
+      modelProvider: provider({ models: [{ ...model, contextWindow: 64000 }] }), conversationModel: choice,
+    }, storage);
+    const windowOnly = await loadRuntimeConfiguration(database, storage, {});
+    expect(windowOnly).toHaveProperty('modelContextWindow', 64000);
+    expect(windowOnly).not.toHaveProperty('modelMaxOutputTokens');
+
+    await saveRuntimeSettings(database, { modelProvider: provider({ models: [{ ...model, maxOutputTokens: 2048 }] }) }, storage);
+    const outputOnly = await loadRuntimeConfiguration(database, storage, {});
+    expect(outputOnly).toHaveProperty('modelMaxOutputTokens', 2048);
+    expect(outputOnly).not.toHaveProperty('modelContextWindow');
+
+    await saveRuntimeSettings(database, { modelProvider: provider({ models: [model] }) }, storage);
+    const unspecified = await loadRuntimeConfiguration(database, storage, {});
+    expect(unspecified).not.toHaveProperty('modelContextWindow');
+    expect(unspecified).not.toHaveProperty('modelMaxOutputTokens');
+  });
+  it('reloads both limits from the newly selected model instead of retaining the prior model budget', async () => {
+    const { database } = await paths();
+    await saveRuntimeSettings(database, {
+      modelProvider: provider({ models: [
+        { id: 'large', displayName: '大窗口', images: false, contextWindow: 128000, maxOutputTokens: 4096 },
+        { id: 'small', displayName: '小窗口', images: false, contextWindow: 16000, maxOutputTokens: 1024 },
+        { id: 'unspecified', displayName: '未配置预算', images: false },
+      ] }),
+      conversationModel: { providerId: 'custom-test', modelId: 'large' },
+    }, storage);
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ modelContextWindow: 128000, modelMaxOutputTokens: 4096 });
+    await saveRuntimeSettings(database, { conversationModel: { providerId: 'custom-test', modelId: 'small' } }, storage);
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekModel: 'small', modelContextWindow: 16000, modelMaxOutputTokens: 1024 });
+    await saveRuntimeSettings(database, { conversationModel: { providerId: 'custom-test', modelId: 'unspecified' } }, storage);
+    const configuration = await loadRuntimeConfiguration(database, storage, {});
+    expect(configuration).not.toHaveProperty('modelContextWindow');
+    expect(configuration).not.toHaveProperty('modelMaxOutputTokens');
   });
   it('clearing an internal saved key returns to the environment source', async () => {
     const { database } = await paths();

@@ -110,6 +110,7 @@ describe('runTurn', () => {
     expect(model.requests).toHaveLength(2);
     expect(model.requests[1]?.messages).toEqual([
       { role: 'user', content: 'cancel during tool' },
+      { role: 'user', content: expect.stringContaining('未知效果须先核验') },
       { role: 'user', content: 'continue' },
     ]);
   });

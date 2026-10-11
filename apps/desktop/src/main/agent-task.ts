@@ -118,6 +118,7 @@ export interface DesktopTaskOptions {
   readonly onToolResult?: ToolResultListener;
   readonly onToolProgress?: ToolProgressListener;
   readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
+  readonly contextBudget?: NonNullable<Parameters<typeof runTurn>[2]>['contextBudget'];
 }
 
 /**
@@ -144,6 +145,7 @@ export async function runDesktopAgentTask(
 ) {
   const result = await runTurn(agent, buildAgentPrompt(prompt, attachments), {
     trace: options.trace,
+    ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
     ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
     // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
     ...(options.signal === undefined ? {} : { signal: options.signal }),

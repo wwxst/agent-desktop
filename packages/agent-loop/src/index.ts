@@ -2,10 +2,14 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '@agent-desktop/agent';
 import { ModelRequestError } from '@agent-desktop/model';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { ModelMessage, ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
-import { recoverSessionEvents, SessionPersistenceError, TurnCancellationError, projectTurnState,
+import type { ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
+import { SessionPersistenceError, TurnCancellationError, projectTurnState,
   type RecoveryMode, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
+import { prepareModelContext, type ContextBudget } from './context.js';
+
+export { ContextBudgetError, estimateContextTokens, createContextSourceDigest, validateContextCompactedEvent,
+  type ContextBudget } from './context.js';
 
 /** 一次 Turn 的最小公开结果；不返回可变 Session，调用方通过 Agent 自己读取历史。 */
 export interface RunTurnResult {
@@ -71,61 +75,6 @@ export function prepareTurnStart(
 function createStepId(): StepId {
   // Step 使用独立品牌，防止在需要 StepId 的位置误传 TurnId。
   return randomUUID() as StepId;
-}
-
-/** 把 Session 中的未知工具输出稳定投影为模型协议要求的字符串。 */
-function formatToolResultForModel(result: ToolResult): string {
-  if (result.status === 'error') {
-    // 失败调用可能仍然带有结构化结果（当前是命令的退出码和有界输出），
-    // 只交回一条错误文字会让模型拿不到失败原因，因此两者一起交给模型。
-    if (result.output === undefined) return result.message;
-    const formattedOutput = JSON.stringify(result.output);
-    if (formattedOutput === undefined) throw new Error('Tool result output must be JSON-serializable');
-    return `${result.message}\n${formattedOutput}`;
-  }
-  // 字符串保持原样，避免 JSON.stringify 额外添加引号。
-  if (typeof result.output === 'string') return result.output;
-
-  // 模型 Tool Message 必须是字符串；没有 JSON 表示时直接暴露程序错误，不用默认文本掩盖。
-  const formatted = JSON.stringify(result.output);
-  if (formatted === undefined) throw new Error('Tool result output must be JSON-serializable');
-  return formatted;
-}
-
-/**
- * 每次模型调用前都从 Session 事件重建上下文。
- * 不维护隐藏 messages 数组，确保 Session 始终是唯一事实来源。
- */
-function buildModelMessages(events: readonly SessionEvent[]): ModelMessage[] {
-  const messages: ModelMessage[] = [];
-  // Step 完整性只由 Session 的单一权威实现判定；取消或失败 Turn 的残留不会进入模型协议链。
-  for (const event of recoverSessionEvents(events)) {
-    // 只投影模型需要看到的三类事实，生命周期事件留在 Session 中供审计。
-    switch (event.type) {
-      case 'user.message':
-        messages.push({ role: 'user', content: event.content });
-        break;
-      case 'assistant.message':
-        // exactOptionalPropertyTypes 下，缺少 content 与显式 content: undefined 不等价。
-        messages.push(event.content === undefined
-          ? { role: 'assistant', toolCalls: event.toolCalls }
-          : { role: 'assistant', content: event.content, toolCalls: event.toolCalls });
-        break;
-      case 'tool.result':
-        // ToolCallId 保留调用与结果的关联，格式化只依赖已写入 Session 的结果。
-        messages.push({
-          role: 'tool',
-          toolCallId: event.toolCallId,
-          content: formatToolResultForModel(event.result),
-        });
-        break;
-      default:
-        // Turn、Step 和 tool.called 是运行事实，不直接进入模型消息。
-        break;
-    }
-  }
-
-  return messages;
 }
 
 /** 只向模型暴露工具描述，解构投影会主动排除 execute 运行时方法。 */
@@ -265,6 +214,8 @@ export interface RunTurnOptions {
   readonly onModelText?: (stepId: StepId, text: string, purpose: 'delta' | 'commentary' | 'final') => void;
   /** 当前只读子任务的真实预算；父任务不默认设置上限。 */
   readonly maxSteps?: number;
+  /** 只有宿主明确窗口和供应商实际输出上限时启用，不猜测模型默认值。 */
+  readonly contextBudget?: ContextBudget;
 }
 
 export class StepBudgetError extends Error {
@@ -311,8 +262,12 @@ export async function runStartedTurn(
       agent.session.append({ type: 'step.started', turnId, stepId });
 
       // System Prompt、历史消息和工具描述都从 Agent 的当前依赖即时构建。
-      const messages = buildModelMessages(agent.session.events());
       const tools = buildToolDefinitions(agent);
+      const systemPrompt = agent.systemPrompt.build();
+      const messages = await prepareModelContext({ model: agent.model, session: agent.session,
+        turnId, systemPrompt, tools,
+        ...(signal === undefined ? {} : { signal }),
+        ...(options.contextBudget === undefined ? {} : { budget: options.contextBudget }) });
       await trace?.({
         type: 'model.started',
         turnId,
@@ -325,9 +280,10 @@ export async function runStartedTurn(
       let response: ModelResponse;
       try {
         const request = {
-          systemPrompt: agent.systemPrompt.build(),
+          systemPrompt,
           messages,
           tools,
+          ...(options.contextBudget === undefined ? {} : { maxOutputTokens: options.contextBudget.maxOutputTokens }),
           ...(signal === undefined ? {} : { signal }),
           // 文本增量只向上转发给实时展示，不会写入 Session。
           ...(onModelText === undefined ? (onTextDelta === undefined ? {} : { onTextDelta }) : { onTextDelta: (delta: string) => {

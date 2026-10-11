@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ToolCallId } from '@agent-desktop/model';
 import type { SessionEvent, StepId, TurnId } from '@agent-desktop/session';
+import { createContextSourceDigest } from '@agent-desktop/agent-loop';
 import {
   loadDesktopState,
   parseDesktopState,
@@ -40,7 +41,7 @@ function parsedEvents(events: readonly unknown[]) {
 
 /** 覆盖新事件的真实保存形状，不通过模型声明来补造完成结果。 */
 function recoveryEvents(): readonly SessionEvent[] {
-  return [
+  const events: SessionEvent[] = [
     { type: 'turn.started', turnId: rootTurn }, // 0
     { type: 'step.started', turnId: rootTurn, stepId: firstStep },
     { type: 'assistant.message', turnId: rootTurn, stepId: firstStep,
@@ -55,7 +56,7 @@ function recoveryEvents(): readonly SessionEvent[] {
         output: { errorName: 'ConnectionError', detail: ['原始输出'] } } },
     { type: 'step.completed', turnId: rootTurn, stepId: firstStep }, // 6
     { type: 'context.compacted', turnId: rootTurn, coveredStepEndEventIndexes: [6],
-      sourceDigest: digest, summary: '用户约束保留；文件结果待核验。', estimatorVersion: 1,
+      sourceDigest: digest, summary: JSON.stringify({ summary: '用户约束保留；文件结果待核验。', sourceEventIndexes: [2, 5] }), estimatorVersion: 1,
       estimatedBefore: 1200, estimatedAfter: 300 }, // 7
     { type: 'host.operation.started', turnId: rootTurn, operation: 'stop', description: '调用宿主收尾。' }, // 8
     { type: 'host.operation.result', turnId: rootTurn, sourceEventIndex: 8, status: 'failed',
@@ -81,7 +82,7 @@ function recoveryEvents(): readonly SessionEvent[] {
       result: { status: 'success', output: { completed: true }, artifacts: ['D:/任务/新结果.txt'] } }, // 21
     { type: 'step.completed', turnId: continueTurn, stepId: secondStep }, // 22
     { type: 'context.compacted', turnId: continueTurn, coveredStepEndEventIndexes: [22],
-      previousSummaryEventIndex: 7, sourceDigest: 'b'.repeat(64), summary: '新增工作有真实成功结果。',
+      previousSummaryEventIndex: 7, sourceDigest: digest, summary: JSON.stringify({ summary: '新增工作有真实成功结果。', sourceEventIndexes: [2, 5, 19, 21] }),
       estimatorVersion: 1, estimatedBefore: 1500, estimatedAfter: 400 },
     { type: 'plan.updated', turnId: continueTurn, revision: 2, explanation: '按照原任务事实重新规划。',
       steps: [
@@ -98,6 +99,14 @@ function recoveryEvents(): readonly SessionEvent[] {
     { type: 'turn.started', turnId: 'interrupted-turn' as TurnId },
     { type: 'turn.interrupted', turnId: 'interrupted-turn' as TurnId, reason: 'process-exit' },
   ];
+  // 与生产代码使用同一确切来源表示，不用伪造哈希绕过重启校验。
+  for (const index of [7, 23]) {
+    const event = events[index];
+    if (event?.type !== 'context.compacted') throw new Error('摘要测试来源缺失。');
+    events[index] = { ...event, sourceDigest: createContextSourceDigest(events.slice(0, index),
+      event.coveredStepEndEventIndexes, event.previousSummaryEventIndex) };
+  }
+  return events;
 }
 
 function replaceEvent(events: readonly unknown[], index: number, replacement: unknown) {
@@ -277,7 +286,7 @@ describe('new Session event persistence', () => {
   it.each([6, 23, 999])('rejects previous summary source %s', previousSummaryEventIndex => {
     const events = recoveryEvents();
     expect(() => parsedEvents(replaceEvent(events, 23, { ...events[23], previousSummaryEventIndex })))
-      .toThrow('sessions[0].events[23].previousSummaryEventIndex');
+      .toThrow(/摘要事件来源不存在|自己或未来摘要/);
   });
 
   it.each([
@@ -285,14 +294,14 @@ describe('new Session event persistence', () => {
   ])('rejects new summary coverage $indexes', ({ indexes: coveredStepEndEventIndexes }) => {
     const events = recoveryEvents();
     expect(() => parsedEvents(replaceEvent(events, 7, { ...events[7], coveredStepEndEventIndexes })))
-      .toThrow('coveredStepEndEventIndexes');
+      .toThrow(/摘要覆盖|摘要不能覆盖/);
   });
 
   it('rejects overlap with all prior summary coverage', () => {
     const events = recoveryEvents();
     expect(() => parsedEvents(replaceEvent(events, 23, {
       ...events[23], coveredStepEndEventIndexes: [6, 22],
-    }))).toThrow('sessions[0].events[23].coveredStepEndEventIndexes[0]');
+    }))).toThrow('重复覆盖');
   });
 
   it.each([

@@ -17,6 +17,7 @@ import type {
   TerminalSnapshot,
 } from '@agent-desktop/client';
 import { projectRecoveryAncestry, type SessionEvent, type TaskPlanStep } from '@agent-desktop/session';
+import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
 import type { SubagentRecord } from './subagent.js';
 
 export interface PersistedDesktopSession {
@@ -273,7 +274,6 @@ function priorEvent(events: readonly SessionEvent[], index: number, sourceIndex:
 function readSessionEvents(value: unknown, field: string): readonly SessionEvent[] {
   if (!Array.isArray(value)) invalid(field);
   const events = value.map((event, index) => readSessionEvent(event, `${field}[${index}]`));
-  const summaryCoverage = new Map<number, ReadonlySet<number>>();
   for (const [index, event] of events.entries()) {
     const eventField = `${field}[${index}]`;
     switch (event.type) {
@@ -310,19 +310,8 @@ function readSessionEvents(value: unknown, field: string): readonly SessionEvent
         break;
       }
       case 'context.compacted': {
-        const covered = new Set<number>();
-        if (event.previousSummaryEventIndex !== undefined) {
-          priorEvent(events, index, event.previousSummaryEventIndex, ['context.compacted'], `${eventField}.previousSummaryEventIndex`);
-          for (const sourceIndex of summaryCoverage.get(event.previousSummaryEventIndex)!) covered.add(sourceIndex);
-        }
-        if (event.coveredStepEndEventIndexes.length === 0) invalid(`${eventField}.coveredStepEndEventIndexes`);
-        for (const [offset, sourceIndex] of event.coveredStepEndEventIndexes.entries()) {
-          const sourceField = `${eventField}.coveredStepEndEventIndexes[${offset}]`;
-          priorEvent(events, index, sourceIndex, ['step.completed'], sourceField);
-          if (covered.has(sourceIndex)) invalid(sourceField);
-          covered.add(sourceIndex);
-        }
-        summaryCoverage.set(index, covered);
+        // 来源、累计覆盖和摘要 JSON 与模型投影复用同一校验，不再维护第二套摘要算法。
+        validateContextCompactedEvent(events.slice(0, index + 1), index);
         break;
       }
       case 'plan.updated': {

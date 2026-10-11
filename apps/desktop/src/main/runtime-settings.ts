@@ -20,6 +20,8 @@ export interface RuntimeConfiguration {
   readonly deepSeekBaseUrl?: string;
   readonly deepSeekModel?: string;
   readonly modelProtocol?: ModelApiProtocol;
+  /** 只读取当前所选模型的明确窗口；缺失时不按名称猜测。 */
+  readonly modelContextWindow?: number;
   readonly modelMaxOutputTokens?: number;
   readonly useDeepSeekThinking?: boolean;
   readonly visionApiKey?: string;
@@ -205,6 +207,7 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
   return { ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
     deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
     useDeepSeekThinking: new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com',
+    ...(conversation.model.contextWindow === undefined ? {} : { modelContextWindow: conversation.model.contextWindow }),
     ...(conversation.model.maxOutputTokens === undefined ? {} : { modelMaxOutputTokens: conversation.model.maxOutputTokens }),
     ...(visionKey === undefined || vision === undefined ? {} : { visionApiKey: visionKey, visionBaseUrl: vision.provider.baseUrl,
       visionModel: vision.model.id, visionProtocol: vision.provider.protocol,

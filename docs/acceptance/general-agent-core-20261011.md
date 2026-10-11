@@ -23,4 +23,12 @@ SKIP                    未执行            缺少环境或尚未实施，不�
 
 `pnpm install --frozen-lockfile` 和 `pnpm check`：PASS，60 个测试文件、722 项测试，19 个正式包架构门禁通过。完整日志在本工作树 `logs/general-agent-core/stage-1-check.log`；未把聚焦运行与全仓运行数量相加。两位独立审查者针对实际 Loop、Session 和磁盘解析复审均为 PASS，无剩余修改要求。真实 SQLite 测试已执行；本阶段没有更改真实模型协议、外部进程或 UI，因此这些新增能力的真实供应商、强杀恢复及视觉验收仍为 SKIP，留待消费者接入。
 
-后续上下文、计划工具与展示、失败门禁、任务恢复和集成验收尚未完成。
+## 阶段 2：上下文预算与来源压缩
+
+正式模型请求和摘要请求均使用所选模型的明确窗口/输出额度；缺少任一配置时不猜预算。压缩只覆盖完整步骤，保持工具协议完整，用户原文、计划和待核验事实独立保留。摘要校验精确覆盖范围、前摘要链和来源 SHA-256；失败不改原历史。
+
+`pnpm install --frozen-lockfile`、最终 `pnpm check` 和 `pnpm desktop:build`：PASS，63 个测试文件、754 项测试、19 个包架构门禁通过。日志为 `logs/general-agent-core/stage-2-check.log` 与 `stage-2-build.log`。两位独立审查者核对实际 Context、Loop/Main 接线、供应商额度、磁盘解析后均无代码修改要求；SQLite 重启与两个协议的本地 HTTP 完整工具往返均 PASS。
+
+真实 DeepSeek `deepseek-v4-flash`：PASS。每次请求额度覆盖实例默认值；8 额度请求真实截断并保留失败，64 额度请求正常完成。真实 Loop 压缩前估算 11124 超过输入预算 6977，压缩后 6879；摘要与正式请求各一次，输出额度均 2048，最终保留 `ALT-731` 与 `READ_ONLY`，原历史与来源校验通过，额外工具执行为零。证据在 `logs/general-agent-core/deepseek-output-cap.json` 和 `real-context-run.json`。
+
+真实 Responses 供应商：SKIP，缺少 `OPENAI_API_KEY` 及可用的已保存供应商凭据。本地协议测试不冒充真实供应商验收；该外部合并条件仍未满足。当前估算不是服务端精确令牌数，来源完整性也不证明摘要语义准确。计划工具与展示、失败门禁、任务恢复、Windows 强杀和最终集成验收尚未完成。

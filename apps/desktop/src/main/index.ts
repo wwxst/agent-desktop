@@ -740,6 +740,9 @@ function registerIpcHandlers(): void {
             sendActivity(traceEvent, session.session.events());
           },
           signal: controller.signal,
+          // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
+          ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
+            : { contextBudget: { contextWindow: settings.modelContextWindow, maxOutputTokens: settings.modelMaxOutputTokens } }),
           // 把 Model 文本增量实时推给 Renderer；它不进入 Session，也不影响最终结果。
           onModelText: (stepId, text, purpose) => sendAgentEvent(purpose === 'delta'
             ? { type: 'text.delta', stepId, delta: text }
