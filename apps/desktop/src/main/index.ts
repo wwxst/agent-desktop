@@ -307,7 +307,11 @@ function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientSta
     }
     return changed ? { ...conversation, messages } : conversation;
   };
-  return { ...snapshot, conversations: snapshot.conversations.map(reconcile) };
+  return {
+    ...snapshot,
+    conversations: snapshot.conversations.map(reconcile),
+    ...(snapshot.drafts === undefined ? {} : { drafts: snapshot.drafts.map(reconcile) }),
+  };
 }
 
 /** 启动时将没有终态的旧轮次标为异常中断；原有工具和模型事实保持不变。 */

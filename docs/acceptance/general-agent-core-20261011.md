@@ -55,12 +55,12 @@ Commit `3a926b0` 接入 `DesktopPersistentSession`：Session 事件先以完整�
 
 三轮 Review 结果：第一轮源码事实审查 PASS（所有新增状态均有 Session、Main、Preload、Client 或测试证据）；第二轮架构兼容性审查 PASS（未新增 package，Core 未依赖 UI/Provider/插件，插件和视频工具边界未改）；第三轮失败与工程审查经发现并修正后 PASS（覆盖持久化失败、异常中断、重复恢复、未知副作用、终端断开、清理失败和 UI 核验竞态）。
 
-`pnpm check`：PASS，68 个测试文件、788 项测试，19 个包架构门禁通过。阶段 5 聚焦测试、SQLite 往返和客户端恢复动作均 PASS；纯 Web Playwright UI 测试 7 项 PASS（800x600）。Responses 真实供应商：SKIP，未配置 `OPENAI_API_KEY`；真实 DeepSeek/视频链路：SKIP，本轮未提供外部凭据、媒体和 Whisper 运行条件。Electron Windows 真实启动：SKIP，仓库依赖的 Electron 44 二进制未下载到 `node_modules/.pnpm/.../electron/dist/electron.exe`，Playwright 下载器持续等待后停止；不能把单元测试或 Web 浏览器结果写成真实 Electron 通过。
+`pnpm check`：PASS，68 个测试文件、788 项测试，19 个包架构门禁通过。阶段 5 聚焦测试、SQLite 往返和客户端恢复动作均 PASS；纯 Web Playwright UI 测试 7 项 PASS（800x600）。真实 Electron 44 启动与 SQLite 往返：PASS，使用本机已校验的 Electron 二进制和独立用户数据目录完成。强杀恢复验收：PASS，首次模型请求保持挂起后用 `taskkill.exe /PID /T /F` 结束 Electron，重启后请求计数保持 1，界面出现“继续未完成任务”，用户主动继续后第二次请求完成并展示恢复结果。Responses 真实供应商：SKIP，未配置 `OPENAI_API_KEY`；真实 DeepSeek/视频链路：SKIP，本轮未提供外部凭据、媒体和 Whisper 运行条件。
 
 ## 阶段 6：联调与回归
 
-`pnpm typecheck`、`pnpm typecheck:tests`、`pnpm test`、`pnpm check:architecture`、`git diff --check`：PASS。`pnpm desktop:build` 和 `pnpm client:web:build`：PASS。Web UI 的聊天滚动、长文本、附件、失败卡片、设置布局和短窗口验收：PASS，7 项；真实 Electron/SQLite 重启、强杀后的 Windows 进程验收：SKIP，原因见阶段 5。原有插件、Skill、MCP、视频任务只完成静态边界与全仓自动化回归，未执行需要外部模型、FFmpeg、ffprobe、whisper.cpp 的真实发布链路，标记 SKIP。
+`pnpm typecheck`、`pnpm typecheck:tests`、`pnpm test`、`pnpm check:architecture`、`git diff --check`：PASS。`pnpm desktop:build` 和 `pnpm client:web:build`：PASS。Web UI 的聊天滚动、长文本、附件、失败卡片、设置布局和短窗口验收：PASS，7 项；真实 Electron/SQLite 重启和强杀后的 Windows 进程恢复：PASS，新增 `apps/web/tests/browser/general-agent-recovery.pw.ts` 覆盖不重放、主动恢复和恢复结果展示。原有插件、Skill、MCP、视频任务只完成静态边界与全仓自动化回归，未执行需要外部模型、FFmpeg、ffprobe、whisper.cpp 的真实发布链路，标记 SKIP。
 
 最终已交付独立 Commit 顺序：`b35e918` 执行契约与恢复基础事件，`13d8510` Context Manager，`7d5a384` Task Plan，`f81cb93` Failure Recovery，`b206fff` 计划证据修正，`3a926b0` Task Recovery，`5c7b42b` 启动恢复与联调修正。暂缓项仍未建设：操作系统沙箱、后台队列、可写子智能体、多任务并发、分布式/云端恢复和通用 Agent Framework。
 
-已知风险：真实 Electron 强杀/SQLite 重启、真实 Responses 协议和带凭据的视频外部工具链未在本环境执行；这些项目保持 SKIP，不能作为已验收能力对外宣称。主工作区未修改，本分支只包含通用 Agent Core 与 Desktop 恢复消费者变更。
+已知风险：真实 Responses 协议和带凭据的视频外部工具链未在本环境执行；这些项目保持 SKIP，不能作为已验收能力对外宣称。强杀恢复夹具使用本地 HTTP 模型替身，证明进程、SQLite、Session 和 UI 的恢复边界，不替代真实供应商验收。主工作区未修改，本分支只包含通用 Agent Core 与 Desktop 恢复消费者变更。
