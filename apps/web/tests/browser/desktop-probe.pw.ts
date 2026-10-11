@@ -14,7 +14,7 @@ interface ModelInput {
 interface Evidence { scenario: string; tools: string[]; results: string[] }
 
 test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', async ({}, testInfo) => {
-  test.setTimeout(180_000);
+  test.setTimeout(420_000);
   test.skip(testInfo.project.name !== 'chromium-desktop' || process.platform !== 'win32', 'Windows 真实桌面验收。');
   const root = resolve('../..');
   const evidence = resolve(root, 'logs/probe-media-plugin', `electron-${Date.now()}`);
@@ -94,8 +94,10 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
   const address = server.address(); if (address === null || typeof address === 'string') throw new Error('模型夹具未启动。');
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
-  delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL; env.FFPROBE_PATH = ffprobe;
-  env.FFMPEG_PATH = execFileSync('where.exe', ['ffmpeg'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
+  delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL;
+  delete env.FFPROBE_PATH; delete env.FFMPEG_PATH;
+  // 应用和插件进程仅获得系统目录，不能通过开发机 PATH 找到 Node 或媒体程序。
+  env.PATH = `${process.env.SystemRoot}/System32;${process.env.SystemRoot}`;
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
   let app: Awaited<ReturnType<typeof launch>> | undefined;

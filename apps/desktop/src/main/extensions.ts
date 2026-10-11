@@ -8,6 +8,7 @@ import type { ExtensionItem, ExtensionSnapshot, McpServerUpdate } from '@agent-d
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import { ExtensionMarketplaces, marketPath } from './extension-marketplaces.js';
 import type { ExtensionConnections } from './extension-connections.js';
+import { installFFmpegRuntime } from './ffmpeg-runtime.js';
 
 type Kind = 'plugin' | 'skill';
 type Source = ExtensionItem['source'];
@@ -419,7 +420,7 @@ export class DesktopExtensions {
       const effectiveServers = servers.map(server => {
         const config = this.connections?.values(plugin.item.id, server.name) ?? {};
         const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original
-          : config[name] ?? (plugin.item.id === 'plugin:ffmpeg' && server.name === 'ffmpeg' && ['FFPROBE_PATH', 'FFMPEG_PATH'].includes(name) ? process.env[name] ?? '' : original));
+          : config[name] ?? original);
         return { ...server, ...(config.url ? { url: config.url } : {}), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
           ...(server.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) }) };
       });
@@ -497,7 +498,9 @@ export class DesktopExtensions {
   private async atomicCopy(source: string, destination: string, kind: Kind, id: string, origin: InstalledExtension['source']): Promise<ExtensionItem> {
     await validatePackageLinks(source);
     await mkdir(join(this.root, '.staging'), { recursive: true }); const staging = join(this.root, '.staging', `${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`); await mkdir(join(this.root, `${kind}s`), { recursive: true });
-    try { await cp(source, staging, { recursive: true, dereference: true }); const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await rename(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
+    try { await cp(source, staging, { recursive: true, dereference: true });
+      if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
+      const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await rename(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
   }
   /** 先完成暂存目录解析，再交换旧目录；新包解析失败时旧版本仍然保留。 */
   private async atomicReplace(source: string, destination: string, kind: Kind, id: string, origin: InstalledExtension['source']): Promise<ExtensionItem> {
@@ -510,6 +513,7 @@ export class DesktopExtensions {
     let backedUp = false;
     try {
       await cp(source, staging, { recursive: true, dereference: true });
+      if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
       const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin);
       try { await rename(destination, backup); backedUp = true; } catch (error) { if (!missing(error)) throw error; }
       try {

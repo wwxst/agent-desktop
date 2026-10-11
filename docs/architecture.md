@@ -83,7 +83,7 @@ Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映�
 
 抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制。插件未安装、停用、卸载或启动被拒绝时，下一轮没有这些只读工具，依赖能力的验收明确受阻。普通任务及写出工具继续使用阶段二现有路径；完整写出迁移与独立插件分发仍在实施，记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
 
-该边界是宿主调用策略，不是操作系统沙箱；已批准的通用 MCP 服务或本机可执行程序仍以当前用户身份运行。此试点没有二进制下载、SHA-256 来源校验、签名、共享缓存、自动回收或正式分发更新；这些能力在正式插件分发阶段独立实施。验收记录见 [Probe 插件验收](acceptance/probe-media-plugin-20261011.md)。
+该边界是宿主调用策略，不是操作系统沙箱；已批准的通用 MCP 服务或本机可执行程序仍以当前用户身份运行。FFmpeg 正式资源目前支持 Windows x64：安装在已有暂存目录下载 `runtime.lock.json` 锁定的 Gyan 8.1.2 ZIP，校验归档及两个程序 SHA-256、版本和必要构建选项，再原子发布。下载使用 Electron 网络栈及 Windows 系统代理；失败保留旧安装。插件自身目录提供可执行文件，Electron 自带 Node 启动自包含服务，不搜索系统 PATH。插件专属归档缓存每次复核摘要，旧完整版本沿用既有缓存与回滚。保留供应商 GPLv3 许可证、README 和构建说明；没有再托管二进制或宣称代码签名。来源和再分发要求见插件 `NOTICE.md`。验收见 [FFmpeg 插件验收](acceptance/ffmpeg-plugin-20261011.md)，原 Probe 阶段记录保留供追溯。
 
 ## Core Relationship（核心关系）
 
@@ -267,7 +267,7 @@ Electron Main 同时只保存一个 `{ sessionId, controller, finished }` 活动
 
 `close` 事件必须先 `preventDefault()` 再判断该窗口是否已在收尾：收尾期间用户再次点关闭时，前一次收尾尚未结束，若先判断再阻止，第二次关闭就会直接销毁窗口，跳过等待落盘并留下半份状态。重复关闭不重复进入收尾流程，真正的关闭只发生在收尾通过后的 `window.destroy()`，它不会再触发 `close` 事件。
 
-非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。DeepSeek 与 Vision API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；缺少 Vision Key 或 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。FFmpeg 继续只使用系统 PATH。
+非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。DeepSeek 与 Vision API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；缺少 Vision Key 或 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。Desktop FFmpeg 由独立插件安装目录解析；CLI 显式选择本机实现并使用系统 PATH。
 
 ```text
 Layer                 中文名称         职责

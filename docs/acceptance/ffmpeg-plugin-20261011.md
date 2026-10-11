@@ -67,6 +67,18 @@ Non-goals     排除范围    不重写核心循环，不迁移 Whisper/Vision�
 
 阶段审查：旧服务不能绕过独立插件状态，没有双重公开名称注册；Core 契约未修改，没有新插件协议或依赖解析框架。`Review Decision: PASS`。回退恢复阶段三资源组织；数据库身份、缓存版本及用户数据不删除。
 
+## 阶段五：受控 Windows 运行资源
+
+锁定 Gyan FFmpeg `8.1.2` Windows x64 静态构建，归档 `109728040` 字节，SHA-256 `db580001caa24ac104c8cb856cd113a87b0a443f7bdf47d8c12b1d740584a2ec`。供应商校验文件、GitHub 发行资产摘要和真实下载一致；两个程序摘要也锁定。真实执行确认 GPLv3、`--enable-gpl --enable-version3 --enable-libx264 --enable-libass`。安装保留完整供应商许可、README、预设和文档，不在仓库提交二进制或再托管下载。未来重新分发须履行对应源码及第三方库许可义务；未声明签名完成。
+
+复用暂存、原子替换、旧版本缓存和任务锁，仅增加 FFmpeg 专属下载缓存。下载使用 Electron 网络栈，避免 Node fetch 不读取 Windows 系统代理导致的下载停滞（首次失败记录保留）。归档损坏、程序损坏、错误版本、不支持平台，以及安装/更新失败保留旧版、完整资源回滚均有测试。
+
+完整门禁 62 文件 649 项通过，构建与 NSIS 安装包生成通过。真实 Electron 使用只含 Windows 系统目录的 PATH，删除 `FFPROBE_PATH`、`FFMPEG_PATH`，首次从供应商下载并安装，探测、语义交付、禁用/启用/卸载/重装/重启通过（1.2 分钟）；见 `stage-5-electron-net.log` 与 `logs/probe-media-plugin/electron-1791719206594`。安装版验收在阶段六执行。
+
+远端 Windows 连续失败的诊断确认：`fs-event.c:72` 路径前缀断言，根因是递归监视安装目录时传入 Windows 短路径。已在 `48b3761` 统一真实路径，不跳过监视用例。单独 Node 24.19 及本机聚焦用例通过，最终远端结果继续复核。
+
+阶段审查：没有通用资产平台或外部 Node 要求；第三方本地插件不能触发受控 FFmpeg 资源安装。`Review Decision: PASS`。回退恢复阶段四显式路径方式，插件版本与用户媒体保留。
+
 ## 最终状态
 
 实施中，尚未完成 FFmpeg 完整插件化正式验收。
