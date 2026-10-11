@@ -115,6 +115,19 @@ describe('shared App', () => {
     await waitFor(() => expect(retry).toHaveBeenCalledOnce());
     expect(install).not.toHaveBeenCalled();
   });
+
+  it('shows a neutral unavailable update notice without a retry or installation button', async () => {
+    let receive!: (state: AppUpdateState) => void;
+    render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'unavailable' }), onStateChanged: listener => { receive = listener; return () => {}; }, install: vi.fn(), retry: vi.fn() } }} />);
+    const notice = await screen.findByText('暂未提供在线更新');
+    expect(notice).toHaveProperty('role', 'status');
+    expect(screen.queryByRole('button', { name: '重试更新' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '安装更新' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    act(() => receive({ status: 'ready' }));
+    await screen.findByRole('button', { name: '安装更新' });
+    expect(screen.queryByText('暂未提供在线更新')).toBeNull();
+  });
   it('reuses a pending new-chat draft without adding history or losing its input and attachment', async () => {
     const newSession = vi.fn(api.newSession);
     const saveClientState = vi.fn(api.saveClientState);

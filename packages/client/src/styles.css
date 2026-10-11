@@ -469,6 +469,7 @@ input:focus-visible {
 .app-update-button:disabled { opacity: 0.65; }
 .app-update-spinner { animation: sidebar-spin 1s linear infinite; }
 .app-update-error { position: absolute; bottom: 44px; left: 44px; z-index: 10; width: 300px; max-width: calc(100vw - 70px); max-height: 160px; overflow: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--danger); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.app-update-error.unavailable { width: max-content; color: var(--text-muted); }
 
 .sidebar-new-session svg {
   flex: 0 0 auto;

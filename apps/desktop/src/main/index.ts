@@ -970,7 +970,7 @@ void app.whenReady().then(async () => {
   if (app.isPackaged && process.platform === 'win32') {
     desktopUpdater = new DesktopUpdater(state => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_CHANNELS.updateState, state);
-    });
+    }, join(app.getPath('logs'), 'app-updater.log'));
   }
   registerIpcHandlers();
   createWindow();
