@@ -361,7 +361,8 @@ export class DesktopExtensions {
   /** 监视安装目录与当前项目；目录尚未创建时监视最近存在的父目录。 */
   async watchSkills(workingDirectory: string | undefined, changed: () => void, failed: (error: Error) => void): Promise<void> {
     await mkdir(this.root, { recursive: true });
-    const roots = [this.root];
+    // Windows 短路径别名会触发 libuv 递归监视器的目录前缀断言，统一使用真实路径。
+    const roots = [await realpath(this.root)];
     let projectIsWorkspaceRoot = false;
     if (workingDirectory !== undefined) {
       for (const candidate of [join(workingDirectory, '.agents/skills'), join(workingDirectory, '.agents'), workingDirectory]) {
