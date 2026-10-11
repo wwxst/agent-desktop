@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as filesystem from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -100,7 +100,7 @@ describe('Desktop extensions persisted local packages', () => {
     expect((await store.files()).plugins[0]?.servers).toEqual([]);
     expect(snapshot.errors?.join(' ')).toContain('独立 FFmpeg');
     expect(snapshot.skills.find(item => item.name === 'short-drama-editing')?.description).toContain('短剧');
-    expect(await store.skillPath(preview.id)).toBe(join(root, 'extensions/plugins/video-editing/skills/short-drama-editing/SKILL.md'));
+    expect(await store.skillPath(preview.id)).toBe(await realpath(join(root, 'extensions/plugins/video-editing/skills/short-drama-editing/SKILL.md')));
     await store.setEnabled('plugin:video-editing', false);
     const restored = new DesktopExtensions(database, join(root, 'extensions'), resources);
     snapshot = await restored.list();
