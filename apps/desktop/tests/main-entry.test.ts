@@ -209,10 +209,11 @@ describe('desktop main session lifecycle', () => {
     const configuredKey = process.env.DEEPSEEK_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
     try {
-      await expect(runAgentTask!({}, '测试任务')).resolves.toEqual({
+      await expect(runAgentTask!({}, '测试任务')).resolves.toMatchObject({
         status: 'error',
         errorName: 'Error',
         errorMessage: '请先在设置中配置当前对话模型的 API 密钥。',
+        taskState: { status: 'failed' },
       });
       expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
     } finally {
@@ -871,11 +872,12 @@ describe('desktop main session lifecycle', () => {
       throw new Error('第二个工具执行失败。');
     });
 
-    await expect(runAgentTask!({}, '两步任务')).resolves.toEqual({
+    await expect(runAgentTask!({}, '两步任务')).resolves.toMatchObject({
       status: 'error',
       errorName: 'Error',
       errorMessage: '第二个工具执行失败。',
       outputFiles: [{ path: 'D:\\videos\\done.mp4', fileName: 'done.mp4' }],
+      taskState: { status: 'failed' },
     });
   });
 
@@ -918,10 +920,11 @@ describe('desktop main session lifecycle', () => {
     const configuredKey = process.env.DEEPSEEK_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
     try {
-      await expect(runAgentTask!({}, '下一轮任务')).resolves.toEqual({
+      await expect(runAgentTask!({}, '下一轮任务')).resolves.toMatchObject({
         status: 'error',
         errorName: 'Error',
         errorMessage: '请先在设置中配置当前对话模型的 API 密钥。',
+        taskState: { status: 'failed' },
       });
     } finally {
       if (configuredKey !== undefined) process.env.DEEPSEEK_API_KEY = configuredKey;
@@ -977,11 +980,12 @@ describe('desktop main session lifecycle', () => {
     });
 
     // 只有真正成功的那个文件被报告，正在执行的未成功文件不登记。
-    await expect(runAgentTask!({}, '取消任务')).resolves.toEqual({
+    await expect(runAgentTask!({}, '取消任务')).resolves.toMatchObject({
       status: 'error',
       errorName: 'AbortError',
       errorMessage: 'The operation was aborted',
       outputFiles: [{ path: 'D:\\videos\\cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
+      taskState: { status: 'blocked' },
     });
   });
 
@@ -1158,6 +1162,37 @@ describe('desktop main session lifecycle', () => {
     await expect(run({}, '新会话任务')).resolves.toMatchObject({ status: 'success' });
     expect(mainMocks.extensionRuntimes[count + 2]!.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
     await newSession({});
+  });
+
+  it('records manual verification for an unknown external effect and rejects it a second time', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session')!;
+    const run = mainMocks.handlers.get('desktop:run-agent-task')!;
+    const verify = mainMocks.handlers.get('desktop:verify-task-effect')!;
+    const sessionId = await newSession({});
+    let sourceEventIndex = -1;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+      const session = mainMocks.agents.at(-1)!.session;
+      const turn = session.events().findLast((event) => (
+        typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'turn.started'
+      )) as { turnId: string };
+      session.append({ type: 'step.started', turnId: turn.turnId, stepId: 'verify-step' });
+      session.append({ type: 'tool.called', turnId: turn.turnId, stepId: 'verify-step', toolCallId: 'verify-call',
+        name: 'write_text_file', input: { path: 'D:/clips/result.txt' }, boundary: 'checkpointed' });
+      sourceEventIndex = session.events().length - 1;
+      session.append({ type: 'tool.result', turnId: turn.turnId, stepId: 'verify-step', toolCallId: 'verify-call',
+        result: { status: 'error', message: '写入后连接断开。', failureKind: 'unknown-outcome' } });
+      session.append({ type: 'step.completed', turnId: turn.turnId, stepId: 'verify-step' });
+      session.append({ type: 'turn.completed', turnId: turn.turnId });
+      return { responseText: '结果待核验。', turnId: turn.turnId, artifacts: [] };
+    });
+
+    await expect(run({}, '写入结果')).resolves.toMatchObject({ status: 'success', result: { taskState: { status: 'blocked' } } });
+    const state = await verify({}, { sessionId, sourceEventIndex, outcome: 'completed' });
+    expect(state).toMatchObject({ rootTurnId: expect.any(String), status: 'completed' });
+    expect(mainMocks.agents.at(-1)!.session.events()).toContainEqual(expect.objectContaining({
+      type: 'effect.outcome.verified', sourceEventIndex, outcome: 'completed', scope: 'entire-call',
+    }));
+    expect(() => verify({}, { sessionId, sourceEventIndex, outcome: 'completed' })).toThrow('该外部效果已经核验或不存在');
   });
 
 });

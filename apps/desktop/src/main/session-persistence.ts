@@ -1,4 +1,5 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
+import { InMemorySession, SessionPersistenceError, type Session } from '@agent-desktop/session';
 import type {
   AgentActivityDetail,
   AgentActivityDirectoryEntry,
@@ -47,6 +48,54 @@ export interface PersistedDesktopState {
   readonly activeSessionId: string;
   readonly sessions: readonly PersistedDesktopSession[];
   readonly clientState: ClientStateSnapshot;
+}
+
+/**
+ * Desktop 主进程使用的持久 Session。
+ * 候选快照先提交 SQLite，成功后才更新内存事件；保存失败固定保留第一次错误，
+ * 防止后续取消或默认状态覆盖真正的持久化故障。
+ */
+export class DesktopPersistentSession implements Session {
+  private readonly memory: InMemorySession;
+  private persistenceFailure: SessionPersistenceError | undefined;
+
+  constructor(
+    private readonly filePath: string,
+    private readonly sessionId: string,
+    initialEvents: readonly SessionEvent[],
+    private readonly stateForEvents: (sessionId: string, events: readonly SessionEvent[]) => PersistedDesktopState,
+    private readonly onPersistenceFailure: (error: SessionPersistenceError) => void,
+  ) { this.memory = new InMemorySession(initialEvents); }
+
+  append(event: SessionEvent): void { this.appendMany([event]); }
+
+  appendMany(events: readonly SessionEvent[]): void {
+    if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
+    const candidateEvents = [...this.memory.events(), ...events];
+    try {
+      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, candidateEvents) }]);
+    } catch (cause) {
+      const error = new SessionPersistenceError(cause);
+      this.persistenceFailure = error;
+      this.onPersistenceFailure(error);
+      throw error;
+    }
+    this.memory.appendMany(events);
+  }
+
+  events(): readonly SessionEvent[] { return this.memory.events(); }
+
+  /** 宿主资源状态（终端退出等）变化时复用同一全快照提交入口。 */
+  persist(): void {
+    if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
+    try { writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, this.memory.events()) }]); }
+    catch (cause) {
+      const error = new SessionPersistenceError(cause);
+      this.persistenceFailure = error;
+      this.onPersistenceFailure(error);
+      throw error;
+    }
+  }
 }
 
 type SessionToolCall = Extract<SessionEvent, { type: 'assistant.message' }>['toolCalls'][number];
@@ -672,17 +721,23 @@ function readClientMessage(
   }
   if (role !== 'assistant') invalid(`${field}.role`);
   // UI 快照只携带关联提示；显示状态与完成证据必须从 Main 的原始事实重建。
-  let task;
+  let taskState;
+  if (value.taskState !== undefined) {
+    if (!isRecord(value.taskState) || typeof value.taskState.latestTurnId !== 'string') invalid(`${field}.taskState`);
+    const turnId = value.taskState.latestTurnId as TurnId;
+    if (projectTurnState(events, turnId) === undefined) invalid(`${field}.taskState.latestTurnId`);
+    taskState = projectAgentTaskState(events, turnId);
+  }
   if (value.task !== undefined) {
     if (!isRecord(value.task)) invalid(`${field}.task`);
     const turnId = readString(value.task.turnId, `${field}.task.turnId`) as TurnId;
     if (projectTurnState(events, turnId) === undefined) invalid(`${field}.task.turnId`);
-    task = projectAgentTaskState(events, turnId);
+    taskState = projectAgentTaskState(events, turnId);
   }
   const base = {
     id,
     role,
-    ...(task === undefined ? {} : { task }),
+    ...(taskState === undefined ? {} : { taskState }),
     activity: readActivity(value.activity, `${field}.activity`, value.tools, `${field}.tools`),
     activityExpanded: value.activityExpanded === undefined
       ? readBoolean(value.toolsExpanded, `${field}.toolsExpanded`)
@@ -889,7 +944,7 @@ function parseDesktopSession(
     session: {
       id: readString(value.id, `${field}.id`),
       attachments: readAttachments(value, field),
-      ...(value.terminalHistory === undefined ? {} : { terminalHistory: { ...readTerminalHistory(value.terminalHistory, field), status: 'disconnected' as const } }),
+      ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
       events: readSessionEvents(value.events, `${field}.events`),
       ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),

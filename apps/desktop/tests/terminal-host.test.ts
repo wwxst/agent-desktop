@@ -37,4 +37,16 @@ describe('terminal authorization and ownership', () => {
     expect(requestApproval).toHaveBeenNthCalledWith(2, expect.objectContaining({ kind: 'terminal-input', command: 'echo accepted\n' }), undefined);
     expect(write).toHaveBeenCalledExactlyOnceWith('echo accepted\n');
   });
+
+  it('reads disconnected history after restart without reconnecting or marking a live terminal touched', async () => {
+    const history = { terminalId: 'old-terminal', workingDirectory: process.cwd(), command: 'npm run dev',
+      output: 'old output', droppedBytes: 0, status: 'running' as const, exitCode: null };
+    const touched = vi.fn();
+    const port = terminalPortFor({ terminalHistory: history },
+      { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval: vi.fn() }, vi.fn(), touched);
+
+    await expect(port.read(history.terminalId, 2_000, context)).resolves.toEqual({ ...history, status: 'disconnected' });
+    expect(touched).not.toHaveBeenCalled();
+    expect(native.spawn).not.toHaveBeenCalled();
+  });
 });

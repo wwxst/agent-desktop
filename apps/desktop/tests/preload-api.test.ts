@@ -92,6 +92,7 @@ describe('createDesktopApi', () => {
       'onPrepareClose',
       'openModelConfig',
       'openProjectDirectory',
+      'recoverTask',
       'removeAttachment',
       'resizeTerminal',
       'revealFile',
@@ -102,6 +103,7 @@ describe('createDesktopApi', () => {
       'selectAttachmentFiles',
       'selectProjectDirectory',
       'switchSession',
+      'verifyTaskEffect',
     ]);
 
     await api.getActiveSessionId();

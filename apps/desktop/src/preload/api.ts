@@ -20,18 +20,26 @@ export interface IpcRendererPort {
 async function invokeAgentTask(
   ipc: IpcRendererPort,
   prompt: string,
+  recovery?: { readonly sessionId: string; readonly sourceTurnId: string; readonly mode: 'continue' | 'verify' },
+  channel: string = DESKTOP_CHANNELS.runAgentTask,
 ): ReturnType<DesktopApi['runAgentTask']> {
   try {
-    const ipcResult = await ipc.invoke(DESKTOP_CHANNELS.runAgentTask, prompt) as AgentTaskIpcResult;
+    const ipcResult = await (channel === DESKTOP_CHANNELS.recoverTask
+      ? ipc.invoke(channel, recovery)
+      : recovery === undefined
+        ? ipc.invoke(channel, prompt)
+        : ipc.invoke(channel, prompt, recovery)) as AgentTaskIpcResult;
     if (ipcResult.status === 'success') return ipcResult.result;
 
     const taskError = new Error(ipcResult.errorMessage) as Error & {
       outputFiles?: readonly AgentTaskOutputFile[];
       outputs?: readonly AgentTaskOutputItemResult[];
+      taskState?: import('@agent-desktop/client').AgentTaskState;
     };
     taskError.name = ipcResult.errorName;
     if (ipcResult.outputFiles !== undefined) taskError.outputFiles = ipcResult.outputFiles;
     if (ipcResult.outputs !== undefined) taskError.outputs = ipcResult.outputs;
+    if (ipcResult.taskState !== undefined) taskError.taskState = ipcResult.taskState;
     throw taskError;
   } catch (error) {
     throw unwrapRemoteError(error);
@@ -51,6 +59,7 @@ function unwrapRemoteError(error: unknown): unknown {
   const normalized = new Error(message) as Error & {
     outputFiles?: readonly AgentTaskOutputFile[];
     outputs?: readonly AgentTaskOutputItemResult[];
+    taskState?: import('@agent-desktop/client').AgentTaskState;
   };
   if (errorName === 'AbortError') normalized.name = 'AbortError';
   // Electron 自身拒绝任务时仍可能带上此前已成功的产物与逐项结果，必须继续透传。
@@ -58,6 +67,8 @@ function unwrapRemoteError(error: unknown): unknown {
   if (outputFiles !== undefined) normalized.outputFiles = outputFiles;
   const outputs = readErrorOutputResults(error);
   if (outputs !== undefined) normalized.outputs = outputs;
+  const taskState = (error as { taskState?: unknown }).taskState;
+  if (taskState !== undefined) normalized.taskState = taskState as import('@agent-desktop/client').AgentTaskState;
   return normalized;
 }
 
@@ -195,6 +206,15 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       sessionId,
     ) as ReturnType<DesktopApi['deleteSession']>,
     runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
+    recoverTask: (sessionId, sourceTurnId, mode = 'continue') => invokeAgentTask(ipc, '', {
+      sessionId, sourceTurnId, mode,
+    }, DESKTOP_CHANNELS.recoverTask),
+    verifyTaskEffect: async (sessionId, sourceEventIndex, outcome = 'completed', description) => {
+      const result = await ipc.invoke(DESKTOP_CHANNELS.verifyTaskEffect, {
+        sessionId, sourceEventIndex, outcome, ...(description === undefined ? {} : { description }),
+      });
+      return result as import('@agent-desktop/client').AgentTaskState;
+    },
     cancelTask: async () => { await ipc.invoke(DESKTOP_CHANNELS.cancelTask); },
     decideApproval: async (requestId, approved) => {
       await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);

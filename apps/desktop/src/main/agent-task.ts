@@ -1,5 +1,6 @@
 import {
   runTurn,
+  runStartedTurn,
   type ExecutionTrace,
   type ToolProgressListener,
   type ToolResultListener,
@@ -120,6 +121,7 @@ export interface DesktopTaskOptions {
   readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
   readonly contextBudget?: NonNullable<Parameters<typeof runTurn>[2]>['contextBudget'];
   readonly qualifyToolEvidence?: NonNullable<Parameters<typeof runTurn>[2]>['qualifyToolEvidence'];
+  readonly turnId?: TurnId;
 }
 
 /**
@@ -144,7 +146,9 @@ export async function runDesktopAgentTask(
   attachments: readonly PromptAttachment[],
   options: DesktopTaskOptions,
 ) {
-  const result = await runTurn(agent, buildAgentPrompt(prompt, attachments), {
+  const turnId = options.turnId;
+  const result = turnId === undefined
+    ? await runTurn(agent, buildAgentPrompt(prompt, attachments), {
     trace: options.trace,
     ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
     ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
@@ -157,7 +161,17 @@ export async function runDesktopAgentTask(
     ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
     // 实时进度同样走独立通道，不写入 Session，也不进入模型上下文。
     ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
-  });
+      })
+    : await runStartedTurn(agent, turnId, {
+        trace: options.trace,
+        ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
+        ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
+        ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
+        ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
+        ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
+      });
   if (result.response.text === undefined) {
     throw new Error('Agent 未返回最终文本回复。');
   }

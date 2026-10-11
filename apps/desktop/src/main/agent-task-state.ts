@@ -1,5 +1,6 @@
 import {
   projectRecoveryAncestry,
+  projectRecoveryFacts,
   projectTaskPlan,
   projectTaskState,
   type PlanEvidenceSource,
@@ -116,10 +117,19 @@ export function projectAgentTaskState(events: readonly SessionEvent[], turnId: T
   const ancestry = projectRecoveryAncestry(events, turnId);
   const planProjection = projectTaskPlan(events, ancestry.rootTurnId, qualifyTaskToolEvidence);
   const state = projectTaskState(events, ancestry.rootTurnId, planProjection) ?? 'started';
+  const unknownEffects = projectRecoveryFacts(events).unknownEffects.map((fact) => ({
+    sourceEventIndex: fact.sourceEventIndex,
+    source: fact.source.type === 'tool.called' ? 'tool' as const : 'host' as const,
+    label: fact.source.type === 'tool.called' ? fact.source.name : fact.source.operation,
+    description: fact.source.type === 'tool.called'
+      ? `工具 ${fact.source.name} 的外部效果尚未确认。`
+      : fact.source.description,
+  }));
   return {
     rootTurnId: ancestry.rootTurnId,
     latestTurnId: ancestry.latestTurnId,
     status: state,
+    ...(unknownEffects.length === 0 ? {} : { unknownEffects }),
     ...(planProjection === undefined ? {} : {
       plan: {
         revision: planProjection.revision,

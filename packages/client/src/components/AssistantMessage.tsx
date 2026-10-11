@@ -13,6 +13,8 @@ interface AssistantMessageProps {
   readonly message: ClientAssistantMessage;
   readonly onToggleActivity: (messageId: number) => void;
   readonly onRevealFile: (path: string) => Promise<void>;
+  readonly onRecover?: (sourceTurnId: string, mode: 'continue' | 'verify') => void;
+  readonly onVerifyEffect?: (sourceEventIndex: number, outcome: 'completed' | 'not-applied') => void;
 }
 
 /** 已成功的持久产物：无论整轮成功、失败还是取消，都沿用同一张卡。 */
@@ -44,7 +46,13 @@ export function AssistantMessage({
   message,
   onToggleActivity,
   onRevealFile,
+  onRecover,
+  onVerifyEffect,
 }: AssistantMessageProps) {
+  const taskState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
+  const recoverable = taskState !== undefined && (taskState.status === 'failed' || taskState.status === 'cancelled'
+    || taskState.status === 'interrupted' || taskState.status === 'blocked');
+  const unknownEffects = taskState?.unknownEffects ?? [];
   return (
     <article
       className={`message-block agent-message${message.status === 'failed' ? ' error-message' : ''}`}
@@ -60,7 +68,27 @@ export function AssistantMessage({
           onRevealFile={onRevealFile}
         />
       )}
-      <TaskPlan taskState={message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined)} />
+      <TaskPlan taskState={taskState} />
+
+      {message.status !== 'processing' && (unknownEffects.length > 0 || recoverable) && (
+        <section className="task-recovery" aria-label="任务恢复">
+          {unknownEffects.map((effect) => (
+            <div className="task-recovery-effect" key={effect.sourceEventIndex}>
+              <p>{effect.description}</p>
+              <div className="task-recovery-actions">
+                <button type="button" onClick={() => onVerifyEffect?.(effect.sourceEventIndex, 'completed')}>确认已完成</button>
+                <button type="button" onClick={() => onVerifyEffect?.(effect.sourceEventIndex, 'not-applied')}>确认未应用</button>
+              </div>
+            </div>
+          ))}
+          {recoverable && unknownEffects.length === 0 && (
+            <button type="button" onClick={() => onRecover?.(taskState!.latestTurnId, 'continue')}>继续未完成任务</button>
+          )}
+          {recoverable && unknownEffects.length > 0 && (
+            <button type="button" onClick={() => onRecover?.(taskState!.latestTurnId, 'verify')}>先核验未确定效果</button>
+          )}
+        </section>
+      )}
 
       {message.status === 'cancelled' ? (
         <>

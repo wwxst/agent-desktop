@@ -516,6 +516,48 @@ describe('shared App', () => {
     expect(screen.getByRole('region', { name: '任务计划' })).toBeTruthy();
   });
 
+  it('verifies an unknown external effect from the recovery card', async () => {
+    const taskState = {
+      rootTurnId: 'turn-unknown', latestTurnId: 'turn-unknown', status: 'blocked' as const,
+      unknownEffects: [{ sourceEventIndex: 7, source: 'tool' as const, label: 'write_text_file', description: '写入结果的外部效果尚未确认。' }],
+    };
+    const verifyTaskEffect = vi.fn(async () => ({ ...taskState, status: 'completed' as const, unknownEffects: [] }));
+    const state: ClientStateSnapshot = {
+      activeSessionId: 'session-a', drafts: [],
+      conversations: [{ ...savedConversation('session-a', '未确定任务'), messages: [
+        { id: 1, role: 'user', text: '写入结果', attachments: [] },
+        { id: 2, role: 'assistant', status: 'failed', activity: [], activityExpanded: false, errorMessage: '连接中断。', taskState },
+      ] }],
+    };
+    render(<App api={{ ...api, loadClientState: async () => state, verifyTaskEffect }} />);
+
+    expect(await screen.findByText('写入结果的外部效果尚未确认。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '确认已完成' }));
+
+    await waitFor(() => expect(verifyTaskEffect).toHaveBeenCalledWith('session-a', 7, 'completed'));
+    await waitFor(() => expect(screen.queryByText('写入结果的外部效果尚未确认。')).toBeNull());
+  });
+
+  it('continues a failed task from the recovery card as a new execution round', async () => {
+    const recoverTask = vi.fn(async () => ({ responseText: '继续完成', traceId: 'trace-recovery', taskState: {
+      rootTurnId: 'turn-failed', latestTurnId: 'turn-recovered', status: 'completed' as const,
+    } }));
+    const state: ClientStateSnapshot = {
+      activeSessionId: 'session-a', drafts: [],
+      conversations: [{ ...savedConversation('session-a', '失败任务'), messages: [
+        { id: 1, role: 'user', text: '继续工作', attachments: [] },
+        { id: 2, role: 'assistant', status: 'failed', activity: [], activityExpanded: false, errorMessage: '模型失败。', taskState: {
+          rootTurnId: 'turn-failed', latestTurnId: 'turn-failed', status: 'failed' as const,
+        } },
+      ] }],
+    };
+    render(<App api={{ ...api, loadClientState: async () => state, recoverTask }} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '继续未完成任务' }));
+    await waitFor(() => expect(recoverTask).toHaveBeenCalledWith('session-a', 'turn-failed', 'continue'));
+    expect(await screen.findByText('继续完成')).toBeTruthy();
+  });
+
   it('clears streamed text when the turn is cancelled', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let rejectRunning: ((reason: Error) => void) | undefined;

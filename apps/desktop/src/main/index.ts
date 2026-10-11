@@ -5,16 +5,18 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } fr
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
-import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
+import { SessionPersistenceError, projectRecoveryAncestry, projectRecoveryFacts, projectTurnState, type Session, type SessionEvent, type TurnId } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
 import { generateConversationTitle } from './conversation-title.js';
 import {
   findLatestTurnId,
   findTurnArtifacts,
+  buildAgentPrompt,
   projectTurnOutputs,
   runDesktopAgentTask,
   type TurnArtifact,
 } from './agent-task.js';
+import { prepareTurnStart } from '@agent-desktop/agent-loop';
 import {
   assertRevealableFile,
   findCommandText,
@@ -34,6 +36,7 @@ import {
 } from '../shared/ipc.js';
 import {
   loadDesktopState,
+  DesktopPersistentSession,
   parseClientState,
   parseDesktopState,
   saveDesktopState,
@@ -43,6 +46,7 @@ import type {
   AgentTaskOutputFile,
   AgentTaskOutputItemResult,
   AttachmentRole,
+  ClientAssistantMessage,
   ClientStateSnapshot,
 } from '@agent-desktop/client';
 import type { OutputItemResult } from '@agent-desktop/video-agent';
@@ -64,9 +68,11 @@ import { ExtensionConnections } from './extension-connections.js';
 import { InMemoryToolRegistry, UpdatePlanTool } from '@agent-desktop/tools';
 import { projectAgentTaskState, qualifyTaskToolEvidence } from './agent-task-state.js';
 import { DesktopUpdater } from './app-updater.js';
+import { VerifyToolOutcomeTool } from './verify-tool.js';
 
 let mainWindow: BrowserWindow | null = null;
 let isTaskRunning = false;
+let persistenceFailure: SessionPersistenceError | undefined;
 let isExtensionChanging = false;
 let desktopUpdater: DesktopUpdater | undefined;
 let updatePrepared = false;
@@ -98,7 +104,7 @@ interface DesktopSessionState {
   terminal?: SessionTerminal;
   terminalHistory?: import('@agent-desktop/client').TerminalSnapshot;
   readonly subagentHistory: SubagentRecord[];
-  readonly session: InMemorySession;
+  readonly session: Session;
   /** 当前会话的输入附件；角色决定提示词把它当主视频还是音轨。 */
   readonly attachments: SelectedAttachment[];
   /**
@@ -122,8 +128,20 @@ function createDesktopSession(
   id: string = randomUUID(),
   initialEvents?: readonly SessionEvent[],
 ): string {
+  const sessionId = id;
   const session = {
-    session: new InMemorySession(initialEvents),
+    session: new DesktopPersistentSession(
+      persistenceFilePath(), sessionId, initialEvents ?? [],
+      (replacementId, events) => {
+        const snapshot = clientState ?? {
+          activeSessionId,
+          conversations: [...sessions.keys()].map(id => ({ id, title: '', titleManuallyRenamed: false, messages: [], prompt: '', attachments: [] })),
+          drafts: [],
+        } satisfies ClientStateSnapshot;
+        return currentPersistedState(snapshot, { id: replacementId, events });
+      },
+      (error) => { if (persistenceFailure === undefined) persistenceFailure = error; },
+    ),
     pendingSessionStart: initialEvents === undefined ? 'startup' : 'resume',
     attachments: [],
     subagentHistory: [],
@@ -135,6 +153,80 @@ function createDesktopSession(
 
 function persistenceFilePath(): string {
   return join(app.getPath('userData'), DESKTOP_DATABASE_FILE_NAME);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 找到重启前终端的 open/input 调用；每个调用都必须单独保留未解决事实。 */
+function terminalRestartSourceIndexes(events: readonly SessionEvent[], terminalId: string): readonly number[] {
+  const preparedSources: number[] = [];
+  for (const [index, event] of events.entries()) {
+    if (event.type !== 'tool.effect.prepared' || !isRecord(event.data)
+      || event.data.kind !== 'terminal' || event.data.terminalId !== terminalId
+      || (event.data.operation !== 'open' && event.data.operation !== 'input')) continue;
+    const source = events[event.sourceEventIndex];
+    if (source?.type === 'tool.called' && (source.name === 'open_terminal' || source.name === 'write_terminal')) {
+      preparedSources.push(event.sourceEventIndex);
+    }
+  }
+  if (preparedSources.length > 0) return [...new Set(preparedSources)];
+
+  // 旧历史没有检查点时，只按工具结果中宿主生成的 terminalId 做机械匹配。
+  const legacySources: number[] = [];
+  for (const [index, event] of events.entries()) {
+    if (event.type !== 'tool.called' || (event.name !== 'open_terminal' && event.name !== 'write_terminal')) continue;
+    const result = events.find((candidate) => candidate.type === 'tool.result'
+      && candidate.turnId === event.turnId && candidate.stepId === event.stepId && candidate.toolCallId === event.toolCallId);
+    if (result?.type !== 'tool.result' || result.result.status !== 'success' || !isRecord(result.result.output)
+      || result.result.output.terminalId !== terminalId) continue;
+    legacySources.push(index);
+  }
+  return legacySources;
+}
+
+function hasEntireTerminalVerification(events: readonly SessionEvent[], sourceEventIndex: number): boolean {
+  return events.some((event) => event.type === 'effect.outcome.verified'
+    && event.sourceEventIndex === sourceEventIndex && event.scope === 'entire-call');
+}
+
+function terminalRestartFacts(session: DesktopSessionState): readonly SessionEvent[] {
+  const history = session.terminalHistory;
+  if (history?.status !== 'running') return [];
+  const events = session.session.events();
+  const allSourceIndexes = terminalRestartSourceIndexes(events, history.terminalId);
+  const sourceIndexes = allSourceIndexes.filter((sourceEventIndex) => !hasEntireTerminalVerification(events, sourceEventIndex));
+  if (allSourceIndexes.length > 0) {
+    return sourceIndexes.map((sourceEventIndex) => {
+      const source = events[sourceEventIndex];
+      if (source?.type !== 'tool.called') throw new Error('终端恢复来源不是工具调用。');
+      return {
+        type: 'effect.outcome.verified' as const,
+        turnId: source.turnId,
+        sourceEventIndex,
+        scope: 'entire-call' as const,
+        outcome: 'unresolved' as const,
+        evidence: { source: 'host' as const, reference: `terminal:${history.terminalId}`, description: '应用重启后失去终端连接，命令效果和进程状态未确认。' },
+      };
+    });
+  }
+
+  // 没有可机械关联的旧来源时，按 terminalId 复用已有宿主观察，避免每次启动重复追加。
+  if (events.some((event) => event.type === 'effect.outcome.verified'
+    && event.scope === 'entire-call' && event.evidence.reference === `terminal:${history.terminalId}`)) return [];
+
+  // 无法关联旧来源时也要留下可核验事实，不能静默放过 running 快照。
+  const turnId = events.findLast((event) => 'turnId' in event)?.turnId;
+  if (turnId === undefined) return [];
+  const startedIndex = events.length;
+  return [
+    { type: 'host.operation.started' as const, turnId, operation: 'terminal-connection-lost', description: `终端 ${history.terminalId} 的旧来源无法关联。` },
+    { type: 'host.operation.result' as const, turnId, sourceEventIndex: startedIndex, status: 'failed' as const,
+      errorName: 'TerminalConnectionLost', errorMessage: '应用重启后失去终端连接。' },
+    { type: 'effect.outcome.verified' as const, turnId, sourceEventIndex: startedIndex, scope: 'entire-call' as const,
+      outcome: 'unresolved' as const, evidence: { source: 'host' as const, reference: `terminal:${history.terminalId}`, description: '应用重启后失去终端连接，命令效果和进程状态未确认。' } },
+  ];
 }
 
 let desktopExtensions: DesktopExtensions | undefined;
@@ -155,19 +247,66 @@ function extensionId(value: unknown): string {
   return value;
 }
 
-function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopState {
+function currentPersistedState(snapshot: ClientStateSnapshot, replacement?: { readonly id: string; readonly events: readonly SessionEvent[] }): PersistedDesktopState {
   return {
     activeSessionId,
     sessions: [...sessions].map(([id, session]) => ({
       id,
       attachments: session.attachments,
       ...(session.workingDirectory === undefined ? {} : { workingDirectory: session.workingDirectory }),
-      events: session.session.events(),
+      events: replacement?.id === id ? replacement.events : session.session.events(),
       ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory }),
       ...(session.subagentHistory.length === 0 ? {} : { subagentHistory: session.subagentHistory }),
     })),
     clientState: snapshot,
   };
+}
+
+/** Renderer 可能在收到最终 IPC 前崩溃；用已有 Session 终态补回缺失的 Assistant 结果，不重新执行任务。 */
+function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientStateSnapshot {
+  const reconcile = (conversation: ClientStateSnapshot['conversations'][number]) => {
+    const session = sessions.get(conversation.id);
+    if (session === undefined) return conversation;
+    const events = session.session.events();
+    const userTurns = events.filter((event): event is Extract<SessionEvent, { type: 'user.message' }> => event.type === 'user.message');
+    if (userTurns.length === 0) return conversation;
+    const messages = [...conversation.messages];
+    let cursor = 0;
+    let nextId = Math.max(0, ...messages.map(message => message.id)) + 1;
+    for (const user of userTurns) {
+      const userIndex = messages.findIndex((message, index) => index >= cursor && message.role === 'user');
+      if (userIndex < 0) break;
+      cursor = userIndex + 1;
+      if (messages[cursor]?.role === 'assistant') { cursor += 1; continue; }
+      const state = projectTurnState(events, user.turnId);
+      if (state !== 'completed' && state !== 'failed' && state !== 'cancelled' && state !== 'interrupted') continue;
+      const taskState = projectAgentTaskState(events, user.turnId);
+      const filesFound = toOutputFiles(findTurnArtifacts(events, user.turnId));
+      const files = filesFound.length === 0 ? undefined : filesFound;
+      const outputFacts = projectTurnOutputs(events, user.turnId).map(toClientOutputResult);
+      const outputs = outputFacts.length === 0 ? undefined : outputFacts;
+      const final = [...events].reverse().find((event): event is Extract<SessionEvent, { type: 'assistant.message' }> =>
+        event.type === 'assistant.message' && event.turnId === user.turnId && event.toolCalls.length === 0 && event.content !== undefined);
+      let recovered: ClientAssistantMessage;
+      if (state === 'completed' && final !== undefined) {
+        recovered = { id: nextId++, role: 'assistant', status: 'completed', activity: [], activityExpanded: false,
+          taskState, result: { responseText: final.content!, traceId: `recovered:${user.turnId}`, taskState,
+            ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) } };
+      } else if (state === 'cancelled') {
+        recovered = { id: nextId++, role: 'assistant', status: 'cancelled', activity: [], activityExpanded: false, taskState,
+          ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) };
+      } else {
+        const failure = [...events].reverse().find(event => event.turnId === user.turnId && event.type === 'turn.failed');
+        recovered = { id: nextId++, role: 'assistant', status: 'failed', activity: [], activityExpanded: false, taskState,
+          errorMessage: failure?.type === 'turn.failed' ? failure.errorMessage : '应用退出时任务被中断。',
+          ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) };
+      }
+      messages.splice(cursor, 0, recovered);
+      cursor += 1;
+    }
+    return messages.length === conversation.messages.length ? conversation : { ...conversation, messages };
+  };
+  return { ...snapshot, conversations: snapshot.conversations.map(reconcile) };
 }
 
 async function restoreDesktopState(): Promise<void> {
@@ -203,7 +342,7 @@ async function restoreDesktopState(): Promise<void> {
       return {
         ...rest,
         attachments: toClientAttachments(session.attachments),
-        ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory }),
+        ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory.status === 'running' ? { ...session.terminalHistory, status: 'disconnected' as const } : session.terminalHistory }),
         ...(session.workingDirectory === undefined
           ? {}
           : { workingDirectory: session.workingDirectory }),
@@ -214,10 +353,34 @@ async function restoreDesktopState(): Promise<void> {
     conversations: clientState.conversations.map(restoreConversation),
     ...(clientState.drafts === undefined ? {} : { drafts: clientState.drafts.map(restoreConversation) }),
   };
+  clientState = reconcileRecoveredClientState(clientState);
+
+  // 所有会话和派生界面状态都准备好后再追加重启观察，避免中途写入只包含部分会话的快照。
+  for (const session of sessions.values()) {
+    const facts = terminalRestartFacts(session);
+    // 终端连接不会在应用重启后自动恢复；先把运行态转换为已断开，
+    // 再和重启观察事实一起提交，后续快照不能继续声称旧进程仍在运行。
+    if (session.terminalHistory?.status === 'running') {
+      session.terminalHistory = { ...session.terminalHistory, status: 'disconnected' };
+    }
+    if (facts.length > 0) session.session.appendMany(facts);
+    else if (session.terminalHistory?.status === 'disconnected' && session.session instanceof DesktopPersistentSession) session.session.persist();
+  }
 }
 
 function activeSession(): DesktopSessionState {
   return sessions.get(activeSessionId)!;
+}
+
+function persistSessionResourceState(sessionId: string): void {
+  const session = sessions.get(sessionId)?.session;
+  if (!(session instanceof DesktopPersistentSession)) return;
+  try { session.persist(); }
+  catch (error) {
+    const failure = error instanceof SessionPersistenceError ? error : new SessionPersistenceError(error);
+    persistenceFailure ??= failure;
+    if (activeTask?.sessionId === sessionId) activeTask.controller.abort(failure);
+  }
 }
 
 /** 当前真实支持的主输入格式；与文件对话框过滤器保持同一份来源。 */
@@ -258,6 +421,29 @@ function sendTaskState(sessionId: string): void {
   if (turnId === undefined) return;
   const state = projectAgentTaskState(events, turnId);
   if (state !== undefined) sendAgentEvent({ type: 'task.state', sessionId, taskState: state });
+}
+
+/** 宿主阶段也进入同一 Session 事实链，失败时保留 started 及真实错误。 */
+async function runHostOperation<T>(
+  session: DesktopSessionState,
+  turnId: TurnId,
+  operation: string,
+  description: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const sourceEventIndex = session.session.events().length;
+  session.session.append({ type: 'host.operation.started', turnId, operation, description });
+  try {
+    const result = await action();
+    session.session.append({ type: 'host.operation.result', turnId, sourceEventIndex, status: 'completed' });
+    return result;
+  } catch (error) {
+    if (error instanceof SessionPersistenceError) throw error;
+    if (!(error instanceof Error)) throw error;
+    session.session.append({ type: 'host.operation.result', turnId, sourceEventIndex,
+      status: error.name === 'AbortError' ? 'cancelled' : 'failed', errorName: error.name, errorMessage: error.message });
+    throw error;
+  }
 }
 
 /**
@@ -531,10 +717,16 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(DESKTOP_CHANNELS.saveClientState, async (_event, state: unknown) => {
     if (isTaskRunning) throw new Error('Agent 正在执行，无法保存未完成的会话状态。');
+    if (persistenceFailure !== undefined) throw persistenceFailure;
     const snapshot = parseClientState(state, undefined, sessionId => sessions.get(sessionId)?.session.events() ?? []);
     const persisted = parseDesktopState(currentPersistedState(snapshot));
     // 复用磁盘读取的同一结构校验，保证 Renderer 会话与 Main 运行态一一对应。
-    await saveDesktopState(persistenceFilePath(), persisted);
+    try { await saveDesktopState(persistenceFilePath(), persisted); }
+    catch (cause) {
+      const error = cause instanceof SessionPersistenceError ? cause : new SessionPersistenceError(cause);
+      persistenceFailure ??= error;
+      throw error;
+    }
     clientState = snapshot;
   });
 
@@ -622,13 +814,32 @@ function registerIpcHandlers(): void {
     return activeSessionId;
   });
 
-  ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, async (_event, prompt: unknown): Promise<AgentTaskIpcResult> => {
+  const runAgentTaskHandler = async (_event: unknown, prompt: unknown, recoveryValue?: unknown): Promise<AgentTaskIpcResult> => {
+    if (persistenceFailure !== undefined) throw persistenceFailure;
     if (desktopUpdater?.state.status === 'installing') throw new Error('正在安装更新，无法开始任务。');
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       throw new Error('请输入剪辑需求。');
     }
     if (activeTask !== undefined) throw new Error('已有任务正在执行。');
     if (isExtensionChanging) throw new Error('扩展操作正在进行，请完成后再开始任务。');
+
+    let recovery: { readonly sourceTurnId: TurnId; readonly mode: 'continue' | 'verify' } | undefined;
+    if (recoveryValue !== undefined) {
+      if (typeof recoveryValue !== 'object' || recoveryValue === null) throw new Error('恢复请求无效。');
+      const value = recoveryValue as Record<string, unknown>;
+      if (value.sessionId !== activeSessionId || typeof value.sourceTurnId !== 'string'
+        || (value.mode !== 'continue' && value.mode !== 'verify')) throw new Error('恢复请求不属于当前会话。');
+      const events = activeSession().session.events();
+      const sourceTurnId = value.sourceTurnId as TurnId;
+      const ancestry = projectRecoveryAncestry(events, sourceTurnId);
+      const sourceState = projectTurnState(events, sourceTurnId);
+      const sourceTaskState = sourceState === undefined ? undefined : projectAgentTaskState(events, sourceTurnId);
+      if (sourceState === undefined || (sourceState === 'completed' && sourceTaskState?.status === 'completed') || ancestry.latestTurnId !== sourceTurnId
+        || events.some(event => event.type === 'turn.recovery.started' && event.sourceTurnId === sourceTurnId)) {
+        throw new Error('该任务不能再次恢复。');
+      }
+      recovery = { sourceTurnId, mode: value.mode };
+    }
 
     const sessionId = activeSessionId;
     const controller = new AbortController();
@@ -639,8 +850,12 @@ function registerIpcHandlers(): void {
     // 在 try 之外持有会话：失败与取消路径也要按它的事件统计已成功的产物。
     const session = activeSession();
     const firstTaskEventIndex = session.session.events().length;
+    // 起点批次先落 SQLite，再准备扩展、钩子或外部模型；失败时不会留下可执行但未保存的任务。
+    let preparedStart: ReturnType<typeof prepareTurnStart> | undefined;
     let closeExtensions: (() => Promise<void>) | undefined;
     try {
+      preparedStart = prepareTurnStart(buildAgentPrompt(prompt.trim(), session.attachments), recovery);
+      session.session.appendMany(preparedStart.events);
       const settings = await loadRuntimeConfiguration(
         persistenceFilePath(),
         safeStorage,
@@ -648,6 +863,7 @@ function registerIpcHandlers(): void {
       if (settings.deepSeekApiKey === undefined) {
         throw new Error('请先在设置中配置当前对话模型的 API 密钥。');
       }
+      let terminalRunningPersisted = false;
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
@@ -669,6 +885,11 @@ function registerIpcHandlers(): void {
         command: createCommandPort(),
         terminal: terminalPortFor(session, workspacePortFor(sessionId), (terminal) => {
           sendAgentEvent({ type: 'terminal.updated', sessionId, terminal });
+          // 只在宿主终态转换时保存终端事实，逐块输出仍按现有有界内存通知。
+          if (terminal.status !== 'running' || !terminalRunningPersisted) {
+            persistSessionResourceState(sessionId);
+            if (terminal.status === 'running') terminalRunningPersisted = true;
+          }
         }, () => { if (activeTask?.controller === controller) activeTask.terminalTouched = true; }),
         askUser: (question, context) => {
           const called = session.session.events().findLast((event) => event.type === 'tool.called' && event.toolCallId === context.toolCallId);
@@ -693,14 +914,25 @@ function registerIpcHandlers(): void {
               sendAgentEvent({ type: 'activity.detail', activityId: context.toolCallId, detail: { kind: 'subagents', tasks: [...currentChildren.values()] } });
             }, (record) => {
               session.subagentHistory.push(record);
+              // 子任务完成记录与父 Session 同一快照落盘；保存失败会终止当前轮次，不能只留在内存。
+              persistSessionResourceState(sessionId);
               currentChildren.set(record.result.taskId, record.result);
             });
           };
         })(),
       });
-      const extensionFiles = await extensionStore().files(session.workingDirectory);
-      const extensions = await prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
-        { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) });
+      const safeRecovery = recovery !== undefined && projectRecoveryFacts(session.session.events()).unknownEffects.length > 0;
+      if (safeRecovery) {
+        const safeTools = new InMemoryToolRegistry();
+        for (const tool of agent.tools.list()) {
+          if (['list_directory', 'read_file', 'search_text', 'read_terminal'].includes(tool.name)) safeTools.register(tool);
+        }
+        agent = { ...agent, tools: safeTools };
+      }
+      const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(session.workingDirectory);
+      const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
+        () => prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
+          { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) }));
       closeExtensions = extensions.close;
       for (const tool of extensions.tools) agent.tools.register(tool);
       if (settings.memoryEnabled) {
@@ -714,18 +946,21 @@ function registerIpcHandlers(): void {
       }
       // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
       agent.tools.register(new UpdatePlanTool(session.session, qualifyTaskToolEvidence));
-      if (session.pendingSessionStart !== undefined) {
+      agent.tools.register(new VerifyToolOutcomeTool(session.session, workspacePortFor(sessionId)));
+      if (recovery === undefined && session.pendingSessionStart !== undefined) {
         const source = session.pendingSessionStart;
         // 在执行前消费；失败或取消后的继续任务不会重放已触发的启动命令。
         delete session.pendingSessionStart;
-        await extensions.runHooks('SessionStart', { session_id: activeSessionId, source });
+        await runHostOperation(session, preparedStart.turnId, 'session-start', '运行会话启动钩子。',
+          () => extensions.runHooks('SessionStart', { session_id: activeSessionId, source }));
       }
-      await extensions.runHooks('UserPromptSubmit', { prompt: prompt.trim(), session_id: activeSessionId });
+      if (recovery === undefined) await runHostOperation(session, preparedStart.turnId, 'prompt-submit', '运行用户提示提交钩子。',
+        () => extensions.runHooks('UserPromptSubmit', { prompt: prompt.trim(), session_id: activeSessionId }));
       if (extensions.instructions !== '') {
         const base = agent.systemPrompt.build();
         agent = { ...agent, systemPrompt: { build: () => base + extensions.instructions } };
       }
-      if (settings.memoryEnabled) {
+      if (recovery === undefined && settings.memoryEnabled) {
         const memories = loadMemories(persistenceFilePath());
         let instructions = '';
         try { instructions = await readFile(join(app.getPath('home'), 'AGENTS.md'), 'utf8'); }
@@ -753,6 +988,7 @@ function registerIpcHandlers(): void {
             sendTaskState(sessionId);
           },
           signal: controller.signal,
+          turnId: preparedStart.turnId,
           qualifyToolEvidence: qualifyTaskToolEvidence,
           // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
           ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
@@ -776,7 +1012,8 @@ function registerIpcHandlers(): void {
           },
         },
       );
-      await extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText });
+      if (recovery === undefined) await runHostOperation(session, result.turnId, 'stop', '运行本轮停止钩子。',
+        () => extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText }));
       // 产物身份是真实路径；文件名只是给界面看的标签，因此同名不同目录可以并存。
       const outputFiles = toOutputFiles(result.artifacts);
       const taskState = projectAgentTaskState(session.session.events(), result.turnId);
@@ -807,15 +1044,27 @@ function registerIpcHandlers(): void {
     } catch (error) {
       // Electron 不传递 Error 自定义字段：失败终态改用普通对象跨 IPC，再由 Preload 还原 Error。
       if (!(error instanceof Error)) throw error;
+      // 扩展准备或宿主启动在进入 Loop 前失败时，起点仍需留下真实失败终态。
+      if (error instanceof SessionPersistenceError) throw error;
+      if (preparedStart !== undefined && projectTurnState(session.session.events(), preparedStart.turnId) === 'started') {
+        try {
+          session.session.append({ type: 'turn.failed', turnId: preparedStart.turnId, errorName: error.name, errorMessage: error.message });
+        } catch (persistenceError) {
+          if (persistenceError instanceof SessionPersistenceError) throw persistenceError;
+          throw error;
+        }
+      }
       // 失败或取消不代表本轮此前没有产出：已交付文件和逐项结果都是真实事实。
       const outputs = turnOutputResults(session.session.events(), firstTaskEventIndex);
       const outputFiles = succeededOutputFiles(session.session.events(), firstTaskEventIndex);
+      const taskState = preparedStart === undefined ? undefined : projectAgentTaskState(session.session.events(), preparedStart.turnId);
       return {
         status: 'error',
         errorName: error.name,
         errorMessage: error.message,
         ...(outputFiles === undefined ? {} : { outputFiles }),
         ...(outputs === undefined ? {} : { outputs }),
+        ...(taskState === undefined ? {} : { taskState }),
       };
     } finally {
       try {
@@ -829,6 +1078,36 @@ function registerIpcHandlers(): void {
         markFinished();
       }
     }
+  };
+  ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, runAgentTaskHandler);
+  ipcMain.handle(DESKTOP_CHANNELS.recoverTask, async (event, request: unknown) => {
+    if (typeof request !== 'object' || request === null) throw new Error('恢复请求无效。');
+    const value = request as Record<string, unknown>;
+    if (typeof value.sessionId !== 'string' || typeof value.sourceTurnId !== 'string'
+      || (value.mode !== undefined && value.mode !== 'continue' && value.mode !== 'verify')) throw new Error('恢复请求字段无效。');
+    return runAgentTaskHandler(event, '请继续完成原任务。', { ...value, mode: value.mode ?? 'continue' });
+  });
+  ipcMain.handle(DESKTOP_CHANNELS.verifyTaskEffect, (_event, request: unknown) => {
+    if (isTaskRunning) throw new Error('任务执行期间不能修改核验事实。');
+    if (typeof request !== 'object' || request === null) throw new Error('核验请求无效。');
+    const value = request as Record<string, unknown>;
+    if (value.sessionId !== activeSessionId || typeof value.sourceEventIndex !== 'number'
+      || !Number.isSafeInteger(value.sourceEventIndex) || value.sourceEventIndex < 0
+      || (value.outcome !== 'completed' && value.outcome !== 'not-applied')
+      || (value.description !== undefined && (typeof value.description !== 'string' || value.description.trim() === '' || value.description.length > 512))) {
+      throw new Error('核验请求字段无效。');
+    }
+    const session = activeSession();
+    const fact = projectRecoveryFacts(session.session.events()).unknownEffects.find(item => item.sourceEventIndex === value.sourceEventIndex);
+    if (fact === undefined) throw new Error('该外部效果已经核验或不存在。');
+    const description = typeof value.description === 'string' ? value.description : (
+      value.outcome === 'completed' ? '用户确认该外部效果已经完成。' : '用户确认该外部效果没有应用。');
+    session.session.append({ type: 'effect.outcome.verified', turnId: fact.source.turnId,
+      sourceEventIndex: value.sourceEventIndex, scope: 'entire-call', outcome: value.outcome,
+      evidence: { source: 'user', reference: `user:${activeSessionId}:${value.sourceEventIndex}`, description } });
+    const state = projectAgentTaskState(session.session.events(), fact.source.turnId);
+    sendTaskState(activeSessionId);
+    return state;
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.cancelTask, () => {

@@ -491,11 +491,14 @@ export function App({ api }: AppProps) {
     }
   };
 
-  const sendTask = async () => {
+  const sendTask = async (recovery?: { readonly sourceTurnId: string; readonly mode: 'continue' | 'verify' }) => {
     const sessionId = activeSessionIdRef.current;
     const conversation = activeConversation;
     if (conversation === undefined) return;
-    const taskPrompt = conversation.prompt.trim();
+    if (recovery !== undefined && api.recoverTask === undefined) return;
+    const taskPrompt = recovery === undefined
+      ? conversation.prompt.trim()
+      : recovery.mode === 'verify' ? '核验未确定的外部效果' : '继续未完成任务';
     if (!taskPrompt || isProcessing || conversation.archived) return;
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
@@ -511,10 +514,10 @@ export function App({ api }: AppProps) {
           id: nextMessageId.current,
           role: 'user',
           text: taskPrompt,
-          attachments: conversation.attachments.map((attachment) => attachment.name),
-          ...(conversation.attachments.length === 0 ? {} : {
+          attachments: recovery === undefined ? conversation.attachments.map((attachment) => attachment.name) : [],
+          ...(recovery === undefined && conversation.attachments.length > 0 ? {
             attachmentRoles: conversation.attachments.map((attachment) => attachment.role),
-          }),
+          } : {}),
         },
         {
           id: assistantMessageId,
@@ -535,7 +538,9 @@ export function App({ api }: AppProps) {
     setIsProcessing(true);
 
     try {
-      const taskResult = await api.runAgentTask(taskPrompt);
+      const taskResult = recovery === undefined
+        ? await api.runAgentTask(taskPrompt)
+        : await api.recoverTask!(sessionId, recovery.sourceTurnId, recovery.mode);
       // 执行期间禁止切换会话，因此异步结果仍属于当前活动会话；这里也避开初始 ID 查询完成时的占位 ID 变化。
       updateConversation(activeSessionIdRef.current, (currentConversation) => ({
         ...currentConversation,
@@ -561,6 +566,7 @@ export function App({ api }: AppProps) {
       // 失败或取消时，此前已成功的工具产出和逐项结果仍是真实事实：宿主把它们挂在错误上，这里原样带到终态。
       const outputFiles = (error as { outputFiles?: readonly AgentTaskOutputFile[] }).outputFiles;
       const outputs = (error as { outputs?: readonly AgentTaskOutputItemResult[] }).outputs;
+      const taskState = (error as { taskState?: import('./api.js').AgentTaskState }).taskState;
       const artifacts = {
         ...(outputFiles === undefined || outputFiles.length === 0 ? {} : { outputFiles }),
         ...(outputs === undefined || outputs.length === 0 ? {} : { outputs }),
@@ -579,6 +585,7 @@ export function App({ api }: AppProps) {
                   )),
                   activityExpanded: false,
                   ...artifacts,
+                  ...(taskState === undefined ? {} : { taskState }),
                 }
               : {
                   ...dropStreamedText(message),
@@ -586,6 +593,7 @@ export function App({ api }: AppProps) {
                   errorMessage: error instanceof Error ? error.message : '任务执行失败。',
                   activityExpanded: false,
                   ...artifacts,
+                  ...(taskState === undefined ? {} : { taskState }),
                 }
             : message
         )),
@@ -598,6 +606,24 @@ export function App({ api }: AppProps) {
       streamedStepId.current = undefined;
       setIsProcessing(false);
     }
+  };
+
+  const recoverTask = (sourceTurnId: string, mode: 'continue' | 'verify') => {
+    if (isProcessing || api.recoverTask === undefined) return;
+    void sendTask({ sourceTurnId, mode });
+  };
+
+  const verifyTaskEffect = async (sourceEventIndex: number, outcome: 'completed' | 'not-applied') => {
+    if (isProcessing || api.verifyTaskEffect === undefined) return;
+    const state = await api.verifyTaskEffect(activeSessionIdRef.current, sourceEventIndex, outcome);
+    updateConversation(activeSessionIdRef.current, conversation => ({
+      ...conversation,
+      messages: conversation.messages.map(message => {
+        if (message.role !== 'assistant') return message;
+        const currentState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
+        return currentState?.rootTurnId === state.rootTurnId ? { ...message, taskState: state } : message;
+      }),
+    }));
   };
 
   const decideApproval = async (approved: boolean) => {
@@ -750,6 +776,8 @@ export function App({ api }: AppProps) {
           onHistoryScroll={handleHistoryScroll}
           onToggleActivity={toggleActivity}
           onRevealFile={(path) => api.revealFile(path)}
+          onRecover={recoverTask}
+          onVerifyEffect={(sourceEventIndex, outcome) => void verifyTaskEffect(sourceEventIndex, outcome)}
         />
         </div>
       </div>

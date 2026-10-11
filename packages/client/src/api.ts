@@ -46,6 +46,13 @@ export interface AgentTaskState {
   readonly rootTurnId: string;
   readonly latestTurnId: string;
   readonly status: 'started' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked';
+  /** 当前仍待事实核验的外部效果；索引来自 Session，不是模型可伪造的调用 ID。 */
+  readonly unknownEffects?: readonly {
+    readonly sourceEventIndex: number;
+    readonly source: 'tool' | 'host';
+    readonly label: string;
+    readonly description: string;
+  }[];
   readonly plan?: {
     readonly revision: number;
     readonly explanation: string;
@@ -580,6 +587,8 @@ export interface AgentClientApi {
   switchSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<string>;
   runAgentTask(prompt: string): Promise<AgentTaskResult>;
+  recoverTask?(sessionId: string, sourceTurnId: string, mode?: 'continue' | 'verify'): Promise<AgentTaskResult>;
+  verifyTaskEffect?(sessionId: string, sourceEventIndex: number, outcome?: 'completed' | 'not-applied', description?: string): Promise<AgentTaskState>;
   cancelTask(): Promise<void>;
   onAgentEvent(listener: (event: AgentRuntimeEvent) => void): () => void;
   /**

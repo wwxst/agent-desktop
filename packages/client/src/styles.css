@@ -975,6 +975,13 @@ input:focus-visible {
 .task-plan-evidence { display: flex; flex-wrap: wrap; gap: 3px 8px; margin: 1px 0 0 21px; color: var(--text-muted); font-size: 11px; line-height: 17px; }
 .task-plan-evidence span::before { content: '· '; }
 
+.task-recovery { display: grid; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+.task-recovery-effect { display: grid; gap: 6px; min-width: 0; }
+.task-recovery-effect p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.task-recovery-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-recovery button { min-height: 28px; padding: 4px 10px; border: 1px solid var(--border-default); border-radius: 5px; background: var(--surface-raised); color: var(--text-primary); font: inherit; font-size: 12px; cursor: pointer; }
+.task-recovery button:hover { border-color: var(--accent); color: var(--accent); }
+
 .conversation-scroll {
   display: flex;
   flex-direction: column;

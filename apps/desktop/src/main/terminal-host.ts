@@ -86,6 +86,12 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       return owner.terminal.snapshot();
     },
     read: async (id, waitMs, context) => {
+      // 重启后没有活的 SessionTerminal；只返回保存过的有界历史，绝不重连或重放旧进程。
+      if (owner.terminal === undefined) {
+        const history = owner.terminalHistory;
+        if (history?.terminalId !== id) throw new Error('终端不属于当前会话，或连接已结束。');
+        return history.status === 'running' ? { ...history, status: 'disconnected' as const } : history;
+      }
       const terminal = current(id); touched();
       if (waitMs > 0) await delay(waitMs, undefined, { signal: context.signal });
       return terminal.snapshot();

@@ -43,6 +43,8 @@ export const DESKTOP_CHANNELS = {
   switchSession: 'desktop:switch-session',
   deleteSession: 'desktop:delete-session',
   runAgentTask: 'desktop:run-agent-task',
+  recoverTask: 'desktop:recover-task',
+  verifyTaskEffect: 'desktop:verify-task-effect',
   cancelTask: 'desktop:cancel-task',
   decideApproval: 'desktop:decide-approval',
   answerQuestion: 'desktop:answer-question',
@@ -68,6 +70,7 @@ export type AgentTaskIpcResult =
     /** 取消或失败前已经真实交付的文件与逐项结果仍然可见。 */
     readonly outputFiles?: readonly AgentTaskOutputFile[];
     readonly outputs?: readonly AgentTaskOutputItemResult[];
+    readonly taskState?: import('@agent-desktop/client').AgentTaskState;
   };
 
 export type {
