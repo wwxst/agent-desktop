@@ -263,6 +263,8 @@ function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientSta
     let nextId = Math.max(0, ...messages.map(message => message.id)) + 1;
     for (const user of userTurns) {
       let userIndex = messages.findIndex((message, index) => index >= cursor && message.role === 'user' && message.text === user.content);
+      // Session 用户事实包含宿主追加的附件说明；Client 只保存原始输入，文本不同时按历史顺序配对。
+      if (userIndex < 0) userIndex = messages.findIndex((message, index) => index >= cursor && message.role === 'user');
       if (userIndex < 0) {
         userIndex = cursor;
         messages.splice(userIndex, 0, { id: nextId++, role: 'user', text: user.content, attachments: [] });
