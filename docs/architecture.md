@@ -73,7 +73,7 @@ Producer Evidence    生产证据          成功视频写出及来源归属支�
 Binary Distribution  二进制分发        正式可执行程序的来源与版本管理留待后续阶段。
 ```
 
-Desktop 每轮先准备扩展，再调用 `createVideoAgent`。来源为 `builtin` 的 `plugin:video-editing` 中 `ffmpeg-probe` 服务映射七项只读专业工具：`probe_media`、`decode_video`、`detect_black_segments`、`extract_video_frames`、`extract_video_range_frames`、`extract_audio` 和 `extract_full_video_frames`。冲突直接失败；第三方同名工具仍使用限定名称。宿主将同一组适配器经 `mediaTools` 注入，应用层没有只读工具回退；CLI 在自身入口显式注入本机实现。Core 和 Loop 不接触 MCP 协议。
+Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映射十四项专业工具：`probe_media`、`decode_video`、`detect_black_segments`、`extract_video_frames`、`extract_video_range_frames`、`extract_audio`、`extract_full_video_frames`、`trim_video`、`concat_videos`、`add_audio`、`add_subtitles`、`resize_video`、`crop_video`、`set_speed`。冲突直接失败；第三方同名工具仍使用限定名称。宿主经 `mediaTools` 注入实际启用能力，应用层没有 FFmpeg 实现导入或自动回退；写出工具继续经过原有候选目录包装器。CLI 在自身入口显式注入本机实现。Core 和 Loop 不接触 MCP 协议。
 
 `probe-media-tool.ts` 在 MCP 调用审批前拒绝 URL、URI、UNC 网络路径和无工作目录的相对路径；路径先解析到真实文件，再验证已确认工作目录范围或精确匹配当前选择附件的真实路径。目录链接不能扩大工作目录权限。附件旁的候选只在存在成功视频生产记录、来源归属匹配、全部原始来源已授权、真实候选仍在对应输出项目录中时允许；只声明目录、未选择附件的邻居文件或伪造候选路径均不授权。生产归属复用交付工具的权威规则，不另建来源算法。
 

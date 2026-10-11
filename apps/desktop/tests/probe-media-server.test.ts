@@ -15,15 +15,16 @@ describe('bundled ffmpeg Probe MCP server', () => {
     execFileSync(join(process.env.WINDIR!, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'), ['/nologo', `/out:${executable}`, resolve('apps/desktop/tests/fixtures/probe-process.cs')]);
     await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'probe.cjs'), bundle: true, platform: 'node', format: 'cjs' });
     try {
-      for (const mode of ['cancel', 'disconnect']) {
+      for (const name of ['probe_media', 'trim_video']) for (const mode of ['cancel', 'disconnect']) {
         const client = new Client({ name: 'probe-test', version: '1' });
         try {
-          await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(directory, 'probe.cjs')], cwd: directory, env: { FFPROBE_PATH: executable } }));
+          await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(directory, 'probe.cjs')], cwd: directory, env: { FFPROBE_PATH: executable, FFMPEG_PATH: executable } }));
           for (const file of ['malformed.mp4', 'failed.mp4']) {
             expect(await client.callTool({ name: 'probe_media', arguments: { inputPath: join(directory, file) } })).toMatchObject({ isError: true });
           }
-          const controller = new AbortController(); const inputPath = join(directory, `${mode}.mp4`);
-          const pending = client.callTool({ name: 'probe_media', arguments: { inputPath } }, undefined, { signal: controller.signal });
+          const controller = new AbortController(); const inputPath = join(directory, `${name}-${mode}.mp4`);
+          const pending = client.callTool({ name, arguments: name === 'probe_media' ? { inputPath }
+            : { inputPath: join(directory, 'source.mp4'), outputPath: inputPath, start: 0, duration: 1 } }, undefined, { signal: controller.signal });
           const rejection = expect(pending).rejects.toThrow();
           let pid = 0;
           await vi.waitFor(async () => { pid = Number(await readFile(`${inputPath}.pid`, 'utf8')); expect(pid).toBeGreaterThan(0); });
@@ -47,7 +48,8 @@ describe('bundled ffmpeg Probe MCP server', () => {
       await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(directory, 'probe.cjs')],
         cwd: directory, env: { FFPROBE_PATH: executable } }));
       expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['probe_media', 'decode_video', 'detect_black_segments',
-        'extract_video_frames', 'extract_video_range_frames', 'extract_audio', 'extract_full_video_frames']);
+        'extract_video_frames', 'extract_video_range_frames', 'extract_audio', 'extract_full_video_frames',
+        'trim_video', 'concat_videos', 'add_audio', 'add_subtitles', 'resize_video', 'crop_video', 'set_speed']);
       const result = await client.callTool({ name: 'probe_media', arguments: { inputPath } });
       expect(result.structuredContent).toEqual({ inputPath, duration: 1, width: 160, height: 120, videoCodec: 'h264', audioCodec: null });
       const missing = await client.callTool({ name: 'probe_media', arguments: { inputPath: join(directory, 'missing.mp4') } });

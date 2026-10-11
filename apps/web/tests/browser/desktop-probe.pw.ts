@@ -29,6 +29,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   await symlink(outside, resolve(workspace, 'escape'), 'junction');
   const ffprobe = execFileSync('where.exe', ['ffprobe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
   const requests: Evidence[] = []; const allApprovals: ApprovalRequest[] = []; let imageCount = 0;
+  let lastCandidate: { outputItemId: string; candidatePath: string } | undefined;
   let cancellationProcesses: { before: string; after: string } | undefined;
   // 只替换模型网络响应及原生选择器；Electron、Loop、MCP、媒体进程、审批及磁盘事实都真实运行。
   const server = createServer(async (request, response) => {
@@ -58,19 +59,25 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
       const results = input.messages.slice(userIndex + 1).filter(message => message.role === 'tool').map(message => message.content as string);
       const step = results.length;
       requests.push({ scenario, tools: names, results });
-      if (scenario === 'delivery' || scenario === 'blocked') {
+      if (scenario === 'blocked') {
+        if (lastCandidate === undefined) throw new Error('停用验收缺少上一轮真实候选。');
+        const actions: [string, object][] = [['check_video_semantics', lastCandidate], ['validate_video_candidate', lastCandidate],
+          ['publish_video_output', { validationId: step > 1 ? (JSON.parse(results[1]!) as { validation: { id: string } }).validation.id : '' }]];
+        delta = step < actions.length ? call(actions[step]![0], actions[step]![1], `${scenario}-${step}`) : { content: `完成 ${scenario}` };
+      } else if (scenario === 'delivery') {
         const declared = step === 0 ? undefined : JSON.parse(results[0]!) as { items: { id: string; workingDirectory: string }[] };
         const item = declared?.items[0]; const candidatePath = item === undefined ? '' : resolve(item.workingDirectory, 'candidate.mp4');
         const check = { outputItemId: item?.id, candidatePath };
+        if (item !== undefined) lastCandidate = { outputItemId: item.id, candidatePath };
         const actions: [string, object][] = [
           ['declare_video_outputs', { items: [{ sourcePaths: [source], target: { kind: 'automatic' }, requirements: [
             { kind: 'duration-range', minSeconds: 0.5, maxSeconds: 0.7 }, { kind: 'semantic', description: '完整画面是红色矩形' },
           ] }] }],
           ['trim_video', { inputPath: source, outputPath: candidatePath, start: 0, duration: 0.6 }],
           ['decode_video', { inputPath: candidatePath }],
-          ...(scenario === 'delivery' ? [['probe_media', { inputPath: candidatePath }] as [string, object]] : []),
+          ['probe_media', { inputPath: candidatePath }],
           ['check_video_semantics', check], ['validate_video_candidate', check],
-          ['publish_video_output', { validationId: step > (scenario === 'delivery' ? 5 : 4) ? (JSON.parse(results[scenario === 'delivery' ? 5 : 4]!) as { validation: { id: string } }).validation.id : '' }],
+          ['publish_video_output', { validationId: step > 5 ? (JSON.parse(results[5]!) as { validation: { id: string } }).validation.id : '' }],
         ];
         delta = step < actions.length ? call(actions[step]![0], actions[step]![1], `${scenario}-${step}`) : { content: `完成 ${scenario}` };
       } else if (scenario === 'workspace' && step === 0) delta = call('set_working_directory', { path: workspace }, `${scenario}-${step}`);
@@ -146,7 +153,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'allow'; });
     const before = (await approvals()).filter(request => request.kind === 'plugin-tool').length;
     const delivered = await run('delivery');
-    expect((await approvals()).filter(request => request.kind === 'plugin-tool')).toHaveLength(before + 2);
+    expect((await approvals()).filter(request => request.kind === 'plugin-tool')).toHaveLength(before + 5);
     expect(JSON.parse(delivered.results[4]!), delivered.results[4]).toMatchObject({ coverage: 'all-frames-and-transcript', frameCount: 3, checks: [{ outcome: 'passed' }] });
     const validation = JSON.parse(delivered.results[5]!) as { validation: { checks: { outcome: string; evidenceToolCallIds: string[] }[] } };
     expect(validation.validation.checks.every(check => check.outcome === 'passed')).toBe(true);
@@ -158,11 +165,11 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     expect(pixels[0]).toBeGreaterThan(240); expect(pixels[1]).toBeLessThan(10); expect(pixels[2]).toBeLessThan(10);
     await page.screenshot({ path: resolve(evidence, 'published.png') });
     await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:video-editing', false));
-    const disabled = await run('disabled'); expect(disabled.tools).not.toContain('probe_media'); expect(disabled.tools).toContain('trim_video');
+    const disabled = await run('disabled'); expect(disabled.tools).not.toContain('probe_media'); expect(disabled.tools).not.toContain('trim_video');
     const blocked = await run('blocked');
-    expect(JSON.parse(blocked.results[3]!)).toMatchObject({ checks: [{ outcome: 'blocked', detail: expect.stringContaining('probe_media') }] });
-    expect(JSON.parse(blocked.results[4]!).validation.checks[2]).toMatchObject({ outcome: 'blocked', detail: expect.stringContaining('probe_media') });
-    expect(blocked.results[5]).toContain('不能发布');
+    expect(JSON.parse(blocked.results[0]!)).toMatchObject({ checks: [{ outcome: 'blocked', detail: expect.stringContaining('probe_media') }] });
+    expect(JSON.parse(blocked.results[1]!).validation.checks[2]).toMatchObject({ outcome: 'blocked', detail: expect.stringContaining('probe_media') });
+    expect(blocked.results[2]).toContain('不能发布');
     allApprovals.push(...await approvals());
     await app.close(); app = await launch(); page = await app.firstWindow(); await observeApprovals();
     expect((await run('restart-disabled')).tools).not.toContain('probe_media');

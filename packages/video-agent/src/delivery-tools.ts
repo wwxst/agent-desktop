@@ -37,7 +37,7 @@ import {
 export type SessionReader = () => readonly SessionEvent[];
 
 /** 当前会写出候选文件的视频工具；只有它们的成功结果可以建立候选。 */
-const VIDEO_WRITE_TOOL_NAMES = new Set([
+export const VIDEO_WRITE_TOOL_NAMES = new Set([
   'trim_video',
   'concat_videos',
   'add_audio',
@@ -463,7 +463,7 @@ function checkRequirement(
 ): RequirementCheck {
   switch (requirement.kind) {
     case 'decodable-video': {
-      const found = findCheckEvidence(events, toolNames, 'decode_video', candidatePath, producerResultIndex);
+      const found = findCheckEvidence(events, toolNames, 'decode_video', candidatePath, producerResultIndex, canonicalPath);
       if (found === undefined) {
         return blocked(requirement.id, 'insufficient-evidence', '缺少本候选的全文件解码检查证据。');
       }
@@ -508,6 +508,7 @@ function checkRequirement(
         'detect_black_segments',
         candidatePath,
         producerResultIndex,
+        canonicalPath,
       );
       if (found === undefined) {
         return blocked(requirement.id, 'insufficient-evidence', '缺少本候选的黑段检测证据。');

@@ -8,7 +8,7 @@ import { runTurn } from '@agent-desktop/agent-loop';
 import { InMemorySession } from '@agent-desktop/session';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import { createVideoAgent, readVideoDeliveryFacts } from '@agent-desktop/video-agent';
-import { adaptProbeMediaTool, adaptFFmpegReadTool, FFMPEG_READ_TOOLS, type ProbeFileAccess } from '../src/main/probe-media-tool.js';
+import { adaptProbeMediaTool, adaptFFmpegTool, FFMPEG_READ_TOOLS, type ProbeFileAccess } from '../src/main/probe-media-tool.js';
 import { prepareExtensions } from '../src/main/extension-runtime.js';
 import type { PluginFiles } from '../src/main/extensions.js';
 
@@ -38,7 +38,7 @@ describe('host Probe capability boundary', () => {
     await writeFile(join(outside, 'video.mp4'), 'data');
     await symlink(outside, join(workspace, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
     for (const name of FFMPEG_READ_TOOLS) {
-      const raw = rawTool(); const tool = adaptFFmpegReadTool(raw, access, name);
+      const raw = rawTool(); const tool = adaptFFmpegTool(raw, access, name);
       const field = ['extract_video_frames', 'extract_video_range_frames', 'extract_audio'].includes(name) ? 'videoPath' : 'inputPath';
       expect(await tool.execute({ [field]: join(outside, 'video.mp4') }, context)).toMatchObject({ status: 'error' });
       expect(await tool.execute({ [field]: 'https://example.com/file.mp4' }, context)).toMatchObject({ status: 'error' });
@@ -78,7 +78,7 @@ describe('host Probe capability boundary', () => {
       expect(results[2]).toMatchObject({ result: { output: { hasBlackSegments: false, segments: [] } } });
       expect(results[3]).toMatchObject({ result: { output: { frames: expect.any(Array), duration: 2 } } });
       expect(results[5]).toMatchObject({ result: { output: { complete: true, frames: expect.arrayContaining([{ path: expect.any(String), timestamp: 0 }]) } } });
-      expect(results[6]).toMatchObject({ result: { output: `Audio created: ${outputPath}` } });
+      expect(results[6]).toMatchObject({ result: { output: `Audio created: ${await realpath(outputPath)}` } });
       const audio = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', outputPath], { encoding: 'utf8' })) as { streams: Array<{ codec_name: string; sample_rate: string; channels: number }> };
       expect(audio.streams[0]).toMatchObject({ codec_name: 'pcm_s16le', sample_rate: '16000', channels: 1 });
       expect(approve.mock.calls.filter(([request]) => request.kind === 'plugin-tool')).toHaveLength(7);

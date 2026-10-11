@@ -23,7 +23,7 @@ import {
   projectAgentActivityDetail,
 } from './agent-activity.js';
 import { CommandOutputProjection, createCommandPort } from './command-host.js';
-import { FFMPEG_READ_TOOLS } from './probe-media-tool.js';
+import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './probe-media-tool.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';
@@ -641,12 +641,13 @@ function registerIpcHandlers(): void {
       }
       // 先准备插件再组装 Agent；公开 Probe 与语义验收必须持有同一个已授权适配器。
       const extensionFiles = await extensionStore().files(session.workingDirectory);
+      const mediaAccess = { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
+        events: () => session.session.events() };
       const extensions = await prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
         { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
-          probeAccess: { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
-            events: () => session.session.events() } });
+          probeAccess: mediaAccess });
       closeExtensions = extensions.close;
-      const mediaTools = extensions.tools.filter(tool => FFMPEG_READ_TOOLS.has(tool.name)).map(extensions.wrapTool);
+      const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name)).map(extensions.wrapTool);
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
@@ -699,14 +700,17 @@ function registerIpcHandlers(): void {
         })(),
       });
       // Probe 已注入且已包装钩子，只追加其他扩展工具。
-      for (const tool of extensions.tools) if (!FFMPEG_READ_TOOLS.has(tool.name)) agent.tools.register(tool);
+      for (const tool of extensions.tools) if (!FFMPEG_TOOLS.has(tool.name)) agent.tools.register(tool);
+      const authorizedTools = new InMemoryToolRegistry();
+      for (const tool of agent.tools.list()) authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
+      agent = { ...agent, tools: authorizedTools };
       if (settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
         agent.tools.register(new SaveMemoryTool(persistenceFilePath(), () => hasToolCall() ? 'tool' : 'conversation', settings.memoryFromToolChatsEnabled ?? true));
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(FFMPEG_READ_TOOLS.has(tool.name) ? tool : extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(FFMPEG_TOOLS.has(tool.name) ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
       if (session.pendingSessionStart !== undefined) {

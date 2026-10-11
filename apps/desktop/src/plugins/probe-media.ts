@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool, ExtractAudioTool, ExtractFullVideoFramesTool, executeFileCommand,
+  TrimVideoTool, ConcatVideosTool, AddAudioTool, AddSubtitlesTool, ResizeVideoTool, CropVideoTool, SetSpeedTool,
   type CommandExecutor } from '@agent-desktop/video-ffmpeg';
 
 // 服务只适配传输和明确的可执行程序路径；媒体参数、解析和错误契约复用原工具。
@@ -19,7 +20,9 @@ const execute: CommandExecutor = async (command, args, signal) => {
   return executeFileCommand(executable, restricted, signal);
 };
 const tools = [new ProbeMediaTool(execute), new DecodeVideoTool(execute), new DetectBlackSegmentsTool(execute),
-  new ExtractVideoFramesTool(execute), new ExtractVideoRangeFramesTool(execute), new ExtractAudioTool(execute), new ExtractFullVideoFramesTool(execute)];
+  new ExtractVideoFramesTool(execute), new ExtractVideoRangeFramesTool(execute), new ExtractAudioTool(execute), new ExtractFullVideoFramesTool(execute),
+  new TrimVideoTool(execute), new ConcatVideosTool(execute), new AddAudioTool(execute), new AddSubtitlesTool(execute),
+  new ResizeVideoTool(execute), new CropVideoTool(execute), new SetSpeedTool(execute)];
 const server = new Server({ name: 'ffmpeg-probe', version: '1.0.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map(tool => ({
   name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
@@ -29,7 +32,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request, context) => {
   if (tool === undefined) throw new Error('未知的 FFmpeg 工具。');
   const input = request.params.arguments;
   // 服务不会作为任意 URL 或命令入口；宿主已完成授权，这里只接受绝对本地文件。
-  const paths = Object.entries(input ?? {}).filter(([key]) => ['inputPath', 'videoPath', 'outputPath', 'outputDir'].includes(key));
+  const paths = Object.entries(input ?? {}).filter(([key]) => ['inputPath', 'videoPath', 'audioPath', 'subtitlePath', 'outputPath', 'outputDir'].includes(key));
+  if (Array.isArray(input?.inputPaths)) paths.push(...input.inputPaths.map(path => ['inputPaths', path] as [string, unknown]));
   if (paths.some(([, path]) => typeof path !== 'string' || !isAbsolute(path)
     || /^(?:[a-z][a-z0-9+.-]*:)(?![\\/])/i.test(path) || /^[\\/]{2}/.test(path))) {
     return { isError: true, content: [{ type: 'text', text: 'FFmpeg 只接受已授权的本地绝对路径。' }] };

@@ -329,7 +329,7 @@ describe('desktop main session lifecycle', () => {
     expect(secondAgent).not.toBe(firstAgent);
     expect(secondAgent.session).not.toBe(firstAgent.session);
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
-      secondAgent,
+      expect.objectContaining({ session: secondAgent.session }),
       '记住数字 952',
       [],
       expect.objectContaining({
@@ -351,7 +351,7 @@ describe('desktop main session lifecycle', () => {
     await runAgentTask!({}, '我刚才让你记住什么数字？');
     const followUpAgent = mainMocks.agents[2]!;
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
-      followUpAgent,
+      expect.objectContaining({ session: followUpAgent.session }),
       '我刚才让你记住什么数字？',
       [{ path: 'D:/videos/input.mp4', role: 'video' }],
       expect.objectContaining({
