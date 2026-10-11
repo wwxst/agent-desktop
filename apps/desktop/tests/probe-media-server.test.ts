@@ -46,7 +46,8 @@ describe('bundled ffmpeg Probe MCP server', () => {
         bundle: true, platform: 'node', format: 'cjs' });
       await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(directory, 'probe.cjs')],
         cwd: directory, env: { FFPROBE_PATH: executable } }));
-      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['probe_media']);
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['probe_media', 'decode_video', 'detect_black_segments',
+        'extract_video_frames', 'extract_video_range_frames', 'extract_audio', 'extract_full_video_frames']);
       const result = await client.callTool({ name: 'probe_media', arguments: { inputPath } });
       expect(result.structuredContent).toEqual({ inputPath, duration: 1, width: 160, height: 120, videoCodec: 'h264', audioCodec: null });
       const missing = await client.callTool({ name: 'probe_media', arguments: { inputPath: join(directory, 'missing.mp4') } });

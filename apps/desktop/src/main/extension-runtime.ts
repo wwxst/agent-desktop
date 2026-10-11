@@ -11,7 +11,7 @@ import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 import type { McpServerFile, PluginFiles, SkillFile, StandaloneMcpFile } from './extensions.js';
 import { readSkill } from './extensions.js';
-import { adaptProbeMediaTool, type ProbeFileAccess } from './probe-media-tool.js';
+import { adaptFFmpegReadTool, FFMPEG_READ_TOOLS, type ProbeFileAccess } from './probe-media-tool.js';
 
 type Approve = (request: PluginApproval, signal?: AbortSignal) => Promise<boolean>;
 
@@ -184,8 +184,8 @@ export async function prepareExtensions(
             };
             // 仅随包安装的已知服务可占用既有公开名；同名第三方插件仍使用限定名称。
             const mapped = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:video-editing'
-              && server.name === 'ffmpeg-probe' && definition.name === 'probe_media'
-              ? adaptProbeMediaTool(tool, options?.probeAccess) : tool;
+              && server.name === 'ffmpeg-probe' && FFMPEG_READ_TOOLS.has(definition.name)
+              ? adaptFFmpegReadTool(tool, options?.probeAccess, definition.name) : tool;
             if (tools.some(existing => existing.name === mapped.name)) throw new Error(`插件工具名称冲突：${mapped.name}`);
             tools.push(mapped);
           }

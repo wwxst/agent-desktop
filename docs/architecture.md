@@ -73,7 +73,7 @@ Producer Evidence    生产证据          成功视频写出及来源归属支�
 Binary Distribution  二进制分发        正式可执行程序的来源与版本管理留待后续阶段。
 ```
 
-Desktop 每轮先准备扩展，再调用 `createVideoAgent`。只有来源为 `builtin` 的 `plugin:video-editing` 中 `ffmpeg-probe` 服务的内部 `probe_media` 映射到公开名 `probe_media`，冲突直接失败；第三方同名工具仍使用限定名称。宿主从扩展列表取出该适配器并注入一次，其他工具继续追加。共享视频 Agent 不实例化 Probe，CLI 在自身组装层显式注入本机 `ProbeMediaTool`；Core 和 Loop 不接触 MCP 协议。
+Desktop 每轮先准备扩展，再调用 `createVideoAgent`。来源为 `builtin` 的 `plugin:video-editing` 中 `ffmpeg-probe` 服务映射七项只读专业工具：`probe_media`、`decode_video`、`detect_black_segments`、`extract_video_frames`、`extract_video_range_frames`、`extract_audio` 和 `extract_full_video_frames`。冲突直接失败；第三方同名工具仍使用限定名称。宿主将同一组适配器经 `mediaTools` 注入，应用层没有只读工具回退；CLI 在自身入口显式注入本机实现。Core 和 Loop 不接触 MCP 协议。
 
 `probe-media-tool.ts` 在 MCP 调用审批前拒绝 URL、URI、UNC 网络路径和无工作目录的相对路径；路径先解析到真实文件，再验证已确认工作目录范围或精确匹配当前选择附件的真实路径。目录链接不能扩大工作目录权限。附件旁的候选只在存在成功视频生产记录、来源归属匹配、全部原始来源已授权、真实候选仍在对应输出项目录中时允许；只声明目录、未选择附件的邻居文件或伪造候选路径均不授权。生产归属复用交付工具的权威规则，不另建来源算法。
 
@@ -81,7 +81,7 @@ Desktop 每轮先准备扩展，再调用 `createVideoAgent`。只有来源为 `
 
 随包服务由 `apps/desktop/src/plugins/probe-media.ts` 构建为自包含 CJS 资源，使用 Electron 自带 Node 运行时及原 `ProbeMediaTool`，不复制 FFmpeg 参数或解析逻辑。`FFPROBE_PATH` 必须明确指向本地绝对可执行文件；插件连接配置优先于启动环境。缺少配置在调用时失败，不下载、不搜索 PATH、不影响普通任务启动。ffprobe 协议限定为 `file`，只接受常用普通媒体容器，拒绝网络协议与播放列表间接资源。stdin 结束会关闭 SDK、取消在途请求并终止探测子进程。
 
-插件未安装、停用、卸载或启动被拒绝时，下一轮没有独立 `probe_media`，依赖它的语义验收明确返回 `blocked`；依赖时长的候选验收缺少公开探测证据也受阻。普通任务及其他视频工具仍可运行，解码、黑段检测、剪辑、抽帧等 FFmpeg 实现保留。它们内部使用 ffprobe 或通用终端执行 FFmpeg 的能力不属于本次卸载范围，因此此阶段只完成 Desktop 的独立 Probe 插件化。
+抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制。插件未安装、停用、卸载或启动被拒绝时，下一轮没有这些只读工具，依赖能力的验收明确受阻。普通任务及写出工具继续使用阶段二现有路径；完整写出迁移与独立插件分发仍在实施，记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
 
 该边界是宿主调用策略，不是操作系统沙箱；已批准的通用 MCP 服务或本机可执行程序仍以当前用户身份运行。此试点没有二进制下载、SHA-256 来源校验、签名、共享缓存、自动回收或正式分发更新；这些能力在正式插件分发阶段独立实施。验收记录见 [Probe 插件验收](acceptance/probe-media-plugin-20261011.md)。
 

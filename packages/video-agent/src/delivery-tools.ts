@@ -68,7 +68,7 @@ function latestTurnId(events: readonly SessionEvent[]): string | undefined {
 }
 
 /** 判断一个路径是否严格落在某个目录内部；相等不算内部。 */
-async function resolveThroughExistingParent(filePath: string): Promise<string> {
+export async function resolveThroughExistingParent(filePath: string): Promise<string> {
   let currentPath = resolve(filePath);
   const missingParts: string[] = [];
 

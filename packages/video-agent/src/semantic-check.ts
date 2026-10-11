@@ -1,10 +1,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Model, ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
-import { ExtractAudioTool, extractFullVideoFrames } from '@agent-desktop/video-ffmpeg';
 import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { readVideoDeliveryFacts, type RequirementCheck } from './delivery.js';
 import type { SessionReader } from './delivery-tools.js';
@@ -13,7 +11,7 @@ import { isInsideDirectory } from './delivery-tools.js';
 
 export interface SemanticCheckOptions {
   readonly model: Model; readonly vision?: AnalyzeImagesTool; readonly speech?: TranscribeAudioTool;
-  readonly probeMedia?: Tool;
+  readonly mediaTools?: readonly Tool[];
 }
 /** 验收独立消费候选实际内容；父模型只提交身份，不能填写通过或覆盖范围。 */
 export class CheckVideoSemanticsTool implements Tool {
@@ -38,15 +36,21 @@ export class CheckVideoSemanticsTool implements Tool {
       ...(digest === undefined ? {} : { candidateSha256: digest }), coverage: 'incomplete',
       checks: requirements.map((requirement) => ({ requirementId: requirement.id, outcome: 'blocked', detail: reason })) } });
     // 先经过入口提供的权限、审批与 Probe；不能先读取候选或发出昂贵的视觉请求。
-    if (this.options.probeMedia === undefined) return blocked('未提供 probe_media，候选语义验收无法确认。');
-    const probed = await this.options.probeMedia.execute({ inputPath }, context);
+    const probe = this.options.mediaTools?.find(tool => tool.name === 'probe_media');
+    if (probe === undefined) return blocked('未提供 probe_media，候选语义验收无法确认。');
+    const probed = await probe.execute({ inputPath }, context);
     if (probed.status === 'error') return blocked(`候选探测失败：${probed.message}`);
     const media = probed.output as { audioCodec: string | null; duration: number | null };
-    const temporary = await mkdtemp(join(tmpdir(), 'agent-semantic-'));
+    const fullFrames = this.options.mediaTools?.find(tool => tool.name === 'extract_full_video_frames');
+    if (fullFrames === undefined) return blocked('未提供 extract_full_video_frames，不能确认全部画面。');
+    // 临时媒体留在本输出项已授权的工作目录，插件不获得任意系统临时目录写权限。
+    const temporary = await mkdtemp(join(item.workingDirectory, '.semantic-'));
     try {
       digest = await candidateDigest(inputPath, context.signal);
       if (this.options.vision === undefined) return blocked('未配置视觉服务，无法检查候选全部画面。');
-      const extracted = await extractFullVideoFrames(inputPath, join(temporary, 'frames'), context.signal);
+      const extraction = await fullFrames.execute({ inputPath, outputDir: join(temporary, 'frames') }, context);
+      if (extraction.status === 'error') return blocked(`提取候选画面失败：${extraction.message}`);
+      const extracted = extraction.output as { complete: false; reason: string } | { complete: true; frames: readonly { path: string; timestamp: number }[] };
       if (!extracted.complete) return blocked(extracted.reason);
       const observations: unknown[] = [];
       // 每批仍使用现有六张图片的视觉边界；所有实际解码帧都必须有对应观察。
@@ -66,7 +70,9 @@ export class CheckVideoSemanticsTool implements Tool {
       if (media.audioCodec !== null) {
         if (this.options.speech === undefined) return blocked('候选有音轨，但未配置本地语音识别；不能省略声音内容验收。');
         const wav = join(temporary, 'audio.wav');
-        const audio = await new ExtractAudioTool().execute({ videoPath: inputPath, outputPath: wav }, context);
+        const extractAudio = this.options.mediaTools?.find(tool => tool.name === 'extract_audio');
+        if (extractAudio === undefined) return blocked('未提供 extract_audio，不能检查候选声音。');
+        const audio = await extractAudio.execute({ videoPath: inputPath, outputPath: wav }, context);
         if (audio.status === 'error') return blocked(`提取候选声音失败：${audio.message}`);
         const speech = await this.options.speech.execute({ audioPath: wav }, context);
         if (speech.status === 'error') return blocked(`语音检查失败：${speech.message}`);

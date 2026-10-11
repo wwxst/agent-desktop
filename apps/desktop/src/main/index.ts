@@ -23,6 +23,7 @@ import {
   projectAgentActivityDetail,
 } from './agent-activity.js';
 import { CommandOutputProjection, createCommandPort } from './command-host.js';
+import { FFMPEG_READ_TOOLS } from './probe-media-tool.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';
@@ -645,11 +646,11 @@ function registerIpcHandlers(): void {
           probeAccess: { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
             events: () => session.session.events() } });
       closeExtensions = extensions.close;
-      const probe = extensions.tools.find(tool => tool.name === 'probe_media');
+      const mediaTools = extensions.tools.filter(tool => FFMPEG_READ_TOOLS.has(tool.name)).map(extensions.wrapTool);
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
-        ...(probe === undefined ? {} : { probeMedia: extensions.wrapTool(probe) }),
+        mediaTools,
         ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
         ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
@@ -698,14 +699,14 @@ function registerIpcHandlers(): void {
         })(),
       });
       // Probe 已注入且已包装钩子，只追加其他扩展工具。
-      for (const tool of extensions.tools) if (tool.name !== 'probe_media') agent.tools.register(tool);
+      for (const tool of extensions.tools) if (!FFMPEG_READ_TOOLS.has(tool.name)) agent.tools.register(tool);
       if (settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
         agent.tools.register(new SaveMemoryTool(persistenceFilePath(), () => hasToolCall() ? 'tool' : 'conversation', settings.memoryFromToolChatsEnabled ?? true));
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(tool.name === 'probe_media' ? tool : extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(FFMPEG_READ_TOOLS.has(tool.name) ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
       if (session.pendingSessionStart !== undefined) {

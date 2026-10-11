@@ -88,6 +88,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   const address = server.address(); if (address === null || typeof address === 'string') throw new Error('模型夹具未启动。');
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL; env.FFPROBE_PATH = ffprobe;
+  env.FFMPEG_PATH = execFileSync('where.exe', ['ffmpeg'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
   let app: Awaited<ReturnType<typeof launch>> | undefined;

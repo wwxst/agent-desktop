@@ -1,21 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type Session } from '@agent-desktop/session';
-import { ProbeMediaTool } from '@agent-desktop/video-ffmpeg';
+import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoFramesTool,
+  ExtractVideoRangeFramesTool, ExtractAudioTool, ExtractFullVideoFramesTool } from '@agent-desktop/video-ffmpeg';
 import { createVideoAgent } from '../src/index.js';
 
 describe('createVideoAgent', () => {
   it('registers the injected Probe instance and preserves other video capabilities when absent', () => {
     const probe = { name: 'probe_media', description: '', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: {} }) };
-    expect(createVideoAgent({ deepSeekApiKey: 'fixture', probeMedia: probe }).tools.list().find(tool => tool.name === 'probe_media')).toBe(probe);
+    expect(createVideoAgent({ deepSeekApiKey: 'fixture', mediaTools: [probe] }).tools.list().find(tool => tool.name === 'probe_media')).toBe(probe);
     const names = createVideoAgent({ deepSeekApiKey: 'fixture' }).tools.list().map(tool => tool.name);
     expect(names).not.toContain('probe_media');
-    for (const name of ['trim_video', 'decode_video', 'extract_audio', 'validate_video_candidate', 'publish_video_output', 'check_video_semantics']) expect(names).toContain(name);
+    for (const name of ['decode_video', 'extract_audio', 'extract_video_frames', 'extract_full_video_frames']) expect(names).not.toContain(name);
+    for (const name of ['trim_video', 'validate_video_candidate', 'publish_video_output', 'check_video_semantics']) expect(names).toContain(name);
   });
   it('assembles the formal video Agent dependencies and tools', () => {
     const agent = createVideoAgent({
       deepSeekApiKey: 'test-deepseek-key',
-      probeMedia: new ProbeMediaTool(),
+      mediaTools: [new ProbeMediaTool(), new DecodeVideoTool(), new DetectBlackSegmentsTool(), new ExtractVideoFramesTool(),
+        new ExtractVideoRangeFramesTool(), new ExtractAudioTool(), new ExtractFullVideoFramesTool()],
       deepSeekBaseUrl: 'https://deepseek.test',
       whisperModelPath: 'ggml-small.bin',
       whisperCliPath: 'whisper-cli',
@@ -32,6 +35,7 @@ describe('createVideoAgent', () => {
       'extract_video_frames',
       'extract_video_range_frames',
       'extract_audio',
+      'extract_full_video_frames',
       'analyze_images',
       'transcribe_audio',
       'trim_video',

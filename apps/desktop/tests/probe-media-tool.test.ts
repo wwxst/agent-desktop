@@ -8,7 +8,7 @@ import { runTurn } from '@agent-desktop/agent-loop';
 import { InMemorySession } from '@agent-desktop/session';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import { createVideoAgent, readVideoDeliveryFacts } from '@agent-desktop/video-agent';
-import { adaptProbeMediaTool, type ProbeFileAccess } from '../src/main/probe-media-tool.js';
+import { adaptProbeMediaTool, adaptFFmpegReadTool, FFMPEG_READ_TOOLS, type ProbeFileAccess } from '../src/main/probe-media-tool.js';
 import { prepareExtensions } from '../src/main/extension-runtime.js';
 import type { PluginFiles } from '../src/main/extensions.js';
 
@@ -32,6 +32,64 @@ function rawTool(): Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> 
 }
 
 describe('host Probe capability boundary', () => {
+  it('rejects unauthorized inputs and output junctions for every read capability before MCP approval', async () => {
+    const source = join(workspace, 'video.mp4'); await writeFile(source, 'data');
+    const outside = join(directory, 'outside'); await mkdir(outside);
+    await writeFile(join(outside, 'video.mp4'), 'data');
+    await symlink(outside, join(workspace, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    for (const name of FFMPEG_READ_TOOLS) {
+      const raw = rawTool(); const tool = adaptFFmpegReadTool(raw, access, name);
+      const field = ['extract_video_frames', 'extract_video_range_frames', 'extract_audio'].includes(name) ? 'videoPath' : 'inputPath';
+      expect(await tool.execute({ [field]: join(outside, 'video.mp4') }, context)).toMatchObject({ status: 'error' });
+      expect(await tool.execute({ [field]: 'https://example.com/file.mp4' }, context)).toMatchObject({ status: 'error' });
+      if (name.startsWith('extract_')) {
+        expect(await tool.execute({ [field]: source, [name === 'extract_audio' ? 'outputPath' : 'outputDir']: join(workspace, 'escape', 'new.wav') }, context)).toMatchObject({ status: 'error' });
+      }
+      expect(raw.execute).not.toHaveBeenCalled();
+    }
+  });
+  it('runs all read capabilities in one Agent turn through real MCP and verifies generated media', async () => {
+    const inputPath = join(workspace, '带音轨 video.mp4');
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=5:d=2',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', inputPath]);
+    await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'read.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+    const executable = (name: string) => execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [name], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
+    const plugin: PluginFiles = { name: 'video-editing', directory, skills: [], item: { id: 'plugin:video-editing', kind: 'plugin', name: 'video-editing', description: '', source: 'builtin', enabled: true, installed: true },
+      servers: [{ name: 'ffmpeg-probe', command: 'node', args: [join(directory, 'read.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
+    const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
+    const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
+    const outputPath = join(workspace, '声音 16k.wav');
+    const calls = [
+      { name: 'probe_media', input: { inputPath } }, { name: 'decode_video', input: { inputPath } },
+      { name: 'detect_black_segments', input: { inputPath } },
+      { name: 'extract_video_frames', input: { videoPath: inputPath, outputDir: join(workspace, '粗看') } },
+      { name: 'extract_video_range_frames', input: { videoPath: inputPath, outputDir: join(workspace, '局部'), start: 0, end: 1 } },
+      { name: 'extract_full_video_frames', input: { inputPath, outputDir: join(workspace, '全部') } },
+      { name: 'extract_audio', input: { videoPath: inputPath, outputPath } },
+    ];
+    try {
+      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      await runTurn({ ...agent, model: { complete: async request => request.messages.some(message => message.role === 'tool')
+        ? { text: 'verified', toolCalls: [] } : { toolCalls: calls.map((call, index) => ({ ...call, id: `read-${index}` as never })) } } }, 'inspect');
+      const results = session.events().filter(event => event.type === 'tool.result');
+      expect(results).toHaveLength(7);
+      expect(results.every(event => event.result.status === 'success')).toBe(true);
+      expect(results[1]).toMatchObject({ result: { output: { fullyDecoded: true, hasVideoStream: true } } });
+      expect(results[2]).toMatchObject({ result: { output: { hasBlackSegments: false, segments: [] } } });
+      expect(results[3]).toMatchObject({ result: { output: { frames: expect.any(Array), duration: 2 } } });
+      expect(results[5]).toMatchObject({ result: { output: { complete: true, frames: expect.arrayContaining([{ path: expect.any(String), timestamp: 0 }]) } } });
+      expect(results[6]).toMatchObject({ result: { output: `Audio created: ${outputPath}` } });
+      const audio = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', outputPath], { encoding: 'utf8' })) as { streams: Array<{ codec_name: string; sample_rate: string; channels: number }> };
+      expect(audio.streams[0]).toMatchObject({ codec_name: 'pcm_s16le', sample_rate: '16000', channels: 1 });
+      expect(approve.mock.calls.filter(([request]) => request.kind === 'plugin-tool')).toHaveLength(7);
+    } finally { await runtime.close(); }
+    const disabled = await prepareExtensions({ plugins: [{ ...plugin, item: { ...plugin.item, enabled: false } }], skills: [] }, approve);
+    try { expect(disabled.tools).toEqual([]); }
+    finally { await disabled.close(); }
+    const uninstalled = await prepareExtensions({ plugins: [], skills: [] }, approve);
+    try { expect(uninstalled.tools).toEqual([]); }
+    finally { await uninstalled.close(); }
+  }, 30_000);
   it('normalizes a workspace file and authorizes only the selected external attachment', async () => {
     const source = join(workspace, '中文 video.mp4'); await writeFile(source, 'data');
     const attachment = join(directory, 'attachment.mp4'); await writeFile(attachment, 'data'); selected.push(attachment);
