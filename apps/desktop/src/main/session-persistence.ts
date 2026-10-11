@@ -16,7 +16,7 @@ import type {
   AttachmentRole,
   TerminalSnapshot,
 } from '@agent-desktop/client';
-import type { SessionEvent } from '@agent-desktop/session';
+import { projectRecoveryAncestry, type SessionEvent, type TaskPlanStep } from '@agent-desktop/session';
 import type { SubagentRecord } from './subagent.js';
 
 export interface PersistedDesktopSession {
@@ -72,6 +72,37 @@ function readStringArray(value: unknown, field: string): readonly string[] {
   return value.map((item, index) => readString(item, `${field}[${index}]`));
 }
 
+/** 新事件的枚举来自磁盘 JSON，不能将未知状态转换为默认成功。 */
+function readChoice<T extends string>(value: unknown, choices: readonly T[], field: string): T {
+  if (typeof value !== 'string' || !choices.includes(value as T)) invalid(field);
+  return value as T;
+}
+
+function readEventIndexes(value: unknown, field: string): readonly number[] {
+  if (!Array.isArray(value)) invalid(field);
+  return value.map((item, index) => readNonNegativeInteger(item, `${field}[${index}]`));
+}
+
+function readPlanSteps(value: unknown, field: string): readonly TaskPlanStep[] {
+  if (!Array.isArray(value)) invalid(field);
+  const steps = value.map((item, index): TaskPlanStep => {
+    const stepField = `${field}[${index}]`;
+    if (!isRecord(item)) invalid(stepField);
+    const id = readString(item.id, `${stepField}.id`);
+    const description = readString(item.description, `${stepField}.description`);
+    if (!id.trim() || !description.trim()) invalid(stepField);
+    return {
+      id,
+      description,
+      requestedStatus: readChoice(item.requestedStatus, ['pending', 'in_progress', 'completed', 'failed', 'blocked'], `${stepField}.requestedStatus`),
+      completionKind: readChoice(item.completionKind, ['tool', 'response'], `${stepField}.completionKind`),
+      evidenceEventIndexes: readEventIndexes(item.evidenceEventIndexes, `${stepField}.evidenceEventIndexes`),
+    };
+  });
+  if (new Set(steps.map(step => step.id)).size !== steps.length) invalid(`${field}.id`);
+  return steps;
+}
+
 /** 成功结果里的产物路径；字段缺失表示这次调用没有创建交付文件。 */
 function readArtifacts(value: unknown, field: string): { readonly artifacts?: readonly string[] } {
   if (value === undefined) return {};
@@ -96,6 +127,59 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
     case 'turn.started':
     case 'turn.completed':
       return { type, turnId } as SessionEvent;
+    case 'turn.failed':
+      return { type, turnId, errorName: readString(value.errorName, `${field}.errorName`),
+        errorMessage: readString(value.errorMessage, `${field}.errorMessage`) } as SessionEvent;
+    case 'turn.cancelled':
+      return { type, turnId,
+        reason: readChoice(value.reason, ['user', 'window-closed', 'external'], `${field}.reason`) } as SessionEvent;
+    case 'turn.interrupted':
+      return { type, turnId,
+        reason: readChoice(value.reason, ['process-exit', 'legacy-unknown'], `${field}.reason`) } as SessionEvent;
+    case 'turn.recovery.started':
+      return { type, turnId, sourceTurnId: readString(value.sourceTurnId, `${field}.sourceTurnId`),
+        mode: readChoice(value.mode, ['continue', 'verify'], `${field}.mode`) } as SessionEvent;
+    case 'context.compacted': {
+      const sourceDigest = readString(value.sourceDigest, `${field}.sourceDigest`);
+      if (!/^[a-f0-9]{64}$/.test(sourceDigest)) invalid(`${field}.sourceDigest`);
+      const summary = readString(value.summary, `${field}.summary`);
+      if (!summary.trim()) invalid(`${field}.summary`);
+      if (value.estimatorVersion !== 1) invalid(`${field}.estimatorVersion`);
+      return { type, turnId, sourceDigest, summary, estimatorVersion: 1,
+        coveredStepEndEventIndexes: readEventIndexes(value.coveredStepEndEventIndexes, `${field}.coveredStepEndEventIndexes`),
+        ...(value.previousSummaryEventIndex === undefined ? {} : {
+          previousSummaryEventIndex: readNonNegativeInteger(value.previousSummaryEventIndex, `${field}.previousSummaryEventIndex`) }),
+        estimatedBefore: readNonNegativeInteger(value.estimatedBefore, `${field}.estimatedBefore`),
+        estimatedAfter: readNonNegativeInteger(value.estimatedAfter, `${field}.estimatedAfter`) } as SessionEvent;
+    }
+    case 'plan.updated':
+      return { type, turnId, revision: readNonNegativeInteger(value.revision, `${field}.revision`),
+        explanation: readString(value.explanation, `${field}.explanation`),
+        steps: readPlanSteps(value.steps, `${field}.steps`) } as SessionEvent;
+    case 'tool.effect.prepared':
+      if (!Object.hasOwn(value, 'data')) invalid(`${field}.data`);
+      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
+        data: value.data } as SessionEvent;
+    case 'host.operation.started':
+      return { type, turnId, operation: readString(value.operation, `${field}.operation`),
+        description: readString(value.description, `${field}.description`) } as SessionEvent;
+    case 'host.operation.result':
+      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
+        status: readChoice(value.status, ['completed', 'failed', 'cancelled'], `${field}.status`),
+        ...(value.errorName === undefined ? {} : { errorName: readString(value.errorName, `${field}.errorName`) }),
+        ...(value.errorMessage === undefined ? {} : { errorMessage: readString(value.errorMessage, `${field}.errorMessage`) }) } as SessionEvent;
+    case 'effect.outcome.verified': {
+      if (!isRecord(value.evidence)) invalid(`${field}.evidence`);
+      const source = readChoice(value.evidence.source, ['tool', 'user', 'host'], `${field}.evidence.source`);
+      const scope = readChoice(value.scope, ['file-effect', 'entire-call'], `${field}.scope`);
+      const outcome = readChoice(value.outcome, ['completed', 'not-applied', 'unresolved'], `${field}.outcome`);
+      // 宿主观察只报告未确认的整次调用；磁盘不能伪造宿主已证明效果完成。
+      if (source === 'host' && (scope !== 'entire-call' || outcome !== 'unresolved')) invalid(`${field}.evidence.source`);
+      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
+        scope, outcome, evidence: { source,
+          reference: readString(value.evidence.reference, `${field}.evidence.reference`),
+          description: readString(value.evidence.description, `${field}.evidence.description`) } } as SessionEvent;
+    }
     case 'user.message':
       return {
         type,
@@ -133,6 +217,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
         toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
         name: readString(value.name, `${field}.name`),
         input: value.input,
+        ...(value.boundary === undefined ? {} : { boundary: readChoice(value.boundary,
+          ['not-executed', 'read-only', 'checkpointed', 'opaque'], `${field}.boundary`) }),
       } as SessionEvent;
     case 'tool.interaction.closed': {
       if (value.reason !== 'cancelled' && value.reason !== 'window-closed') invalid(`${field}.reason`);
@@ -155,6 +241,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
               status,
               message: readString(value.result.message, `${field}.result.message`),
               ...(Object.hasOwn(value.result, 'output') ? { output: value.result.output } : {}),
+              ...(value.result.failureKind === undefined ? {} : { failureKind: readChoice(value.result.failureKind,
+                ['transient', 'permanent', 'denied', 'cancelled', 'unknown-outcome'], `${field}.result.failureKind`) }),
             }
           : invalid(`${field}.result.status`);
       return {
@@ -168,6 +256,93 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
     default:
       return invalid(`${field}.type`);
   }
+}
+
+/** 索引只引用此前真实事件；未来/自身索引不能作为核验或压缩依据。 */
+function priorEvent(events: readonly SessionEvent[], index: number, sourceIndex: number,
+  types: readonly SessionEvent['type'][], field: string): SessionEvent {
+  const source = events[sourceIndex];
+  if (sourceIndex >= index || source === undefined || !types.includes(source.type)) invalid(field);
+  return source;
+}
+
+/**
+ * 磁盘是实际外部边界：新事件引用在解析时一次确认，旧残留事件仍原样保留。
+ * 这里只检查来源身份/范围；工具业务资格和执行状态继续由 Session 的纯投影负责。
+ */
+function readSessionEvents(value: unknown, field: string): readonly SessionEvent[] {
+  if (!Array.isArray(value)) invalid(field);
+  const events = value.map((event, index) => readSessionEvent(event, `${field}[${index}]`));
+  const summaryCoverage = new Map<number, ReadonlySet<number>>();
+  for (const [index, event] of events.entries()) {
+    const eventField = `${field}[${index}]`;
+    switch (event.type) {
+      case 'turn.recovery.started': {
+        // 关系只能指向此前已存在的轮次，天然排除自循环及未来恢复源。
+        const priorEvents = events.slice(0, index);
+        const sourceStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.sourceTurnId);
+        const turnStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.turnId);
+        if (sourceStartIndex < 0 || turnStartIndex < 0 || sourceStartIndex >= turnStartIndex
+          || priorEvents.some(source => source.type === 'turn.recovery.started' && source.turnId === event.turnId)) {
+          invalid(`${eventField}.sourceTurnId`);
+        }
+        break;
+      }
+      case 'tool.effect.prepared': {
+        const source = priorEvent(events, index, event.sourceEventIndex, ['tool.called'], `${eventField}.sourceEventIndex`);
+        if (source.turnId !== event.turnId
+          || (source.type === 'tool.called' && (source.boundary === 'not-executed' || source.boundary === 'read-only'))) {
+          invalid(`${eventField}.sourceEventIndex`);
+        }
+        break;
+      }
+      case 'host.operation.result': {
+        const source = priorEvent(events, index, event.sourceEventIndex, ['host.operation.started'], `${eventField}.sourceEventIndex`);
+        if (source.turnId !== event.turnId) invalid(`${eventField}.sourceEventIndex`);
+        break;
+      }
+      case 'effect.outcome.verified': {
+        const source = priorEvent(events, index, event.sourceEventIndex,
+          ['tool.called', 'host.operation.started'], `${eventField}.sourceEventIndex`);
+        // 核验可跨本会话轮次，但文件部分不能指向宿主阶段或从未执行的调用。
+        if ((event.scope === 'file-effect' && source.type !== 'tool.called')
+          || (source.type === 'tool.called' && source.boundary === 'not-executed')) invalid(`${eventField}.sourceEventIndex`);
+        break;
+      }
+      case 'context.compacted': {
+        const covered = new Set<number>();
+        if (event.previousSummaryEventIndex !== undefined) {
+          priorEvent(events, index, event.previousSummaryEventIndex, ['context.compacted'], `${eventField}.previousSummaryEventIndex`);
+          for (const sourceIndex of summaryCoverage.get(event.previousSummaryEventIndex)!) covered.add(sourceIndex);
+        }
+        if (event.coveredStepEndEventIndexes.length === 0) invalid(`${eventField}.coveredStepEndEventIndexes`);
+        for (const [offset, sourceIndex] of event.coveredStepEndEventIndexes.entries()) {
+          const sourceField = `${eventField}.coveredStepEndEventIndexes[${offset}]`;
+          priorEvent(events, index, sourceIndex, ['step.completed'], sourceField);
+          if (covered.has(sourceIndex)) invalid(sourceField);
+          covered.add(sourceIndex);
+        }
+        summaryCoverage.set(index, covered);
+        break;
+      }
+      case 'plan.updated': {
+        // 后面的恢复关系尚未校验，不能反过来影响当前计划的来源归属。
+        const priorEvents = events.slice(0, index);
+        const root = projectRecoveryAncestry(priorEvents, event.turnId).rootTurnId;
+        for (const [stepIndex, step] of event.steps.entries()) {
+          for (const [offset, sourceIndex] of step.evidenceEventIndexes.entries()) {
+            const sourceField = `${eventField}.steps[${stepIndex}].evidenceEventIndexes[${offset}]`;
+            const source = priorEvent(events, index, sourceIndex,
+              ['tool.called', 'tool.result', 'tool.interaction.closed', 'host.operation.started', 'host.operation.result',
+                'effect.outcome.verified', 'turn.failed', 'turn.cancelled', 'turn.interrupted'], sourceField);
+            if (projectRecoveryAncestry(priorEvents, source.turnId).rootTurnId !== root) invalid(sourceField);
+          }
+        }
+        break;
+      }
+    }
+  }
+  return events;
 }
 
 function readToolActivity(value: unknown, field: string): AgentActivityItem {
@@ -713,7 +888,7 @@ function parseDesktopSession(
       attachments: readAttachments(value, field),
       ...(value.terminalHistory === undefined ? {} : { terminalHistory: { ...readTerminalHistory(value.terminalHistory, field), status: 'disconnected' as const } }),
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
-      events: value.events.map((item, index) => readSessionEvent(item, `${field}.events[${index}]`)),
+      events: readSessionEvents(value.events, `${field}.events`),
       ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),
     },
     // 旧快照带按文件名索引的产物表；新快照没有，用空表表示「没有可还原的旧关联」。
@@ -730,7 +905,7 @@ function readSubagentHistory(value: unknown, field: string): readonly SubagentRe
     const result = record.result;
     if (!['completed', 'failed', 'cancelled', 'budget-exhausted'].includes(String(result.status))) invalid(field);
     return { parentToolCallId: readString(record.parentToolCallId, field),
-      events: record.events.map((event, index) => readSessionEvent(event, `${field}.events[${index}]`)),
+      events: readSessionEvents(record.events, `${field}.events`),
       result: { taskId: readString(result.taskId, field), title: readString(result.title, field),
         status: result.status as SubagentRecord['result']['status'], summary: readString(result.summary, field),
         evidence: readStringArray(result.evidence, field) } };

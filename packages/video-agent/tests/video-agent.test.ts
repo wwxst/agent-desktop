@@ -137,6 +137,7 @@ describe('createVideoAgent', () => {
   it('uses an injected Session and keeps the default InMemorySession behavior', () => {
     const injectedSession: Session = {
       append: () => undefined,
+      appendMany: () => undefined,
       events: () => [],
     };
     const restoredAgent = createVideoAgent({

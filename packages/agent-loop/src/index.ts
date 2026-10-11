@@ -3,7 +3,8 @@ import type { Agent } from '@agent-desktop/agent';
 import { ModelRequestError } from '@agent-desktop/model';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelMessage, ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
-import { recoverSessionEvents, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import { recoverSessionEvents, SessionPersistenceError, TurnCancellationError, projectTurnState,
+  type RecoveryMode, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
 
 /** 一次 Turn 的最小公开结果；不返回可变 Session，调用方通过 Agent 自己读取历史。 */
@@ -51,6 +52,20 @@ export type ToolProgressListener = (
 function createTurnId(): TurnId {
   // Node.js 原生 UUID 已满足唯一性需求，类型断言只负责附加编译期品牌。
   return randomUUID() as TurnId;
+}
+
+/** 只准备起点事实；Desktop 可在任何外部准备之前与消息绑定一起原子保存。 */
+export function prepareTurnStart(
+  input: string,
+  recovery?: { readonly sourceTurnId: TurnId; readonly mode: RecoveryMode },
+): { readonly turnId: TurnId; readonly events: readonly SessionEvent[] } {
+  const turnId = createTurnId();
+  const events: SessionEvent[] = [
+    { type: 'turn.started', turnId },
+    { type: 'user.message', turnId, content: input },
+  ];
+  if (recovery !== undefined) events.push({ type: 'turn.recovery.started', turnId, ...recovery });
+  return { turnId, events };
 }
 
 function createStepId(): StepId {
@@ -120,6 +135,9 @@ function buildToolDefinitions(agent: Agent): ModelToolDefinition[] {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted === true) {
+    // 保存错误是致命事实，不能在取消检查中被普通 AbortError 覆盖。
+    if (signal.reason instanceof SessionPersistenceError) throw signal.reason;
+    if (signal.reason instanceof TurnCancellationError) throw signal.reason;
     throw new DOMException('The operation was aborted', 'AbortError');
   }
 }
@@ -176,6 +194,7 @@ async function executeToolCall(
       };
       result = await tool.execute(toolCall.input, context);
     } catch (error) {
+      if (error instanceof SessionPersistenceError) throw error;
       if (error instanceof Error && error.name === 'AbortError') throw error;
       // Tool 的 Error 失败按既有契约回写结果；其他抛出值不是合法 Tool 错误，直接暴露程序错误。
       if (!(error instanceof Error)) throw error;
@@ -259,19 +278,30 @@ export async function runTurn(
   input: string,
   options: RunTurnOptions = {},
 ): Promise<RunTurnResult> {
+  const start = prepareTurnStart(input);
+  agent.session.appendMany(start.events);
+  return runStartedTurn(agent, start.turnId, options);
+}
+
+/** 执行已经持久化的起点，不再次创建 Turn 或用户消息。 */
+export async function runStartedTurn(
+  agent: Agent,
+  turnId: TurnId,
+  options: RunTurnOptions = {},
+): Promise<RunTurnResult> {
+  const history = agent.session.events();
+  const latestStart = history.findLast(event => event.type === 'turn.started');
+  if (latestStart?.turnId !== turnId || projectTurnState(history, turnId) !== 'started'
+    || history.some(event => event.turnId === turnId && event.type === 'step.started')) {
+    throw new Error('Turn 必须是最新且尚未执行的已提交起点。');
+  }
   const { trace, signal, onTextDelta, onToolResult, onToolProgress, onModelText, maxSteps } = options;
-  const turnId = createTurnId();
   let stepCount = 0;
   let extraRequests = 0;
   const turnStartedAt = Date.now();
 
-  await trace?.({ type: 'turn.started', turnId });
-
   try {
-    // Turn 生命周期先于用户消息写入，固定 Session 中的事实顺序。
-    agent.session.append({ type: 'turn.started', turnId });
-    agent.session.append({ type: 'user.message', turnId, content: input });
-
+    await trace?.({ type: 'turn.started', turnId });
     while (true) {
       throwIfAborted(signal);
       if (maxSteps !== undefined && stepCount >= maxSteps) throw new StepBudgetError();
@@ -319,6 +349,7 @@ export async function runTurn(
           response = await agent.model.complete(request);
         }
       } catch (error) {
+        if (error instanceof SessionPersistenceError) throw error;
         // 非 Error 抛出值继续直接传播，不为 Trace 制造默认错误文本。
         if (!(error instanceof Error)) throw error;
         if (error.name === 'AbortError') throw error;
@@ -371,7 +402,15 @@ export async function runTurn(
       }
     }
   } catch (error) {
+    // 第一次保存失败直接向宿主传播；不能用另一次终态写入覆盖它。
+    if (signal?.reason instanceof SessionPersistenceError) throw signal.reason;
+    if (error instanceof SessionPersistenceError) throw error;
+    // 完成已经提交后的诊断/通知失败不改变 Core 的终态。
+    if (projectTurnState(agent.session.events(), turnId) !== 'started') throw error;
     if (error instanceof Error && error.name === 'AbortError') {
+      agent.session.append({ type: 'turn.cancelled', turnId,
+        reason: signal?.reason instanceof TurnCancellationError ? signal.reason.reason
+          : error instanceof TurnCancellationError ? error.reason : 'external' });
       await trace?.({
         type: 'turn.cancelled',
         turnId,
@@ -382,6 +421,7 @@ export async function runTurn(
     }
     // runTurn 的 Error 异常记录后仍按原语义向上传播。
     if (!(error instanceof Error)) throw error;
+    agent.session.append({ type: 'turn.failed', turnId, errorName: error.name, errorMessage: error.message });
     await trace?.({
       type: 'turn.failed',
       turnId,

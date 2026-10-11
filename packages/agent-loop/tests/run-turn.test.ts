@@ -101,6 +101,7 @@ describe('runTurn', () => {
       'step.started',
       'assistant.message',
       'tool.called',
+      'turn.cancelled',
     ]);
 
     const result = await runTurn(agent, 'continue');
@@ -599,7 +600,7 @@ describe('runTurn', () => {
     const session = new InMemorySession();
 
     await expect(runTurn(createTestAgent(model, session), 'hello')).rejects.toThrow('model down');
-    expect(eventTypes(session)).toEqual(['turn.started', 'user.message', 'step.started']);
+    expect(eventTypes(session)).toEqual(['turn.started', 'user.message', 'step.started', 'turn.failed']);
   });
 
   it('traces successful Model and Tool boundaries in execution order', async () => {
@@ -817,6 +818,7 @@ describe('runTurn', () => {
       'turn.completed',
       'turn.started',
       'user.message',
+      'turn.cancelled',
     ]);
     // 流式增量、未完成 Step 与 dangling Tool Call 都不是可恢复事实。
     expect(JSON.stringify(recoveredEvents)).not.toContain('正在裁剪');
