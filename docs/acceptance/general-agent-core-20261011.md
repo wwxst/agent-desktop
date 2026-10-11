@@ -46,3 +46,21 @@ SKIP                    未执行            缺少环境或尚未实施，不�
 Loop 在每个 Tool Call 前保存调用事实，并把工具声明的 `checkpointed` 边界与同步 `tool.effect.prepared` 事件写入同一 Session；文件创建、文件编辑、命令启动和持久终端启动/输入/关闭均在真实副作用前检查点。检查点保存失败会直接阻止副作用。工具错误保留 `permanent`、`denied` 和 `unknown-outcome` 等供应商无关分类，命令非零/超时按结果未知处理，拒绝不重试。模型只对明确的临时服务错误最多追加两次请求，工具调用不会重放。
 
 阶段独立审查：Agent Loop、local-tools、terminal-host 和 model 契约复核 PASS；检查点顺序、取消传播、拒绝分类和非零命令未知结果均有聚焦测试，新增全仓总计 66 个测试文件、780 项测试，`pnpm check` PASS。持久 SQLite 保存健康、失败后的停止策略、恢复入口与崩溃验收留待阶段 5；当前检查点在 InMemory Session 的核心链路已验证，不能提前宣称应用崩溃恢复完成。
+
+## 阶段 5：任务恢复与持久执行事实
+
+Commit `3a926b0` 接入 `DesktopPersistentSession`：Session 事件先以完整快照提交 SQLite，成功后才更新内存；第一次保存失败固定传播，后续取消或诊断不会覆盖原始持久化错误。任务起点先持久化，恢复通过独立 IPC 主动触发，重复恢复和已完成任务被拒绝。`VerifyToolOutcomeTool` 与 `verifyTaskEffect` IPC 为文本文件检查点提供自动和人工核验，未确定的终端、宿主和外部写入保留 `unknownEffects`，不默认成功。终端历史重启后只返回 `disconnected` 快照，不重连、不重放。Renderer 未收到最终 IPC 时，Main 从 Session 终态补回助手结果和产物；子智能体结果使用同一持久化入口。
+
+阶段 5 后续修正 Commit `5c7b42b` 处理三轮独立 Review 的发现：启动时将未结束 Turn 追加 `turn.interrupted(process-exit)`；终端断开事实先于客户端投影写入；过期或缺失的客户端消息按 Session 用户事实重建；扩展关闭和取消时终端关闭纳入宿主操作事实，清理失败不覆盖已提交 Turn；核验 IPC 失败在 Client 显示可见错误。
+
+三轮 Review 结果：第一轮源码事实审查 PASS（所有新增状态均有 Session、Main、Preload、Client 或测试证据）；第二轮架构兼容性审查 PASS（未新增 package，Core 未依赖 UI/Provider/插件，插件和视频工具边界未改）；第三轮失败与工程审查经发现并修正后 PASS（覆盖持久化失败、异常中断、重复恢复、未知副作用、终端断开、清理失败和 UI 核验竞态）。
+
+`pnpm check`：PASS，68 个测试文件、788 项测试，19 个包架构门禁通过。阶段 5 聚焦测试、SQLite 往返和客户端恢复动作均 PASS；纯 Web Playwright UI 测试 7 项 PASS（800x600）。Responses 真实供应商：SKIP，未配置 `OPENAI_API_KEY`；真实 DeepSeek/视频链路：SKIP，本轮未提供外部凭据、媒体和 Whisper 运行条件。Electron Windows 真实启动：SKIP，仓库依赖的 Electron 44 二进制未下载到 `node_modules/.pnpm/.../electron/dist/electron.exe`，Playwright 下载器持续等待后停止；不能把单元测试或 Web 浏览器结果写成真实 Electron 通过。
+
+## 阶段 6：联调与回归
+
+`pnpm typecheck`、`pnpm typecheck:tests`、`pnpm test`、`pnpm check:architecture`、`git diff --check`：PASS。`pnpm desktop:build` 和 `pnpm client:web:build`：PASS。Web UI 的聊天滚动、长文本、附件、失败卡片、设置布局和短窗口验收：PASS，7 项；真实 Electron/SQLite 重启、强杀后的 Windows 进程验收：SKIP，原因见阶段 5。原有插件、Skill、MCP、视频任务只完成静态边界与全仓自动化回归，未执行需要外部模型、FFmpeg、ffprobe、whisper.cpp 的真实发布链路，标记 SKIP。
+
+最终已交付独立 Commit 顺序：`b35e918` 执行契约与恢复基础事件，`13d8510` Context Manager，`7d5a384` Task Plan，`f81cb93` Failure Recovery，`b206fff` 计划证据修正，`3a926b0` Task Recovery，`5c7b42b` 启动恢复与联调修正。暂缓项仍未建设：操作系统沙箱、后台队列、可写子智能体、多任务并发、分布式/云端恢复和通用 Agent Framework。
+
+已知风险：真实 Electron 强杀/SQLite 重启、真实 Responses 协议和带凭据的视频外部工具链未在本环境执行；这些项目保持 SKIP，不能作为已验收能力对外宣称。主工作区未修改，本分支只包含通用 Agent Core 与 Desktop 恢复消费者变更。
