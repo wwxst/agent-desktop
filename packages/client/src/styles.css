@@ -981,6 +981,7 @@ input:focus-visible {
 .task-recovery-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .task-recovery button { min-height: 28px; padding: 4px 10px; border: 1px solid var(--border-default); border-radius: 5px; background: var(--surface-raised); color: var(--text-primary); font: inherit; font-size: 12px; cursor: pointer; }
 .task-recovery button:hover { border-color: var(--accent); color: var(--accent); }
+.task-action-error { margin: 8px 16px 0; color: var(--danger); font-size: 12px; line-height: 18px; }
 
 .conversation-scroll {
   display: flex;

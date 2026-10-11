@@ -212,21 +212,8 @@ function terminalRestartFacts(session: DesktopSessionState): readonly SessionEve
     });
   }
 
-  // 没有可机械关联的旧来源时，按 terminalId 复用已有宿主观察，避免每次启动重复追加。
-  if (events.some((event) => event.type === 'effect.outcome.verified'
-    && event.scope === 'entire-call' && event.evidence.reference === `terminal:${history.terminalId}`)) return [];
-
-  // 无法关联旧来源时也要留下可核验事实，不能静默放过 running 快照。
-  const turnId = events.findLast((event) => 'turnId' in event)?.turnId;
-  if (turnId === undefined) return [];
-  const startedIndex = events.length;
-  return [
-    { type: 'host.operation.started' as const, turnId, operation: 'terminal-connection-lost', description: `终端 ${history.terminalId} 的旧来源无法关联。` },
-    { type: 'host.operation.result' as const, turnId, sourceEventIndex: startedIndex, status: 'failed' as const,
-      errorName: 'TerminalConnectionLost', errorMessage: '应用重启后失去终端连接。' },
-    { type: 'effect.outcome.verified' as const, turnId, sourceEventIndex: startedIndex, scope: 'entire-call' as const,
-      outcome: 'unresolved' as const, evidence: { source: 'host' as const, reference: `terminal:${history.terminalId}`, description: '应用重启后失去终端连接，命令效果和进程状态未确认。' } },
-  ];
+  // 旧快照没有可关联的调用来源时，只展示 disconnected 历史；不能把事实绑定到无关的最新任务。
+  return [];
 }
 
 let desktopExtensions: DesktopExtensions | undefined;
@@ -271,13 +258,17 @@ function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientSta
     const userTurns = events.filter((event): event is Extract<SessionEvent, { type: 'user.message' }> => event.type === 'user.message');
     if (userTurns.length === 0) return conversation;
     const messages = [...conversation.messages];
+    let changed = false;
     let cursor = 0;
     let nextId = Math.max(0, ...messages.map(message => message.id)) + 1;
     for (const user of userTurns) {
-      const userIndex = messages.findIndex((message, index) => index >= cursor && message.role === 'user');
-      if (userIndex < 0) break;
+      let userIndex = messages.findIndex((message, index) => index >= cursor && message.role === 'user' && message.text === user.content);
+      if (userIndex < 0) {
+        userIndex = cursor;
+        messages.splice(userIndex, 0, { id: nextId++, role: 'user', text: user.content, attachments: [] });
+        changed = true;
+      }
       cursor = userIndex + 1;
-      if (messages[cursor]?.role === 'assistant') { cursor += 1; continue; }
       const state = projectTurnState(events, user.turnId);
       if (state !== 'completed' && state !== 'failed' && state !== 'cancelled' && state !== 'interrupted') continue;
       const taskState = projectAgentTaskState(events, user.turnId);
@@ -301,12 +292,30 @@ function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientSta
           errorMessage: failure?.type === 'turn.failed' ? failure.errorMessage : '应用退出时任务被中断。',
           ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) };
       }
+      const existingAssistant = messages[cursor];
+      const keepExisting = existingAssistant?.role === 'assistant'
+        && ((state === 'completed' && existingAssistant.status === 'completed' && final !== undefined)
+          || (state === 'cancelled' && existingAssistant.status === 'cancelled')
+          || ((state === 'failed' || state === 'interrupted') && existingAssistant.status === 'failed'));
+      if (keepExisting) { cursor += 1; continue; }
+      if (existingAssistant?.role === 'assistant') messages.splice(cursor, 1);
       messages.splice(cursor, 0, recovered);
+      changed = true;
       cursor += 1;
     }
-    return messages.length === conversation.messages.length ? conversation : { ...conversation, messages };
+    return changed ? { ...conversation, messages } : conversation;
   };
   return { ...snapshot, conversations: snapshot.conversations.map(reconcile) };
+}
+
+/** 启动时将没有终态的旧轮次标为异常中断；原有工具和模型事实保持不变。 */
+function interruptRecoveredTurns(session: DesktopSessionState): void {
+  const events = session.session.events();
+  const startedTurns = [...new Set(events.filter(event => event.type === 'turn.started').map(event => event.turnId))];
+  const interrupted = startedTurns
+    .filter(turnId => projectTurnState(events, turnId) === 'started')
+    .map(turnId => ({ type: 'turn.interrupted' as const, turnId, reason: 'process-exit' as const }));
+  if (interrupted.length > 0) session.session.appendMany(interrupted);
 }
 
 async function restoreDesktopState(): Promise<void> {
@@ -329,6 +338,17 @@ async function restoreDesktopState(): Promise<void> {
     }
   }
   activeSessionId = persisted.activeSessionId;
+  // 先固定异常退出事实，再重建客户端消息和恢复入口；启动不会重放任何终端或工具调用。
+  for (const session of sessions.values()) interruptRecoveredTurns(session);
+
+  // 终端旧连接只转为 disconnected，并在消息重建前追加可关联的未知效果事实。
+  for (const session of sessions.values()) {
+    const facts = terminalRestartFacts(session);
+    if (session.terminalHistory?.status === 'running') {
+      session.terminalHistory = { ...session.terminalHistory, status: 'disconnected' };
+    }
+    if (facts.length > 0) session.session.appendMany(facts);
+  }
 
   // 会话侧附件与工作目录是权威事实（旧快照在这里被换算成带 role 的形状）。
   // 快照里的界面副本可能来自更旧的格式（只有名称、没有真实路径），
@@ -354,17 +374,9 @@ async function restoreDesktopState(): Promise<void> {
     ...(clientState.drafts === undefined ? {} : { drafts: clientState.drafts.map(restoreConversation) }),
   };
   clientState = reconcileRecoveredClientState(clientState);
-
-  // 所有会话和派生界面状态都准备好后再追加重启观察，避免中途写入只包含部分会话的快照。
+  // 将异常中断、终端断开事实及重建后的客户端状态一起固定到最终快照。
   for (const session of sessions.values()) {
-    const facts = terminalRestartFacts(session);
-    // 终端连接不会在应用重启后自动恢复；先把运行态转换为已断开，
-    // 再和重启观察事实一起提交，后续快照不能继续声称旧进程仍在运行。
-    if (session.terminalHistory?.status === 'running') {
-      session.terminalHistory = { ...session.terminalHistory, status: 'disconnected' };
-    }
-    if (facts.length > 0) session.session.appendMany(facts);
-    else if (session.terminalHistory?.status === 'disconnected' && session.session instanceof DesktopPersistentSession) session.session.persist();
+    if (session.session instanceof DesktopPersistentSession) session.session.persist();
   }
 }
 
@@ -853,6 +865,7 @@ function registerIpcHandlers(): void {
     // 起点批次先落 SQLite，再准备扩展、钩子或外部模型；失败时不会留下可执行但未保存的任务。
     let preparedStart: ReturnType<typeof prepareTurnStart> | undefined;
     let closeExtensions: (() => Promise<void>) | undefined;
+    let closeExtensionsSafely: () => Promise<void> = async () => {};
     try {
       preparedStart = prepareTurnStart(buildAgentPrompt(prompt.trim(), session.attachments), recovery);
       session.session.appendMany(preparedStart.events);
@@ -934,6 +947,17 @@ function registerIpcHandlers(): void {
         () => prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
           { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) }));
       closeExtensions = extensions.close;
+      closeExtensionsSafely = async (): Promise<void> => {
+        const close = closeExtensions;
+        closeExtensions = undefined;
+        if (close === undefined || preparedStart === undefined) return;
+        try {
+          await runHostOperation(session, preparedStart.turnId, 'close', '关闭本轮扩展和工具服务。', close);
+        } catch (error) {
+          // 清理失败不能覆盖已提交的 Turn 结果；宿主失败事实会让最终任务投影进入待处理状态。
+          if (error instanceof SessionPersistenceError) throw error;
+        }
+      };
       for (const tool of extensions.tools) agent.tools.register(tool);
       if (settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
@@ -1014,6 +1038,7 @@ function registerIpcHandlers(): void {
       );
       if (recovery === undefined) await runHostOperation(session, result.turnId, 'stop', '运行本轮停止钩子。',
         () => extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText }));
+      await closeExtensionsSafely();
       // 产物身份是真实路径；文件名只是给界面看的标签，因此同名不同目录可以并存。
       const outputFiles = toOutputFiles(result.artifacts);
       const taskState = projectAgentTaskState(session.session.events(), result.turnId);
@@ -1068,8 +1093,19 @@ function registerIpcHandlers(): void {
       };
     } finally {
       try {
-        try { await closeExtensions?.(); }
-        finally { if (controller.signal.aborted && activeTask?.terminalTouched) await session.terminal?.close(); }
+        try {
+          await closeExtensionsSafely();
+        } finally {
+          if (controller.signal.aborted && activeTask?.terminalTouched) {
+            try {
+              if (preparedStart !== undefined && session.terminal !== undefined) {
+                await runHostOperation(session, preparedStart.turnId, 'terminal-close', '关闭取消任务留下的终端进程。', () => session.terminal!.close());
+              }
+            } catch (error) {
+              if (error instanceof SessionPersistenceError) throw error;
+            }
+          }
+        }
       } finally {
         commandOutput.flush();
         sendTaskState(sessionId);

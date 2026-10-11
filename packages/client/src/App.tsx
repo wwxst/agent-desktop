@@ -81,6 +81,7 @@ export function App({ api }: AppProps) {
   // 侧栏与设置归档列表共用同一份删除确认，不改变宿主删除接口。
   const [deleteTarget, setDeleteTarget] = useState<ClientConversation | undefined>(undefined);
   const [deleteError, setDeleteError] = useState('');
+  const [taskActionError, setTaskActionError] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const deleteDialog = useRef<HTMLDialogElement>(null);
   const deleteCancelButton = useRef<HTMLButtonElement>(null);
@@ -500,6 +501,7 @@ export function App({ api }: AppProps) {
       ? conversation.prompt.trim()
       : recovery.mode === 'verify' ? '核验未确定的外部效果' : '继续未完成任务';
     if (!taskPrompt || isProcessing || conversation.archived) return;
+    setTaskActionError('');
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
     followsLatest.current = true;
@@ -615,15 +617,20 @@ export function App({ api }: AppProps) {
 
   const verifyTaskEffect = async (sourceEventIndex: number, outcome: 'completed' | 'not-applied') => {
     if (isProcessing || api.verifyTaskEffect === undefined) return;
-    const state = await api.verifyTaskEffect(activeSessionIdRef.current, sourceEventIndex, outcome);
-    updateConversation(activeSessionIdRef.current, conversation => ({
-      ...conversation,
-      messages: conversation.messages.map(message => {
-        if (message.role !== 'assistant') return message;
-        const currentState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
-        return currentState?.rootTurnId === state.rootTurnId ? { ...message, taskState: state } : message;
-      }),
-    }));
+    try {
+      const state = await api.verifyTaskEffect(activeSessionIdRef.current, sourceEventIndex, outcome);
+      setTaskActionError('');
+      updateConversation(activeSessionIdRef.current, conversation => ({
+        ...conversation,
+        messages: conversation.messages.map(message => {
+          if (message.role !== 'assistant') return message;
+          const currentState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
+          return currentState?.rootTurnId === state.rootTurnId ? { ...message, taskState: state } : message;
+        }),
+      }));
+    } catch (error) {
+      setTaskActionError(error instanceof Error ? error.message : '核验外部效果失败。');
+    }
   };
 
   const decideApproval = async (approved: boolean) => {
@@ -768,6 +775,7 @@ export function App({ api }: AppProps) {
             settingsButton.current!.focus();
           }} />
         <div className="conversation-view" hidden={activeView !== 'conversation'}>
+        {taskActionError !== '' && <p className="task-action-error" role="alert">{taskActionError}</p>}
         <ConversationPanel
           messages={messages}
           hasConversation={hasConversation}
