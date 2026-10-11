@@ -145,9 +145,14 @@ describe('createDesktopApi', () => {
     const item = { id: 'call-1', kind: 'tool' as const, status: 'running' as const, toolName: 'probe_media' };
     listeners.get('desktop:agent-event')?.({}, { type: 'activity', item });
     listeners.get('desktop:agent-event')?.({}, { type: 'text.delta', delta: '实时增量' });
+    listeners.get('desktop:agent-event')?.({}, {
+      type: 'task.state', sessionId: 'session-a',
+      taskState: { rootTurnId: 'turn-1', latestTurnId: 'turn-1', status: 'started' },
+    });
     expect(events).toEqual([
       { type: 'activity', item },
       { type: 'text.delta', delta: '实时增量' },
+      { type: 'task.state', sessionId: 'session-a', taskState: { rootTurnId: 'turn-1', latestTurnId: 'turn-1', status: 'started' } },
     ]);
 
     unsubscribe();

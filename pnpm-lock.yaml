@@ -306,6 +306,9 @@ importers:
       '@agent-desktop/model':
         specifier: workspace:*
         version: link:../model
+      '@agent-desktop/session':
+        specifier: workspace:*
+        version: link:../session
 
   packages/video-agent:
     dependencies:

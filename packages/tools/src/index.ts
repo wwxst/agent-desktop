@@ -1,5 +1,7 @@
 import type { ModelToolDefinition, ToolCallId, ToolFailureKind, ToolResult } from '@agent-desktop/model';
 
+export { UpdatePlanTool } from './plan.js';
+
 // 复用 Model 定义，避免 Tools package 再声明一份可能漂移的模型可见契约。
 export type { ModelToolDefinition };
 

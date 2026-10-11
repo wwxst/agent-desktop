@@ -7,6 +7,7 @@ import { AgentActivity } from './AgentActivity.js';
 import { ArtifactCard } from './ArtifactCard.js';
 import { Markdown } from './Markdown.js';
 import { OutputResults } from './OutputResults.js';
+import { TaskPlan } from './TaskPlan.js';
 
 interface AssistantMessageProps {
   readonly message: ClientAssistantMessage;
@@ -59,6 +60,7 @@ export function AssistantMessage({
           onRevealFile={onRevealFile}
         />
       )}
+      <TaskPlan taskState={message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined)} />
 
       {message.status === 'cancelled' ? (
         <>

@@ -61,7 +61,8 @@ import { migrateLegacyDesktopFiles } from './legacy-storage-migration.js';
 import { DesktopExtensions } from './extensions.js';
 import { prepareExtensions } from './extension-runtime.js';
 import { ExtensionConnections } from './extension-connections.js';
-import { InMemoryToolRegistry } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, UpdatePlanTool } from '@agent-desktop/tools';
+import { projectAgentTaskState, qualifyTaskToolEvidence } from './agent-task-state.js';
 import { DesktopUpdater } from './app-updater.js';
 
 let mainWindow: BrowserWindow | null = null;
@@ -248,6 +249,15 @@ function sendAgentEvent(event: AgentRuntimeEvent): void {
   if (mainWindow?.isDestroyed() === false) {
     mainWindow.webContents.send(DESKTOP_CHANNELS.agentEvent, event);
   }
+}
+
+/** 计划及任务状态只从会话事实生成，模型声明和渲染层副本不决定完成。 */
+function sendTaskState(sessionId: string): void {
+  const events = sessions.get(sessionId)!.session.events();
+  const turnId = findLatestTurnId(events);
+  if (turnId === undefined) return;
+  const state = projectAgentTaskState(events, turnId);
+  if (state !== undefined) sendAgentEvent({ type: 'task.state', sessionId, taskState: state });
 }
 
 /**
@@ -521,7 +531,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(DESKTOP_CHANNELS.saveClientState, async (_event, state: unknown) => {
     if (isTaskRunning) throw new Error('Agent 正在执行，无法保存未完成的会话状态。');
-    const snapshot = parseClientState(state);
+    const snapshot = parseClientState(state, undefined, sessionId => sessions.get(sessionId)?.session.events() ?? []);
     const persisted = parseDesktopState(currentPersistedState(snapshot));
     // 复用磁盘读取的同一结构校验，保证 Renderer 会话与 Main 运行态一一对应。
     await saveDesktopState(persistenceFilePath(), persisted);
@@ -702,6 +712,8 @@ function registerIpcHandlers(): void {
         for (const tool of agent.tools.list()) extensionTools.register(extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
+      // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
+      agent.tools.register(new UpdatePlanTool(session.session, qualifyTaskToolEvidence));
       if (session.pendingSessionStart !== undefined) {
         const source = session.pendingSessionStart;
         // 在执行前消费；失败或取消后的继续任务不会重放已触发的启动命令。
@@ -738,8 +750,10 @@ function registerIpcHandlers(): void {
           trace: async (traceEvent) => {
             await trace.write(traceEvent);
             sendActivity(traceEvent, session.session.events());
+            sendTaskState(sessionId);
           },
           signal: controller.signal,
+          qualifyToolEvidence: qualifyTaskToolEvidence,
           // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
           ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
             : { contextBudget: { contextWindow: settings.modelContextWindow, maxOutputTokens: settings.modelMaxOutputTokens } }),
@@ -748,6 +762,7 @@ function registerIpcHandlers(): void {
             ? { type: 'text.delta', stepId, delta: text }
             : { type: 'model.text', stepId, text, purpose }),
           onToolResult: (toolCallId, toolName, toolResult) => {
+            sendTaskState(sessionId);
             // 先结清实时输出再发布最终详情：最终详情是权威结果，不能被迟到的进度覆盖。
             commandOutput.flush();
             const detail = projectAgentActivityDetail(toolName, toolResult);
@@ -764,6 +779,7 @@ function registerIpcHandlers(): void {
       await extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText });
       // 产物身份是真实路径；文件名只是给界面看的标签，因此同名不同目录可以并存。
       const outputFiles = toOutputFiles(result.artifacts);
+      const taskState = projectAgentTaskState(session.session.events(), result.turnId);
       // 逐项结果与失败路径共用同一条读取投影，保证两种终态口径一致。
       const outputs = turnOutputResults(session.session.events(), firstTaskEventIndex);
       let conversationTitle: string | undefined;
@@ -781,6 +797,7 @@ function registerIpcHandlers(): void {
         result: {
           responseText: result.responseText,
           traceId: trace.id,
+          ...(taskState === undefined ? {} : { taskState }),
           ...(conversationTitle === undefined ? {} : { conversationTitle }),
           ...(conversationTitleError === undefined ? {} : { conversationTitleError }),
           ...(outputFiles.length === 0 ? {} : { outputFiles }),
@@ -806,6 +823,7 @@ function registerIpcHandlers(): void {
         finally { if (controller.signal.aborted && activeTask?.terminalTouched) await session.terminal?.close(); }
       } finally {
         commandOutput.flush();
+        sendTaskState(sessionId);
         isTaskRunning = false;
         if (activeTask?.controller === controller) activeTask = undefined;
         markFinished();

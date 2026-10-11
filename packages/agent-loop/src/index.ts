@@ -4,7 +4,7 @@ import { ModelRequestError } from '@agent-desktop/model';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, TurnCancellationError, projectTurnState,
-  type RecoveryMode, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+  type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
 import { prepareModelContext, type ContextBudget } from './context.js';
 
@@ -216,6 +216,8 @@ export interface RunTurnOptions {
   readonly maxSteps?: number;
   /** 只有宿主明确窗口和供应商实际输出上限时启用，不猜测模型默认值。 */
   readonly contextBudget?: ContextBudget;
+  /** 宿主同一个证据资格规则同时供计划投影和模型来源目录使用。 */
+  readonly qualifyToolEvidence?: QualifyToolEvidence;
 }
 
 export class StepBudgetError extends Error {
@@ -267,6 +269,7 @@ export async function runStartedTurn(
       const messages = await prepareModelContext({ model: agent.model, session: agent.session,
         turnId, systemPrompt, tools,
         ...(signal === undefined ? {} : { signal }),
+        ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
         ...(options.contextBudget === undefined ? {} : { budget: options.contextBudget }) });
       await trace?.({
         type: 'model.started',

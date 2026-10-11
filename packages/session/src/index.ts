@@ -1,7 +1,7 @@
 import type { ToolCall, ToolCallId, ToolResult } from '@agent-desktop/model';
 
 export {
-  projectTurnState, projectRecoveryAncestry, projectRecoveryFacts, projectTaskPlan, projectTaskState,
+  projectTurnState, projectRecoveryAncestry, projectRecoveryFacts, projectTaskPlan, projectTaskState, TaskPlanUpdateError,
   type RecoveryAncestry, type RecoveryCallFact, type RecoveryEffectFact, type RecoveryFacts,
   type ProjectedTaskPlanStep, type TaskPlanProjection, type TaskState,
 } from './projections.js';

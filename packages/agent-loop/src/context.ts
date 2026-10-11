@@ -3,7 +3,7 @@ import { ModelRequestError, type Model, type ModelMessage, type ModelResponse, t
 import {
   projectRecoveryAncestry, projectRecoveryFacts, recoverSessionEvents, SessionPersistenceError,
   type AssistantMessageEvent, type ContextCompactedEvent, type Session, type SessionEvent,
-  type StepCompletedEvent, type ToolResultEvent, type TurnId,
+  type QualifyToolEvidence, type StepCompletedEvent, type ToolCalledEvent, type ToolResultEvent, type TurnId,
 } from '@agent-desktop/session';
 
 export interface ContextBudget { readonly contextWindow: number; readonly maxOutputTokens: number; }
@@ -11,6 +11,8 @@ export interface PrepareModelContextInput {
   readonly model: Model; readonly session: Session; readonly turnId: TurnId;
   readonly systemPrompt: string; readonly tools: readonly ModelToolDefinition[];
   readonly signal?: AbortSignal; readonly budget?: ContextBudget;
+  /** 与计划工具/纯投影共用宿主的业务证据资格，不在上下文中猜具体工具是否完成任务。 */
+  readonly qualifyToolEvidence?: QualifyToolEvidence;
 }
 export class ContextBudgetError extends Error {
   override readonly name = 'ContextBudgetError';
@@ -153,7 +155,7 @@ export function createContextSourceDigest(events: readonly SessionEvent[], cover
 }
 
 /** 计划原文仅是意图；未知效果和未完整步骤的成功事实以资料文本保留，不伪造 tool 消息。 */
-function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: readonly CompleteStep[], keepCompletedIdentities: boolean): string[] {
+function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: readonly CompleteStep[], keepCompletedIdentities: boolean, qualifyToolEvidence?: QualifyToolEvidence): string[] {
   const ancestry = projectRecoveryAncestry(events, turnId);
   const taskTurns = new Set(ancestry.turnIds);
   const latestPlanIndex = events.findLastIndex(event => event.type === 'plan.updated' && taskTurns.has(event.turnId));
@@ -187,6 +189,36 @@ function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: 
     const plan = events[index]!;
     text.push(`最新计划声明（意图，requestedStatus 不是执行完成证据）：\n${canonicalJson({ sourceEventIndex: index, rootTurnId: projectRecoveryAncestry(events, plan.turnId).rootTurnId, event: plan })}`);
     if (plan.type === 'plan.updated') for (const step of plan.steps) for (const index of step.evidenceEventIndexes) retained.add(index);
+  }
+  if (latestPlanIndex >= 0) {
+    // 目录只在本任务已经有计划时提供；索引来自原历史，不复制大输出或用 ToolCallId 猜跨轮归属。
+    const calls = new Map<string, { index: number; event: ToolCalledEvent }>();
+    const unknownSources = new Set(facts.unknownEffects.map(fact => fact.sourceEventIndex));
+    const evidence: unknown[] = [];
+    events.forEach((event, sourceEventIndex) => {
+      if (!taskTurns.has(event.turnId)) return;
+      if (event.type === 'tool.called') calls.set(canonicalJson([event.turnId, event.stepId, event.toolCallId]), { index: sourceEventIndex, event });
+      if (event.type === 'tool.result') {
+        const call = calls.get(canonicalJson([event.turnId, event.stepId, event.toolCallId]));
+        evidence.push({ sourceEventIndex, type: event.type, turnId: event.turnId, stepId: event.stepId, toolCallId: event.toolCallId,
+          ...(call === undefined ? {} : { callSourceEventIndex: call.index, toolName: call.event.name,
+            pendingEffectVerification: unknownSources.has(call.index) }), resultStatus: event.result.status,
+          ...(event.result.status === 'error' && event.result.failureKind !== undefined ? { failureKind: event.result.failureKind } : {}),
+          ...(qualifyToolEvidence === undefined ? {} : { qualification: qualifyToolEvidence(event, events) }) });
+      } else if (event.type === 'effect.outcome.verified') {
+        const source = events[event.sourceEventIndex];
+        if (source === undefined || !taskTurns.has(source.turnId)) return;
+        evidence.push({ sourceEventIndex, type: event.type, turnId: event.turnId, operationSourceEventIndex: event.sourceEventIndex,
+          sourceTurnId: source.turnId, sourceType: source.type,
+          ...(source.type === 'tool.called' ? { toolName: source.name } : source.type === 'host.operation.started' ? { operation: source.operation } : {}),
+          scope: event.scope, outcome: event.outcome, evidence: event.evidence, pendingEffectVerification: unknownSources.has(event.sourceEventIndex),
+          ...(qualifyToolEvidence === undefined ? {} : { qualification: qualifyToolEvidence(event, events) }) });
+      } else if (event.type === 'turn.failed' || event.type === 'turn.cancelled' || event.type === 'turn.interrupted'
+        || event.type === 'tool.interaction.closed' || (event.type === 'host.operation.result' && event.status !== 'completed')) {
+        evidence.push({ sourceEventIndex, event });
+      }
+    });
+    text.push(`计划证据目录（仅本任务及恢复链；引用 sourceEventIndex。resultStatus 只表示真实返回，资格由宿主判断；未知效果须先核验；没有 qualification 时不能据此确认业务完成）：\n${canonicalJson(evidence)}`);
   }
   if (ancestry.turnIds.length > 1) {
     events.forEach((event, index) => {
@@ -239,7 +271,7 @@ export async function prepareModelContext(input: PrepareModelContextInput): Prom
   throwIfAborted(input.signal);
   const events = input.session.events();
   const steps = completeSteps(events);
-  const facts = importantFacts(events, input.turnId, steps, input.budget !== undefined);
+  const facts = importantFacts(events, input.turnId, steps, input.budget !== undefined, input.qualifyToolEvidence);
   const raw = projectMessages(events, new Set(), steps, input.turnId, facts);
   if (input.budget === undefined) return raw;
   const { contextWindow, maxOutputTokens } = input.budget;

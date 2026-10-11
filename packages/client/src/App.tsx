@@ -51,6 +51,7 @@ function dropStreamedText(message: ClientAssistantMessage): ClientAssistantMessa
     role: message.role,
     activity: message.activity,
     activityExpanded: message.activityExpanded,
+    ...(message.taskState === undefined ? {} : { taskState: message.taskState }),
   };
 }
 
@@ -196,6 +197,15 @@ export function App({ api }: AppProps) {
     const sessionId = activeSessionIdRef.current;
     if (event.type === 'terminal.updated') {
       updateConversation(event.sessionId, (conversation) => ({ ...conversation, terminalHistory: event.terminal }));
+      return;
+    }
+    if (event.type === 'task.state') {
+      // 任务投影按宿主会话归属进入当前回复，完成资格完全由 Session 的权威投影提供。
+      updateConversation(event.sessionId, conversation => {
+        const activeIndex = conversation.messages.findLastIndex(message => message.role === 'assistant' && message.status === 'processing');
+        return { ...conversation, messages: conversation.messages.map((message, index) => index === activeIndex
+          ? { ...message, taskState: event.taskState } : message) };
+      });
       return;
     }
     if (event.type === 'question.requested') {
@@ -537,6 +547,7 @@ export function App({ api }: AppProps) {
                 ...dropStreamedText(message),
                 status: 'completed',
                 result: taskResult,
+                ...(taskResult.taskState === undefined ? {} : { taskState: taskResult.taskState }),
                 activityExpanded: false,
               }
             : message

@@ -41,9 +41,28 @@ export type AgentTaskOutputItemResult =
     readonly reason: string;
   };
 
+/** 宿主从 Session 事实生成的任务展示投影；Client 不重新判断完成资格。 */
+export interface AgentTaskState {
+  readonly rootTurnId: string;
+  readonly latestTurnId: string;
+  readonly status: 'started' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked';
+  readonly plan?: {
+    readonly revision: number;
+    readonly explanation: string;
+    readonly steps: readonly {
+      readonly id: string;
+      readonly description: string;
+      readonly status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
+      readonly completionKind: 'tool' | 'response';
+      readonly evidenceLabels: readonly string[];
+    }[];
+  };
+}
+
 export interface AgentTaskResult {
   readonly responseText: string;
   readonly traceId: string;
+  readonly taskState?: AgentTaskState;
   /** 首轮由宿主模型概括任务；命名失败独立说明，不改变已完成任务的结果。 */
   readonly conversationTitle?: string;
   readonly conversationTitleError?: string;
@@ -171,6 +190,7 @@ export interface ClientAssistantMessageBase {
   readonly role: 'assistant';
   readonly activity: readonly AgentActivityItem[];
   readonly activityExpanded: boolean;
+  readonly taskState?: AgentTaskState;
 }
 
 /**
@@ -399,6 +419,7 @@ export interface AgentWorkspaceEvent {
 
 /** Host 在 Turn 执行期间推送给 Client 的运行期事件：活动轨迹、实时文本增量、待决审批或已确认的工作目录。 */
 export type AgentRuntimeEvent =
+  | { readonly type: 'task.state'; readonly sessionId: string; readonly taskState: AgentTaskState }
   | AgentActivityEvent
   | AgentActivityDetailEvent
   | AgentTextDeltaEvent

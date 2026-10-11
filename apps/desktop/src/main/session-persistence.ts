@@ -16,8 +16,9 @@ import type {
   AttachmentRole,
   TerminalSnapshot,
 } from '@agent-desktop/client';
-import { projectRecoveryAncestry, type SessionEvent, type TaskPlanStep } from '@agent-desktop/session';
+import { projectRecoveryAncestry, projectTurnState, type SessionEvent, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
 import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
+import { projectAgentTaskState } from './agent-task-state.js';
 import type { SubagentRecord } from './subagent.js';
 
 export interface PersistedDesktopSession {
@@ -644,6 +645,7 @@ function readClientMessage(
   value: unknown,
   field: string,
   legacyOutputFilePaths: Readonly<Record<string, string>>,
+  events: readonly SessionEvent[],
 ): ClientConversationMessage {
   if (!isRecord(value)) invalid(field);
   const id = readNonNegativeInteger(value.id, `${field}.id`);
@@ -669,9 +671,18 @@ function readClientMessage(
     };
   }
   if (role !== 'assistant') invalid(`${field}.role`);
+  // UI 快照只携带关联提示；显示状态与完成证据必须从 Main 的原始事实重建。
+  let task;
+  if (value.task !== undefined) {
+    if (!isRecord(value.task)) invalid(`${field}.task`);
+    const turnId = readString(value.task.turnId, `${field}.task.turnId`) as TurnId;
+    if (projectTurnState(events, turnId) === undefined) invalid(`${field}.task.turnId`);
+    task = projectAgentTaskState(events, turnId);
+  }
   const base = {
     id,
     role,
+    ...(task === undefined ? {} : { task }),
     activity: readActivity(value.activity, `${field}.activity`, value.tools, `${field}.tools`),
     activityExpanded: value.activityExpanded === undefined
       ? readBoolean(value.toolsExpanded, `${field}.toolsExpanded`)
@@ -743,6 +754,7 @@ function readClientConversation(
   value: unknown,
   field: string,
   legacyOutputFilePaths: Readonly<Record<string, string>>,
+  events: readonly SessionEvent[],
 ): ClientConversation {
   if (!isRecord(value)) invalid(field);
   if (!Array.isArray(value.messages)) invalid(`${field}.messages`);
@@ -764,7 +776,7 @@ function readClientConversation(
         ? value.titleManuallyRenamed
         : invalid(`${field}.titleManuallyRenamed`),
     messages: value.messages.map((item, index) => (
-      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths)
+      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths, events)
     )),
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
@@ -802,6 +814,7 @@ function readSidebar(value: unknown): ClientSidebarState {
 export function parseClientState(
   value: unknown,
   legacyOutputFilePathsFor: (sessionId: string) => Readonly<Record<string, string>> = () => ({}),
+  eventsFor: (sessionId: string) => readonly SessionEvent[] = () => [],
 ): ClientStateSnapshot {
   if (!isRecord(value)) invalid('clientState');
   if (!Array.isArray(value.conversations)) {
@@ -812,11 +825,12 @@ export function parseClientState(
       item,
       `clientState.conversations[${index}]`,
       isRecord(item) && typeof item.id === 'string' ? legacyOutputFilePathsFor(item.id) : {},
+      isRecord(item) && typeof item.id === 'string' ? eventsFor(item.id) : [],
     )
   ));
   if (value.drafts !== undefined && !Array.isArray(value.drafts)) invalid('clientState.drafts');
   const drafts = value.drafts === undefined ? [] : (value.drafts as unknown[]).map((item, index) => (
-    readClientConversation(item, `clientState.drafts[${index}]`, {})
+    readClientConversation(item, `clientState.drafts[${index}]`, {}, [])
   ));
   if (drafts.some(draft => draft.messages.length > 0 || draft.archived || draft.pinned || draft.titleManuallyRenamed)) invalid('clientState.drafts');
   const allConversations = [...conversations, ...drafts];
@@ -927,6 +941,7 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
   const clientState = parseClientState(
     value.clientState,
     (sessionId) => legacyOutputFilePathsBySession.get(sessionId) ?? {},
+    (sessionId) => sessions.find(session => session.id === sessionId)?.events ?? [],
   );
   const clientSessionIds = [...clientState.conversations, ...clientState.drafts ?? []].map((conversation) => conversation.id);
   if (!sessionIds.includes(activeSessionId)

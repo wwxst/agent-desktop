@@ -492,6 +492,30 @@ describe('shared App', () => {
     expect(screen.queryByText('正在生成结果')).toBeNull();
   });
 
+  it('attaches task state to the active reply and preserves it when the turn completes', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    const taskState = {
+      rootTurnId: 'turn-1', latestTurnId: 'turn-1', status: 'started' as const,
+      plan: { revision: 1, explanation: '读取并回复', steps: [{
+        id: 'read', description: '读取文件', status: 'in_progress' as const,
+        completionKind: 'tool' as const, evidenceLabels: [],
+      }] },
+    };
+    render(<App api={{ ...api,
+      runAgentTask: () => new Promise<AgentTaskResult>(resolve => { resolveTask = resolve; }),
+      onAgentEvent: listener => { receiveEvent = listener; return () => undefined; },
+    }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '读取文件' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    act(() => receiveEvent?.({ type: 'task.state', sessionId: 'session-a', taskState }));
+    expect(await screen.findByRole('region', { name: '任务计划' })).toBeTruthy();
+    await act(async () => resolveTask?.({ responseText: '文件内容', traceId: 'trace-plan', taskState: { ...taskState, status: 'completed' } }));
+    expect(await screen.findByText('文件内容')).toBeTruthy();
+    expect(screen.getByRole('region', { name: '任务计划' })).toBeTruthy();
+  });
+
   it('clears streamed text when the turn is cancelled', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let rejectRunning: ((reason: Error) => void) | undefined;

@@ -4,6 +4,11 @@ import type {
   TaskPlanStatus, TaskPlanStep, ToolCalledEvent, ToolResultEvent, TurnId, TurnState,
 } from './index.js';
 
+/** 模型候选计划违反稳定步骤规则；调用方只捕获此业务错误，不吞程序或保存错误。 */
+export class TaskPlanUpdateError extends Error {
+  override readonly name = 'TaskPlanUpdateError';
+}
+
 export interface RecoveryAncestry {
   readonly rootTurnId: TurnId;
   readonly turnIds: readonly TurnId[];
@@ -34,6 +39,10 @@ export interface RecoveryFacts {
 export interface ProjectedTaskPlanStep extends TaskPlanStep {
   readonly status: TaskPlanStatus;
   readonly evidenceLabels: readonly string[];
+  /** 已取得完成证据不等于当前可继续执行；未知效果仍可使 status 为 blocked。 */
+  readonly completionConfirmed: boolean;
+  /** 实际错误可同时具有未知效果，不能仅从优先显示的 blocked 状态丢掉错误依据。 */
+  readonly failureConfirmed: boolean;
 }
 export interface TaskPlanProjection {
   readonly rootTurnId: TurnId;
@@ -179,13 +188,18 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
   let projection: TaskPlanProjection | undefined;
   // 完成证据与暂时 blocked 展示分开派生，不能趁新的未知观察删掉已完成的原步骤。
   const completedSteps = new Map<string, ProjectedTaskPlanStep>();
+  const knownSteps = new Map<string, TaskPlanStep>();
   for (let version = 0; version < declarations.length; version += 1) {
     const { event: declaration, index } = declarations[version]!;
     const end = declarations[version + 1]?.index ?? events.length;
     const steps = declaration.steps.map((step): ProjectedTaskPlanStep => {
       const previous = completedSteps.get(step.id);
+      const known = knownSteps.get(step.id);
       // 实际完成的是稳定的原步骤。后续版本可保留该事实，但不能换描述/类型或退回未完成。
-      if (previous !== undefined && (step.description !== previous.description || step.completionKind !== previous.completionKind || step.requestedStatus !== 'completed')) throw new Error('已完成计划步骤不得删除或撤销。');
+      if (previous !== undefined && (step.description !== previous.description || step.completionKind !== previous.completionKind || step.requestedStatus !== 'completed')) throw new TaskPlanUpdateError('已完成计划步骤不得删除或撤销。');
+      // 稳定 ID 代表同一项工作；重新规划的新工作必须使用新 ID，不能改写旧描述。
+      if (known !== undefined && (step.description !== known.description || step.completionKind !== known.completionKind)) throw new TaskPlanUpdateError('计划稳定步骤不得改写描述或完成类型；新工作请使用新 ID。');
+      knownSteps.set(step.id, step);
       let completed = false;
       let failed = false;
       let blocked = false;
@@ -231,13 +245,13 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
       const status: TaskPlanStatus = blocked ? 'blocked' : completed ? 'completed'
         : failed ? 'failed'
         : step.requestedStatus === 'in_progress' ? 'in_progress' : 'pending';
-      const projected = { ...step, status, evidenceLabels,
+      const projected = { ...step, status, evidenceLabels, completionConfirmed: completed, failureConfirmed: failed,
         evidenceEventIndexes: previous === undefined ? step.evidenceEventIndexes : [...new Set([...previous.evidenceEventIndexes, ...step.evidenceEventIndexes])] };
       if (completed) completedSteps.set(step.id, projected);
       return projected;
     });
     // 更新必须保留已完成的稳定步骤；不能靠后续声明撤销实际完成事实。
-    for (const id of completedSteps.keys()) if (!steps.some(step => step.id === id)) throw new Error('已完成计划步骤不得删除或撤销。');
+    for (const id of completedSteps.keys()) if (!steps.some(step => step.id === id)) throw new TaskPlanUpdateError('已完成计划步骤不得删除或撤销。');
     projection = { rootTurnId: ancestry.rootTurnId, revision: declaration.revision, sourceEventIndex: index, explanation: declaration.explanation, steps };
   }
   return projection;

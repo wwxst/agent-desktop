@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ModelRequestError, type Model, type ModelMessage, type ModelRequest, type ModelResponse, type ModelToolDefinition, type ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, SessionPersistenceError, TurnCancellationError, type ContextCompactedEvent, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import { InMemorySession, SessionPersistenceError, TurnCancellationError, type ContextCompactedEvent, type QualifyToolEvidence, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import { ContextBudgetError, createContextSourceDigest, estimateContextTokens, prepareModelContext, validateContextCompactedEvent, type ContextBudget } from '../src/context.js';
 
 const root = 'original' as TurnId;
@@ -301,5 +301,86 @@ describe('summary provenance', () => {
     expect(() => validateContextCompactedEvent([...events, { ...event, previousSummaryEventIndex: summaryIndex }], summaryIndex + 1)).toThrow('重复覆盖');
     expect(() => validateContextCompactedEvent([...events.slice(0, summaryIndex), { ...event, coveredStepEndEventIndexes: [summaryIndex + 1] }], summaryIndex)).toThrow('未来');
     expect(() => validateContextCompactedEvent([...events.slice(0, summaryIndex), { ...event, previousSummaryEventIndex: summaryIndex }], summaryIndex)).toThrow('自己或未来');
+  });
+});
+
+describe('plan evidence available to the model', () => {
+  const plan: SessionEvent = { type: 'plan.updated', turnId: current, revision: 1, explanation: '检查资料并给出回复',
+    steps: [{ id: 'check', description: '检查资料', requestedStatus: 'in_progress', completionKind: 'tool', evidenceEventIndexes: [] }] };
+  const qualify: QualifyToolEvidence = source => ({ eligible: source.type === 'effect.outcome.verified'
+    ? source.scope === 'entire-call' && source.outcome === 'completed'
+    : source.result.status === 'success' && source.result.output === 'qualified-read',
+    label: source.type === 'effect.outcome.verified' ? '仅核验当前操作效果' : source.result.status === 'error' ? '真实工具失败' : source.result.output === 'qualified-read' ? '资料已读取' : '仅确认工具返回' });
+  function directory(messages: readonly ModelMessage[]): Record<string, unknown>[] | undefined {
+    const message = messages.find(message => message.role === 'user' && message.content.startsWith('计划证据目录'));
+    return message?.role === 'user' ? JSON.parse(message.content.slice(message.content.indexOf('\n') + 1)) as Record<string, unknown>[] : undefined;
+  }
+  function prepare(session: InMemorySession, qualifier = qualify, budget?: ContextBudget) {
+    return prepareModelContext({ session, model: { complete: async request => summarize(request) }, turnId: current,
+      systemPrompt, tools, qualifyToolEvidence: qualifier, ...(budget === undefined ? {} : { budget }) });
+  }
+
+  it('exposes stable task-chain result and verification indexes with their real qualification and composite call identity', async () => {
+    const stepId = 'same-step' as StepId; const toolCallId = 'same-call' as ToolCallId; const other = 'unrelated' as TurnId;
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId: other },
+      { type: 'tool.called', turnId: other, stepId, toolCallId, name: 'unrelated-tool', input: {}, boundary: 'read-only' },
+      { type: 'tool.result', turnId: other, stepId, toolCallId, result: { status: 'success', output: 'unrelated-fact' } },
+      { type: 'turn.started', turnId: root },
+      { type: 'tool.called', turnId: root, stepId, toolCallId, name: 'read_file', input: {}, boundary: 'read-only' },
+      { type: 'tool.result', turnId: root, stepId, toolCallId, result: { status: 'success', output: 'qualified-read' } },
+      { type: 'turn.failed', turnId: root, errorName: 'Error', errorMessage: 'original failure' },
+      { type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: '继续检查' },
+      { type: 'turn.recovery.started', turnId: current, sourceTurnId: root, mode: 'continue' }, plan,
+      { type: 'tool.called', turnId: current, stepId, toolCallId, name: 'external-tool', input: {}, boundary: 'opaque' },
+      { type: 'tool.result', turnId: current, stepId, toolCallId, result: { status: 'success', output: 'opaque-return' } },
+      { type: 'effect.outcome.verified', turnId: current, sourceEventIndex: 11, scope: 'entire-call', outcome: 'unresolved',
+        evidence: { source: 'host', reference: 'terminal:1', description: '命令效果未明' } },
+      { type: 'tool.called', turnId: current, stepId: 'failed' as StepId, toolCallId, name: 'read_file', input: {}, boundary: 'read-only' },
+      { type: 'tool.result', turnId: current, stepId: 'failed' as StepId, toolCallId, result: { status: 'error', message: 'real read error', failureKind: 'permanent' } },
+      { type: 'effect.outcome.verified', turnId: current, sourceEventIndex: 4, scope: 'entire-call', outcome: 'completed',
+        evidence: { source: 'user', reference: '原轮次的资料', description: '人工确认原操作结果' } },
+    ];
+    const callback = vi.fn(qualify); const session = new InMemorySession(events);
+    const evidence = directory(await prepare(session, callback))!;
+    expect(evidence.map(item => item.sourceEventIndex)).toEqual([5, 6, 12, 13, 15, 16]);
+    expect(evidence[0]).toMatchObject({ turnId: root, callSourceEventIndex: 4, toolName: 'read_file', resultStatus: 'success', qualification: { eligible: true, label: '资料已读取' } });
+    expect(evidence[2]).toMatchObject({ turnId: current, callSourceEventIndex: 11, toolName: 'external-tool', pendingEffectVerification: true, qualification: { eligible: false, label: '仅确认工具返回' } });
+    expect(evidence[3]).toMatchObject({ operationSourceEventIndex: 11, outcome: 'unresolved', qualification: { eligible: false }, evidence: { source: 'host' } });
+    expect(evidence[4]).toMatchObject({ callSourceEventIndex: 14, resultStatus: 'error', failureKind: 'permanent', qualification: { eligible: false, label: '真实工具失败' } });
+    expect(evidence[5]).toMatchObject({ operationSourceEventIndex: 4, sourceTurnId: root, sourceType: 'tool.called', toolName: 'read_file', outcome: 'completed', qualification: { eligible: true }, evidence: { source: 'user' } });
+    expect(callback).toHaveBeenCalledTimes(5); expect(session.events()).toEqual(events);
+  });
+
+  it('does not add an evidence directory or query qualification without a current task plan', async () => {
+    const { session } = history(2, 100); const callback = vi.fn(qualify);
+    expect(directory(await prepare(session, callback))).toBeUndefined(); expect(callback).not.toHaveBeenCalled();
+    session.append({ ...plan, turnId: root });
+    expect(directory(await prepare(session, callback))).toBeUndefined(); expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('keeps exact result indexes after compression without copying large output into the directory', async () => {
+    const { session } = history(5, 1400);
+    session.append({ type: 'turn.recovery.started', turnId: current, sourceTurnId: root, mode: 'continue' });
+    session.append(plan);
+    const messages = await prepare(session, qualify, { contextWindow: 9500, maxOutputTokens: 800 });
+    const evidence = directory(messages)!;
+    expect(evidence.map(item => item.sourceEventIndex)).toEqual([5, 10, 15, 20, 25]);
+    expect(JSON.stringify(evidence)).not.toContain('fact-0:');
+    expect(session.events().some(event => event.type === 'context.compacted')).toBe(true);
+    assertToolPairs(messages);
+    expect(estimateContextTokens({ systemPrompt, messages, tools })).toBeLessThanOrEqual(9500 - 800 - Math.ceil(9500 * 0.05));
+  });
+
+  it('counts the evidence directory in mandatory input rather than dropping it to fit a budget', async () => {
+    const session = new InMemorySession([{ type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: '检查' }, plan,
+      { type: 'tool.called', turnId: current, stepId: 's' as StepId, toolCallId: 'c' as ToolCallId, name: 'read', input: {}, boundary: 'read-only' },
+      { type: 'tool.result', turnId: current, stepId: 's' as StepId, toolCallId: 'c' as ToolCallId, result: { status: 'success', output: 'small' } },
+      { type: 'step.completed', turnId: current, stepId: 's' as StepId }]);
+    const complete = vi.fn<Model['complete']>(); const original = [...session.events()];
+    await expect(prepareModelContext({ session, model: { complete }, turnId: current, systemPrompt, tools,
+      qualifyToolEvidence: () => ({ eligible: false, label: 'actual business qualification '.repeat(300) }),
+      budget: { contextWindow: 6000, maxOutputTokens: 800 } })).rejects.toThrow('必须保留');
+    expect(complete).not.toHaveBeenCalled(); expect(session.events()).toEqual(original);
   });
 });

@@ -25,6 +25,7 @@ export type {
   AgentTaskOutputFile,
   AgentTaskOutputItemResult,
   AgentTaskResult,
+  AgentTaskState,
   ApprovalRequest,
   ClientAssistantMessage,
   ClientConversation,
