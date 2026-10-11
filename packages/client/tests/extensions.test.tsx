@@ -24,6 +24,24 @@ function setup() {
 }
 
 describe('extension catalog notifications and separate skill reading', () => {
+  it('updates an installed builtin plugin from its detail and disables the action during tasks', async () => {
+    const host = setup();
+    const plugin = { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'FFmpeg', description: '本地媒体工具', source: 'builtin' as const, installed: true, enabled: true, version: '1.0.0', availableVersion: '1.1.0' };
+    const { availableVersion: _availableVersion, ...updated } = plugin;
+    host.api.manage = vi.fn(async () => ({ plugins: [{ ...updated, version: '1.1.0' }], skills: [] }));
+    const view = render(<ExtensionsPage api={host.api} view="plugins" requestedId={plugin.id} isProcessing={true} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [plugin], skills: [] }));
+    const update = await screen.findByRole('button', { name: '更新至 1.1.0' });
+    expect(update).toHaveProperty('disabled', true);
+    fireEvent.click(update);
+    expect(host.api.manage).not.toHaveBeenCalled();
+    view.rerender(<ExtensionsPage api={host.api} view="plugins" requestedId={plugin.id} isProcessing={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '更新至 1.1.0' }));
+    await waitFor(() => expect(host.api.manage).toHaveBeenCalledWith({ action: 'update', id: plugin.id }));
+    await screen.findByRole('button', { name: '检查更新' });
+    expect(screen.getByRole('region', { name: '信息' }).textContent).toContain('1.1.0');
+  });
   it('adds and edits a standalone MCP server through the reference menu without disclosing secrets', async () => {
     const host = setup();
     const server = { id: 'mcp:local', name: 'local-tools', transport: 'stdio' as const, command: 'node', args: ['script.mjs'], url: '', enabled: true, environmentNames: ['TOKEN'], headerNames: [], connected: false };

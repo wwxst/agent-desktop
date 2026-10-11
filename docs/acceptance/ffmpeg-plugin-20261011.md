@@ -83,6 +83,8 @@ Non-goals     排除范围    不重写核心循环，不迁移 Whisper/Vision�
 
 最终完整门禁：62 文件 653 项通过；生产和测试类型、19 个包架构检查、差异格式全部通过。正式构建及 NSIS 打包通过。完整界面与 Electron 回归为 63 项通过、11 项按既有平台或专项运行条件跳过（`stage-6-browser-suite.log`）；安装版专项另行实际执行两项通过，不用跳过代替验收。
 
+收尾补修：宿主内置更新已具备，但详情入口仍仅显示市场插件。补齐现有按钮的来源条件后，完整机械门禁变为 62 文件 654 项通过（`builtin-update-final-check.log`），正式构建和 NSIS 重打包通过。安装版真实点击内置 FFmpeg 检查更新、回滚至明确的旧版本，通过一项专项验收（`builtin-update-installed.log`）；默认和 800×600 截图已实际观察，更新按钮可见，文字无横向溢出，路径 `installed-1791720013346/builtin-update{,-narrow}.png`。截图中既有线上应用更新源无 Release 的错误提示保留；不等于插件更新失败。并行打包曾导致生命周期用例 5 秒超时，打包结束后完整重跑通过，未改断言或超时阈值。
+
 真实媒体：七项写出加独立交付均经过 MCP 与 Agent，成片独立解码/ffprobe/像素验证；中文、空格、长文件名、无音轨 MPEG-4、H.264/AAC、不同分辨率、损坏输入、网络播放列表及原生取消清理通过。错误或取消输出不能产生成功生产/交付事实。新增拒绝伪造正式产物、不匹配结果及空全帧成功的用例通过；见 `stage-6-media.log`、`stage-6-review-check.log`、`stage-6-final-check.log`。
 
 额外执行已安装 FFmpeg 8.1.2 的真实 MCP 写出取消：60 秒静音输入缩放到 1920×1080，观察实际 `ffmpeg.exe` PID `33140`，取消请求后进程退出。原始 SDK 请求以 `McpError` 拒绝（宿主适配器按已取消信号转换为原取消契约，自动化用例另行覆盖）；没有把部分文件作为成片。证据 `logs/ffmpeg-plugin/real-cancel-media/evidence.json`，重复运行脚本为 `real-writer-cancel.mjs`。
@@ -110,6 +112,7 @@ Non-goals     排除范围    不重写核心循环，不迁移 Whisper/Vision�
 - `d9c9041`：完整 Windows 安装版、媒体验收、审查修复与记录。
 
 已确认 [最终实现双平台 CI 成功运行](https://github.com/wwxst/agent-desktop/actions/runs/38138288259) 对应 `d9c9041`，Ubuntu 和 Windows 两项门禁、构建及已提交差异检查均成功。之后只追加本验收结果的文档提交；其最终远端结果随交付消息提供。
+文档提交 `bf2060f` 的 [双平台 CI](https://github.com/wwxst/agent-desktop/actions/runs/38138472340) 同样成功；之后的内置更新入口补修提交由最终交付消息列出提交与对应远端运行。
 分支：[codex/ffmpeg-plugin](https://github.com/wwxst/agent-desktop/tree/codex/ffmpeg-plugin)。未合并 `main`，未发布发行版。
 
 ## 限制与后续

@@ -242,3 +242,46 @@ test('installed application preserves plugin and session data after installer ov
     await page.screenshot({ path: resolve(profile!, '../upgrade-restored.png') });
   } finally { await app.close(); }
 });
+
+test('installed FFmpeg detail exposes real builtin update and rollback controls', async ({}, testInfo) => {
+  test.setTimeout(60_000);
+  const executablePath = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
+  const profile = process.env.DESKTOP_UPGRADE_PROFILE;
+  test.skip(testInfo.project.name !== 'chromium-desktop' || process.platform !== 'win32' || executablePath === undefined || profile === undefined, '需要真实隔离安装目录与已安装插件配置。');
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL;
+  const app = await _electron.launch({ executablePath: executablePath!, args: [`--user-data-dir=${profile!}`], env });
+  let manifest: string | undefined; let original: string | undefined;
+  try {
+    const page = await app.firstWindow();
+    await page.evaluate(async () => {
+      const snapshot = await window.agentDesktop.extensions.list();
+      const plugin = snapshot.plugins.find(item => item.id === 'plugin:ffmpeg')!;
+      if (plugin.version !== '1.0.0') {
+        const versionId = plugin.versions!.find(item => item.version === '1.0.0')!.id;
+        await window.agentDesktop.extensions.manage({ action: 'rollback', id: plugin.id, versionId });
+      }
+    });
+    await page.getByRole('button', { name: '插件和技能', exact: true }).click();
+    await page.getByRole('button', { name: '查看 FFmpeg', exact: true }).click();
+    await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeVisible();
+    const appPath = await app.evaluate(({ app }) => app.getAppPath());
+    manifest = resolve(appPath, 'resources/plugins/ffmpeg/.codex-plugin/plugin.json');
+    original = await readFile(manifest, 'utf8');
+    await writeFile(manifest, JSON.stringify({ ...JSON.parse(original), version: '1.0.1' }));
+    await page.getByRole('button', { name: '检查更新', exact: true }).click();
+    await expect(page.getByRole('region', { name: '信息' })).toContainText('1.0.1');
+    const evidence = resolve(profile!, '../builtin-update.png');
+    await page.screenshot({ path: evidence });
+    await page.getByText(/^1\.0\.0 ·/).first().locator('..').getByRole('button', { name: '回滚', exact: true }).click();
+    await expect(page.getByRole('region', { name: '信息' })).toContainText('1.0.0');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(800, 600));
+    await page.getByRole('button', { name: '更新至 1.0.1', exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole('button', { name: '更新至 1.0.1', exact: true })).toBeVisible();
+    await page.screenshot({ path: resolve(profile!, '../builtin-update-narrow.png') });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  } finally {
+    if (manifest !== undefined && original !== undefined) await writeFile(manifest, original);
+    await app.close();
+  }
+});
