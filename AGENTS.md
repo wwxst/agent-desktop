@@ -40,6 +40,7 @@ Session Persistent Terminal        会话持久终端                已实现�
 Semantic Candidate Acceptance      候选视频语义验收            已实现，逐帧预算与不可确认边界见架构文档。
 Codex-style Plugin Runtime         Codex 风格插件运行时       已实现真实公开市场、完整清单、技能缓存与懒加载、版本更新回滚、原子安装、stdio/HTTP/SSE MCP、OAuth 和命令钩子，当前在功能分支；Codex 私有账号云同步及完整应用服务器协议边界见架构文档。
 Local Project Sidebar              本地项目与会话侧栏          已实现项目分区、折叠、置顶、归档恢复与自动保存，当前在功能分支。
+Desktop Probe Plugin              媒体探测插件试点            已完成独立 probe_media 的宿主授权、统一注入及真实 Windows 验收，当前在功能分支；其余 FFmpeg 能力保留，边界见架构文档。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。

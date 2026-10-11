@@ -426,6 +426,7 @@ function findCheckEvidence(
   toolName: string,
   candidatePath: string,
   producerResultIndex: number,
+  canonicalPath?: string,
 ): { readonly toolCallId: ToolCallId; readonly output: Record<string, unknown> } | undefined {
   let found: { readonly toolCallId: ToolCallId; readonly output: Record<string, unknown> } | undefined;
   for (let index = producerResultIndex + 1; index < events.length; index += 1) {
@@ -434,7 +435,8 @@ function findCheckEvidence(
     if (event.type !== 'tool.result' || event.result.status !== 'success') continue;
     if (toolNames.get(event.toolCallId) !== toolName) continue;
     if (!isRecord(event.result.output) || typeof event.result.output.inputPath !== 'string') continue;
-    if (resolve(event.result.output.inputPath) !== candidatePath) continue;
+    const checkedPath = resolve(event.result.output.inputPath);
+    if (checkedPath !== candidatePath && checkedPath !== canonicalPath) continue;
     found = { toolCallId: event.toolCallId as ToolCallId, output: event.result.output };
   }
   return found;
@@ -457,6 +459,7 @@ function checkRequirement(
   producerResultIndex: number,
   digest: string,
   outputItemId: string,
+  canonicalPath: string,
 ): RequirementCheck {
   switch (requirement.kind) {
     case 'decodable-video': {
@@ -475,7 +478,8 @@ function checkRequirement(
       };
     }
     case 'duration-range': {
-      const found = findCheckEvidence(events, toolNames, 'probe_media', candidatePath, producerResultIndex);
+      // 插件返回宿主 realpath；保留候选引用路径也能消费 CLI 的原始路径结果。
+      const found = findCheckEvidence(events, toolNames, 'probe_media', candidatePath, producerResultIndex, canonicalPath);
       if (found === undefined) {
         return blocked(requirement.id, 'insufficient-evidence', '缺少本候选的时长探测证据。');
       }
@@ -522,7 +526,6 @@ function checkRequirement(
       const found = findCheckEvidence(events, toolNames, 'check_video_semantics', candidatePath, producerResultIndex);
       if (found === undefined) return blocked(requirement.id, 'insufficient-evidence', `内容要求「${requirement.description}」缺少本候选的语义检查。`);
       if (found.output.outputItemId !== outputItemId) return blocked(requirement.id, 'insufficient-evidence', '语义证据不属于当前输出项。');
-      if (found.output.candidateSha256 !== digest) return blocked(requirement.id, 'insufficient-evidence', '语义证据对应的候选内容已经改变。');
       const checks = found.output.checks;
       const check: unknown = Array.isArray(checks) ? checks.find((entry: unknown) => isRecord(entry) && entry.requirementId === requirement.id) : undefined;
       if (!isRecord(check) || !['passed', 'failed', 'blocked'].includes(String(check.outcome))
@@ -530,6 +533,11 @@ function checkRequirement(
         || (check.outcome === 'passed' && found.output.coverage !== 'all-frames-and-transcript')) {
         return blocked(requirement.id, 'insufficient-evidence', '语义证据没有覆盖完整候选与本项要求。');
       }
+      // Probe 缺失或被拒绝时尚未读取候选摘要；保留明确的阻塞原因，不能误报候选被修改。
+      if (found.output.candidateSha256 === undefined && check.outcome === 'blocked' && found.output.coverage === 'incomplete') {
+        return blocked(requirement.id, 'insufficient-evidence', check.detail);
+      }
+      if (found.output.candidateSha256 !== digest) return blocked(requirement.id, 'insufficient-evidence', '语义证据对应的候选内容已经改变。');
       return { requirementId: requirement.id, evidenceToolCallIds: [found.toolCallId], detail: check.detail,
         ...(check.outcome === 'blocked' ? { outcome: 'blocked', reason: 'insufficient-evidence' } : { outcome: check.outcome as 'passed' | 'failed' }) };
     }
@@ -608,8 +616,9 @@ export class ValidateVideoCandidateTool implements Tool {
     };
 
     const digest = await candidateDigest(candidatePath);
+    const canonicalPath = await realpath(candidatePath);
     const checks = item.requirements.map((requirement) => (
-      checkRequirement(requirement, candidatePath, events, toolNames, producer.resultIndex, digest, item.id)
+      checkRequirement(requirement, candidatePath, events, toolNames, producer.resultIndex, digest, item.id, canonicalPath)
     ));
 
     const validation: CandidateValidation = {

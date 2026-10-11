@@ -52,6 +52,11 @@ describe('host Probe capability boundary', () => {
     }
     expect(raw.execute).not.toHaveBeenCalled();
   });
+  it('keeps a selected attachment usable when another historical attachment was deleted', async () => {
+    const source = join(directory, 'selected.mp4'); await writeFile(source, 'data');
+    selected.push(join(directory, 'deleted.mp4'), source);
+    expect(await adaptProbeMediaTool(rawTool(), access).execute({ inputPath: source }, context)).toMatchObject({ status: 'success' });
+  });
   it('requires successful production from authorized sources for candidates outside the session workspace', async () => {
     const source = join(directory, 'attachment.mp4'); await writeFile(source, 'data'); selected.push(source);
     const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
@@ -92,7 +97,7 @@ describe('host Probe capability boundary', () => {
     execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=5:d=1', '-c:v', 'libx264', inputPath]);
     await build({ entryPoints: [resolve('apps/desktop/src/plugins/probe-media.ts')], outfile: join(directory, 'probe.cjs'), bundle: true, platform: 'node', format: 'cjs' });
     const plugin: PluginFiles = { name: 'video-editing', directory, skills: [], item: { id: 'plugin:video-editing', kind: 'plugin', name: 'video-editing', description: '', source: 'builtin', enabled: true, installed: true },
-      servers: [{ name: 'ffmpeg-probe', command: 'node', args: [join(directory, 'probe.cjs')], env: { FFPROBE_PATH: execFileSync('where.exe', ['ffprobe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]! } }] };
+      servers: [{ name: 'ffmpeg-probe', command: 'node', args: [join(directory, 'probe.cjs')], env: { FFPROBE_PATH: execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', ['ffprobe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]! } }] };
     const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
     const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
     try {

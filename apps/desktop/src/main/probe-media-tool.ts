@@ -27,7 +27,11 @@ async function authorizedSource(path: string, access: ProbeFileAccess): Promise<
   if (directory !== undefined && await isInsideDirectory(canonical, directory)) return true;
   for (const attachment of access.attachments()) {
     requireLocalPath(attachment);
-    if (canonical === await realpath(attachment)) return true;
+    try { if (canonical === await realpath(attachment)) return true; }
+    catch (error) {
+      // 删除过的历史附件不能授权，也不能阻止其它仍存在的选定文件。
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
   return false;
 }

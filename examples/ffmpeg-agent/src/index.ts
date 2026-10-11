@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { runTurn } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
+import { ProbeMediaTool } from '@agent-desktop/video-ffmpeg';
 import { type SessionEvent, type ToolResultEvent, type TurnId } from '@agent-desktop/session';
 import {
   createVideoAgent,
@@ -65,6 +66,7 @@ async function runCli(
 ): Promise<void> {
   const agent = createVideoAgent({
     deepSeekApiKey: apiKey,
+    probeMedia: new ProbeMediaTool(),
     whisperModelPath,
     visionApiKey,
     ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),

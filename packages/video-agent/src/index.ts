@@ -25,7 +25,6 @@ import {
   ExtractAudioTool,
   ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool,
-  ProbeMediaTool,
   ResizeVideoTool,
   SetSpeedTool,
   TrimVideoTool,
@@ -96,8 +95,8 @@ export interface VideoAgentOptions {
   readonly askUser?: AskUserPort;
   readonly delegateTasks?: DelegateTasksPort;
   readonly terminal?: TerminalPort;
-  /** 入口选择 Probe 来源；null 表示该入口明确没有探测能力。 */
-  readonly probeMedia?: Tool | null;
+  /** 入口显式选择 Probe 来源；省略时不注册且依赖它的语义验收受阻。 */
+  readonly probeMedia?: Tool;
 }
 
 /** 组装当前正式能力；不读取环境、不创建 CLI 或桌面层状态。 */
@@ -125,9 +124,8 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
       tools.register(new RunCommandTool(options.workspace, options.command));
     }
   }
-  // 切换入口期间保留默认值，Desktop 切换后显式传入插件或 null。
-  const probeMedia = options.probeMedia === undefined ? new ProbeMediaTool() : options.probeMedia;
-  if (probeMedia !== null) tools.register(probeMedia);
+  const probeMedia = options.probeMedia;
+  if (probeMedia !== undefined) tools.register(probeMedia);
   tools.register(new DecodeVideoTool());
   tools.register(new DetectBlackSegmentsTool());
   tools.register(new ExtractVideoFramesTool());
@@ -160,7 +158,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new PublishVideoOutputTool(readEvents));
   tools.register(new CheckVideoSemanticsTool(readEvents, {
     model: new DeepSeekModel(modelOptionsFor(options)),
-    ...(probeMedia === null ? {} : { probeMedia }),
+    ...(probeMedia === undefined ? {} : { probeMedia }),
     ...(options.visionApiKey === undefined || !options.visionApiKey ? {} : { vision: new AnalyzeImagesTool(visionOptionsFor(options, options.visionApiKey)) }),
     ...(options.whisperModelPath === undefined ? {} : { speech: new TranscribeAudioTool({ modelPath: options.whisperModelPath,
       ...(options.whisperCliPath === undefined ? {} : { command: options.whisperCliPath }) }) }),

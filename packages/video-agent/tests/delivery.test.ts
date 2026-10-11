@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -206,6 +206,23 @@ function resultsOf(session: InMemorySession): readonly OutputItemResult[] {
 }
 
 describe('video delivery declaration and write boundary', () => {
+  it('consumes canonical Probe evidence for a candidate accessed through a directory link', async () => {
+    const directory = await temporaryDirectory(); const target = await temporaryDirectory();
+    const link = join(directory, 'linked'); await symlink(target, link, 'junction');
+    await writeFile(join(target, 'source.mp4'), 'source');
+    const tools = createDeliveryTools();
+    const item = await declareItem(tools, join(link, 'source.mp4'), { kind: 'automatic' }, [{ kind: 'duration-range', minSeconds: 4, maxSeconds: 6 }]);
+    const candidate = await produceCandidate(tools, item.workingDirectory, 'candidate.mp4', item.sourcePath);
+    const canonical = await realpath(candidate.path); expect(canonical).not.toBe(candidate.path);
+    appendCheck(tools.session, 'decode_video', candidate.path, decodableEvidence(candidate.path));
+    appendCheck(tools.session, 'probe_media', candidate.path, { inputPath: join(target, 'source.mp4'), duration: 5 });
+    expect((await validateCandidate(tools, item.outputItemId, candidate.path)).checks[1]?.outcome).toBe('blocked');
+    appendCheck(tools.session, 'probe_media', candidate.path, { inputPath: canonical, duration: 5 });
+    expect((await validateCandidate(tools, item.outputItemId, candidate.path)).checks.every(check => check.outcome === 'passed')).toBe(true);
+    // CLI 仍返回原引用路径；同一验收契约继续接受它。
+    appendCheck(tools.session, 'probe_media', candidate.path, { inputPath: candidate.path, duration: 5 });
+    expect((await validateCandidate(tools, item.outputItemId, candidate.path)).checks.every(check => check.outcome === 'passed')).toBe(true);
+  });
   it('binds semantic evidence to the declared item, complete coverage, and unchanged bytes', async () => {
     const directory = await temporaryDirectory();
     const tools = createDeliveryTools();

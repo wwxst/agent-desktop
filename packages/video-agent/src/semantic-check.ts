@@ -23,6 +23,7 @@ export class CheckVideoSemanticsTool implements Tool {
     required: ['outputItemId', 'candidatePath'], additionalProperties: false };
   constructor(private readonly readEvents: SessionReader, private readonly options: SemanticCheckOptions) {}
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    context.signal?.throwIfAborted();
     if (typeof input !== 'object' || input === null) return { status: 'error', message: '语义检查需要输出项与候选路径。' };
     const value = input as Record<string, unknown>;
     if (typeof value.outputItemId !== 'string' || typeof value.candidatePath !== 'string') return { status: 'error', message: '语义检查需要输出项与候选路径。' };

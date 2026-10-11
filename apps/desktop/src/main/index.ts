@@ -649,7 +649,7 @@ function registerIpcHandlers(): void {
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
-        probeMedia: probe === undefined ? null : extensions.wrapTool(probe),
+        ...(probe === undefined ? {} : { probeMedia: extensions.wrapTool(probe) }),
         ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
         ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
