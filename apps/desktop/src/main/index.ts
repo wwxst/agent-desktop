@@ -638,9 +638,18 @@ function registerIpcHandlers(): void {
       if (settings.deepSeekApiKey === undefined) {
         throw new Error('请先在设置中配置当前对话模型的 API 密钥。');
       }
+      // 先准备插件再组装 Agent；公开 Probe 与语义验收必须持有同一个已授权适配器。
+      const extensionFiles = await extensionStore().files(session.workingDirectory);
+      const extensions = await prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
+        { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
+          probeAccess: { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
+            events: () => session.session.events() } });
+      closeExtensions = extensions.close;
+      const probe = extensions.tools.find(tool => tool.name === 'probe_media');
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
+        probeMedia: probe === undefined ? null : extensions.wrapTool(probe),
         ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
         ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
@@ -688,11 +697,7 @@ function registerIpcHandlers(): void {
           };
         })(),
       });
-      const extensionFiles = await extensionStore().files(session.workingDirectory);
-      const extensions = await prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
-        { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) });
-      closeExtensions = extensions.close;
-      // 切换前仍由内置 Probe 提供能力，避免同名适配器重复注册。
+      // Probe 已注入且已包装钩子，只追加其他扩展工具。
       for (const tool of extensions.tools) if (tool.name !== 'probe_media') agent.tools.register(tool);
       if (settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
@@ -700,7 +705,7 @@ function registerIpcHandlers(): void {
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(tool.name === 'probe_media' ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
       if (session.pendingSessionStart !== undefined) {

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DesktopTaskOptions } from '../src/main/agent-task.js';
+import type { Tool } from '@agent-desktop/tools';
 
 type IpcHandler = (...args: unknown[]) => unknown;
 
@@ -16,6 +17,7 @@ const mainMocks = vi.hoisted(() => {
   }> = [];
   // 组装参数要保留：宿主注入的工作目录端口只有在这里才能验证真实形状。
   const agentOptions: Array<{
+    readonly probeMedia?: Tool | null;
     readonly workspace?: {
       confirmedDirectory(): string | undefined;
       requestApproval(target: { kind: 'directory' | 'create-file'; path: string }, signal?: AbortSignal): Promise<boolean>;
@@ -293,6 +295,8 @@ describe('desktop main session lifecycle', () => {
     });
 
     const firstAgent = mainMocks.agents[0]!;
+    // 未安装 Probe 插件时宿主必须显式禁止默认回退；普通任务仍然正常运行。
+    expect(mainMocks.agentOptions[0]?.probeMedia).toBeNull();
     firstAgent.session.append({ type: 'user.message', content: '记住数字 731' });
     // 产物路径来自模型写入 Session 的工具输入，定位时按会话事实校验。
     firstAgent.session.append({
