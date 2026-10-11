@@ -639,27 +639,31 @@ input:focus-visible {
 
 /* 原生模态弹窗进入顶层，避免确认内容被侧栏滚动和窄窗口裁切。 */
 .session-delete-dialog {
-  width: min(440px, calc(100vw - 32px));
+  width: min(420px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   margin: auto;
-  padding: 24px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  padding: 20px;
+  border: 0;
+  border-radius: 20px;
   background: var(--surface);
   color: var(--text-primary);
-  box-shadow: 0 16px 64px #0003;
+  box-shadow: 0 8px 30px #0002, 0 1px 4px #0002;
   overflow-y: auto;
 }
 .session-delete-dialog::backdrop { background: #0006; }
-.session-delete-dialog h2 { margin: 0 0 16px; font-size: 18px; font-weight: 600; }
-.session-delete-dialog p { margin: 0 0 16px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
-.session-delete-dialog #session-delete-description { color: var(--text-secondary); }
-.session-delete-name { max-height: 96px; overflow-y: auto; }
-.session-delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
-.session-delete-actions button { padding: 8px 16px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text-primary); cursor: pointer; font-size: 13px; }
-.session-delete-actions button:hover:not(:disabled) { background: var(--surface-hover); }
-.session-delete-actions .session-delete-confirm { border-color: #b53b3b; background: #b53b3b; color: white; }
-.session-delete-actions .session-delete-confirm:hover:not(:disabled) { background: #9e3030; }
+.session-dialog-close { position: absolute; top: 14px; right: 14px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.session-dialog-close:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.session-dialog-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.session-dialog-close:disabled { opacity: 0.55; cursor: default; }
+.session-delete-dialog h2 { margin: 0 28px 4px 0; font-size: 20px; line-height: 28px; font-weight: 650; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.session-delete-dialog p { margin: 0; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere; }
+.session-delete-dialog #session-delete-description, .session-delete-dialog #project-remove-description { color: light-dark(#999, #b5bdc8); }
+.session-delete-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.session-delete-actions button { min-width: 62px; height: 32px; padding: 0 14px; border: 0; border-radius: 11px; background: transparent; color: light-dark(#999, #b5bdc8); cursor: pointer; font-size: 14px; }
+.session-delete-actions button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text-primary); }
+.session-delete-actions button:focus-visible, .session-delete-actions button:not(.session-delete-confirm):focus { outline: 2px solid #1590ff; outline-offset: 1px; }
+.session-delete-actions .session-delete-confirm { min-width: 90px; background: light-dark(#ffebeb, #4a2529); color: light-dark(#e33b3b, #ff9a9a); }
+.session-delete-actions .session-delete-confirm:hover:not(:disabled) { background: light-dark(#ffdede, #5c2b30); }
 .session-delete-actions button:disabled { opacity: 0.55; cursor: default; }
 .conversation-title-notice { margin: 0 0 8px; color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 
