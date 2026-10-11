@@ -23,6 +23,7 @@ import { RuntimeSettingsPanel } from './components/RuntimeSettingsPanel.js';
 import { ExtensionsPage } from './components/ExtensionsPage.js';
 import { SessionSidebar } from './components/SessionSidebar.js';
 import { UserQuestion } from './components/UserQuestion.js';
+import { X } from 'lucide-react';
 import { TerminalView } from './components/TerminalView.js';
 
 const INITIAL_RENDERER_SESSION_ID = 'initializing-session';
@@ -743,9 +744,9 @@ export function App({ api }: AppProps) {
       </div>
       {deleteTarget !== undefined && <dialog ref={deleteDialog} className="session-delete-dialog" aria-labelledby="session-delete-title" aria-describedby="session-delete-description"
         onCancel={event => { event.preventDefault(); if (!isDeleting) closeDeleteDialog(); }}>
-        <h2 id="session-delete-title">删除会话确认</h2>
-        <p className="session-delete-name">确定删除“{deleteTarget.title}”？</p>
-        <p id="session-delete-description">删除会话将清除聊天记录和会话上下文，但不会删除已经生成的视频文件。</p>
+        <button className="session-dialog-close" type="button" aria-label="关闭" title="关闭" disabled={isDeleting} onClick={closeDeleteDialog}><X size={16} /></button>
+        <h2 id="session-delete-title">删除 {deleteTarget.title}?</h2>
+        <p id="session-delete-description">这只会从应用中删除该会话。你电脑上的文件和已生成的视频不会被删除。</p>
         {deleteError && <p className="sidebar-error" role="alert">{deleteError}</p>}
         <div className="session-delete-actions">
           <button ref={deleteCancelButton} type="button" disabled={isDeleting} onClick={closeDeleteDialog}>取消</button>

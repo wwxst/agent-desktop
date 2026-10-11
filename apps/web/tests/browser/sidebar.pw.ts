@@ -127,6 +127,62 @@ test('manages projects, context menus, archives and collapse in the shared sideb
   expect(await page.locator('.app-sidebar').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
 });
 
+test('confirms project removal in a modal while preserving chat and draft', async ({ page }, info) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '添加项目', exact: true }).click();
+  const trigger = page.getByRole('button', { name: '项目操作：web-project' });
+  await trigger.click();
+  await page.getByRole('button', { name: '在项目中新建会话', exact: true }).click();
+  await page.getByLabel('剪辑需求').fill('移除项目后保留的聊天');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+  await page.getByLabel('剪辑需求').fill('移除项目后保留的草稿');
+  const openRemoval = async () => {
+    await trigger.click();
+    await page.getByRole('button', { name: '移除项目', exact: true }).click();
+  };
+  await openRemoval();
+  const dialog = page.getByRole('dialog', { name: '移除 web-project?' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+  expect(await dialog.evaluate(element => element.matches(':modal'))).toBe(true);
+  await expect(dialog).toContainText('你电脑上的文件和现有聊天不会被删除');
+  await expect(page.locator('.sidebar-session-menu')).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('remove-project-dialog.png') });
+  const originalViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 400, height: 600 });
+  expect(await dialog.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+  await dialog.getByRole('button', { name: '移除项目', exact: true }).click({ trial: true });
+  await page.screenshot({ path: info.outputPath('remove-project-dialog-400.png') });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.screenshot({ path: info.outputPath('remove-project-dialog-dark.png') });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.setViewportSize(originalViewport);
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await page.getByRole('button', { name: '项目：web-project', exact: true }).click({ button: 'right' });
+  await page.getByRole('button', { name: '移除项目', exact: true }).click();
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.getByRole('button', { name: '项目：web-project', exact: true })).toBeFocused();
+  await openRemoval();
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await openRemoval();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await openRemoval();
+  await dialog.getByRole('button', { name: '移除项目', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '项目：web-project', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeFocused();
+  await expect(page.locator('section[aria-label="最近"]').getByRole('button', { name: '移除项目后保留的聊天', exact: true })).toBeVisible();
+  await expect(page.getByLabel('剪辑需求')).toHaveValue('移除项目后保留的草稿');
+  await expect(page.getByRole('button', { name: '项目目录：web-project', exact: true })).toHaveAttribute('title', 'D:/projects/web-project');
+});
+
 test('restores project navigation and archived history through Desktop IPC and SQLite', async ({}, info) => {
   test.skip(info.project.name !== 'chromium-desktop', '真实桌面重启只验收一次。');
   const root = resolve('../..');
@@ -184,5 +240,18 @@ test('restores project navigation and archived history through Desktop IPC and S
     await expect(page.getByRole('button', { name: '在项目中新建会话', exact: true })).toBeVisible();
     await page.screenshot({ path: resolve(evidence, 'desktop-sidebar-narrow-menu.png') });
     expect(await page.locator('.app-sidebar').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    await page.getByRole('button', { name: '移除项目', exact: true }).click();
+    const removeDialog = page.getByRole('dialog', { name: '移除 project-folder?' });
+    await expect(removeDialog).toBeVisible();
+    await expect(removeDialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+    await page.screenshot({ path: resolve(evidence, 'desktop-remove-project-dialog.png') });
+    await removeDialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(page.getByRole('button', { name: '项目操作：project-folder' })).toBeFocused();
+    await page.getByRole('button', { name: '项目操作：project-folder' }).click();
+    await page.getByRole('button', { name: '移除项目', exact: true }).click();
+    await removeDialog.getByRole('button', { name: '移除项目', exact: true }).click();
+    await expect(page.getByRole('button', { name: '项目：project-folder' })).toHaveCount(0);
+    await expect(page.getByLabel('剪辑需求')).toHaveValue('重启后保留的草稿');
+    await expect(page.getByRole('button', { name: '项目目录：project-folder', exact: true })).toHaveAttribute('title', directory);
   } finally { if (app !== undefined) await app.close(); }
 });

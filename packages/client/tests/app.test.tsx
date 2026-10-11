@@ -387,7 +387,7 @@ describe('shared App', () => {
     await screen.findByRole('button', { name: '会话 1' });
     fireEvent.click(screen.getByRole('button', { name: '会话操作：会话 1' }));
     fireEvent.click(screen.getByRole('button', { name: '删除' }));
-    const dialog = screen.getByRole('dialog', { name: '删除会话确认' });
+    const dialog = screen.getByRole('dialog', { name: '删除 会话 1?' });
     fireEvent.click(within(dialog).getByRole('button', { name: '删除会话' }));
     await within(dialog).findByRole('alert');
     expect(within(dialog).getByRole('alert').textContent).toBe('会话删除失败');

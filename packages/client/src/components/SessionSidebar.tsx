@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
-import { Archive, AtSign, Box, ChevronDown, ChevronRight, Folder, FolderOpen, MoreHorizontal, Pin, Plus, SquarePen } from 'lucide-react';
+import { Archive, AtSign, Box, ChevronDown, ChevronRight, Folder, FolderOpen, MoreHorizontal, Pin, Plus, SquarePen, X } from 'lucide-react';
 import type { AppUpdateApi, ClientConversation, ClientProject, ClientSidebarState, ExtensionClientApi, ExtensionItem } from '../api.js';
 import { ExtensionIcon } from './ExtensionsPage.js';
 import { AppUpdateButton } from './AppUpdateButton.js';
@@ -42,13 +42,17 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
   onArchiveSessions, onOpenSettings, onOpenExtensions, onOpenConversation, extensionsApi, onSelectPlugin }: SessionSidebarProps) {
   const [installedPlugins, setInstalledPlugins] = useState<readonly ExtensionItem[]>([]);
   const [menu, setMenu] = useState<SidebarMenu | null>(null);
-  const [panel, setPanel] = useState<'main' | 'rename' | 'move' | 'edit-project' | 'remove-project' | 'archive-project'>('main');
+  const [panel, setPanel] = useState<'main' | 'rename' | 'move' | 'edit-project' | 'archive-project'>('main');
+  const [removeTarget, setRemoveTarget] = useState<ClientProject>();
   const [editingTitle, setEditingTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const sessionMenu = useRef<HTMLDivElement>(null);
   const menuTrigger = useRef<HTMLElement>(null);
   const activeSessionButton = useRef<HTMLButtonElement>(null);
+  const newSessionButton = useRef<HTMLButtonElement>(null);
+  const removeDialog = useRef<HTMLDialogElement>(null);
+  const removeCancelButton = useRef<HTMLButtonElement>(null);
   const disabled = !isSessionReady || isProcessing || busy;
   useEffect(() => {
     if (activeView !== 'plugins' && activeView !== 'skills') return;
@@ -66,6 +70,19 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
     if (menu !== null) sessionMenu.current!.showPopover({ source: menuTrigger.current! });
   }, [menu]);
   const closeMenu = () => { setMenu(null); setPanel('main'); };
+  // 移除确认脱离菜单，原生模态弹窗阻止背景操作并默认聚焦取消。
+  useLayoutEffect(() => {
+    if (removeTarget !== undefined) {
+      removeDialog.current!.showModal();
+      removeCancelButton.current!.focus();
+    }
+  }, [removeTarget]);
+  const closeRemoveDialog = (removed = false) => {
+    flushSync(() => setRemoveTarget(undefined));
+    // 取消回到项目入口；确认后项目入口已移除，回到常驻的新会话按钮。
+    const trigger = menuTrigger.current!;
+    (removed ? newSessionButton.current! : trigger instanceof HTMLButtonElement ? trigger : trigger.querySelector<HTMLButtonElement>('.sidebar-project-toggle')!).focus();
+  };
   const openMenu = (target: SidebarMenu, source: HTMLElement) => {
     menuTrigger.current = source;
     setError(''); setPanel('main'); setMenu(target);
@@ -134,16 +151,16 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
       <label>项目名称<input className="sidebar-session-title-input" aria-label="项目名称" value={editingTitle} autoFocus onChange={event => setEditingTitle(event.target.value)} /></label>
       <p className="sidebar-project-directory" title={selectedProject.directory}>{selectedProject.directory}</p>
       <div className="sidebar-session-confirm-actions"><button type="submit" disabled={!editingTitle.trim()}>保存</button><button type="button" onClick={() => setPanel('main')}>取消</button></div>
-    </form> : panel === 'remove-project' || panel === 'archive-project' ? <>
-      <p>{panel === 'remove-project' ? '移除项目只取消列表归属，保留会话、文件和原工作目录。' : '归档此项目的所有会话，保留历史和产物，可从设置中的已归档对话恢复。'}</p>
-      <div className="sidebar-session-confirm-actions"><button type="button" disabled={disabled} onClick={() => void run(() => panel === 'remove-project' ? onRemoveProject(selectedProject.id) : onArchiveSessions(conversations.filter(item => item.projectId === selectedProject.id && !item.archived).map(item => item.id), true))}>{panel === 'remove-project' ? '移除项目' : '归档全部'}</button><button type="button" onClick={() => setPanel('main')}>取消</button></div>
+    </form> : panel === 'archive-project' ? <>
+      <p>归档此项目的所有会话，保留历史和产物，可从设置中的已归档对话恢复。</p>
+      <div className="sidebar-session-confirm-actions"><button type="button" disabled={disabled} onClick={() => void run(() => onArchiveSessions(conversations.filter(item => item.projectId === selectedProject.id && !item.archived).map(item => item.id), true))}>归档全部</button><button type="button" onClick={() => setPanel('main')}>取消</button></div>
     </> : <>
       <button type="button" disabled={disabled} onClick={() => void run(() => onNewSession(selectedProject))}>在项目中新建会话</button>
       <button type="button" autoFocus onClick={() => { onUpdateProject(selectedProject.id, { pinned: !selectedProject.pinned }); closeMenu(); }}>{selectedProject.pinned ? '取消置顶' : '置顶'}</button>
       <button type="button" onClick={() => { setEditingTitle(selectedProject.name); setPanel('edit-project'); }}>编辑</button>
       <hr /><button type="button" disabled={disabled} onClick={() => void run(() => onOpenProjectDirectory(selectedProject.directory))}>在资源管理器中打开</button>
       <button type="button" onClick={() => setPanel('archive-project')}>归档聊天</button>
-      <hr /><button type="button" onClick={() => setPanel('remove-project')}>移除项目</button>
+      <hr /><button type="button" onClick={() => { closeMenu(); setRemoveTarget(selectedProject); }}>移除项目</button>
     </>)}
     {menu.kind === 'section' && <>
       <button type="button" autoFocus aria-pressed={sidebar.grouped} onClick={() => { onSidebarChange({ ...sidebar, grouped: true }); closeMenu(); }}>分项目显示</button>
@@ -200,7 +217,7 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
     ) : activeView === 'settings' ? null : (
     <aside className="app-sidebar" aria-label="工作区导航">
       <div className="sidebar-brand"><strong>Agent Desktop</strong></div>
-      <button className="sidebar-new-session" type="button" aria-label="新会话" title="新会话" disabled={disabled} onClick={() => void run(() => onNewSession())}><SquarePen size={16} /><span>新会话</span></button>
+      <button ref={newSessionButton} className="sidebar-new-session" type="button" aria-label="新会话" title="新会话" disabled={disabled} onClick={() => void run(() => onNewSession())}><SquarePen size={16} /><span>新会话</span></button>
       {error && <p className="sidebar-error" role="alert">{error}</p>}
       <nav className="sidebar-session-list" aria-label="会话列表">
         {sidebar.grouped && <section aria-label="项目">
@@ -235,6 +252,16 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
       {renderMenu()}
     </aside>
     )}
+    {removeTarget !== undefined && <dialog ref={removeDialog} className="session-delete-dialog" aria-labelledby="project-remove-title" aria-describedby="project-remove-description"
+      onCancel={event => { event.preventDefault(); closeRemoveDialog(); }}>
+      <button className="session-dialog-close" type="button" aria-label="关闭" title="关闭" onClick={() => closeRemoveDialog()}><X size={16} /></button>
+      <h2 id="project-remove-title">移除 {removeTarget.name}?</h2>
+      <p id="project-remove-description">这只会从应用中移除该项目。你电脑上的文件和现有聊天不会被删除。</p>
+      <div className="session-delete-actions">
+        <button ref={removeCancelButton} type="button" onClick={() => closeRemoveDialog()}>取消</button>
+        <button className="session-delete-confirm" type="button" disabled={disabled} onClick={() => { onRemoveProject(removeTarget.id); closeRemoveDialog(true); }}>移除项目</button>
+      </div>
+    </dialog>}
     </>
   );
 }
