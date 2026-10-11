@@ -41,6 +41,15 @@ jobs:
       - name: Run engineering gate
         run: pnpm check
 
+      - name: Diagnose Windows native test failures
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pnpm exec vitest run apps/desktop/tests/extensions.test.ts --reporter verbose
+          Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-15) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -like '*node.exe*' } |
+            Select-Object TimeCreated, Id, Message | Format-List
+
       - name: Build Desktop
         run: pnpm desktop:build
 
