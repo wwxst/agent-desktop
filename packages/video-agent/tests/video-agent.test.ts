@@ -4,6 +4,13 @@ import { InMemorySession, type Session } from '@agent-desktop/session';
 import { createVideoAgent } from '../src/index.js';
 
 describe('createVideoAgent', () => {
+  it('registers the injected Probe instance and preserves other video capabilities when absent', () => {
+    const probe = { name: 'probe_media', description: '', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: {} }) };
+    expect(createVideoAgent({ deepSeekApiKey: 'fixture', probeMedia: probe }).tools.list().find(tool => tool.name === 'probe_media')).toBe(probe);
+    const names = createVideoAgent({ deepSeekApiKey: 'fixture', probeMedia: null }).tools.list().map(tool => tool.name);
+    expect(names).not.toContain('probe_media');
+    for (const name of ['trim_video', 'decode_video', 'extract_audio', 'validate_video_candidate', 'publish_video_output', 'check_video_semantics']) expect(names).toContain(name);
+  });
   it('assembles the formal video Agent dependencies and tools', () => {
     const agent = createVideoAgent({
       deepSeekApiKey: 'test-deepseek-key',

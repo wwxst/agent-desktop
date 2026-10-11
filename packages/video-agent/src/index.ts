@@ -14,7 +14,7 @@ import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type Session } from '@agent-desktop/session';
 import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
-import { InMemoryToolRegistry } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import {
   AddAudioTool,
   AddSubtitlesTool,
@@ -96,6 +96,8 @@ export interface VideoAgentOptions {
   readonly askUser?: AskUserPort;
   readonly delegateTasks?: DelegateTasksPort;
   readonly terminal?: TerminalPort;
+  /** 入口选择 Probe 来源；null 表示该入口明确没有探测能力。 */
+  readonly probeMedia?: Tool | null;
 }
 
 /** 组装当前正式能力；不读取环境、不创建 CLI 或桌面层状态。 */
@@ -123,7 +125,9 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
       tools.register(new RunCommandTool(options.workspace, options.command));
     }
   }
-  tools.register(new ProbeMediaTool());
+  // 切换入口期间保留默认值，Desktop 切换后显式传入插件或 null。
+  const probeMedia = options.probeMedia === undefined ? new ProbeMediaTool() : options.probeMedia;
+  if (probeMedia !== null) tools.register(probeMedia);
   tools.register(new DecodeVideoTool());
   tools.register(new DetectBlackSegmentsTool());
   tools.register(new ExtractVideoFramesTool());
@@ -156,6 +160,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new PublishVideoOutputTool(readEvents));
   tools.register(new CheckVideoSemanticsTool(readEvents, {
     model: new DeepSeekModel(modelOptionsFor(options)),
+    ...(probeMedia === null ? {} : { probeMedia }),
     ...(options.visionApiKey === undefined || !options.visionApiKey ? {} : { vision: new AnalyzeImagesTool(visionOptionsFor(options, options.visionApiKey)) }),
     ...(options.whisperModelPath === undefined ? {} : { speech: new TranscribeAudioTool({ modelPath: options.whisperModelPath,
       ...(options.whisperCliPath === undefined ? {} : { command: options.whisperCliPath }) }) }),

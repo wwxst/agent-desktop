@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import type { Model, ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
-import { ExtractAudioTool, ProbeMediaTool, extractFullVideoFrames } from '@agent-desktop/video-ffmpeg';
+import { ExtractAudioTool, extractFullVideoFrames } from '@agent-desktop/video-ffmpeg';
 import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { readVideoDeliveryFacts, type RequirementCheck } from './delivery.js';
 import type { SessionReader } from './delivery-tools.js';
@@ -13,6 +13,7 @@ import { isInsideDirectory } from './delivery-tools.js';
 
 export interface SemanticCheckOptions {
   readonly model: Model; readonly vision?: AnalyzeImagesTool; readonly speech?: TranscribeAudioTool;
+  readonly probeMedia?: Tool;
 }
 /** 验收独立消费候选实际内容；父模型只提交身份，不能填写通过或覆盖范围。 */
 export class CheckVideoSemanticsTool implements Tool {
@@ -31,12 +32,18 @@ export class CheckVideoSemanticsTool implements Tool {
     if (requirements.length === 0) return { status: 'error', message: '该输出项没有语义要求，无需调用语义检查。' };
     const inputPath = resolve(value.candidatePath);
     if (!(await isInsideDirectory(inputPath, item.workingDirectory))) return { status: 'error', message: '语义候选不在该输出项的工作目录内。' };
+    let digest: string | undefined;
+    const blocked = (reason: string): ToolResult => ({ status: 'success', output: { inputPath, outputItemId: item.id,
+      ...(digest === undefined ? {} : { candidateSha256: digest }), coverage: 'incomplete',
+      checks: requirements.map((requirement) => ({ requirementId: requirement.id, outcome: 'blocked', detail: reason })) } });
+    // 先经过入口提供的权限、审批与 Probe；不能先读取候选或发出昂贵的视觉请求。
+    if (this.options.probeMedia === undefined) return blocked('未提供 probe_media，候选语义验收无法确认。');
+    const probed = await this.options.probeMedia.execute({ inputPath }, context);
+    if (probed.status === 'error') return blocked(`候选探测失败：${probed.message}`);
+    const media = probed.output as { audioCodec: string | null; duration: number | null };
     const temporary = await mkdtemp(join(tmpdir(), 'agent-semantic-'));
-    let digest: string;
     try {
       digest = await candidateDigest(inputPath, context.signal);
-      const blocked = (reason: string): ToolResult => ({ status: 'success', output: { inputPath, outputItemId: item.id,
-        candidateSha256: digest, coverage: 'incomplete', checks: requirements.map((requirement) => ({ requirementId: requirement.id, outcome: 'blocked', detail: reason })) } });
       if (this.options.vision === undefined) return blocked('未配置视觉服务，无法检查候选全部画面。');
       const extracted = await extractFullVideoFrames(inputPath, join(temporary, 'frames'), context.signal);
       if (!extracted.complete) return blocked(extracted.reason);
@@ -54,9 +61,6 @@ export class CheckVideoSemanticsTool implements Tool {
         }
         observations.push(...observed.frames);
       }
-      const probed = await new ProbeMediaTool().execute({ inputPath }, context);
-      if (probed.status === 'error') return blocked(`候选探测失败：${probed.message}`);
-      const media = probed.output as { audioCodec: string | null; duration: number | null };
       let transcript: unknown = { text: '', segments: [], hasAudio: false };
       if (media.audioCodec !== null) {
         if (this.options.speech === undefined) return blocked('候选有音轨，但未配置本地语音识别；不能省略声音内容验收。');
