@@ -24,6 +24,125 @@ function setup() {
 }
 
 describe('extension catalog notifications and separate skill reading', () => {
+  const plugin = { id: 'plugin:video', kind: 'plugin' as const, name: '视频', displayName: '语义视频剪辑', description: '剪辑', source: 'builtin' as const, installed: false, enabled: false };
+  const skill = { id: 'plugin:video/edit', kind: 'skill' as const, name: 'edit', description: '剪辑', source: 'plugin' as const, pluginId: plugin.id, installed: true, enabled: true };
+
+  it('shows installation on its row and only offers a confirmed usable skill on success', async () => {
+    const host = setup(); const trial = vi.fn();
+    let finish!: (next: ExtensionSnapshot) => void;
+    host.api.install = vi.fn(() => new Promise<ExtensionSnapshot>(resolve => { finish = resolve; }));
+    render(<ExtensionsPage api={host.api} view="plugins" isProcessing={false} onTrySkill={trial} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [plugin], skills: [] }));
+    fireEvent.click(await screen.findByRole('button', { name: '安装 视频' }));
+    expect(screen.getByRole('status').textContent).toBe('正在安装');
+    expect(screen.queryByRole('button', { name: '安装 视频' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '立即试用' })).toBeNull();
+    await act(async () => finish({ plugins: [{ ...plugin, installed: true, enabled: true }], skills: [skill] }));
+    expect(await screen.findByText('语义视频剪辑 插件已安装')).toBeTruthy();
+    expect(screen.queryByText('正在安装')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '立即试用' }));
+    expect(trial).toHaveBeenCalledWith(skill);
+    expect(screen.queryByText('语义视频剪辑 插件已安装')).toBeNull();
+  });
+
+  it.each(['no-skills', 'disabled-skill', 'disabled-plugin'] as const)('does not offer an unusable trial after %s installation', async mode => {
+    const host = setup();
+    host.api.install = async () => ({ plugins: [{ ...plugin, installed: true, enabled: mode !== 'disabled-plugin' }], skills: mode === 'no-skills' ? [] : [{ ...skill, enabled: mode !== 'disabled-skill' }] });
+    render(<ExtensionsPage api={host.api} view="plugins" isProcessing={false} onTrySkill={vi.fn()} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [plugin], skills: [] }));
+    fireEvent.click(await screen.findByRole('button', { name: '安装 视频' }));
+    await screen.findByText('语义视频剪辑 插件已安装');
+    expect(screen.queryByRole('button', { name: '立即试用' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('keeps a failed installation retryable and closes its error without reporting success', async () => {
+    const host = setup();
+    host.api.install = vi.fn().mockRejectedValueOnce(new Error('下载失败')).mockResolvedValue({ plugins: [{ ...plugin, installed: true, enabled: true }], skills: [skill] });
+    render(<ExtensionsPage api={host.api} view="plugins" isProcessing={false} onTrySkill={vi.fn()} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [plugin], skills: [] }));
+    fireEvent.click(await screen.findByRole('button', { name: '安装 视频' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('下载失败');
+    expect(screen.queryByRole('button', { name: '立即试用' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '安装 视频' }));
+    await screen.findByText('语义视频剪辑 插件已安装');
+  });
+
+  it('reports confirmed uninstall and does not offer a stale skill', async () => {
+    const host = setup();
+    host.api.uninstall = async () => ({ plugins: [plugin], skills: [] });
+    render(<ExtensionsPage api={host.api} view="plugins" requestedId={plugin.id} isProcessing={false} onTrySkill={vi.fn()} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [{ ...plugin, installed: true, enabled: true }], skills: [skill] }));
+    fireEvent.click(await screen.findByRole('button', { name: '插件操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '卸载' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }));
+    await screen.findByText('语义视频剪辑 插件已卸载');
+    expect(screen.queryByRole('button', { name: '立即试用' })).toBeNull();
+    expect(screen.getByRole('button', { name: '安装 视频' })).toBeTruthy();
+  });
+
+  it('shows the shared feedback inside a skill dialog and waits for explicit trial after installation', async () => {
+    const host = setup(); const trial = vi.fn();
+    const local = { ...skill, id: 'skill:edit', source: 'builtin' as const, pluginId: undefined, installed: false, enabled: false };
+    const { pluginId: _pluginId, ...standalone } = local;
+    host.api.install = async () => ({ plugins: [], skills: [{ ...standalone, installed: true, enabled: true }] });
+    render(<ExtensionsPage api={host.api} view="skills" isProcessing={false} onTrySkill={trial} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [], skills: [standalone] }));
+    fireEvent.click(await screen.findByRole('button', { name: '查看 edit' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    fireEvent.click(dialog.getByRole('button', { name: /^安装$/ }));
+    await dialog.findByText('edit 技能已安装');
+    expect(trial).not.toHaveBeenCalled();
+    fireEvent.click(dialog.getByRole('button', { name: '立即试用' }));
+    expect(trial).toHaveBeenCalledWith(expect.objectContaining({ id: standalone.id, installed: true, enabled: true }));
+  });
+
+  it('keeps a canceled directory selection silent and makes all catalog errors dismissible', async () => {
+    const host = setup();
+    render(<ExtensionsPage api={host.api} view="skills" isProcessing={false} />);
+    await screen.findByText('暂无已安装的扩展');
+    fireEvent.click(screen.getByRole('button', { name: '添加技能' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '添加技能' })).toHaveProperty('disabled', false));
+    expect(screen.queryByRole('status')).toBeNull();
+    act(() => host.update({ plugins: [], skills: [], errors: ['来源 A 加载失败', '来源 B 加载失败'] }));
+    expect((await screen.findByRole('alert')).textContent).toContain('来源 A 加载失败\n来源 B 加载失败');
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not hide partial host failures behind a refresh success', async () => {
+    const host = setup();
+    host.api.reconcile = async () => { throw new Error('市场刷新失败，旧目录保留'); };
+    render(<ExtensionsPage api={host.api} view="plugins" isProcessing={false} />);
+    await screen.findByText('暂无已安装的扩展');
+    fireEvent.click(screen.getByRole('button', { name: '刷新插件' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('市场刷新失败');
+    expect(screen.queryByText('插件目录已刷新')).toBeNull();
+  });
+
+  it('preserves catalog dependency diagnostics after acknowledging a successful installation', async () => {
+    const host = setup();
+    host.api.install = async () => ({ plugins: [{ ...plugin, installed: true, enabled: true }], skills: [skill], errors: ['需要安装 FFmpeg 插件'] });
+    render(<ExtensionsPage api={host.api} view="plugins" isProcessing={false} onTrySkill={vi.fn()} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [plugin], skills: [] }));
+    fireEvent.click(await screen.findByRole('button', { name: '安装 视频' }));
+    await screen.findByText('语义视频剪辑 插件已安装');
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('需要安装 FFmpeg');
+    expect(screen.queryByRole('button', { name: '立即试用' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('updates an installed builtin plugin from its detail and disables the action during tasks', async () => {
     const host = setup();
     const plugin = { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'FFmpeg', description: '本地媒体工具', source: 'builtin' as const, installed: true, enabled: true, version: '1.0.0', availableVersion: '1.1.0' };
@@ -65,6 +184,11 @@ describe('extension catalog notifications and separate skill reading', () => {
     fireEvent.click(screen.getByRole('button', { name: '配置 local-tools' }));
     editor = within(await screen.findByRole('dialog', { name: '配置 MCP 服务器' }));
     expect(editor.getByLabelText('环境变量 1 值')).toHaveProperty('value', '');
+    fireEvent.click(editor.getByRole('button', { name: '添加环境变量' }));
+    fireEvent.click(editor.getByRole('button', { name: '保存' }));
+    expect((await editor.findByRole('alert')).textContent).toContain('变量名称不能为空或重复');
+    fireEvent.click(editor.getByRole('button', { name: '关闭提示' }));
+    fireEvent.click(editor.getByRole('button', { name: '移除环境变量 2' }));
     fireEvent.click(editor.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(host.api.manage).toHaveBeenLastCalledWith({ action: 'save-mcp-server', server: { id: server.id, name: server.name, transport: 'stdio', command: 'node', args: ['script.mjs'], url: '', environment: { TOKEN: '' }, headers: {} } }));
   });
