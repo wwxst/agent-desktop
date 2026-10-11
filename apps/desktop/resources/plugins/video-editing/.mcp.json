@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ffmpeg-probe": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/probe-media.cjs"],
+      "env": { "FFPROBE_PATH": "${FFPROBE_PATH}" }
+    }
+  }
+}

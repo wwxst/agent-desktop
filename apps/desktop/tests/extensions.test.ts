@@ -74,6 +74,7 @@ describe('Desktop extensions persisted local packages', () => {
     let snapshot = await store.list();
     expect(snapshot.skills.find(item => item.pluginId !== undefined)?.enabled).toBe(true);
     expect(snapshot.plugins.find(item => item.id === 'plugin:video-editing')?.skillNames).toEqual(['semantic-editing', 'short-drama-editing']);
+    expect((await store.files()).plugins[0]?.servers[0]).toMatchObject({ name: 'ffmpeg-probe', command: 'node' });
     expect(snapshot.skills.find(item => item.name === 'short-drama-editing')?.description).toContain('短剧');
     expect(await store.skillPath(preview.id)).toBe(join(root, 'extensions/plugins/video-editing/skills/short-drama-editing/SKILL.md'));
     await store.setEnabled('plugin:video-editing', false);

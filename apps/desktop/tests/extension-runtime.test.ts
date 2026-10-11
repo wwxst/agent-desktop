@@ -24,7 +24,7 @@ async function plugin(): Promise<PluginFiles> {
 describe('actual extension runtime tool chain', () => {
   it('discovers and loads the bundled short drama skill through a real turn', async () => {
     const bundled = await readPlugin(resolve('apps/desktop/resources/plugins/video-editing'), 'plugin:video-editing', 'builtin');
-    const runtime = await prepareExtensions({ plugins: [bundled], skills: bundled.skills }, async () => true, undefined, '$short-drama-editing 剪辑冲突对白');
+    const runtime = await prepareExtensions({ plugins: [bundled], skills: bundled.skills }, async () => false, undefined, '$short-drama-editing 剪辑冲突对白');
     const complete = vi.fn<Model['complete']>(async request => request.messages.some(message => message.role === 'tool')
       ? { text: '短剧技能已加载', toolCalls: [] }
       : { toolCalls: [{ id: 'short-drama' as never, name: 'load_skill', input: { id: 'plugin:video-editing/short-drama-editing' } }] });

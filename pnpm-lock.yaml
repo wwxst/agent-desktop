@@ -44,6 +44,9 @@ importers:
       '@agent-desktop/video-agent':
         specifier: workspace:*
         version: link:../../packages/video-agent
+      '@agent-desktop/video-ffmpeg':
+        specifier: workspace:*
+        version: link:../../packages/video-ffmpeg
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
         version: 1.31.0(supports-color@7.1.0)(zod@4.6.5)

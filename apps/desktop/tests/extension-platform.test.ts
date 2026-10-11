@@ -69,7 +69,7 @@ describe('Desktop plugin platform boundaries', () => {
     expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '2.0.0', enabled: false });
     const version = store.versions(id)[0]!;
     await store.rollback(id, version.id);
-    expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '1.1.0', enabled: false });
+    expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '1.2.0', enabled: false });
     await store.removeMarketplace('test-market');
     expect((await store.files()).plugins[0]?.item.installed).toBe(true);
     await store.uninstall(id);

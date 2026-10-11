@@ -416,7 +416,8 @@ export class DesktopExtensions {
       }
       const effectiveServers = servers.map(server => {
         const config = this.connections?.values(plugin.item.id, server.name) ?? {};
-        const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original : config[name] ?? original);
+        const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original
+          : config[name] ?? (plugin.item.id === 'plugin:video-editing' && server.name === 'ffmpeg-probe' && name === 'FFPROBE_PATH' ? process.env.FFPROBE_PATH ?? '' : original));
         return { ...server, ...(config.url ? { url: config.url } : {}), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
           ...(server.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) }) };
       });
