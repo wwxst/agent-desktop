@@ -7,12 +7,12 @@ import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoF
 import { createVideoAgent } from '../src/index.js';
 
 describe('createVideoAgent', () => {
-  it('registers the injected Probe instance and preserves other video capabilities when absent', () => {
+  it('registers injected media capabilities and keeps delivery rules when media tools are absent', () => {
     const probe = { name: 'probe_media', description: '', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: {} }) };
     expect(createVideoAgent({ deepSeekApiKey: 'fixture', mediaTools: [probe] }).tools.list().find(tool => tool.name === 'probe_media')).toBe(probe);
     const names = createVideoAgent({ deepSeekApiKey: 'fixture' }).tools.list().map(tool => tool.name);
     expect(names).not.toContain('probe_media');
-    for (const name of ['trim_video', 'concat_videos', 'add_audio', 'add_subtitles', 'resize_video', 'crop_video', 'set_speed', 'decode_video', 'extract_audio', 'extract_video_frames', 'extract_full_video_frames']) expect(names).not.toContain(name);
+    for (const name of ['trim_video', 'concat_videos', 'add_audio', 'add_subtitles', 'resize_video', 'crop_video', 'set_speed', 'decode_video', 'detect_black_segments', 'extract_audio', 'extract_video_frames', 'extract_video_range_frames', 'extract_full_video_frames']) expect(names).not.toContain(name);
     for (const name of ['validate_video_candidate', 'publish_video_output', 'check_video_semantics']) expect(names).toContain(name);
   });
   it('assembles the formal video Agent dependencies and tools', () => {

@@ -6,7 +6,7 @@
 
 左侧入口提供按 Codex 参考图实现的插件与技能管理页：分类双列、搜索、详情、技能来源及已安装导航。默认进入个人插件，展示内置资源与实际安装；已撤下未接通服务的官方推荐目录。支持主动添加市场、本地导入、安装、启停、更新、回滚和卸载。已启用技能按任务描述匹配，也可输入 `$local-file-review` 指定。内置“语义视频剪辑”插件包含 `semantic-editing` 与 `short-drama-editing`。
 
-Desktop 的独立 `probe_media` 由该插件提供；安装并启用后，在插件连接配置中填写 `FFPROBE_PATH`，或在启动 Desktop 前设置同名环境变量，值为本机 ffprobe 可执行文件的绝对路径。缺少插件时普通任务继续，依赖探测的验收明确受阻。其他 FFmpeg 工具保留原实现，CLI 显式使用本机 Probe。权限、结果契约及本阶段范围见 [媒体探测插件边界](docs/architecture.md#desktop-媒体探测插件)。
+Desktop 的十四项 FFmpeg 专业工具由独立“FFmpeg”插件提供；Windows x64 用户在插件页安装后即可使用，无需另装 Node、FFmpeg 或填写程序路径。安装从可信固定来源下载并校验 FFmpeg 8.1.2，支持禁用、更新、回滚和卸载。“语义视频剪辑”仅提供工作方法并声明工具依赖。缺少 FFmpeg 插件时普通任务继续，依赖媒体工具的验收明确受阻；CLI 仍显式使用本机实现。权限、结果契约及分发边界见 [FFmpeg 插件边界](docs/architecture.md#desktop-ffmpeg-插件) 和 [验收记录](docs/acceptance/ffmpeg-plugin-20261011.md)。
 
 技能支持 `agents/openai.yaml` 的图标、展示信息、工具依赖与显式调用策略，元数据缓存、正文按需加载。外部改文件后管理页自动刷新；“刷新”同步内置资源与市场目录，详情可检查更新并回滚。远程工具支持 HTTP/SSE 传输、加密配置和浏览器账户授权；命令钩子执行前审批。实现与外部服务边界见 [三轮核对记录](docs/acceptance/codex-extensions-three-reviews-20261004.md)。
 
@@ -139,7 +139,7 @@ pnpm ffmpeg-agent
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
+Desktop 根据任务按需调用已安装 FFmpeg 插件和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
 
 ```text
 Layer                 中文名称         职责

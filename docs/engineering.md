@@ -18,7 +18,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 Desktop 的 SQLite（本地嵌入式数据库）使用 Node.js 自带的 `node:sqlite`；当前 Electron 44 的主进程运行时已验证提供该模块，不引入第三方数据库依赖或额外原生模块重建步骤。数据库只由 Desktop Main（桌面主进程）访问，渲染层与 Agent Core（智能体核心）不持有数据库连接。
 
-Desktop 的 `build`、`start`、`dev` 与 Windows 打包均先执行 `build:probe`，将现有 MCP SDK 与 `video-ffmpeg` 的 Probe 实现打入插件 CJS 资源。插件运行使用 Electron 自带运行时，不要求最终用户安装 Node；可执行程序来源仍由显式 `FFPROBE_PATH` 提供。生成资源不提交 Git，构建后的 `resources/**/*` 纳入现有安装包；不新增 package 或资产管理依赖。边界定义见 [媒体探测插件](architecture.md#desktop-媒体探测插件)。
+Desktop 的 `build`、`start`、`dev` 与 Windows 打包均先执行 `build:ffmpeg`，将现有 MCP SDK 与十四项媒体工具打入独立插件 CJS 资源，并清理迁移前生成的旧 Probe 资源。插件运行使用 Electron 自带运行时，不要求最终用户安装 Node；Windows x64 安装插件时下载并验证锁定运行资源，路径只来自安装目录。生成资源不提交 Git，构建后的 `resources/**/*` 纳入现有安装包；不新增 package 或通用资产管理依赖。其他平台可继续使用通用 Agent 和 CLI，正式插件安装明确报告不支持。边界定义见 [FFmpeg 插件](architecture.md#desktop-ffmpeg-插件)。
 
 ## Package Manager（包管理器）
 

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
 import type { ApprovalRequest } from '@agent-desktop/client';
 
@@ -17,8 +17,9 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   test.setTimeout(420_000);
   test.skip(testInfo.project.name !== 'chromium-desktop' || process.platform !== 'win32', 'Windows 真实桌面验收。');
   const root = resolve('../..');
-  const evidence = resolve(root, 'logs/probe-media-plugin', `electron-${Date.now()}`);
-  const profile = resolve(evidence, 'profile');
+  const packagedExecutable = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
+  const evidence = resolve(root, 'logs/ffmpeg-plugin', `${packagedExecutable === undefined ? 'electron' : 'installed'}-${Date.now()}`);
+  const profile = resolve(evidence, '用户 数据');
   const workspace = resolve(evidence, 'workspace');
   const outside = resolve(evidence, 'attachments');
   await mkdir(workspace, { recursive: true }); await mkdir(outside, { recursive: true });
@@ -98,8 +99,8 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   delete env.FFPROBE_PATH; delete env.FFMPEG_PATH;
   // 应用和插件进程仅获得系统目录，不能通过开发机 PATH 找到 Node 或媒体程序。
   env.PATH = `${process.env.SystemRoot}/System32;${process.env.SystemRoot}`;
-  const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
-  const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+  const executablePath = packagedExecutable ?? createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
+  const launch = () => _electron.launch({ executablePath, args: [...(packagedExecutable === undefined ? ['.'] : []), `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   let page: Awaited<ReturnType<NonNullable<typeof app>['firstWindow']>>;
   const observeApprovals = async () => page.evaluate(() => {
@@ -146,8 +147,20 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('CASE:cancel');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as unknown as { held?: ApprovalRequest }).held?.kind)).toBe('plugin-tool');
-    const pids = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -like '*ffmpeg.cjs*' -and $_.CommandLine.Contains('${profile.replaceAll("'", "''")}') } | Select-Object -ExpandProperty ProcessId`], { encoding: 'utf8', windowsHide: true }).trim();
+    const processName = basename(executablePath).replaceAll("'", "''");
+    const pids = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='${processName}'" | Where-Object { $_.CommandLine -like '*ffmpeg.cjs*' -and $_.CommandLine.Contains('${profile.replaceAll("'", "''")}') } | Select-Object -ExpandProperty ProcessId`], { encoding: 'utf8', windowsHide: true }).trim();
     const activePids = pids(); expect(activePids).not.toBe('');
+    for (const action of ['update', 'uninstall', 'disable']) {
+      const error = await page.evaluate(async action => {
+        try {
+          if (action === 'update') await window.agentDesktop.extensions.manage({ action: 'update', id: 'plugin:ffmpeg' });
+          else if (action === 'uninstall') await window.agentDesktop.extensions.uninstall('plugin:ffmpeg');
+          else await window.agentDesktop.extensions.setEnabled('plugin:ffmpeg', false);
+          return '';
+        } catch (error) { return (error as Error).message; }
+      }, action);
+      expect(error).toContain('任务执行期间');
+    }
     await page.getByRole('button', { name: '停止', exact: true }).click();
     await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
     await expect.poll(pids).toBe('');
@@ -181,6 +194,23 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     expect((await run('uninstalled')).tools).not.toContain('probe_media');
     await page.evaluate(() => window.agentDesktop.extensions.install('plugin:ffmpeg'));
     expect((await run('reinstalled')).tools).toContain('probe_media');
+    if (packagedExecutable !== undefined) {
+      const appPath = await app.evaluate(({ app }) => app.getAppPath());
+      const manifest = resolve(appPath, 'resources/plugins/ffmpeg/.codex-plugin/plugin.json');
+      const originalManifest = await readFile(manifest, 'utf8');
+      try {
+        // 尚无线上新版；在隔离安装目录构造元数据升级，媒体二进制及工具契约保持原版。
+        await writeFile(manifest, JSON.stringify({ ...JSON.parse(originalManifest), version: '1.0.1' }));
+        const updated = await page.evaluate(() => window.agentDesktop.extensions.manage({ action: 'update', id: 'plugin:ffmpeg' }));
+        const plugin = updated.plugins.find(item => item.id === 'plugin:ffmpeg')!;
+        expect(plugin.version).toBe('1.0.1');
+        expect((await run('updated')).results[0]).toContain('h264');
+        const versionId = plugin.versions!.find(item => item.version === '1.0.0')!.id;
+        const restored = await page.evaluate(versionId => window.agentDesktop.extensions.manage({ action: 'rollback', id: 'plugin:ffmpeg', versionId }), versionId);
+        expect(restored.plugins.find(item => item.id === 'plugin:ffmpeg')?.version).toBe('1.0.0');
+        expect((await run('rolled-back')).results[0]).toContain('h264');
+      } finally { await writeFile(manifest, originalManifest); }
+    }
     allApprovals.push(...await approvals());
     await app.close(); app = await launch(); page = await app.firstWindow(); await observeApprovals();
     expect((await run('restart-enabled')).results[0]).toContain('h264');
@@ -192,4 +222,23 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     try { await app?.close(); }
     finally { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); }
   }
+});
+
+test('installed application preserves plugin and session data after installer overwrite', async ({}, testInfo) => {
+  const executablePath = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
+  const profile = process.env.DESKTOP_UPGRADE_PROFILE;
+  test.skip(testInfo.project.name !== 'chromium-desktop' || process.platform !== 'win32' || executablePath === undefined || profile === undefined, '需要本机安装器覆盖后的隔离配置目录。');
+  const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL; delete env.FFMPEG_PATH; delete env.FFPROBE_PATH;
+  env.PATH = `${process.env.SystemRoot}/System32;${process.env.SystemRoot}`;
+  const app = await _electron.launch({ executablePath: executablePath!, args: [`--user-data-dir=${profile!}`], env });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByText('完成 restart-enabled', { exact: true })).toBeVisible();
+    const restored = await page.evaluate(async () => ({ extensions: await window.agentDesktop.extensions.list(), state: await window.agentDesktop.loadClientState() }));
+    expect(restored.extensions.plugins.find(plugin => plugin.id === 'plugin:ffmpeg')).toMatchObject({ installed: true, enabled: true, version: '1.0.0' });
+    expect(JSON.stringify(restored.state)).toContain('restart-enabled');
+    expect(JSON.stringify(restored.state)).toContain('中文 video.mp4');
+    await page.screenshot({ path: resolve(profile!, '../upgrade-restored.png') });
+  } finally { await app.close(); }
 });

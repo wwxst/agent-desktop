@@ -32,6 +32,24 @@ function rawTool(): Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> 
 }
 
 describe('host Probe capability boundary', () => {
+  it('handles a long Chinese path, silent MPEG-4 media and rejects indirect network input for decode', async () => {
+    const inputPath = join(workspace, `中文 ${'long-name-'.repeat(12)}.mp4`);
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x180:r=5:d=1', '-c:v', 'mpeg4', inputPath]);
+    await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'matrix.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+    const executable = (name: string) => execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [name], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
+    const plugin: PluginFiles = { name: 'ffmpeg', directory, skills: [], item: { id: 'plugin:ffmpeg', kind: 'plugin', name: 'ffmpeg', description: '', source: 'builtin', enabled: true, installed: true },
+      servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'matrix.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
+    const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, undefined, undefined, { probeAccess: access });
+    const tool = (name: string) => runtime.tools.find(tool => tool.name === name)!;
+    try {
+      expect(await tool('probe_media').execute({ inputPath }, context)).toMatchObject({ status: 'success', output: { videoCodec: 'mpeg4', audioCodec: null, width: 320, height: 180 } });
+      expect(await tool('decode_video').execute({ inputPath }, context)).toMatchObject({ status: 'success', output: { fullyDecoded: true } });
+      expect(await tool('extract_audio').execute({ videoPath: inputPath, outputPath: join(workspace, 'silent.wav') }, context)).toMatchObject({ status: 'error' });
+      const playlist = join(workspace, 'network.m3u8');
+      await writeFile(playlist, '#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nhttp://127.0.0.1:9/segment.ts\n#EXT-X-ENDLIST\n');
+      expect(await tool('decode_video').execute({ inputPath: playlist }, context)).toMatchObject({ status: 'error' });
+    } finally { await runtime.close(); }
+  }, 30_000);
   it('rejects unauthorized inputs and output junctions for every read capability before MCP approval', async () => {
     const source = join(workspace, 'video.mp4'); await writeFile(source, 'data');
     const outside = join(directory, 'outside'); await mkdir(outside);
@@ -143,6 +161,12 @@ describe('host Probe capability boundary', () => {
       raw.execute.mockResolvedValueOnce({ status: 'success', output: result });
       expect(await tool.execute({ inputPath: source }, context)).toMatchObject({ status: 'error' });
     }
+  });
+  it('rejects an empty full-frame success instead of treating it as complete semantic evidence', async () => {
+    const source = join(workspace, 'video.mp4'); await writeFile(source, 'data');
+    const raw = rawTool();
+    raw.execute.mockResolvedValue({ status: 'success', output: { structuredContent: { toolResult: { status: 'success', output: { complete: true, frames: [] } } } } });
+    expect(await adaptFFmpegTool(raw, access, 'extract_full_video_frames').execute({ inputPath: source, outputDir: join(workspace, 'frames') }, context)).toMatchObject({ status: 'error', message: expect.stringContaining('帧列表') });
   });
   it('preserves cancellation instead of returning ordinary tool failure', async () => {
     const source = join(workspace, 'video.mp4'); await writeFile(source, 'data');

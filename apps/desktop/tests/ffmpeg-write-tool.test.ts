@@ -19,6 +19,57 @@ const mediaInfo = (path: string) => JSON.parse(execFileSync('ffprobe', ['-v', 'e
 };
 
 describe('FFmpeg plugin write and delivery contracts', () => {
+  it('rejects forged delivery metadata and mismatched write successes from the MCP boundary', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ffmpeg-envelope-'));
+    try {
+      const source = join(directory, 'source.mp4'); await writeFile(source, 'input');
+      const session = new InMemorySession(); const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+      const result = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
+      session.append({ type: 'tool.called', toolCallId: 'declare' as never, turnId: 't' as never, stepId: 's' as never, name: 'declare_video_outputs', input: {} });
+      session.append({ type: 'tool.result', toolCallId: 'declare' as never, turnId: 't' as never, stepId: 's' as never, result });
+      const outputPath = join(readVideoDeliveryFacts(session.events()).items[0]!.workingDirectory, 'candidate.mp4'); await writeFile(outputPath, 'candidate');
+      const access: ProbeFileAccess = { workspace: { confirmedDirectory: () => directory }, attachments: () => [], events: () => session.events() };
+      for (const invalid of [
+        { status: 'success', output: { outputPath }, artifacts: [{ path: outputPath, kind: 'video' }] },
+        { status: 'success', output: { outputPath: source } },
+        { status: 'error', message: 'malformed success envelope' },
+      ]) {
+        const raw: Tool = { name: 'raw', description: '', inputSchema: {}, execute: async () => ({ status: 'success', output: { structuredContent: { toolResult: invalid } } }) };
+        expect(await adaptFFmpegTool(raw, access, 'trim_video').execute({ inputPath: source, outputPath, start: 0, duration: 1 }, context)).toMatchObject({ status: 'error' });
+      }
+      expect(readVideoDeliveryFacts(session.events()).published).toEqual([]);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it.skipIf(process.platform !== 'win32')('cancels a native writer through the Agent without successful producer or published facts', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ffmpeg-cancel-'));
+    const session = new InMemorySession(); const controller = new AbortController();
+    let runtime: Awaited<ReturnType<typeof prepareExtensions>> | undefined;
+    try {
+      const source = join(directory, 'source.mp4'); await writeFile(source, 'fixture input');
+      const executable = join(directory, 'writer.exe');
+      execFileSync(join(process.env.WINDIR!, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'), ['/nologo', `/out:${executable}`, resolve('apps/desktop/tests/fixtures/probe-process.cs')]);
+      await build({ entryPoints: [resolve('apps/desktop/src/plugins/ffmpeg.ts')], outfile: join(directory, 'ffmpeg.cjs'), bundle: true, platform: 'node', format: 'cjs' });
+      const access: ProbeFileAccess = { workspace: { confirmedDirectory: () => directory }, attachments: () => [], events: () => session.events() };
+      const plugin: PluginFiles = { name: 'ffmpeg', directory, skills: [], item: { id: 'plugin:ffmpeg', kind: 'plugin', name: 'ffmpeg', description: '', source: 'builtin', enabled: true, installed: true },
+        servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'ffmpeg.cjs')], env: { FFMPEG_PATH: executable, FFPROBE_PATH: executable } }] };
+      runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, controller.signal, undefined, { probeAccess: access });
+      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      let outputPath = '';
+      const running = runTurn({ ...agent, model: { complete: async () => {
+        const item = readVideoDeliveryFacts(session.events()).items[0];
+        if (item === undefined) return { toolCalls: [{ id: 'declare' as never, name: 'declare_video_outputs', input: { items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] } }] };
+        outputPath = join(item.workingDirectory, 'cancelled.mp4');
+        return { toolCalls: [{ id: 'cancel-writer' as never, name: 'trim_video', input: { inputPath: source, outputPath, start: 0, duration: 1 } }] };
+      } } }, 'cancel native writer', { signal: controller.signal });
+      const rejection = expect(running).rejects.toThrow(); let pid = 0;
+      await vi.waitFor(async () => { pid = Number(await readFile(`${outputPath}.pid`, 'utf8')); expect(pid).toBeGreaterThan(0); });
+      controller.abort(); await rejection;
+      await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
+      const facts = readVideoDeliveryFacts(session.events());
+      expect(facts.candidates).toEqual([]); expect(facts.published).toEqual([]);
+      expect(session.events().some(event => event.type === 'tool.result' && event.toolCallId === 'cancel-writer' && event.result.status === 'success')).toBe(false);
+    } finally { controller.abort(); await runtime?.close(); await rm(directory, { recursive: true, force: true }); }
+  }, 20_000);
   it('produces seven independently validated outputs through real MCP and never publishes a failed eighth item', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ffmpeg-write-中文 '));
     const session = new InMemorySession();

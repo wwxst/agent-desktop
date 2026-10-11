@@ -123,7 +123,7 @@ function unwrap(result: ToolResult): unknown {
   return raw?.structuredContent ?? JSON.parse(raw?.content?.find(entry => entry.type === 'text')?.text ?? 'null') as unknown;
 }
 
-/** 所有只读能力共用授权及原 MCP 调用链；审批前解析真实路径，结果回到原 Tool 契约。 */
+/** 媒体能力共用授权及原 MCP 调用链；审批前解析真实路径，结果回到原 Tool 契约。 */
 export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined, name: string): Tool {
   if (name === 'probe_media') return adaptProbeMediaTool(tool, access);
   return { name, description: tool.description, inputSchema: tool.inputSchema,
@@ -170,7 +170,7 @@ export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined,
         } else if (name === 'extract_full_video_frames' && value.complete === false) {
           if (typeof value.reason !== 'string') throw new Error('全帧预算结果缺少受阻原因。');
         } else {
-          if (!Array.isArray(value.frames) || (name === 'extract_full_video_frames' && value.complete !== true)) throw new Error('抽帧结果缺少完整帧列表。');
+          if (!Array.isArray(value.frames) || (name === 'extract_full_video_frames' && (value.complete !== true || value.frames.length === 0))) throw new Error('抽帧结果缺少完整帧列表。');
           for (const frame of value.frames as Array<{ path: unknown; timestamp: unknown }>) {
             if (typeof frame?.path !== 'string' || typeof frame.timestamp !== 'number' || !Number.isFinite(frame.timestamp)
               || !await isInsideDirectory(frame.path, normalized.outputDir as string)) throw new Error('抽帧结果超出已授权目录或缺少时间戳。');

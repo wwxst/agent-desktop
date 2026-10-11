@@ -64,13 +64,13 @@ MCP 运行时支持 stdio、Streamable HTTP（可流式 HTTP 传输）和 SSE（
 
 每轮服务启动需审批，各次调用另行审批，SDK 和钩子只继承基础系统环境，不传递模型设置密钥。一般工具名以插件、服务及工具标识组成，特殊字符或超过 64 字符时附加摘要避免身份冲突；下述随包 Probe 是唯一静态名称映射。取消与收尾等待同一个关闭操作，进程不写入恢复数据。复制或卸载期间宿主拒绝新任务，防止使用正在修改的目录。
 
-### Desktop 媒体探测插件
+### Desktop FFmpeg 插件
 
 ```text
-Probe Adapter        探测适配器        宿主将已授权本地路径及 MCP 结果转换为原工具契约。
+Media Adapter        媒体适配器        宿主将已授权本地路径及 MCP 结果转换为原工具契约。
 Shared Injection     共享注入          公开工具与候选语义验收消费同一个通用 Tool 实例。
 Producer Evidence    生产证据          成功视频写出及来源归属支持读取本会话真实候选。
-Binary Distribution  二进制分发        正式可执行程序的来源与版本管理留待后续阶段。
+Binary Distribution  二进制分发        插件安装时下载锁定资源，验证摘要、版本及构建选项。
 ```
 
 Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映射十四项专业工具：`probe_media`、`decode_video`、`detect_black_segments`、`extract_video_frames`、`extract_video_range_frames`、`extract_audio`、`extract_full_video_frames`、`trim_video`、`concat_videos`、`add_audio`、`add_subtitles`、`resize_video`、`crop_video`、`set_speed`。冲突直接失败；第三方同名工具仍使用限定名称。宿主经 `mediaTools` 注入实际启用能力，应用层没有 FFmpeg 实现导入或自动回退；写出工具继续经过原有候选目录包装器。CLI 在自身入口显式注入本机实现。Core 和 Loop 不接触 MCP 协议。
@@ -81,7 +81,7 @@ Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映�
 
 独立 `plugin:ffmpeg` 的 `ffmpeg` 服务由 `apps/desktop/src/plugins/ffmpeg.ts` 构建为自包含 CJS 资源，使用 Electron 自带 Node 运行时及原有工具，不复制媒体算法。`plugin:video-editing` 仅包含技能，由侧车元数据声明 `ffmpeg` 依赖；拒绝启动的连接不满足依赖。旧版内含的 `ffmpeg-probe` 不再启动，插件页提示升级及安装独立能力；会话、文件和设置保留。只有受控独立插件可映射既有公开工具名称，同名第三方服务仍使用限定名。服务限制本地文件协议及普通媒体容器，拒绝网络协议与播放列表间接资源。stdin 结束会关闭 SDK、取消在途请求并终止子进程。
 
-抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制。插件未安装、停用、卸载或启动被拒绝时，下一轮没有这些只读工具，依赖能力的验收明确受阻。普通任务及写出工具继续使用阶段二现有路径；完整写出迁移与独立插件分发仍在实施，记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
+抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制；完整覆盖不能以空帧列表表示。写出路径必须属于已声明输出项，宿主复核来源与最终目标授权；插件不能返回正式产物元数据。插件未安装、停用、卸载或启动被拒绝时，下一轮没有十四项专业工具，依赖能力的验收明确受阻。通用任务继续运行；通用终端仍遵守自己的审批策略，不属于专业工具卸载边界。记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
 
 该边界是宿主调用策略，不是操作系统沙箱；已批准的通用 MCP 服务或本机可执行程序仍以当前用户身份运行。FFmpeg 正式资源目前支持 Windows x64：安装在已有暂存目录下载 `runtime.lock.json` 锁定的 Gyan 8.1.2 ZIP，校验归档及两个程序 SHA-256、版本和必要构建选项，再原子发布。下载使用 Electron 网络栈及 Windows 系统代理；失败保留旧安装。插件自身目录提供可执行文件，Electron 自带 Node 启动自包含服务，不搜索系统 PATH。插件专属归档缓存每次复核摘要，旧完整版本沿用既有缓存与回滚。保留供应商 GPLv3 许可证、README 和构建说明；没有再托管二进制或宣称代码签名。来源和再分发要求见插件 `NOTICE.md`。验收见 [FFmpeg 插件验收](acceptance/ffmpeg-plugin-20261011.md)，原 Probe 阶段记录保留供追溯。
 
