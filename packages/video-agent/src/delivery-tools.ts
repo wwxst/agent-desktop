@@ -408,6 +408,12 @@ function findProducerToolCall(
   return found;
 }
 
+/** 宿主授权候选读取时复用交付的生产归属；单独声明目录不能授予文件权限。 */
+export function producedVideoItem(events: readonly SessionEvent[], candidatePath: string): OutputItem | undefined {
+  const names = collectToolNames(events);
+  return readVideoDeliveryFacts(events).items.find(item => findProducerToolCall(events, names, item, resolve(candidatePath)) !== undefined);
+}
+
 /**
  * 找出针对本候选的一次真实检查证据。
  *

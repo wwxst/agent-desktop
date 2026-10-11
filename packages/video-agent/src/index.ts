@@ -45,6 +45,7 @@ import { CheckVideoSemanticsTool } from './semantic-check.js';
 export type { TerminalPort } from './terminal-tools.js';
 export type { DelegateTasksPort, ReadOnlyTask, SubagentResult } from './delegate-tasks.js';
 export type { AskUserPort, UserQuestion, UserAnswer } from './ask-user.js';
+export { producedVideoItem, isInsideDirectory } from './delivery-tools.js';
 
 // 交付模型与读取投影是桌面与命令行共用的唯一权威实现，必须从包入口暴露。
 export {

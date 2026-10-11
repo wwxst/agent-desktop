@@ -692,7 +692,8 @@ function registerIpcHandlers(): void {
       const extensions = await prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
         { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) });
       closeExtensions = extensions.close;
-      for (const tool of extensions.tools) agent.tools.register(tool);
+      // 切换前仍由内置 Probe 提供能力，避免同名适配器重复注册。
+      for (const tool of extensions.tools) if (tool.name !== 'probe_media') agent.tools.register(tool);
       if (settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
         agent.tools.register(new SaveMemoryTool(persistenceFilePath(), () => hasToolCall() ? 'tool' : 'conversation', settings.memoryFromToolChatsEnabled ?? true));

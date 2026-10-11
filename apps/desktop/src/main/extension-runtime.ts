@@ -11,6 +11,7 @@ import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 import type { McpServerFile, PluginFiles, SkillFile, StandaloneMcpFile } from './extensions.js';
 import { readSkill } from './extensions.js';
+import { adaptProbeMediaTool, type ProbeFileAccess } from './probe-media-tool.js';
 
 type Approve = (request: PluginApproval, signal?: AbortSignal) => Promise<boolean>;
 
@@ -64,7 +65,7 @@ export async function prepareExtensions(
   approve: Approve,
   signal?: AbortSignal,
   prompt?: string,
-  options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider },
+  options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider; readonly probeAccess?: ProbeFileAccess },
 ): Promise<{ tools: Tool[]; instructions: string; runHooks(event: string, input: Readonly<Record<string, unknown>>): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
   const tools: Tool[] = [];
   const clients: Client[] = [];
@@ -167,18 +168,26 @@ export async function prepareExtensions(
             const qualified = original.replaceAll(/[^a-zA-Z0-9_-]/g, '_');
             // 替换特殊字符或截断时加上原标识摘要，保留不同远程工具的身份。
             const name = qualified.length <= 64 && qualified === original ? qualified : `${qualified.slice(0, 47)}_${createHash('sha256').update(original).digest('hex').slice(0, 16)}`;
-            tools.push({ name, description: `[${plugin.item.name} / ${server.name}] ${definition.description ?? definition.name}`,
+            const tool: Tool = { name, description: `[${plugin.item.name} / ${server.name}] ${definition.description ?? definition.name}`,
               inputSchema: definition.inputSchema,
               async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
                 if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', message: '插件工具参数必须是对象。' };
                 if (!await approve({ kind: 'plugin-tool', pluginName: plugin.item.name, serverName: server.name,
                   toolName: definition.name, arguments: JSON.stringify(input) }, context.signal)) return { status: 'error', message: '用户拒绝了插件工具调用。' };
                 context.signal?.throwIfAborted();
-                const result = await client.callTool({ name: definition.name, arguments: input as Record<string, unknown> }, undefined,
-                  { ...(context.signal === undefined ? {} : { signal: context.signal }) });
+                let result;
+                try { result = await client.callTool({ name: definition.name, arguments: input as Record<string, unknown> }, undefined,
+                  { ...(context.signal === undefined ? {} : { signal: context.signal }) }); }
+                catch (error) { context.signal?.throwIfAborted(); throw error; }
                 return result.isError === true ? { status: 'error', message: '插件工具返回失败。', output: result } : { status: 'success', output: result };
               },
-            });
+            };
+            // 仅随包安装的已知服务可占用既有公开名；同名第三方插件仍使用限定名称。
+            const mapped = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:video-editing'
+              && server.name === 'ffmpeg-probe' && definition.name === 'probe_media'
+              ? adaptProbeMediaTool(tool, options?.probeAccess) : tool;
+            if (tools.some(existing => existing.name === mapped.name)) throw new Error(`插件工具名称冲突：${mapped.name}`);
+            tools.push(mapped);
           }
           cursor = listing.nextCursor;
         } while (cursor !== undefined);
