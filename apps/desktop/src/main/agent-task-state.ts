@@ -13,10 +13,42 @@ import {
   readVideoDeliveryFacts,
 } from '@agent-desktop/video-agent';
 import type { AgentTaskState } from '@agent-desktop/client';
+import type { RunTurnOptions } from '@agent-desktop/agent-loop';
 
 const DECLARE_VIDEO_OUTPUTS_TOOL = 'declare_video_outputs';
 const VALIDATE_VIDEO_CANDIDATE_TOOL = 'validate_video_candidate';
 const PUBLISH_VIDEO_OUTPUT_TOOL = 'publish_video_output';
+
+/** 模型 JSON 的字段顺序不影响同一调用身份；数组顺序仍有业务含义。 */
+function canonicalInput(input: unknown): string | undefined {
+  return JSON.stringify(input, (_key, value: unknown) => isRecord(value)
+    ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
+    : value);
+}
+
+/** 每个实际调用前读取同一 Session，不能只在轮次起点过滤模型可见工具。 */
+export function taskToolGate(
+  events: readonly SessionEvent[],
+  input: Parameters<NonNullable<RunTurnOptions['beforeToolCall']>>[0],
+): ReturnType<NonNullable<RunTurnOptions['beforeToolCall']>> {
+  const boundary = input.tool?.executionBoundary ?? 'opaque';
+  const facts = projectRecoveryFacts(events);
+  const block = (message: string, sourceEventIndexes: readonly number[]) => ({ boundary, blocked: { message, sourceEventIndexes } });
+  if (boundary !== 'read-only' && facts.unknownEffects.length > 0) {
+    return block('已有外部操作结果未知，请先核验其事实，不能执行新的外部操作。', facts.unknownEffects.map(fact => fact.sourceEventIndex));
+  }
+  const key = canonicalInput(input.call.input);
+  const sameCall = (call: Extract<SessionEvent, { readonly type: 'tool.called' }>) => call.name === input.call.name && canonicalInput(call.input) === key;
+  const denied = facts.deniedCalls.filter(fact => fact.call.turnId === input.turnId && sameCall(fact.call));
+  if (denied.length > 0) return block('用户已拒绝本轮相同调用，不重复请求审批。', denied.map(fact => fact.sourceEventIndex));
+  if (boundary !== 'read-only') {
+    const ancestry = projectRecoveryAncestry(events, input.turnId);
+    const succeeded = facts.successfulCalls.filter(fact => ancestry.turnIds.includes(fact.call.turnId)
+      && fact.call.boundary !== 'read-only' && fact.call.boundary !== 'not-executed' && sameCall(fact.call));
+    if (succeeded.length > 0) return block('本任务相同外部操作已完成，请使用已有结果，不重复执行。', succeeded.map(fact => fact.sourceEventIndex));
+  }
+  return { boundary };
+}
 
 const toolCallKey = (event: { readonly turnId: string; readonly stepId: string; readonly toolCallId: string }) =>
   `${event.turnId}\u0000${event.stepId}\u0000${event.toolCallId}`;

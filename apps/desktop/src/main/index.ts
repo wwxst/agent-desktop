@@ -5,7 +5,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } fr
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
-import { SessionPersistenceError, projectRecoveryAncestry, projectRecoveryFacts, projectTurnState, type Session, type SessionEvent, type TurnId } from '@agent-desktop/session';
+import { SessionPersistenceError, TurnCancellationError, projectRecoveryAncestry, projectRecoveryFacts, projectTurnState, type Session, type SessionEvent, type TurnId } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
 import { generateConversationTitle } from './conversation-title.js';
 import {
@@ -25,6 +25,7 @@ import {
   projectAgentActivityDetail,
 } from './agent-activity.js';
 import { CommandOutputProjection, createCommandPort } from './command-host.js';
+import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './ffmpeg-tool.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';
@@ -66,7 +67,7 @@ import { DesktopExtensions } from './extensions.js';
 import { prepareExtensions } from './extension-runtime.js';
 import { ExtensionConnections } from './extension-connections.js';
 import { InMemoryToolRegistry, UpdatePlanTool } from '@agent-desktop/tools';
-import { projectAgentTaskState, qualifyTaskToolEvidence } from './agent-task-state.js';
+import { projectAgentTaskState, qualifyTaskToolEvidence, taskToolGate } from './agent-task-state.js';
 import { DesktopUpdater } from './app-updater.js';
 import { VerifyToolOutcomeTool } from './verify-tool.js';
 
@@ -212,8 +213,24 @@ function terminalRestartFacts(session: DesktopSessionState): readonly SessionEve
     });
   }
 
-  // 旧快照没有可关联的调用来源时，只展示 disconnected 历史；不能把事实绑定到无关的最新任务。
-  return [];
+  // 旧快照没有可关联的调用来源时，使用已有 terminalId 建立一次明确的宿主观察。
+  // 不能按命令文字猜测原调用，也不能把观察绑定到另一个工具调用。
+  const existingObservation = events.some((event) => {
+    if (event.type !== 'effect.outcome.verified' || event.scope !== 'entire-call'
+      || event.evidence.source !== 'host' || event.evidence.reference !== `terminal:${history.terminalId}`) return false;
+    const source = events[event.sourceEventIndex];
+    return source?.type === 'host.operation.started' && source.operation === 'terminal-connection-lost';
+  });
+  if (existingObservation) return [];
+  // 独立观察身份只用于三个宿主事实配对，不伪造旧任务、用户消息或工具归属。
+  const turnId = randomUUID() as TurnId;
+  const sourceEventIndex = events.length;
+  return [
+    { type: 'host.operation.started', turnId, operation: 'terminal-connection-lost', description: '应用重启后失去终端连接，命令效果和进程状态未确认。' },
+    { type: 'host.operation.result', turnId, sourceEventIndex, status: 'failed', errorName: 'TerminalConnectionLost', errorMessage: '旧终端没有可关联的工具调用来源。' },
+    { type: 'effect.outcome.verified', turnId, sourceEventIndex, scope: 'entire-call', outcome: 'unresolved',
+      evidence: { source: 'host', reference: `terminal:${history.terminalId}`, description: '应用重启后失去终端连接，命令效果和进程状态未确认。' } },
+  ];
 }
 
 let desktopExtensions: DesktopExtensions | undefined;
@@ -347,12 +364,9 @@ async function restoreDesktopState(): Promise<void> {
   // 先固定异常退出事实，再重建客户端消息和恢复入口；启动不会重放任何终端或工具调用。
   for (const session of sessions.values()) interruptRecoveredTurns(session);
 
-  // 终端旧连接只转为 disconnected，并在消息重建前追加可关联的未知效果事实。
+  // 终端原始 running 状态留在持久化事实中；disconnected 只用于没有活句柄的展示。
   for (const session of sessions.values()) {
     const facts = terminalRestartFacts(session);
-    if (session.terminalHistory?.status === 'running') {
-      session.terminalHistory = { ...session.terminalHistory, status: 'disconnected' };
-    }
     if (facts.length > 0) session.session.appendMany(facts);
   }
 
@@ -883,9 +897,37 @@ function registerIpcHandlers(): void {
         throw new Error('请先在设置中配置当前对话模型的 API 密钥。');
       }
       let terminalRunningPersisted = false;
+      const safeRecovery = projectRecoveryFacts(session.session.events()).unknownEffects.length > 0;
+      // 先准备插件再组装 Agent；公开 Probe 与语义验收必须持有同一个已授权适配器。
+      // 未知外部效果只允许核验，不连接插件或触发其钩子。
+      const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(session.workingDirectory);
+      const mediaAccess = { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
+        events: () => session.session.events() };
+      const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
+        () => prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
+          { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
+            probeAccess: mediaAccess }));
+      closeExtensions = extensions.close;
+      closeExtensionsSafely = async (): Promise<void> => {
+        const close = closeExtensions;
+        closeExtensions = undefined;
+        if (close === undefined || preparedStart === undefined) return;
+        // 保存已经致命失败时只能释放连接；新的宿主事实也无法落盘，仍传播第一次保存错误。
+        if (persistenceFailure !== undefined) {
+          try { await close(); } finally { throw persistenceFailure; }
+        }
+        try {
+          await runHostOperation(session, preparedStart.turnId, 'close', '关闭本轮扩展和工具服务。', close);
+        } catch (error) {
+          // 清理失败不能覆盖已提交的 Turn 结果；宿主失败事实会让最终任务投影进入待处理状态。
+          if (error instanceof SessionPersistenceError) throw error;
+        }
+      };
+      const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name)).map(extensions.wrapTool);
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
+        mediaTools,
         ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
         ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
@@ -940,38 +982,25 @@ function registerIpcHandlers(): void {
           };
         })(),
       });
-      const safeRecovery = recovery !== undefined && projectRecoveryFacts(session.session.events()).unknownEffects.length > 0;
+      // Probe 已注入且已包装钩子，只追加其他扩展工具。
+      for (const tool of extensions.tools) if (!FFMPEG_TOOLS.has(tool.name)) agent.tools.register(tool);
+      const authorizedTools = new InMemoryToolRegistry();
+      for (const tool of agent.tools.list()) authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
+      agent = { ...agent, tools: authorizedTools };
       if (safeRecovery) {
         const safeTools = new InMemoryToolRegistry();
         for (const tool of agent.tools.list()) {
-          if (['list_directory', 'read_file', 'search_text', 'read_terminal'].includes(tool.name)) safeTools.register(tool);
+          if (['list_directory', 'read_file', 'search_text', 'read_terminal', 'update_plan', 'verify_tool_outcome'].includes(tool.name)) safeTools.register(tool);
         }
         agent = { ...agent, tools: safeTools };
       }
-      const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(session.workingDirectory);
-      const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
-        () => prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
-          { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) }));
-      closeExtensions = extensions.close;
-      closeExtensionsSafely = async (): Promise<void> => {
-        const close = closeExtensions;
-        closeExtensions = undefined;
-        if (close === undefined || preparedStart === undefined) return;
-        try {
-          await runHostOperation(session, preparedStart.turnId, 'close', '关闭本轮扩展和工具服务。', close);
-        } catch (error) {
-          // 清理失败不能覆盖已提交的 Turn 结果；宿主失败事实会让最终任务投影进入待处理状态。
-          if (error instanceof SessionPersistenceError) throw error;
-        }
-      };
-      for (const tool of extensions.tools) agent.tools.register(tool);
-      if (settings.memoryEnabled) {
+      if (!safeRecovery && settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
         agent.tools.register(new SaveMemoryTool(persistenceFilePath(), () => hasToolCall() ? 'tool' : 'conversation', settings.memoryFromToolChatsEnabled ?? true));
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(FFMPEG_TOOLS.has(tool.name) ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
       // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
@@ -1020,6 +1049,8 @@ function registerIpcHandlers(): void {
           signal: controller.signal,
           turnId: preparedStart.turnId,
           qualifyToolEvidence: qualifyTaskToolEvidence,
+          beforeToolCall: input => taskToolGate(session.session.events(), input),
+          ...(recovery === undefined ? {} : { maxSteps: 24, maxToolCalls: 48 }),
           // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
           ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
             : { contextBudget: { contextWindow: settings.modelContextWindow, maxOutputTokens: settings.modelMaxOutputTokens } }),
@@ -1079,7 +1110,14 @@ function registerIpcHandlers(): void {
       if (error instanceof SessionPersistenceError) throw error;
       if (preparedStart !== undefined && projectTurnState(session.session.events(), preparedStart.turnId) === 'started') {
         try {
-          session.session.append({ type: 'turn.failed', turnId: preparedStart.turnId, errorName: error.name, errorMessage: error.message });
+          // 前置宿主阶段收到取消时仍保留取消来源；只有真实业务错误才进入 failed。
+          if (error.name === 'AbortError') {
+            session.session.append({ type: 'turn.cancelled', turnId: preparedStart.turnId,
+              reason: controller.signal.reason instanceof TurnCancellationError ? controller.signal.reason.reason
+                : error instanceof TurnCancellationError ? error.reason : 'external' });
+          } else {
+            session.session.append({ type: 'turn.failed', turnId: preparedStart.turnId, errorName: error.name, errorMessage: error.message });
+          }
         } catch (persistenceError) {
           if (persistenceError instanceof SessionPersistenceError) throw persistenceError;
           throw error;
@@ -1105,7 +1143,8 @@ function registerIpcHandlers(): void {
           if (controller.signal.aborted && activeTask?.terminalTouched) {
             try {
               if (preparedStart !== undefined && session.terminal !== undefined) {
-                await runHostOperation(session, preparedStart.turnId, 'terminal-close', '关闭取消任务留下的终端进程。', () => session.terminal!.close());
+                if (persistenceFailure !== undefined) await session.terminal.close();
+                else await runHostOperation(session, preparedStart.turnId, 'terminal-close', '关闭取消任务留下的终端进程。', () => session.terminal!.close());
               }
             } catch (error) {
               if (error instanceof SessionPersistenceError) throw error;
@@ -1142,19 +1181,23 @@ function registerIpcHandlers(): void {
     const session = activeSession();
     const fact = projectRecoveryFacts(session.session.events()).unknownEffects.find(item => item.sourceEventIndex === value.sourceEventIndex);
     if (fact === undefined) throw new Error('该外部效果已经核验或不存在。');
+    const taskTurnId = session.session.events().some(event => event.type === 'turn.started' && event.turnId === fact.source.turnId)
+      ? fact.source.turnId : findLatestTurnId(session.session.events());
+    if (taskTurnId === undefined) throw new Error('当前会话没有可关联任务，请先发起只读核验任务。');
     const description = typeof value.description === 'string' ? value.description : (
       value.outcome === 'completed' ? '用户确认该外部效果已经完成。' : '用户确认该外部效果没有应用。');
     session.session.append({ type: 'effect.outcome.verified', turnId: fact.source.turnId,
       sourceEventIndex: value.sourceEventIndex, scope: 'entire-call', outcome: value.outcome,
       evidence: { source: 'user', reference: `user:${activeSessionId}:${value.sourceEventIndex}`, description } });
-    const state = projectAgentTaskState(session.session.events(), fact.source.turnId);
+    // 旧终端观察保留独立宿主来源；响应只更新会话里真实存在的最近任务。
+    const state = projectAgentTaskState(session.session.events(), taskTurnId);
     sendTaskState(activeSessionId);
     return state;
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.cancelTask, () => {
     if (activeTask === undefined) throw new Error('当前没有正在执行的任务。');
-    activeTask.controller.abort();
+    activeTask.controller.abort(new TurnCancellationError('user'));
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.decideApproval, (_event, requestId: unknown, approved: unknown) => {
@@ -1205,7 +1248,7 @@ async function prepareWindowClose(window: BrowserWindow): Promise<string | null>
   pluginConnections?.cancelAll();
   const running = activeTask;
   if (running !== undefined) {
-    running.controller.abort('window-closed');
+    running.controller.abort(new TurnCancellationError('window-closed'));
     await running.finished;
   }
 
@@ -1301,7 +1344,7 @@ void app.whenReady().then(async () => {
   if (app.isPackaged && process.platform === 'win32') {
     desktopUpdater = new DesktopUpdater(state => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_CHANNELS.updateState, state);
-    });
+    }, join(app.getPath('logs'), 'app-updater.log'));
   }
   registerIpcHandlers();
   createWindow();

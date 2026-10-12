@@ -18,6 +18,8 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 Desktop 的 SQLite（本地嵌入式数据库）使用 Node.js 自带的 `node:sqlite`；当前 Electron 44 的主进程运行时已验证提供该模块，不引入第三方数据库依赖或额外原生模块重建步骤。数据库只由 Desktop Main（桌面主进程）访问，渲染层与 Agent Core（智能体核心）不持有数据库连接。
 
+Desktop 的 `build`、`start`、`dev` 与 Windows 打包均先执行 `build:ffmpeg`，将现有 MCP SDK 与十四项媒体工具打入独立插件 CJS 资源，并清理迁移前生成的旧 Probe 资源。插件运行使用 Electron 自带运行时，不要求最终用户安装 Node；Windows x64 安装插件时下载并验证锁定运行资源，路径只来自安装目录。生成资源不提交 Git，构建后的 `resources/**/*` 纳入现有安装包；不新增 package 或通用资产管理依赖。其他平台可继续使用通用 Agent 和 CLI，正式插件安装明确报告不支持。边界定义见 [FFmpeg 插件](architecture.md#desktop-ffmpeg-插件)。
+
 ## Package Manager（包管理器）
 
 项目使用 pnpm workspace（pnpm 工作区）。当前根项目固定使用 pnpm 11.22.0，并提交 `pnpm-workspace.yaml` 和 `pnpm-lock.yaml`。Workspace 包含 `packages/*`、`examples/*` 和 `apps/*`；当前应用入口为 `apps/desktop` 与 `apps/web`，共享产品客户端为 `packages/client`。
@@ -358,6 +360,8 @@ pnpm desktop           Desktop 真实桌面链路         启动不要求预先�
 ```
 
 当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 启动时缺少其必需环境变量会以非零状态退出；Desktop 允许无 Key 启动，缺少 DeepSeek Key 只在发送任务时明确失败。外部二进制、模型或 Vision Key 在 Tool 执行边界暴露失败。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。
+
+`pnpm ffmpeg-agent` 调用示例包的 `start`，用项目已有版本的 esbuild 构建 `examples/ffmpeg-agent/dist/index.cjs` 后由本机 Node 执行。原生 TypeScript 转换不会把源代码中的 `.js` 引用解析为 `.ts` 子模块，直接执行源入口会在导入阶段失败。构建保留 `@vscode/ripgrep` 为外部运行时依赖，避免破坏其平台二进制的模块定位；示例包显式声明同版本的 esbuild 与 ripgrep，不引入新库或框架。此修正不改变 CLI 模型、工具或交付逻辑。
 
 无法执行真实验证时，必须明确说明原因、未验证范围和风险，不得将 Real Verification 标记为通过。
 

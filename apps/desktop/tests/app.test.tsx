@@ -697,7 +697,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '用户 A' }));
     await waitFor(() => expect(switchSession).toHaveBeenLastCalledWith('session-a'));
-    expect(screen.getByText('assistant A')).toBeTruthy();
+    expect(await screen.findByText('assistant A')).toBeTruthy();
     expect(screen.queryByText('assistant B')).toBeNull();
     expect(screen.getAllByLabelText('视频附件：video-a.mp4')).toHaveLength(2);
     expect(screen.queryByLabelText('视频附件：video-b.mp4')).toBeNull();

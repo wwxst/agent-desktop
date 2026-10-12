@@ -6,6 +6,7 @@ import { spawn, type IPty } from 'node-pty';
 import { BoundedTextBuffer, resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
 import type { TerminalSnapshot } from '@agent-desktop/client';
 import type { TerminalPort } from '@agent-desktop/video-agent';
+import { ToolExecutionError } from '@agent-desktop/tools';
 import { createCommandPort } from './command-host.js';
 
 /** 一个会话的真实终端资源；快照只是历史，不能用于创建或重连进程。 */
@@ -78,7 +79,7 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       const approved = await workspace.requestApproval({ kind: 'terminal-start', command, workingDirectory: scoped.path,
         interpreter: createCommandPort().interpreterPath }, context.signal);
       context.signal?.throwIfAborted();
-      if (!approved) throw new Error('用户拒绝启动终端，没有创建进程。');
+      if (!approved) throw new ToolExecutionError('用户拒绝启动终端，没有创建进程。', 'denied');
       touched();
       const terminalId = randomUUID();
       context.checkpoint?.({ kind: 'terminal', terminalId, operation: 'open', command, workingDirectory: scoped.path });
@@ -101,7 +102,7 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       const approved = await workspace.requestApproval({ kind: 'terminal-input', command: input,
         workingDirectory: terminal.workingDirectory, interpreter: createCommandPort().interpreterPath }, context.signal);
       context.signal?.throwIfAborted();
-      if (!approved) throw new Error('用户拒绝终端输入，没有发送。');
+      if (!approved) throw new ToolExecutionError('用户拒绝终端输入，没有发送。', 'denied');
       context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'input' });
       touched(); terminal.write(input); return terminal.snapshot();
     },

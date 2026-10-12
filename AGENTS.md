@@ -40,6 +40,7 @@ Session Persistent Terminal        会话持久终端                已实现�
 Semantic Candidate Acceptance      候选视频语义验收            已实现，逐帧预算与不可确认边界见架构文档。
 Codex-style Plugin Runtime         Codex 风格插件运行时       已实现真实公开市场、完整清单、技能缓存与懒加载、版本更新回滚、原子安装、stdio/HTTP/SSE MCP、OAuth 和命令钩子，当前在功能分支；Codex 私有账号云同步及完整应用服务器协议边界见架构文档。
 Local Project Sidebar              本地项目与会话侧栏          已实现项目分区、折叠、置顶、归档恢复与自动保存，当前在功能分支。
+Desktop Probe Plugin              媒体探测插件试点            已完成独立 probe_media 的宿主授权、统一注入及真实 Windows 验收，当前在功能分支；其余 FFmpeg 能力保留，边界见架构文档。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
@@ -57,6 +58,7 @@ Commit 28 让 DeepSeek Provider 改用 SSE 流式响应，Model 文本增量经 
 * 核心行为需要测试。
 * 改架构时同步更新文档。
 * 修改 Desktop UI（桌面端用户界面）时，必须使用 [`.agents/skills/desktop-frontend/SKILL.md`](.agents/skills/desktop-frontend/SKILL.md)，并以 [`docs/desktop-ui.md`](docs/desktop-ui.md) 作为视觉行为的唯一文档来源。
+* 插件与技能操作的加载状态和结果提示必须统一遵守 [`docs/desktop-ui.md`](docs/desktop-ui.md) 的强制反馈规范，不得因页面、操作入口或插件来源采用不同提示样式。
 * 界面参考图和第三方界面只授权视觉对照；不得据此新增当前 milestone 未明确要求的控件、产品概念或功能。
 * 创建 package、修改 TypeScript 配置、引入依赖或修改 workspace 前，必须遵守 [`docs/engineering.md`](docs/engineering.md) 工程基线。
 * 面向人阅读的文档中，英文术语必须同时提供中文名称和简要说明；代码标识、文件名、命令、协议字段等技术原文可以保留英文。

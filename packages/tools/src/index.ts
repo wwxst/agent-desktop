@@ -54,7 +54,7 @@ export class ToolExecutionError extends Error {
  */
 export interface Tool extends ModelToolDefinition {
   /** 可证明执行边界的工具才声明 checkpointed；其他工具按 opaque 处理。 */
-  readonly executionBoundary?: ExecutionBoundary;
+  readonly executionBoundary?: Exclude<ExecutionBoundary, 'not-executed'>;
   execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult>;
 }
 

@@ -24,6 +24,8 @@ function failure(message: string): ToolResult {
 
 /** 计划只是声明；真正完成、失败及阻塞由同一 Session 投影及宿主资格回调判定。 */
 export class UpdatePlanTool implements Tool {
+  // 只追加内部计划事实，未知外部效果不应阻止安全核验轮次整理计划。
+  readonly executionBoundary = 'read-only' as const;
   readonly name = 'update_plan';
   readonly description = '为复杂任务创建或更新完整计划；简单任务无需调用。保留稳定步骤 ID，已完成步骤不能删除或撤销，新工作使用新 ID。tool 完成须引用真实成功或整调用完成核验；response 只表示等待最终文本交付，不证明文件或外部业务成功。';
   readonly inputSchema = {

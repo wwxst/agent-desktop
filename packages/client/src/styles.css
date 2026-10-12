@@ -98,6 +98,28 @@
 .extension-section h2 { margin: 0 0 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600; }
 .extension-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 40px; }
 .extension-row { display: flex; align-items: center; min-width: 0; gap: 12px; min-height: 76px; }
+.extension-row-busy { border-radius: 8px; padding-right: 12px; background: var(--surface-subtle); }
+.extension-operation-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; flex: none; color: var(--text-muted); font-size: 12px; line-height: 20px; white-space: nowrap; }
+.extension-operation-status svg, .extension-toast-spinner { animation: extension-spin 1s linear infinite; }
+@keyframes extension-spin { to { transform: rotate(360deg); } }
+.extension-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; width: max-content; max-width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-primary); box-shadow: 0 4px 14px #00000012; font-size: 13px; line-height: 20px; }
+.skill-dialog > .extension-toast { position: static; transform: none; align-self: center; flex: none; order: 2; max-width: 100%; margin-top: 12px; }
+.skill-dialog > .skill-dialog-body { order: 1; }
+.skill-dialog > footer { order: 3; }
+.extension-dialog > .extension-toast { position: sticky; bottom: 0; left: auto; transform: none; max-width: 100%; margin: 16px auto 0; }
+.extension-toast > svg { flex: none; color: var(--success); }
+.extension-toast-progress > svg { color: var(--text-muted); }
+.extension-toast-success { border-color: light-dark(#b8e7cc, #345f47); background: light-dark(#eefbf3, #203a2b); color: var(--success); }
+.extension-toast-error { border-color: light-dark(#efc5c5, #744444); background: light-dark(#fff7f7, #3c2727); color: var(--danger); }
+.extension-toast-error > svg { color: var(--danger); }
+.extension-toast-message { min-width: 0; overflow-wrap: anywhere; white-space: pre-line; max-height: min(180px, calc(100vh - 96px)); overflow-y: auto; }
+.extension-toast .extension-symbol { width: 18px; height: 18px; background: transparent; border-radius: 3px; }
+.extension-toast .extension-symbol svg { width: 16px; height: 16px; }
+.extension-toast-action { flex: none; border: 0; border-radius: 12px; padding: 2px 10px; background: light-dark(#171717, #eef0f3); color: light-dark(#fff, #171717); font-size: 12px; line-height: 20px; cursor: pointer; }
+.extension-toast-action:disabled { opacity: .5; cursor: default; }
+.extension-toast-close { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; color: inherit; background: transparent; cursor: pointer; }
+.extension-toast-close:hover { background: var(--surface-hover); }
+@media (prefers-reduced-motion: reduce) { .extension-operation-status svg, .extension-toast-spinner { animation: none; } }
 .extension-open { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 14px 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
 .extension-open:hover { background: var(--surface-subtle); }
 .extension-row:has(.extension-row-actions) { border-radius: 12px; padding-right: 8px; }
@@ -120,6 +142,8 @@
 @media (prefers-color-scheme: dark) { :root[data-theme="system"] .extension-logo-light { display: none; } :root[data-theme="system"] .extension-logo-dark { display: block; } }
 .extension-summary { display: grid; gap: 4px; min-width: 0; }
 .extension-summary strong { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; white-space: nowrap; }
+.extension-entry-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.plugin-settings-list .extension-entry-name { white-space: normal; }
 .extension-summary strong svg { flex: none; color: var(--text-secondary); }
 .extension-summary > span { font-size: 12px; color: var(--text-secondary); line-height: 18px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .extension-summary small { font-size: 11px; color: var(--text-muted); }
@@ -132,7 +156,6 @@
 .extension-switch input:disabled { cursor: default; }
 .extension-switch input:disabled + span { opacity: 0.45; }
 .extensions-empty, .extensions-notice { color: var(--text-secondary); font-size: 13px; line-height: 20px; padding: 14px 0; }
-.extensions-error { color: var(--danger); font-size: 13px; line-height: 20px; overflow-wrap: anywhere; padding-bottom: 16px; }
 .extension-back { border: 0; padding-left: 0; margin-bottom: 24px; color: var(--text-secondary); }
 .extension-detail-heading { display: flex; align-items: center; gap: 14px; }
 .extension-detail-heading > div { flex: 1; min-width: 0; }
@@ -218,7 +241,6 @@
 .skill-menu button:hover { background: var(--surface-subtle); }
 .skill-menu button:disabled { opacity: .4; cursor: default; }
 .extension-detail-menu-popover button { color: var(--danger); }
-.skill-dialog-notice { margin: 0 0 8px; color: var(--text-secondary); font-size: 12px; }
 .extension-detail-section ul { padding-left: 20px; font-size: 13px; line-height: 22px; overflow-wrap: anywhere; }
 .extension-detail-section pre { margin: 0 0 12px; padding: 16px; background: var(--surface-subtle); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 20px; }
 .extension-badges { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -469,6 +491,7 @@ input:focus-visible {
 .app-update-button:disabled { opacity: 0.65; }
 .app-update-spinner { animation: sidebar-spin 1s linear infinite; }
 .app-update-error { position: absolute; bottom: 44px; left: 44px; z-index: 10; width: 300px; max-width: calc(100vw - 70px); max-height: 160px; overflow: auto; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--danger); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.app-update-error.unavailable { width: max-content; color: var(--text-muted); }
 
 .sidebar-new-session svg {
   flex: 0 0 auto;

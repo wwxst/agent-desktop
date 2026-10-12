@@ -451,7 +451,7 @@ describe('runTurn', () => {
     await runTurn(createTestAgent(model, session), 'use missing');
 
     const result = session.events().find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => event.type === 'tool.result');
-    expect(result?.result).toEqual({ status: 'error', message: 'Tool not found: missing' });
+    expect(result?.result).toEqual({ status: 'error', failureKind: 'permanent', message: 'Tool not found: missing' });
     expect(model.requests[1]?.messages.at(-1)).toEqual({
       role: 'tool',
       toolCallId: callId,
@@ -484,10 +484,7 @@ describe('runTurn', () => {
       'turn.completed',
     ]);
     const failedEvent = traceEvents.find((event) => event.type === 'tool.failed');
-    expect(failedEvent).toMatchObject({
-      toolCallId: callId,
-      toolName: 'missing',
-    });
+    expect(failedEvent).toMatchObject({ toolCallId: callId, toolName: 'missing' });
     expect(failedEvent).not.toHaveProperty('errorMessage');
   });
 

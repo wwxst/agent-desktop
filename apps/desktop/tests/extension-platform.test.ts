@@ -69,7 +69,7 @@ describe('Desktop plugin platform boundaries', () => {
     expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '2.0.0', enabled: false });
     const version = store.versions(id)[0]!;
     await store.rollback(id, version.id);
-    expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '1.1.0', enabled: false });
+    expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: previous.version, enabled: false });
     await store.removeMarketplace('test-market');
     expect((await store.files()).plugins[0]?.item.installed).toBe(true);
     await store.uninstall(id);
@@ -150,7 +150,7 @@ describe('Desktop plugin platform boundaries', () => {
     const root = await temp(); const source = join(root, 'market'); const resources = join(root, 'resources');
     await cp(resolve('apps/desktop/resources'), resources, { recursive: true }); await market(source, 'openai-curated');
     const store = new DesktopExtensions(join(root, 'db.sqlite'), join(root, 'extensions'), resources);
-    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing']);
+    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg']);
     await store.addMarketplace(source);
     expect((await store.list()).plugins.some(item => item.id === 'plugin:video-editing@openai-curated' && !item.installed)).toBe(true);
     await store.install('plugin:video-editing@openai-curated');

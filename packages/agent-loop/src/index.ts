@@ -4,8 +4,8 @@ import { ModelRequestError } from '@agent-desktop/model';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, TurnCancellationError, projectTurnState,
-  type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
-import { ToolExecutionError, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
+  type ExecutionBoundary, type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type ToolCalledEvent, type TurnId } from '@agent-desktop/session';
+import { ToolExecutionError, type Tool, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
 import { prepareModelContext, type ContextBudget } from './context.js';
 
 export { ContextBudgetError, estimateContextTokens, createContextSourceDigest, validateContextCompactedEvent,
@@ -101,19 +101,44 @@ async function executeToolCall(
   signal?: AbortSignal,
   onToolResult?: ToolResultListener,
   onToolProgress?: ToolProgressListener,
+  beforeToolCall?: RunTurnOptions['beforeToolCall'],
 ): Promise<void> {
   throwIfAborted(signal);
-  // 查找和执行前先记录调用，即使工具不存在或抛错也保留完整起点。
-  agent.session.append({
+  const tool = agent.tools.get(toolCall.name);
+  const sourceEventIndex = agent.session.events().length;
+  const decision = beforeToolCall?.({ turnId, stepId, call: toolCall, tool, sourceEventIndex });
+  const boundary = decision?.boundary ?? tool?.executionBoundary;
+  const called: ToolCalledEvent = {
     type: 'tool.called',
     turnId,
     stepId,
     toolCallId: toolCall.id,
     name: toolCall.name,
     input: toolCall.input,
-    ...(agent.tools.get(toolCall.name)?.executionBoundary === undefined ? {} : { boundary: agent.tools.get(toolCall.name)!.executionBoundary }),
-  });
-  const sourceEventIndex = agent.session.events().length - 1;
+    ...(boundary === undefined ? {} : { boundary }),
+  };
+  if (tool === undefined || decision?.blocked !== undefined) {
+    const result: ToolResult = { status: 'error', failureKind: 'permanent',
+      message: decision?.blocked?.message ?? `Tool not found: ${toolCall.name}`,
+      ...(decision?.blocked === undefined ? {} : { output: { sourceEventIndexes: decision.blocked.sourceEventIndexes } }) };
+    if (tool === undefined && decision?.blocked === undefined) {
+      const startedAt = Date.now();
+      await trace?.({ type: 'tool.started', turnId, stepId, toolCallId: toolCall.id, toolName: toolCall.name });
+      agent.session.appendMany([{ ...called, boundary: 'not-executed' },
+        { type: 'tool.result', turnId, stepId, toolCallId: toolCall.id, result }]);
+      await trace?.({ type: 'tool.failed', turnId, stepId, toolCallId: toolCall.id,
+        toolName: toolCall.name, durationMs: Date.now() - startedAt });
+      await onToolResult?.(toolCall.id, toolCall.name, result);
+      throwIfAborted(signal);
+      return;
+    }
+    agent.session.appendMany([{ ...called, boundary: 'not-executed' },
+      { type: 'tool.result', turnId, stepId, toolCallId: toolCall.id, result }]);
+    await onToolResult?.(toolCall.id, toolCall.name, result);
+    throwIfAborted(signal);
+    return;
+  }
+  agent.session.append(called);
 
   await trace?.({
     type: 'tool.started',
@@ -124,15 +149,10 @@ async function executeToolCall(
   });
   const startedAt = Date.now();
 
-  const tool = agent.tools.get(toolCall.name);
   let result: ToolResult;
   let errorName: string | undefined;
 
-  if (!tool) {
-    // 未知工具转换为模型可见错误，而不是中断整个 Turn。
-    result = { status: 'error', message: `Tool not found: ${toolCall.name}` };
-  } else {
-    try {
+  try {
       // 执行上下文把取消信号、调用身份和进度上报收在一个值里；
       // 进度同步入队，循环不等待界面消费，也不让 Renderer 的消费速度决定命令生命周期。
       const context: ToolExecutionContext = {
@@ -145,15 +165,13 @@ async function executeToolCall(
         checkpoint: (data) => agent.session.append({ type: 'tool.effect.prepared', turnId, sourceEventIndex, data }),
       };
       result = await tool.execute(toolCall.input, context);
-    } catch (error) {
-      if (error instanceof SessionPersistenceError) throw error;
-      if (error instanceof Error && error.name === 'AbortError') throw error;
-      // Tool 的 Error 失败按既有契约回写结果；其他抛出值不是合法 Tool 错误，直接暴露程序错误。
-      if (!(error instanceof Error)) throw error;
-      errorName = error.name;
-      result = { status: 'error', message: error.message,
-        ...(error instanceof ToolExecutionError ? { failureKind: error.failureKind } : {}) };
-    }
+  } catch (error) {
+    if (error instanceof SessionPersistenceError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    if (!(error instanceof Error)) throw error;
+    errorName = error.name;
+    result = { status: 'error', message: error.message,
+      ...(error instanceof ToolExecutionError ? { failureKind: error.failureKind } : {}) };
   }
 
   // 先把真实结果写入 Session，再写完成诊断：
@@ -218,6 +236,16 @@ export interface RunTurnOptions {
   readonly onModelText?: (stepId: StepId, text: string, purpose: 'delta' | 'commentary' | 'final') => void;
   /** 当前只读子任务的真实预算；父任务不默认设置上限。 */
   readonly maxSteps?: number;
+  /** 包含门禁拦截的调用尝试；只在明确的恢复轮次设置。 */
+  readonly maxToolCalls?: number;
+  /** 宿主在每次工具调用前同步读取当前事实。 */
+  readonly beforeToolCall?: (input: {
+    readonly turnId: TurnId; readonly stepId: StepId; readonly call: ToolCall;
+    readonly tool: Tool | undefined; readonly sourceEventIndex: number;
+  }) => {
+    readonly boundary: Exclude<ExecutionBoundary, 'not-executed'>;
+    readonly blocked?: { readonly message: string; readonly sourceEventIndexes: readonly number[] };
+  };
   /** 只有宿主明确窗口和供应商实际输出上限时启用，不猜测模型默认值。 */
   readonly contextBudget?: ContextBudget;
   /** 宿主同一个证据资格规则同时供计划投影和模型来源目录使用。 */
@@ -227,6 +255,11 @@ export interface RunTurnOptions {
 export class StepBudgetError extends Error {
   override readonly name = 'StepBudgetError';
   constructor() { super('子任务已达到模型步骤上限，尚未完成。'); }
+}
+
+export class ToolBudgetError extends Error {
+  override readonly name = 'ToolBudgetError';
+  constructor() { super('任务已达到工具调用上限，尚未完成。'); }
 }
 
 /** 从用户输入开始运行一个完整 Turn，直到模型返回零个 Tool Call。 */
@@ -252,8 +285,9 @@ export async function runStartedTurn(
     || history.some(event => event.turnId === turnId && event.type === 'step.started')) {
     throw new Error('Turn 必须是最新且尚未执行的已提交起点。');
   }
-  const { trace, signal, onTextDelta, onToolResult, onToolProgress, onModelText, maxSteps } = options;
+  const { trace, signal, onTextDelta, onToolResult, onToolProgress, onModelText, maxSteps, maxToolCalls, beforeToolCall } = options;
   let stepCount = 0;
+  let toolCallCount = 0;
   let extraRequests = 0;
   const turnStartedAt = Date.now();
 
@@ -346,7 +380,9 @@ export async function runStartedTurn(
 
       // 多个工具调用按响应顺序串行执行，保证事件顺序确定且同属当前 Step。
       for (const toolCall of response.toolCalls) {
-        await executeToolCall(agent, turnId, stepId, toolCall, trace, signal, onToolResult, onToolProgress);
+        if (maxToolCalls !== undefined && toolCallCount >= maxToolCalls) throw new ToolBudgetError();
+        toolCallCount += 1;
+        await executeToolCall(agent, turnId, stepId, toolCall, trace, signal, onToolResult, onToolProgress, beforeToolCall);
       }
 
       // 所有工具结果写入后才完成 Step，下一次模型调用才能看到完整结果。

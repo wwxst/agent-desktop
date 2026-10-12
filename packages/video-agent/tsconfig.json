@@ -13,7 +13,6 @@
     { "path": "../speech-whisper-cpp" },
     { "path": "../system-prompt" },
     { "path": "../tools" },
-    { "path": "../video-ffmpeg" },
     { "path": "../vision-openai" }
   ]
 }

@@ -121,6 +121,9 @@ export interface DesktopTaskOptions {
   readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
   readonly contextBudget?: NonNullable<Parameters<typeof runTurn>[2]>['contextBudget'];
   readonly qualifyToolEvidence?: NonNullable<Parameters<typeof runTurn>[2]>['qualifyToolEvidence'];
+  readonly beforeToolCall?: NonNullable<Parameters<typeof runTurn>[2]>['beforeToolCall'];
+  readonly maxSteps?: number;
+  readonly maxToolCalls?: number;
   readonly turnId?: TurnId;
 }
 
@@ -152,6 +155,9 @@ export async function runDesktopAgentTask(
     trace: options.trace,
     ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
     ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
+    ...(options.beforeToolCall === undefined ? {} : { beforeToolCall: options.beforeToolCall }),
+    ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
+    ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
     ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
     // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -166,6 +172,9 @@ export async function runDesktopAgentTask(
         trace: options.trace,
         ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
         ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
+        ...(options.beforeToolCall === undefined ? {} : { beforeToolCall: options.beforeToolCall }),
+        ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
+        ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
         ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),

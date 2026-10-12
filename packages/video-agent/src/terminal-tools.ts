@@ -10,7 +10,8 @@ export interface TerminalPort {
 type TerminalToolName = 'open_terminal' | 'read_terminal' | 'write_terminal' | 'close_terminal';
 /** 四个明确终端操作共用宿主端口；进程资源始终属于 Desktop 会话，跨轮保持。 */
 export class TerminalTool implements Tool {
-  readonly executionBoundary = 'checkpointed' as const;
+  // 读取终端只观察已有资源；启动、输入和关闭仍需保留检查点边界。
+  get executionBoundary() { return this.name === 'read_terminal' ? 'read-only' as const : 'checkpointed' as const; }
   readonly description: string;
   readonly inputSchema: unknown;
   constructor(readonly name: TerminalToolName, private readonly port: TerminalPort) {

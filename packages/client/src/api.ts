@@ -546,7 +546,7 @@ export interface ExtensionClientApi {
 
 /** 更新事实由桌面宿主提供；浏览器开发宿主不具有安装应用的能力。 */
 export type AppUpdateState =
-  | { readonly status: 'idle' | 'checking' }
+  | { readonly status: 'idle' | 'checking' | 'unavailable' }
   | { readonly status: 'downloading'; readonly percent: number }
   | { readonly status: 'ready' | 'installing' }
   | { readonly status: 'error'; readonly message: string };

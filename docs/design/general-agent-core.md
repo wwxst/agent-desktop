@@ -131,7 +131,7 @@ beforeToolCall(input: {
 
 Loop 查到**最终实际 Tool 实例**后、append tool.called 和任何 Tool.execute 前调用。sourceEventIndex 是同步拟追加索引（当前 events.length），回调只读、不能追加事件或 await；随后立即追加 called，保证引用不漂移。Main 闭包读取当前 Session 的 projectRecoveryFacts。允许时 called 保存返回的 boundary；门禁拒绝或不存在工具时，Loop 以 boundary='not-executed' 一次 appendMany called+真实 error/permanent 结果，output 仅带原事实索引，不新建 success 或 artifacts。not-executed 从不形成未知副作用，不能让被门禁拦截的 opaque 请求制造新阻塞。工具执行后每个后续调用重新投影；同一模型响应中的第二个调用、同一轮新 Step、恢复轮次和普通新任务全部受约束，不能只过滤模型工具描述。
 
-Main 用具体组装实例识别边界，不让模型指定只读：未经包装的已知读工具为 read-only；完成执行前检查点接入的原文件/命令/终端为 checkpointed；MCP、其他外部能力、任何 hooks 包裹后的工具为 opaque。计划/核验工具虽然追加内部事实，但不产生外部写入，可以在核验模式使用；保存失败仍致命。安全模式直接构建未包裹的三个已有读取工具加计划/核验工具；已有终端/历史存在时还允许未包裹的 read_terminal 读有界输出/历史，不能重建进程，不 prepareExtensions、不启动服务或 hooks。**安全轮次工具集固定到结束，即使自动核验解除全部未知，也不在运行中转为正常扩展模式**；用户结束后再主动开始新的 continue 恢复轮次。没有通用只读声明协议。
+Main 用具体组装实例识别边界，不让模型指定只读：未经包装的已知读工具为 read-only；完成执行前检查点接入的原文件/命令/终端为 checkpointed；通用 MCP 包装层在请求前保存检查点并声明 checkpointed，服务端失败/断连仍形成 unknown-outcome；其他外部能力、任何 hooks 包裹后的工具为 opaque，hooks 的内层只读声明不能向外透传。计划/核验工具虽然追加内部事实，但不产生外部写入，可以在核验模式使用；保存失败仍致命。安全模式直接构建未包裹的三个已有读取工具加计划/核验工具；已有终端/历史存在时还允许未包裹的 read_terminal 读有界输出/历史，不能重建进程，不 prepareExtensions、不启动服务或 hooks。**安全轮次工具集固定到结束，即使自动核验解除全部未知，也不在运行中转为正常扩展模式**；用户结束后再主动开始新的 continue 恢复轮次。没有通用只读声明协议。
 
 未知集合规则在 Session 中一处实现：
 
@@ -149,7 +149,7 @@ Main 用具体组装实例识别边界，不让模型指定只读：未经包装
 
 ## 6. 副作用前检查点与核验
 
-`ToolExecutionContext.checkpoint(data:unknown):void` 同步追加 tool.effect.prepared，sourceEventIndex 由 Loop 闭包提供。local-tools 在审批及最后版本检查之后、真实 writeFile 之前记录 `{kind:'text-file',path,beforeSha256:null|string,expectedAfterSha256,expectedBytes}`；具体结构由 local-tools 导出并解析。命令在 spawn 前、终端在启动/发送输入/关闭进程树前都追加自身外部操作的 prepared 数据；close_terminal 未接入此前必须按 opaque，不能冒称 checkpointed。Main 的取消/关闭收尾属宿主阶段，不伪造工具调用。这些不提供通用外部状态核验，只证明跨过了执行边界。视频和插件工具不修改，按 opaque 记录。
+`ToolExecutionContext.checkpoint(data:unknown):void` 同步追加 tool.effect.prepared，sourceEventIndex 由 Loop 闭包提供。local-tools 在审批及最后版本检查之后、真实 writeFile 之前记录 `{kind:'text-file',path,beforeSha256:null|string,expectedAfterSha256,expectedBytes}`；具体结构由 local-tools 导出并解析。命令在 spawn 前、终端在启动/发送输入/关闭进程树前都追加自身外部操作的 prepared 数据；close_terminal 未接入此前必须按 opaque，不能冒称 checkpointed。Main 的取消/关闭收尾属宿主阶段，不伪造工具调用。这些不提供通用外部状态核验，只证明跨过了执行边界。集成后的通用 MCP 工具在审批通过后、client.callTool 前记录 `{kind:'mcp',pluginId,serverName,toolName}`；检查点保存失败原样传播，不发送请求。审批拒绝为 denied、请求前参数错误为 permanent，请求异常及服务端 isError 为 unknown-outcome；hooks 外层仍按 opaque 记录。
 
 **持久终端持续执行的最小事实**：Main 拥有 prepared 数据 `{kind:'terminal',terminalId,operation:'open'|'input'|'close'}`。open 在已有 UUID 机制中先分配 terminalId，再 checkpoint，再构造 SessionTerminal/spawn；write/close 使用真实实例 ID。Session 不解析这些字段。Main 不另建资源表，只从这些原事件定位最后保存终端的 open/input 来源。
 

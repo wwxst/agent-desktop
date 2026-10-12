@@ -8,6 +8,7 @@ import type { ExtensionItem, ExtensionSnapshot, McpServerUpdate } from '@agent-d
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import { ExtensionMarketplaces, marketPath } from './extension-marketplaces.js';
 import type { ExtensionConnections } from './extension-connections.js';
+import { installFFmpegRuntime } from './ffmpeg-runtime.js';
 
 type Kind = 'plugin' | 'skill';
 type Source = ExtensionItem['source'];
@@ -24,6 +25,7 @@ export interface ExtensionReconcileResult { readonly changed: readonly string[];
 
 const catalog = [
   { id: 'plugin:video-editing', kind: 'plugin' as const, name: 'video-editing', directory: 'plugins/video-editing' },
+  { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'ffmpeg', directory: 'plugins/ffmpeg' },
   { id: 'skill:local-file-review', kind: 'skill' as const, name: 'local-file-review', directory: 'skills/local-file-review' },
 ];
 const MAX_SKILLS = 2000;
@@ -360,7 +362,8 @@ export class DesktopExtensions {
   /** 监视安装目录与当前项目；目录尚未创建时监视最近存在的父目录。 */
   async watchSkills(workingDirectory: string | undefined, changed: () => void, failed: (error: Error) => void): Promise<void> {
     await mkdir(this.root, { recursive: true });
-    const roots = [this.root];
+    // Windows 短路径别名会触发 libuv 递归监视器的目录前缀断言，统一使用真实路径。
+    const roots = [await realpath(this.root)];
     let projectIsWorkspaceRoot = false;
     if (workingDirectory !== undefined) {
       for (const candidate of [join(workingDirectory, '.agents/skills'), join(workingDirectory, '.agents'), workingDirectory]) {
@@ -416,7 +419,8 @@ export class DesktopExtensions {
       }
       const effectiveServers = servers.map(server => {
         const config = this.connections?.values(plugin.item.id, server.name) ?? {};
-        const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original : config[name] ?? original);
+        const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original
+          : config[name] ?? original);
         return { ...server, ...(config.url ? { url: config.url } : {}), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
           ...(server.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) }) };
       });
@@ -442,8 +446,13 @@ export class DesktopExtensions {
     const files = await this.files(workingDirectory); const plugins = files.plugins.map(plugin => plugin.item); const skills = files.skills.map(skill => skill.item);
     for (const entry of catalog) {
       const items = entry.kind === 'plugin' ? plugins : skills;
-      if (items.some(item => item.id === entry.id)) continue;
       const directory = join(this.resources, entry.directory);
+      const current = items.find(item => item.id === entry.id);
+      if (current !== undefined) {
+        const available = entry.kind === 'plugin' ? (await readPlugin(directory, entry.id, 'builtin')).item : (await readSkillMetadata(directory, entry.id, 'builtin')).item;
+        if (current.source === 'builtin' && available.version !== undefined && current.version !== available.version) items[items.indexOf(current)] = { ...current, availableVersion: available.version };
+        continue;
+      }
       if (entry.kind === 'plugin') {
         const plugin = await readPlugin(directory, entry.id, 'builtin');
         plugins.push({ ...plugin.item, installed: false, enabled: false });
@@ -452,6 +461,10 @@ export class DesktopExtensions {
       } else skills.push({ ...(await readSkillMetadata(directory, entry.id, 'builtin')).item, installed: false, enabled: false });
     }
     const markets = this.markets(); const errors: string[] = [];
+    if (plugins.some(item => item.id === 'plugin:video-editing' && item.installed)
+      && !plugins.some(item => item.id === 'plugin:ffmpeg' && item.installed && item.enabled)) {
+      errors.push('视频剪辑需要安装并启用独立 FFmpeg 插件；旧版内含的探测服务已停用，请升级视频剪辑技能。会话和文件保留。');
+    }
     const remoteItems: ExtensionItem[] = [];
     for (const entry of await markets.entries()) {
       try {
@@ -485,7 +498,9 @@ export class DesktopExtensions {
   private async atomicCopy(source: string, destination: string, kind: Kind, id: string, origin: InstalledExtension['source']): Promise<ExtensionItem> {
     await validatePackageLinks(source);
     await mkdir(join(this.root, '.staging'), { recursive: true }); const staging = join(this.root, '.staging', `${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`); await mkdir(join(this.root, `${kind}s`), { recursive: true });
-    try { await cp(source, staging, { recursive: true, dereference: true }); const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await rename(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
+    try { await cp(source, staging, { recursive: true, dereference: true });
+      if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
+      const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await rename(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
   }
   /** 先完成暂存目录解析，再交换旧目录；新包解析失败时旧版本仍然保留。 */
   private async atomicReplace(source: string, destination: string, kind: Kind, id: string, origin: InstalledExtension['source']): Promise<ExtensionItem> {
@@ -498,6 +513,7 @@ export class DesktopExtensions {
     let backedUp = false;
     try {
       await cp(source, staging, { recursive: true, dereference: true });
+      if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
       const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin);
       try { await rename(destination, backup); backedUp = true; } catch (error) { if (!missing(error)) throw error; }
       try {
@@ -571,6 +587,16 @@ export class DesktopExtensions {
   }
   async update(id: string): Promise<void> {
     const state = this.state(); const entry = state.installed.find(item => item.id === id);
+    const builtin = catalog.find(item => item.id === id);
+    if (entry?.source === 'builtin' && builtin !== undefined) {
+      const source = join(this.resources, builtin.directory);
+      const available = builtin.kind === 'plugin' ? (await readPlugin(source, id, 'builtin')).item : (await readSkillMetadata(source, id, 'builtin')).item;
+      if (available.version === entry.version) return;
+      await this.preserveVersion(entry);
+      const item = await this.atomicReplace(source, this.directory(entry.kind, entry.name), entry.kind, id, 'builtin');
+      this.save({ ...state, installed: state.installed.map(current => current.id === id ? { ...entry, ...(item.version === undefined ? {} : { version: item.version }) } : current) });
+      return;
+    }
     if (entry === undefined || entry.marketplaceId === undefined) throw new Error('此插件没有可更新的市场来源。');
     const market = this.markets().records().find(market => market.id === entry.marketplaceId);
     if (market === undefined) throw new Error('请先恢复插件的市场来源。');

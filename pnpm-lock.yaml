@@ -44,6 +44,9 @@ importers:
       '@agent-desktop/video-agent':
         specifier: workspace:*
         version: link:../../packages/video-agent
+      '@agent-desktop/video-ffmpeg':
+        specifier: workspace:*
+        version: link:../../packages/video-ffmpeg
       '@modelcontextprotocol/sdk':
         specifier: 1.31.0
         version: 1.31.0(supports-color@7.1.0)(zod@4.6.5)
@@ -199,6 +202,13 @@ importers:
       '@agent-desktop/vision-openai':
         specifier: workspace:*
         version: link:../../packages/vision-openai
+      '@vscode/ripgrep':
+        specifier: 1.18.0
+        version: 1.18.0
+    devDependencies:
+      esbuild:
+        specifier: 0.27.4
+        version: 0.27.4
 
   packages/agent:
     dependencies:
@@ -336,12 +346,13 @@ importers:
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../tools
-      '@agent-desktop/video-ffmpeg':
-        specifier: workspace:*
-        version: link:../video-ffmpeg
       '@agent-desktop/vision-openai':
         specifier: workspace:*
         version: link:../vision-openai
+    devDependencies:
+      '@agent-desktop/video-ffmpeg':
+        specifier: workspace:*
+        version: link:../video-ffmpeg
 
   packages/video-ffmpeg:
     dependencies:

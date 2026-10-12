@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as filesystem from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -23,6 +23,29 @@ async function setup() {
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(temporary.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 describe('Desktop extensions persisted local packages', () => {
+  it('separates media tools from skills and upgrades old skills without losing history or disabled policy', async () => {
+    const { root, database, store } = await setup();
+    await store.install('plugin:video-editing');
+    await store.setEnabled('plugin:video-editing/short-drama-editing', false);
+    const manifest = join(root, 'extensions/plugins/video-editing/.codex-plugin/plugin.json');
+    const old = JSON.parse(await readFile(manifest, 'utf8'));
+    await writeFile(manifest, JSON.stringify({ ...old, version: '1.2.0', mcpServers: './.mcp.json' }));
+    await writeFile(join(root, 'extensions/plugins/video-editing/.mcp.json'), JSON.stringify({ mcpServers: { 'ffmpeg-probe': { command: 'node', args: ['legacy.cjs'] } } }));
+    const state = readDesktopDocument(database, 'extensions') as { installed: { id: string; version: string }[]; disabled: string[] };
+    const { writeDesktopDocuments } = await import('../src/main/desktop-database.js');
+    writeDesktopDocuments(database, [{ name: 'extensions', value: { ...state, installed: state.installed.map(entry => ({ ...entry, version: '1.2.0' })) } }, { name: 'runtime-settings', value: { text: 'keep settings' } }]);
+    expect((await store.list()).plugins.find(item => item.id === 'plugin:video-editing')?.availableVersion).toBe('1.3.0');
+    await store.update('plugin:video-editing');
+    expect((await store.files()).plugins[0]?.servers).toEqual([]);
+    expect((await store.list()).skills.find(item => item.name === 'short-drama-editing')?.enabled).toBe(false);
+    expect(store.versions('plugin:video-editing')[0]?.version).toBe('1.2.0');
+    expect(readDesktopDocument(database, 'runtime-settings')).toEqual({ text: 'keep settings' });
+    const ffmpeg = await readPlugin(join(resources, 'plugins/ffmpeg'), 'plugin:ffmpeg', 'builtin');
+    expect(ffmpeg.skills).toEqual([]);
+    expect(ffmpeg.servers[0]?.name).toBe('ffmpeg');
+    const restored = new DesktopExtensions(database, join(root, 'extensions'), resources);
+    expect((await restored.list()).errors?.join(' ')).toContain('独立 FFmpeg');
+  });
   it('notifies when an installed skill is edited outside the application and closes the watcher', async () => {
     const { root, store } = await setup();
     await store.install('skill:local-file-review');
@@ -61,7 +84,7 @@ describe('Desktop extensions persisted local packages', () => {
   it('installs bundled packages, restores disabled state and removes child skills on uninstall', async () => {
     const { root, database, store } = await setup();
     const initial = await store.list();
-    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing']);
+    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg']);
     expect(initial.plugins[0]?.installed).toBe(false);
     expect(initial.marketplaces).toEqual([]);
     const preview = initial.skills.find(item => item.name === 'short-drama-editing')!;
@@ -74,8 +97,10 @@ describe('Desktop extensions persisted local packages', () => {
     let snapshot = await store.list();
     expect(snapshot.skills.find(item => item.pluginId !== undefined)?.enabled).toBe(true);
     expect(snapshot.plugins.find(item => item.id === 'plugin:video-editing')?.skillNames).toEqual(['semantic-editing', 'short-drama-editing']);
+    expect((await store.files()).plugins[0]?.servers).toEqual([]);
+    expect(snapshot.errors?.join(' ')).toContain('独立 FFmpeg');
     expect(snapshot.skills.find(item => item.name === 'short-drama-editing')?.description).toContain('短剧');
-    expect(await store.skillPath(preview.id)).toBe(join(root, 'extensions/plugins/video-editing/skills/short-drama-editing/SKILL.md'));
+    expect(await store.skillPath(preview.id)).toBe(await realpath(join(root, 'extensions/plugins/video-editing/skills/short-drama-editing/SKILL.md')));
     await store.setEnabled('plugin:video-editing', false);
     const restored = new DesktopExtensions(database, join(root, 'extensions'), resources);
     snapshot = await restored.list();
