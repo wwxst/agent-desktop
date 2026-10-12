@@ -191,7 +191,8 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('CASE:delivery-failure');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     const failedReply = page.getByRole('alert', { name: 'Agent 回复' }).filter({ hasText: 'DeepSeek API request failed: 400' });
-    await expect(failedReply).toContainText('任务失败');
+    // 等待实际七工具媒体链及后续模型失败；并行真实模型验收负载下已复现五秒不足。
+    await expect(failedReply).toContainText('任务失败', { timeout: 120_000 });
     await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
     const failedDelivery = requests.findLast(entry => entry.scenario === 'delivery-failure')!;
     const failedPublished = JSON.parse(failedDelivery.results[6]!) as { output: { path: string } };

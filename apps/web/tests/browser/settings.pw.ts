@@ -151,7 +151,8 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
     await page.getByRole('button', { name: '配置', exact: true }).click();
     await page.getByLabel('REVIEW_TOKEN', { exact: true }).fill('settings-test-token');
     await page.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    // 冷 Windows 配置可能等待系统主密钥落盘；生产期限为二十秒，界面必须等真实保存结束。
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 25_000 });
     await page.getByRole('button', { name: '返回插件', exact: true }).click();
     for (const width of [800, 400]) {
       await page.setViewportSize({ width, height: 740 });
@@ -219,7 +220,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByLabel('图片', { exact: true }).check();
     // 先保存密钥，重新编辑时只显示配置状态，截图不包含新密钥草稿。
     await page.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(page.locator('.model-provider-editor')).toHaveCount(0);
+    // 此目录首次保存密钥，覆盖生产二十秒持久化期限，不改变其他操作的断言预算。
+    await expect(page.locator('.model-provider-editor')).toHaveCount(0, { timeout: 25_000 });
     let saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
     const custom = saved.modelProviders.find(provider => provider.displayName === '本地测试供应商')!;
     expect(custom.models[0]).toMatchObject({ contextWindow: 128000, maxOutputTokens: 4000, images: true });
@@ -328,7 +330,7 @@ test('adds standalone MCP through settings and runs its real tool after restart'
     await editor.getByLabel('环境变量 1 名称').fill('TOKEN');
     await editor.getByLabel('环境变量 1 值').fill('standalone-desktop-secret');
     await editor.getByRole('button', { name: '保存', exact: true }).click();
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 25_000 });
     await expect(page.getByRole('tab', { name: 'MCP 1' })).toHaveAttribute('aria-selected', 'true');
     await page.getByRole('switch', { name: '启用 MCP local-tools' }).click();
     await expect(page.getByRole('switch', { name: '启用 MCP local-tools' })).not.toBeChecked();
