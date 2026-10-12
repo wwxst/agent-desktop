@@ -231,40 +231,33 @@ describe('createDesktopApi', () => {
     expect(invocations).toEqual([{ channel: 'desktop:reveal-file', args: ['D:\\videos\\done.mp4'] }]);
   });
 
-  it('preserves cancellation as AbortError across the IPC boundary', async () => {
+  it('passes cancellation as a plain result through both task entry points', async () => {
+    const result = { status: 'error', errorName: 'AbortError', errorMessage: '任务已取消。' } as const;
     const ipc = {
-      invoke: async () => {
-        throw new Error("Error invoking remote method 'desktop:run-agent-task': AbortError: This operation was aborted");
-      },
+      invoke: async () => result,
       send: () => undefined,
       on: () => undefined,
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).rejects.toMatchObject({
-      name: 'AbortError', message: 'This operation was aborted',
-    });
+    const api = createDesktopApi(ipc);
+    await expect(api.runAgentTask(taskRequest('测试'))).resolves.toBe(result);
+    await expect(api.recoverTask!(taskRequest('继续'), 'source-turn')).resolves.toBe(result);
   });
 
-  it('reconstructs failed task output files from a structured IPC result', async () => {
+  it('passes failed task artifacts and task state without creating an Error before contextBridge', async () => {
     const outputFiles = [{ path: 'D:/videos/done.mp4', fileName: 'done.mp4' }];
+    const outputs = [{ outputItemId: 'done', status: 'published', ...outputFiles[0]! }] as const;
+    const taskState = { rootTurnId: 'turn-a', latestTurnId: 'turn-a', status: 'failed' } as const;
+    const result = { status: 'error', errorName: 'Error', errorMessage: '后续任务失败。', outputFiles, outputs, taskState } as const;
     const ipc = {
-      invoke: async () => ({
-        status: 'error',
-        errorName: 'AbortError',
-        errorMessage: 'This operation was aborted',
-        outputFiles,
-      }),
+      invoke: async () => result,
       send: () => undefined,
       on: () => undefined,
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).rejects.toMatchObject({
-      name: 'AbortError',
-      message: 'This operation was aborted',
-      outputFiles,
-    });
+    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).resolves.toBe(result);
   });
 
   it('reports the close preparation result back to the Main process', async () => {

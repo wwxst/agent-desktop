@@ -65,7 +65,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
         const actions: [string, object][] = [['check_video_semantics', lastCandidate], ['validate_video_candidate', lastCandidate],
           ['publish_video_output', { validationId: step > 1 ? (JSON.parse(results[1]!) as { validation: { id: string } }).validation.id : '' }]];
         delta = step < actions.length ? call(actions[step]![0], actions[step]![1], `${scenario}-${step}`) : { content: `完成 ${scenario}` };
-      } else if (scenario === 'delivery') {
+      } else if (scenario === 'delivery' || scenario === 'delivery-failure') {
         const declared = step === 0 ? undefined : JSON.parse(results[0]!) as { items: { id: string; workingDirectory: string }[] };
         const item = declared?.items[0]; const candidatePath = item === undefined ? '' : resolve(item.workingDirectory, 'candidate.mp4');
         const check = { outputItemId: item?.id, candidatePath };
@@ -80,6 +80,12 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
           ['check_video_semantics', check], ['validate_video_candidate', check],
           ['publish_video_output', { validationId: step > 5 ? (JSON.parse(results[5]!) as { validation: { id: string } }).validation.id : '' }],
         ];
+        // 文件已经真正发布后制造模型失败，反证错误过桥不会丢失此前的产物和任务投影。
+        if (scenario === 'delivery-failure' && step === actions.length) {
+          response.writeHead(400, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ error: { message: '已交付文件后的模型请求失败。' } }));
+          return;
+        }
         delta = step < actions.length ? call(actions[step]![0], actions[step]![1], `${scenario}-${step}`) : { content: `完成 ${scenario}` };
       } else if (scenario === 'workspace' && step === 0) delta = call('set_working_directory', { path: workspace }, `${scenario}-${step}`);
       else if (['disabled', 'uninstalled', 'restart-disabled'].includes(scenario)) delta = { content: `完成 ${scenario}` };
@@ -182,6 +188,20 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     const pixels = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', published.output.path, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']);
     expect(pixels[0]).toBeGreaterThan(240); expect(pixels[1]).toBeLessThan(10); expect(pixels[2]).toBeLessThan(10);
     await page.screenshot({ path: resolve(evidence, 'published.png') });
+    await page.getByRole('textbox', { name: '剪辑需求' }).fill('CASE:delivery-failure');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const failedReply = page.getByRole('alert', { name: 'Agent 回复' }).filter({ hasText: 'DeepSeek API request failed: 400' });
+    await expect(failedReply).toContainText('任务失败');
+    await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
+    const failedDelivery = requests.findLast(entry => entry.scenario === 'delivery-failure')!;
+    const failedPublished = JSON.parse(failedDelivery.results[6]!) as { output: { path: string } };
+    await expect(failedReply.getByText(basename(failedPublished.output.path), { exact: true })).toHaveCount(2);
+    await expect(failedReply.getByRole('button', { name: '打开文件' })).toBeVisible();
+    await expect(failedReply.getByRole('button', { name: '继续未完成任务' })).toBeVisible();
+    expect((await readFile(failedPublished.output.path)).length).toBeGreaterThan(0);
+    await page.screenshot({ path: resolve(evidence, 'failure-after-publish.png') });
+    await writeFile(resolve(evidence, 'failure-after-publish.json'), JSON.stringify({ published: failedPublished, requests: failedDelivery,
+      clientState: await page.evaluate(() => window.agentDesktop.loadClientState()) }, null, 2));
     await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:ffmpeg', false));
     const disabled = await run('disabled'); expect(disabled.tools).not.toContain('probe_media'); expect(disabled.tools).not.toContain('trim_video');
     const blocked = await run('blocked');

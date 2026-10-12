@@ -323,6 +323,8 @@ Electron Main 同时只保存一个 `{ sessionId, controller, finished }` 活动
 
 Desktop 任务起点通过 `DesktopPersistentSession.commitStart(start, clientState, turnMessageBinding)` 一次 SQLite 事务保存新事件批、从草稿迁入历史后的展示快照，以及 `{ executionVersion: 1, turnId, userMessageId, assistantMessageId }` 关联。Main 在 IPC 边界核对会话、两条新增消息的标识与角色、提示词和当前附件；重复提示词也按标识归属，不按文本或消息顺序猜测轮次。事务成功后才更新内存并准备插件、钩子和模型；保存失败不推进起点，也不启动这些外部操作。Renderer 的常规展示保存不能把已提交任务退回空消息草稿。
 
+任务与恢复终态使用普通 `AgentTaskIpcResult` 对象穿过进程通信和 `contextBridge`（上下文安全桥）；Preload 不提前构造业务错误。Renderer 收到对象后在现有 Desktop 入口还原错误名称、已交付文件、逐项交付结果和任务事实投影，继续使用共享客户端和 Web 的 Promise 拒绝契约。这样实际取消身份和既有产物不会因 Electron 复制 Error 而丢失；任务投影可能因未知效果而受阻，不能代替错误名称判断取消。Main 内部保留原始持久化错误实例的契约不因跨进程展示而改变。
+
 重启只为具有 `executionVersion: 1` 消息绑定、且原事件仍处于 `started` 的任务追加 `turn.interrupted`，按绑定的助手消息恢复真实终态、计划和已有产物。旧历史没有绑定时保留其合法展示和已有明确关联，不按相同文本或消息顺序补造绑定，也不以缺少终态直接推断进程异常退出。已完成结果即使尚未送达 Renderer，仍由绑定及 Session 事实补回；恢复始终由用户主动开始新轮次，不重放旧工具、审批或进程。
 
 人工核验请求必须提供去除空白后非空、原字段不超过 512 字符的说明，说明作为 `effect.outcome.verified.evidence.description` 保存；按钮或宿主不自动填入“已完成”。核验只引用当前会话尚未解决的真实来源，不能改写原工具结果、增加产物或授予新的目录权限。终端效果的说明应包含旧进程的实际状态与执行结果；仅显示连接断开不能证明命令已经停止或成功。

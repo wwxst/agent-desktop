@@ -1162,7 +1162,7 @@ function registerIpcHandlers(): void {
         },
       };
     } catch (error) {
-      // Electron 不传递 Error 自定义字段：失败终态改用普通对象跨 IPC，再由 Preload 还原 Error。
+      // 失败终态用普通对象穿过 IPC 与 contextBridge，再由 Renderer 还原错误名称和产物。
       if (!(error instanceof Error)) throw error;
       // 扩展准备或宿主启动在进入 Loop 前失败时，起点仍需留下真实失败终态。
       if (error instanceof SessionPersistenceError) throw error;
