@@ -204,6 +204,20 @@ describe('projectAgentActivity', () => {
     ])).toBeUndefined();
   });
 
+  it('keeps the current cancelled call when an older turn or step reused its model id', () => {
+    for (const previous of [
+      { turnId: 'older-turn' as TurnId, stepId },
+      { turnId, stepId: 'older-step' as StepId },
+    ]) {
+      const events: readonly SessionEvent[] = [
+        { type: 'tool.result', ...previous, toolCallId, result: { status: 'success', output: {} } },
+        toolCalled({ videoPath: 'E:/videos/current.mp4' }),
+      ];
+      expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, events))
+        .toMatchObject({ id: toolCallId, status: 'cancelled', toolName: 'trim_video' });
+    }
+  });
+
   it('uses the successful edit result path for the completed file-change activity', () => {
     const editEvents: readonly SessionEvent[] = [
       {

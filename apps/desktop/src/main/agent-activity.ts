@@ -276,7 +276,9 @@ export function projectAgentActivity(
     case 'turn.cancelled': {
       // 轮次取消没有 Tool Result；用已有 Session 事实结束当前活动，保持核心追踪契约不变。
       const pending = events.findLast(entry => entry.type === 'tool.called' && entry.turnId === event.turnId);
-      if (pending?.type !== 'tool.called' || events.some(entry => entry.type === 'tool.result' && entry.toolCallId === pending.toolCallId)) return undefined;
+      if (pending?.type !== 'tool.called' || events.some(entry => entry.type === 'tool.result'
+        && entry.turnId === pending.turnId && entry.stepId === pending.stepId
+        && entry.toolCallId === pending.toolCallId)) return undefined;
       const files = readActivityFiles(pending.input);
       return { id: pending.toolCallId, kind: 'tool', status: 'cancelled', toolName: pending.name,
         ...(files.length === 0 ? {} : { files }) };
