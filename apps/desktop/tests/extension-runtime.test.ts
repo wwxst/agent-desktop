@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model } from '@agent-desktop/model';
 import { InMemorySession, SessionPersistenceError, TurnCancellationError, projectRecoveryFacts } from '@agent-desktop/session';
-import { InMemoryToolRegistry, ToolExecutionError } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolExecutionError, type Tool } from '@agent-desktop/tools';
 import { prepareExtensions, selectSkills } from '../src/main/extension-runtime.js';
+import { adaptWhisperTool } from '../src/main/whisper-tool.js';
+import { adaptVisionTool } from '../src/main/vision-tool.js';
 import { readPlugin, readSkill, type PluginFiles } from '../src/main/extensions.js';
 import { taskToolGate } from '../src/main/agent-task-state.js';
 import { ToolApprovalGate } from '../src/main/tool-approval.js';
@@ -267,7 +269,24 @@ describe('actual extension runtime tool chain', () => {
       const original = new Error('connection lost');
       callTool.mockRejectedValueOnce(original);
       await expect(tool.execute({}, context)).rejects.toMatchObject({ constructor: ToolExecutionError, failureKind: 'unknown-outcome', cause: original, message: original.message });
+      const persistence = new SessionPersistenceError(new Error('result checkpoint failed'));
+      callTool.mockRejectedValueOnce(persistence);
+      await expect(tool.execute({}, context)).rejects.toBe(persistence);
+      const classified = new ToolExecutionError('request denied by server', 'denied');
+      callTool.mockRejectedValueOnce(classified);
+      await expect(tool.execute({}, context)).rejects.toBe(classified);
     } finally { await runtime.close(); }
+  });
+
+  it.each(['whisper', 'vision'])('does not downgrade %s startup persistence failure into unavailable service instructions', async name => {
+    const files = await plugin();
+    const builtin = { ...files, item: { ...files.item, id: `plugin:${name}`, name, source: 'builtin' as const },
+      servers: files.servers.map(server => ({ ...server, name })) };
+    const error = new SessionPersistenceError(new Error('startup checkpoint failed'));
+    const connect = vi.spyOn(Client.prototype, 'connect');
+    await expect(prepareExtensions({ plugins: [builtin], skills: [] }, async () => { throw error; }, undefined, undefined,
+      { visionConfiguration: { visionApiKey: 'fixture', visionBaseUrl: 'https://vision.example/v1' } })).rejects.toBe(error);
+    expect(connect).not.toHaveBeenCalled();
   });
 
   it('keeps tools wrapped by process hooks opaque even when the inner tool is read-only', async () => {
@@ -276,6 +295,12 @@ describe('actual extension runtime tool chain', () => {
     try {
       const wrapped = runtime.wrapTool({ name: 'read', description: 'read', inputSchema: { type: 'object' }, executionBoundary: 'read-only', execute: async () => ({ status: 'success', output: {} }) });
       expect(wrapped.executionBoundary ?? 'opaque').toBe('opaque');
+      // 媒体适配器前后任一层有钩子时，最终门禁看到的都必须是外层不透明边界。
+      const raw: Tool = { name: 'media', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute: async () => ({ status: 'success', output: {} }) };
+      for (const adapt of [adaptWhisperTool, adaptVisionTool]) {
+        expect(runtime.wrapTool(adapt(raw, undefined)).executionBoundary ?? 'opaque').toBe('opaque');
+        expect(adapt(runtime.wrapTool(raw), undefined).executionBoundary).toBe('opaque');
+      }
     } finally { await runtime.close(); }
   });
 

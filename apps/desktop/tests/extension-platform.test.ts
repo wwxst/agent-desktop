@@ -11,7 +11,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { DesktopExtensions, readPlugin } from '../src/main/extensions.js';
 import { ExtensionConnections } from '../src/main/extension-connections.js';
 import { prepareExtensions, skillCatalog, selectSkills } from '../src/main/extension-runtime.js';
-import { readDesktopDocument } from '../src/main/desktop-database.js';
+import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
@@ -29,6 +29,32 @@ async function listen(server: ReturnType<typeof createServer>) {
 const secureStorage = { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value.split('').reverse().join('')), decryptString: (value: Buffer) => value.toString().split('').reverse().join('') };
 
 describe('Desktop plugin platform boundaries', () => {
+  it('keeps a historical remote URL from replacing the managed built-in Whisper runtime', async () => {
+    const root = await temp(); const database = join(root, 'db.sqlite'); const extensionRoot = join(root, 'extensions');
+    await cp(resolve('apps/desktop/resources/plugins/whisper'), join(extensionRoot, 'plugins/whisper'), { recursive: true });
+    writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:whisper', kind: 'plugin', name: 'whisper', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
+    const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
+    connections.configure('plugin:whisper', 'whisper', { url: 'https://example.invalid/mcp', WHISPER_MODEL_PATH: 'C:\\outside\\model.bin' });
+    const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
+    const plugin = (await store.files()).plugins[0]!;
+    expect(plugin.servers[0]).not.toHaveProperty('url');
+    expect(plugin.servers[0]?.env?.WHISPER_MODEL_PATH).toBe('${WHISPER_MODEL_PATH}');
+    expect(plugin.item.connections?.[0]?.variables).toEqual([]);
+  });
+  it('keeps Vision model credentials in runtime settings and ignores historical plugin connection overrides', async () => {
+    const root = await temp(); const database = join(root, 'db.sqlite'); const extensionRoot = join(root, 'extensions');
+    await cp(resolve('apps/desktop/resources/plugins/vision'), join(extensionRoot, 'plugins/vision'), { recursive: true });
+    writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:vision', kind: 'plugin', name: 'vision', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
+    const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
+    connections.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp', VISION_API_KEY: 'wrong-secret' });
+    const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
+    const plugin = (await store.files()).plugins[0]!;
+    expect(plugin.servers[0]).not.toHaveProperty('url');
+    expect(plugin.servers[0]?.env).toEqual({});
+    expect(plugin.item.connections?.[0]?.variables).toEqual([]);
+    await expect(store.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp' })).rejects.toThrow('运行时设置');
+  });
+
   it('persists standalone MCP servers with encrypted secrets, edits without disclosure and removes them', async () => {
     const root = await temp(); const database = join(root, 'db.sqlite');
     const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
@@ -150,7 +176,7 @@ describe('Desktop plugin platform boundaries', () => {
     const root = await temp(); const source = join(root, 'market'); const resources = join(root, 'resources');
     await cp(resolve('apps/desktop/resources'), resources, { recursive: true }); await market(source, 'openai-curated');
     const store = new DesktopExtensions(join(root, 'db.sqlite'), join(root, 'extensions'), resources);
-    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg']);
+    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision']);
     await store.addMarketplace(source);
     expect((await store.list()).plugins.some(item => item.id === 'plugin:video-editing@openai-curated' && !item.installed)).toBe(true);
     await store.install('plugin:video-editing@openai-curated');

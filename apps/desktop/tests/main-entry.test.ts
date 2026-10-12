@@ -268,6 +268,7 @@ describe('desktop main session lifecycle', () => {
   beforeAll(async () => {
     // 生命周期夹具不启动系统进程，但宿主仍需明确的 Windows 解释器环境。
     vi.stubEnv('SystemRoot', process.env.SystemRoot ?? 'C:/Windows');
+    vi.stubEnv('OPENAI_API_KEY', 'test-vision-key');
     delete process.env.DEEPSEEK_API_KEY;
     process.env.WHISPER_MODEL_PATH = 'D:/models/whisper.bin';
     await import('../src/main/index.js');
@@ -361,6 +362,10 @@ describe('desktop main session lifecycle', () => {
       'Agent 正在执行，无法保存设置。',
     );
     expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
+    // 配置视觉密钥不等于安装插件；宿主不能再创建旧内置视觉工具。
+    expect(mainMocks.agentOptions[0]).not.toHaveProperty('visionTool');
+    expect(mainMocks.agentOptions[0]).not.toHaveProperty('visionApiKey');
+    expect(mainMocks.agentOptions[0]).not.toHaveProperty('visionBaseUrl');
 
     resolveRunningTask?.({
       responseText: '已记住。',

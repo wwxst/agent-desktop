@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename as renameFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { arch, platform } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { net } from 'electron';
+import { renameDirectory } from './rename-directory.js';
 
 const execute = promisify(execFile);
 interface RuntimeLock {
@@ -44,13 +45,13 @@ export async function installFFmpegRuntime(staging: string, archiveDirectory: st
         if (!response.ok || response.body === null) throw new Error(`FFmpeg 下载失败：HTTP ${response.status}`);
         await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(partial));
         if (await digest(partial) !== lock.sha256) throw new Error('FFmpeg 下载的 SHA-256 校验失败。');
-        await rename(partial, archive);
+        await renameFile(partial, archive);
       } finally { await rm(partial, { force: true }); }
     }
     // Windows 自带 tar 支持 ZIP；参数分开传递，中文和空格路径不经过 shell。
     if (!process.env.SystemRoot) throw new Error('Windows SystemRoot 不可用。');
     await execute(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', archive, '-C', staging], { windowsHide: true });
-    await rename(join(staging, lock.archiveRoot), runtime);
+    await renameDirectory(join(staging, lock.archiveRoot), runtime);
   }
   for (const name of ['ffmpeg', 'ffprobe'] as const) {
     const path = join(runtime, 'bin', `${name}.exe`);

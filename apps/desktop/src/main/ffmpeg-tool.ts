@@ -42,7 +42,7 @@ async function authorizedSource(path: string, access: ProbeFileAccess): Promise<
   return false;
 }
 
-async function authorize(input: unknown, access: ProbeFileAccess | undefined): Promise<string> {
+export async function authorizeMediaInput(input: unknown, access: ProbeFileAccess | undefined, derivedAudio = false): Promise<string> {
   if (typeof input !== 'object' || input === null || !('inputPath' in input)
     || typeof input.inputPath !== 'string' || input.inputPath.trim() === '') throw new Error('probe_media 需要非空 inputPath。');
   requireLocalPath(input.inputPath);
@@ -58,6 +58,13 @@ async function authorize(input: unknown, access: ProbeFileAccess | undefined): P
   const item = producedVideoItem(access.events(), path);
   if (item !== undefined && await isInsideDirectory(canonical, item.workingDirectory)) {
     for (const source of item.sourcePaths) if (!await authorizedSource(source, access)) throw new Error('候选来源未经宿主授权。');
+    return canonical;
+  }
+  // Whisper 可以读取同一授权输出项中的中间 WAV，不能据此读取整个附件所在目录。
+  if (derivedAudio) for (const output of readVideoDeliveryFacts(access.events()).items) {
+    if (!await isInsideDirectory(canonical, output.workingDirectory)) continue;
+    for (const source of output.sourcePaths) if (!await authorizedSource(source, access)) throw new Error('语音候选来源未经宿主授权。');
+    await authorizeTarget(output.target.kind === 'explicit' ? output.target.path : output.target.preferredPath, output.sourcePaths, access);
     return canonical;
   }
   throw new Error('probe_media 输入超出已授权工作目录及附件范围。');
@@ -90,7 +97,7 @@ export function adaptProbeMediaTool(tool: Tool, access: ProbeFileAccess | undefi
     async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
       try {
         context.signal?.throwIfAborted();
-        const inputPath = await authorize(input, access);
+        const inputPath = await authorizeMediaInput(input, access);
         // 只读探测不会产生可恢复的外部效果；不要让底层 MCP 检查点污染只读 Session 事实。
         const { checkpoint: _checkpoint, ...readOnlyContext } = context;
         const result = await tool.execute({ inputPath }, readOnlyContext);
@@ -148,10 +155,10 @@ export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined,
         const fields = name === 'concat_videos' ? [] : ['extract_video_frames', 'extract_video_range_frames', 'extract_audio', 'add_audio', 'add_subtitles'].includes(name) ? ['videoPath'] : ['inputPath'];
         if (name === 'add_audio') fields.push('audioPath');
         if (name === 'add_subtitles') fields.push('subtitlePath');
-        for (const field of fields) normalized[field] = await authorize({ inputPath: normalized[field] }, access);
+        for (const field of fields) normalized[field] = await authorizeMediaInput({ inputPath: normalized[field] }, access);
         if (name === 'concat_videos') {
           if (!Array.isArray(normalized.inputPaths)) throw new Error('concat_videos requires inputPaths to be an array');
-          normalized.inputPaths = await Promise.all(normalized.inputPaths.map(inputPath => authorize({ inputPath }, access)));
+          normalized.inputPaths = await Promise.all(normalized.inputPaths.map(inputPath => authorizeMediaInput({ inputPath }, access)));
         }
         for (const field of ['outputPath', 'outputDir']) if (field in normalized) {
           if (typeof normalized[field] !== 'string') throw new Error(`${field} 必须是本地路径。`);
@@ -238,7 +245,7 @@ export function authorizeVideoDeliveryTool(tool: Tool, access: ProbeFileAccess):
           for (const item of value.items as Array<{ sourcePaths?: unknown; target?: { kind?: unknown; path?: unknown } }>) {
             if (!Array.isArray(item?.sourcePaths)) continue; // 原工具负责结构错误，宿主仅检查文件边界。
             const sources: string[] = [];
-            for (const source of item.sourcePaths) sources.push(await authorize({ inputPath: source }, access));
+            for (const source of item.sourcePaths) sources.push(await authorizeMediaInput({ inputPath: source }, access));
             if (item.target?.kind === 'explicit' && typeof item.target.path === 'string') await authorizeTarget(item.target.path, sources, access);
           }
         } else if (tool.name === 'publish_video_output') {

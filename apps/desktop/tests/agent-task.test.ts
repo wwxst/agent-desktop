@@ -97,7 +97,7 @@ describe('desktop agent task', () => {
       '',
       '输入视频 1：D:/videos/main.mp4',
       '',
-      '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
+      '可用音轨（可用 transcribe_audio 识别 WAV 语音，或用 add_audio 配合主视频；不要当作视频输入）：',
       '音轨 1：D:/audio/bgm.mp3',
     ].join('\n'));
   });
@@ -107,13 +107,13 @@ describe('desktop agent task', () => {
     // 但同样不追加「不要调用需要主视频的 Tool」——用户可能在文字里给出主视频路径。
     expect(buildAgentPrompt(
       '把这段音频转成文字',
-      [{ path: 'D:\\audio\\only.mp3', role: 'audio' }],
+      [{ path: 'D:\\audio\\only.wav', role: 'audio' }],
     )).toBe([
       '把这段音频转成文字',
       '',
       '本次没有选择主视频，只有音轨文件：',
-      '音轨 1：D:/audio/only.mp3',
-      '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
+      '音轨 1：D:/audio/only.wav',
+      '不要把这些音轨当作可剪辑的主视频；WAV 可交给已安装的 transcribe_audio 识别语音，也可作为 add_audio 的声音来源。',
     ].join('\n'));
   });
 

@@ -167,6 +167,30 @@ describe('host Probe capability boundary', () => {
     expect(await tool.execute({ inputPath: candidate }, context)).toMatchObject({ status: 'error' });
     expect(raw.execute).toHaveBeenCalledOnce();
   });
+  it('does not authorize an overwritten candidate through an older source-matching producer', async () => {
+    const source = join(directory, 'selected.mp4'); await writeFile(source, 'selected media'); selected.push(source);
+    const otherSource = join(directory, 'removed-attachment.mp4'); await writeFile(otherSource, 'other media');
+    const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+    const declared = await agent.tools.get('declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
+    session.append({ type: 'tool.called', toolCallId: 'declare' as never, turnId: 'first' as never, stepId: 'declare' as never, name: 'declare_video_outputs', input: {} });
+    session.append({ type: 'tool.result', toolCallId: 'declare' as never, turnId: 'first' as never, stepId: 'declare' as never, result: declared });
+    const candidate = join(readVideoDeliveryFacts(session.events()).items[0]!.workingDirectory, 'candidate.mp4');
+    const produce = async (turn: string, inputPath: string) => {
+      await writeFile(candidate, `media from ${inputPath}`);
+      // 模型跨轮复用调用 ID；最新成功生产必须决定当前磁盘文件的来源。
+      session.append({ type: 'tool.called', toolCallId: 'trim' as never, turnId: turn as never, stepId: 'write' as never, name: 'trim_video', input: { inputPath, outputPath: candidate } });
+      session.append({ type: 'tool.result', toolCallId: 'trim' as never, turnId: turn as never, stepId: 'write' as never, result: { status: 'success', output: { outputPath: candidate } } });
+    };
+    const raw = rawTool(); const tool = adaptProbeMediaTool(raw, access);
+    await produce('first', source);
+    expect(await tool.execute({ inputPath: candidate }, context)).toMatchObject({ status: 'success' });
+    selected.push(otherSource);
+    await produce('second', otherSource);
+    // 新来源曾是选定附件，但当前已移除；旧生产不能继续为覆盖后的候选授权。
+    selected.splice(selected.indexOf(otherSource), 1);
+    expect(await tool.execute({ inputPath: candidate }, context)).toMatchObject({ status: 'error', failureKind: 'permanent' });
+    expect(raw.execute).toHaveBeenCalledOnce();
+  });
   it('preserves server errors and rejects malformed or mismatched success results', async () => {
     const source = join(workspace, 'video.mp4'); await writeFile(source, 'data');
     const raw = rawTool(); const tool = adaptProbeMediaTool(raw, access);

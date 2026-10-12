@@ -17,7 +17,9 @@
     { "path": "../../packages/model" },
     { "path": "../../packages/model-deepseek" },
     { "path": "../../packages/session" },
+    { "path": "../../packages/speech-whisper-cpp" },
     { "path": "../../packages/video-agent" },
-    { "path": "../../packages/video-ffmpeg" }
+    { "path": "../../packages/video-ffmpeg" },
+    { "path": "../../packages/vision-openai" }
   ]
 }

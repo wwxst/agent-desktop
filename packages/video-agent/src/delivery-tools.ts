@@ -409,10 +409,11 @@ function findProducerToolCall(
   const producers = collectSuccessfulProducers(events, toolNames);
   let found: SuccessfulProducer | undefined;
   for (const producer of producers) {
-    if (producer.outputPath !== candidatePath || !producerMatchesSources(producer, item, producers)) continue;
+    if (producer.outputPath !== candidatePath) continue;
     if (found === undefined || producer.resultIndex > found.resultIndex) found = producer;
   }
-  return found;
+  // 同路径已被最新成功调用覆盖时，不能回退较旧的来源匹配记录授予权限或通过验收。
+  return found !== undefined && producerMatchesSources(found, item, producers) ? found : undefined;
 }
 
 /** 宿主授权候选读取时复用交付的生产归属；单独声明目录不能授予文件权限。 */

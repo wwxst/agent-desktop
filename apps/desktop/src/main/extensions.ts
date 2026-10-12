@@ -1,5 +1,5 @@
 import { createReadStream, watch, type FSWatcher } from 'node:fs';
-import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -9,6 +9,9 @@ import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.j
 import { ExtensionMarketplaces, marketPath } from './extension-marketplaces.js';
 import type { ExtensionConnections } from './extension-connections.js';
 import { installFFmpegRuntime } from './ffmpeg-runtime.js';
+import { installWhisperRuntime } from './whisper-runtime.js';
+import { WhisperModels } from './whisper-models.js';
+import { renameDirectory } from './rename-directory.js';
 
 type Kind = 'plugin' | 'skill';
 type Source = ExtensionItem['source'];
@@ -26,6 +29,8 @@ export interface ExtensionReconcileResult { readonly changed: readonly string[];
 const catalog = [
   { id: 'plugin:video-editing', kind: 'plugin' as const, name: 'video-editing', directory: 'plugins/video-editing' },
   { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'ffmpeg', directory: 'plugins/ffmpeg' },
+  { id: 'plugin:whisper', kind: 'plugin' as const, name: 'whisper', directory: 'plugins/whisper' },
+  { id: 'plugin:vision', kind: 'plugin' as const, name: 'vision', directory: 'plugins/vision' },
   { id: 'skill:local-file-review', kind: 'skill' as const, name: 'local-file-review', directory: 'skills/local-file-review' },
 ];
 const MAX_SKILLS = 2000;
@@ -316,11 +321,14 @@ export async function readPlugin(directory: string, id: string, source: Source):
 
 /** 固定本机安装目录由当前 userData 解析；数据库不保存原电脑的绝对安装路径。 */
 export class DesktopExtensions {
+  readonly whisperModels: WhisperModels;
   private marketStore: ExtensionMarketplaces | undefined;
   private watchedRoots: string[] = [];
   private watchers: FSWatcher[] = [];
   private changeTimer: ReturnType<typeof setTimeout> | undefined;
-  constructor(private readonly databasePath: string, private readonly root: string, private readonly resources: string, private readonly connections?: ExtensionConnections) {}
+  constructor(private readonly databasePath: string, private readonly root: string, private readonly resources: string, private readonly connections?: ExtensionConnections, changed: () => void = () => {}) {
+    this.whisperModels = new WhisperModels(join(root, 'models', 'whisper'), join(resources, 'plugins', 'whisper', 'models.lock.json'), changed);
+  }
   /** 独立配置整体加密，一次提交；公开列表只投影变量名称。 */
   private mcpRecords(): StandaloneMcpRecord[] {
     const data = this.connections?.values('standalone-mcp', 'configuration').records;
@@ -412,6 +420,8 @@ export class DesktopExtensions {
     }
     if (workingDirectory !== undefined) skills.push(...await scanSkills(join(workingDirectory, '.agents', 'skills'), 'project', 'project'));
     const configured = plugins.map(plugin => {
+      // 随包语音与视觉服务的运行资源、模型和密钥由宿主设置提供，不能改接远程 MCP。
+      const managed = plugin.item.source === 'builtin' && ['plugin:whisper', 'plugin:vision'].includes(plugin.item.id);
       const servers = [...plugin.servers];
       for (const appId of plugin.appIds ?? []) {
         const config = this.connections?.values(plugin.item.id, appId);
@@ -420,13 +430,14 @@ export class DesktopExtensions {
       const effectiveServers = servers.map(server => {
         const config = this.connections?.values(plugin.item.id, server.name) ?? {};
         const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original
-          : config[name] ?? original);
-        return { ...server, ...(config.url ? { url: config.url } : {}), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
+          : managed ? original : config[name] ?? original);
+        const configuredUrl = managed ? undefined : config.url;
+        return { ...server, ...(configuredUrl === undefined ? {} : { url: configuredUrl }), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
           ...(server.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) }) };
       });
       return { ...plugin, servers: effectiveServers, item: { ...plugin.item, connections: [
         ...effectiveServers.map(server => ({ name: server.name, transport: server.type ?? 'stdio', connected: server.url === undefined || this.connections?.connected(plugin.item.id, server.name, server.url) === true,
-          ...(server.url === undefined ? {} : { url: server.url }), variables: [...new Set([...Object.values(servers.find(original => original.name === server.name)?.env ?? {}), ...Object.values(servers.find(original => original.name === server.name)?.headers ?? {})].flatMap(value => [...value.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map(match => match[1]!).filter(name => name !== 'PLUGIN_ROOT' && name !== 'CODEX_PLUGIN_ROOT')))] })),
+          ...(server.url === undefined ? {} : { url: server.url }), variables: [...new Set([...Object.values(servers.find(original => original.name === server.name)?.env ?? {}), ...Object.values(servers.find(original => original.name === server.name)?.headers ?? {})].flatMap(value => [...value.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map(match => match[1]!).filter(name => name !== 'PLUGIN_ROOT' && name !== 'CODEX_PLUGIN_ROOT' && !managed)))] })),
         ...(plugin.appIds ?? []).filter(id => !servers.some(server => server.name === id)).map(id => ({ name: id, transport: 'app', connected: false })),
       ] } };
     });
@@ -491,7 +502,7 @@ export class DesktopExtensions {
       if (current === undefined) plugins.push(item);
       else if (current.installed && item.version !== undefined && item.version !== current.version) plugins[plugins.indexOf(current)] = { ...current, availableVersion: item.version };
     }
-    return { plugins, skills, marketplaces: markets.records().map(({ folder: _folder, ...market }) => market), errors,
+    return { plugins, skills, whisperModel: await this.whisperModels.status(), marketplaces: markets.records().map(({ folder: _folder, ...market }) => market), errors,
       mcpServers: this.mcpRecords().map(({ environment, headers, ...server }) => ({ ...server, environmentNames: Object.keys(environment), headerNames: Object.keys(headers),
         connected: server.transport !== 'stdio' && this.connections?.connected(server.id, server.name, server.url) === true })) };
   }
@@ -500,7 +511,8 @@ export class DesktopExtensions {
     await mkdir(join(this.root, '.staging'), { recursive: true }); const staging = join(this.root, '.staging', `${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`); await mkdir(join(this.root, `${kind}s`), { recursive: true });
     try { await cp(source, staging, { recursive: true, dereference: true });
       if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
-      const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await rename(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
+      if (id === 'plugin:whisper' && origin === 'builtin') await installWhisperRuntime(staging, join(this.root, '.whisper-archives'));
+      const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await renameDirectory(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
   }
   /** 先完成暂存目录解析，再交换旧目录；新包解析失败时旧版本仍然保留。 */
   private async atomicReplace(source: string, destination: string, kind: Kind, id: string, origin: InstalledExtension['source']): Promise<ExtensionItem> {
@@ -514,14 +526,15 @@ export class DesktopExtensions {
     try {
       await cp(source, staging, { recursive: true, dereference: true });
       if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
+      if (id === 'plugin:whisper' && origin === 'builtin') await installWhisperRuntime(staging, join(this.root, '.whisper-archives'));
       const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin);
-      try { await rename(destination, backup); backedUp = true; } catch (error) { if (!missing(error)) throw error; }
+      try { await renameDirectory(destination, backup); backedUp = true; } catch (error) { if (!missing(error)) throw error; }
       try {
-        await rename(staging, destination);
+        await renameDirectory(staging, destination);
       } catch (error) {
         // 只有发布新目录失败才恢复旧目录；删除备份失败不能触发删除新安装。
         if (backedUp) {
-          try { await rename(backup, destination); }
+          try { await renameDirectory(backup, destination); }
           catch (restoreError) { throw new AggregateError([error, restoreError], `发布失败且无法恢复旧版本；旧目录保存在 ${backup}`); }
         }
         throw error;
@@ -558,7 +571,9 @@ export class DesktopExtensions {
   async addMarketplace(source: string): Promise<void> { await this.markets().add(source); }
   async removeMarketplace(id: string): Promise<void> { await this.markets().remove(id); }
   async configure(id: string, server: string, values: Readonly<Record<string, string>>, workingDirectory?: string): Promise<void> {
+    if (id === 'plugin:whisper') throw new Error('Whisper 的运行程序及模型由宿主管理，不能通过连接配置替换路径。');
     const files = await this.files(workingDirectory); const plugin = files.plugins.find(item => item.item.id === id); const skill = files.skills.find(item => item.item.id === id);
+    if (plugin?.item.id === 'plugin:vision' && plugin.item.source === 'builtin') throw new Error('Vision 的模型及 API 密钥由运行时设置管理，不能通过插件连接配置替换。');
     if (!plugin?.servers.some(item => item.name === server) && !plugin?.appIds?.includes(server) && !skill?.toolDependencies?.some(dependency => dependency.value === server)) throw new Error('找不到插件连接。');
     if (values.url !== undefined) { const url = new URL(values.url); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('连接地址需要使用 HTTP。'); }
     if (this.connections === undefined) throw new Error('凭据存储不可用。');

@@ -40,12 +40,12 @@ const provider = (changes: Partial<RuntimeModelProviderUpdate> = {}): RuntimeMod
   models: [{ id: 'test-model', displayName: '测试模型', images: true, contextWindow: 128000, maxOutputTokens: 4000 }], ...changes,
 });
 describe('desktop runtime settings', () => {
-  it('preserves appearance and local paths independently of selected models', async () => {
+  it('preserves appearance independently of selected models', async () => {
     const { database } = await paths();
-    await saveRuntimeSettings(database, { theme: 'dark', whisperModelPath: 'D:/models/a.bin' }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ theme: 'dark', whisper: { modelPath: 'D:/models/a.bin' } });
+    await saveRuntimeSettings(database, { theme: 'dark' }, storage);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ theme: 'dark' });
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('theme');
-    await saveRuntimeSettings(database, { theme: null, whisperModelPath: null }, storage);
+    await saveRuntimeSettings(database, { theme: null }, storage);
     expect(await loadRuntimeSettings(database, storage, {})).not.toHaveProperty('theme');
   });
   it('persists memory controls with enabled defaults', async () => {
@@ -60,7 +60,9 @@ describe('desktop runtime settings', () => {
     const settings = await loadRuntimeSettings(database, storage, env);
     expect(settings.modelProviders[0]).toMatchObject({ baseUrl: 'https://proxy.test/v1', apiKey: { configured: true, source: 'environment' }, models: [{ id: 'environment-model' }] });
     expect(JSON.stringify(settings)).not.toContain('environment-key');
-    expect(await loadRuntimeConfiguration(database, storage, env)).toMatchObject({ deepSeekApiKey: 'environment-key', deepSeekModel: 'environment-model', whisperModelPath: 'a.bin', useDeepSeekThinking: false });
+    const configuration = await loadRuntimeConfiguration(database, storage, env);
+    expect(configuration).toMatchObject({ deepSeekApiKey: 'environment-key', deepSeekModel: 'environment-model', useDeepSeekThinking: false });
+    expect(configuration).not.toHaveProperty('whisperModelPath');
   });
   it('saves encrypted credentials and drives both conversation and vision configuration after reload', async () => {
     const { database } = await paths();
@@ -117,6 +119,16 @@ describe('desktop runtime settings', () => {
     expect(configuration).not.toHaveProperty('modelContextWindow');
     expect(configuration).not.toHaveProperty('modelMaxOutputTokens');
   });
+  it('retains the selected visual service without a key and removes it when vision is disabled', async () => {
+    const { database } = await paths();
+    await saveRuntimeSettings(database, { modelProvider: provider(), visionModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
+    const configuration = await loadRuntimeConfiguration(database, storage, {});
+    expect(configuration).toMatchObject({ visionBaseUrl: 'https://example.com/v1', visionModel: 'test-model', visionProtocol: 'responses', visionMaxOutputTokens: 4000 });
+    expect(configuration).not.toHaveProperty('visionApiKey');
+    await saveRuntimeSettings(database, { visionModel: null }, storage);
+    const disabled = await loadRuntimeConfiguration(database, storage, { OPENAI_API_KEY: 'unused-key' });
+    for (const field of ['visionApiKey', 'visionBaseUrl', 'visionModel', 'visionProtocol', 'visionMaxOutputTokens']) expect(disabled).not.toHaveProperty(field);
+  });
   it('clearing an internal saved key returns to the environment source', async () => {
     const { database } = await paths();
     const { apiKey: _key, builtin: _builtin, ...deepseek } = DEFAULT_MODEL_PROVIDERS[0]!;
@@ -151,9 +163,10 @@ describe('desktop runtime settings', () => {
       { name: 'runtime-settings', value: { deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test', visionBaseUrl: 'https://vision.test/v1', whisperModelPath: 'legacy.bin' } },
       { name: 'runtime-secrets', value: { deepSeekApiKey: storage.encryptString('legacy-secret').toString('base64') } },
     ]);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'legacy-secret', deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test', whisperModelPath: 'legacy.bin' });
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'legacy-secret', deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test' });
     await saveRuntimeSettings(database, { theme: 'light' }, storage);
     expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('deepSeekModel');
+    expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('whisperModelPath');
     expect(readDesktopDocument(database, 'runtime-secrets')).toHaveProperty('providerApiKeys.deepseek');
   });
   it.each([

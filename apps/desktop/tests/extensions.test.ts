@@ -84,7 +84,7 @@ describe('Desktop extensions persisted local packages', () => {
   it('installs bundled packages, restores disabled state and removes child skills on uninstall', async () => {
     const { root, database, store } = await setup();
     const initial = await store.list();
-    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg']);
+    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision']);
     expect(initial.plugins[0]?.installed).toBe(false);
     expect(initial.marketplaces).toEqual([]);
     const preview = initial.skills.find(item => item.name === 'short-drama-editing')!;

@@ -322,10 +322,6 @@ export interface RuntimeSettings {
   readonly modelProviders: readonly RuntimeModelProvider[];
   readonly conversationModel: RuntimeModelReference;
   readonly visionModel: RuntimeModelReference | null;
-  readonly whisper: {
-    readonly modelPath: string;
-    readonly cliPath: string;
-  };
   readonly memoryEnabled: boolean;
   readonly memoryFromToolChatsEnabled: boolean;
 }
@@ -337,8 +333,6 @@ export interface RuntimeSettingsUpdate {
   readonly deleteModelProviderId?: string;
   readonly conversationModel?: RuntimeModelReference;
   readonly visionModel?: RuntimeModelReference | null;
-  readonly whisperModelPath?: string | null;
-  readonly whisperCliPath?: string | null;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
 }
@@ -509,6 +503,7 @@ export interface McpServerUpdate {
   readonly headers: Readonly<Record<string, string>>;
 }
 export type ExtensionManagementRequest =
+  | { readonly action: 'install-whisper-model' | 'import-whisper-model' | 'delete-whisper-model' }
   | { readonly action: 'save-mcp-server'; readonly server: McpServerUpdate }
   | { readonly action: 'set-mcp-enabled'; readonly id: string; readonly enabled: boolean }
   | { readonly action: 'remove-mcp-server'; readonly id: string }
@@ -525,6 +520,16 @@ export interface ExtensionSnapshot {
   readonly marketplaces?: readonly ExtensionMarketplace[];
   readonly mcpServers?: readonly McpServerSettings[];
   readonly errors?: readonly string[];
+  readonly whisperModel?: WhisperModelStatus;
+}
+/** 单个已核实模型的安装事实；路径只由 Desktop 持有，不接收模型调用参数覆盖。 */
+export interface WhisperModelStatus {
+  readonly name: string;
+  readonly size: number;
+  readonly diskBytes: number;
+  readonly downloadedBytes: number;
+  readonly status: 'missing' | 'downloading' | 'verifying' | 'ready' | 'error';
+  readonly message?: string;
 }
 export interface ExtensionClientApi {
   list(): Promise<ExtensionSnapshot>;
@@ -542,7 +547,7 @@ export interface ExtensionClientApi {
   reconcile(): Promise<ExtensionSnapshot>;
   /** 对照 Codex `skills/changed` 的失效通知。 */
   onChanged(listener: () => void): () => void;
-  manage(request: ExtensionManagementRequest): Promise<ExtensionSnapshot>;
+  manage(request: ExtensionManagementRequest): Promise<ExtensionSnapshot | null>;
 }
 
 /** 更新事实由桌面宿主提供；浏览器开发宿主不具有安装应用的能力。 */

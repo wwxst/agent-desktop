@@ -26,6 +26,8 @@ import {
 } from './agent-activity.js';
 import { CommandOutputProjection, createCommandPort } from './command-host.js';
 import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './ffmpeg-tool.js';
+import { WHISPER_TOOLS } from './whisper-tool.js';
+import { verifyWhisperRuntime } from './whisper-runtime.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';
@@ -240,7 +242,7 @@ let desktopExtensions: DesktopExtensions | undefined;
 let pluginConnections: ExtensionConnections | undefined;
 function connectionStore(): ExtensionConnections { return pluginConnections ??= new ExtensionConnections(persistenceFilePath(), safeStorage, url => shell.openExternal(url)); }
 function extensionStore(): DesktopExtensions {
-  return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore());
+  return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore(), () => mainWindow?.webContents.send(DESKTOP_CHANNELS.extensionsChanged));
 }
 
 async function watchCurrentSkills(): Promise<void> {
@@ -624,6 +626,14 @@ function registerIpcHandlers(): void {
     if (value.action === 'cancel-connect') { connectionStore().cancel(extensionId(value.id), extensionId(value.server)); return store.list(activeSession().workingDirectory); }
     return changeExtensions(async () => {
       switch (value.action) {
+        case 'install-whisper-model': await store.whisperModels.install(); break;
+        case 'delete-whisper-model': await store.whisperModels.delete(); break;
+        case 'import-whisper-model': {
+          const selected = await dialog.showOpenDialog({ title: '选择 Whisper Small 模型', properties: ['openFile'], filters: [{ name: 'Whisper 模型', extensions: ['bin'] }] });
+          if (selected.canceled || selected.filePaths[0] === undefined) return null;
+          await store.whisperModels.install(selected.filePaths[0]);
+          break;
+        }
         case 'save-mcp-server': store.saveMcpServer(value.server); break;
         case 'set-mcp-enabled': {
           if (typeof value.enabled !== 'boolean') throw new Error('MCP 启用状态无效。');
@@ -931,12 +941,35 @@ function registerIpcHandlers(): void {
       // 先准备插件再组装 Agent；公开 Probe 与语义验收必须持有同一个已授权适配器。
       // 未知外部效果只允许核验，不连接插件或触发其钩子。
       const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(session.workingDirectory);
+      const whisper = extensionFiles.plugins.find(plugin => plugin.item.id === 'plugin:whisper' && plugin.item.source === 'builtin' && plugin.item.enabled);
+      let whisperModelPath: string | undefined;
+      let whisperExecutable: string | undefined;
+      let whisperUnavailable: string | undefined;
+      if (whisper !== undefined) {
+        try { whisperModelPath = await extensionStore().whisperModels.path(); }
+        catch (error) { if (error instanceof SessionPersistenceError || !(error instanceof Error)) throw error; whisperUnavailable = `Whisper 模型不可用：${error.message}。请重新安装模型。`; }
+        if (whisperModelPath === undefined) whisperUnavailable = 'Whisper 模型未安装或完整性校验失败，请在 Whisper 插件详情中安装模型。';
+        else if (whisperUnavailable === undefined) {
+          try { whisperExecutable = await verifyWhisperRuntime(whisper.directory); }
+          catch (error) { if (error instanceof SessionPersistenceError || !(error instanceof Error)) throw error; whisperUnavailable = `Whisper 运行资源不可用：${error.message}。请重新安装插件。`; }
+        }
+      }
+      // 缺少模型或运行资源只移除这个服务，不能阻止普通任务或其它插件。
+      const availableExtensions = { ...extensionFiles, plugins: extensionFiles.plugins.filter(plugin => plugin !== whisper || whisperUnavailable === undefined) };
       const mediaAccess = { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
         events: () => session.session.events() };
       const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
-        () => prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
+        () => prepareExtensions(availableExtensions, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
           { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
-            probeAccess: mediaAccess }));
+            probeAccess: mediaAccess, whisperAccess: mediaAccess, visionAccess: mediaAccess,
+            visionConfiguration: {
+              ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
+              ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
+              ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
+              ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
+              ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
+            },
+            ...(whisperModelPath === undefined || whisperExecutable === undefined ? {} : { whisperEnvironment: { WHISPER_MODEL_PATH: whisperModelPath, WHISPER_CLI_PATH: whisperExecutable } }) }));
       closeExtensions = extensions.close;
       closeExtensionsSafely = async (): Promise<void> => {
         const close = closeExtensions;
@@ -953,7 +986,8 @@ function registerIpcHandlers(): void {
           if (error instanceof SessionPersistenceError) throw error;
         }
       };
-      const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name)).map(extensions.wrapTool);
+      const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name) || WHISPER_TOOLS.has(tool.name)).map(extensions.wrapTool);
+      const visionTool = extensions.tools.find(tool => tool.name === 'analyze_images');
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
@@ -963,13 +997,7 @@ function registerIpcHandlers(): void {
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
         ...(settings.modelMaxOutputTokens === undefined ? {} : { modelMaxOutputTokens: settings.modelMaxOutputTokens }),
         ...(settings.useDeepSeekThinking === undefined ? {} : { useDeepSeekThinking: settings.useDeepSeekThinking }),
-        ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
-        ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
-        ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
-        ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
-        ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
-        ...(settings.whisperModelPath === undefined ? {} : { whisperModelPath: settings.whisperModelPath }),
-        ...(settings.whisperCliPath === undefined ? {} : { whisperCliPath: settings.whisperCliPath }),
+        ...(visionTool === undefined ? {} : { visionTool: extensions.wrapTool(visionTool) }),
         session: session.session,
         workspace: workspacePortFor(sessionId),
         // 命令能力由宿主提供解释器绝对路径和受限子进程环境；工具自己不做这些选择。
@@ -1012,8 +1040,8 @@ function registerIpcHandlers(): void {
           };
         })(),
       });
-      // Probe 已注入且已包装钩子，只追加其他扩展工具。
-      for (const tool of extensions.tools) if (!FFMPEG_TOOLS.has(tool.name)) agent.tools.register(tool);
+      // 媒体工具已注入且已包装钩子，只追加其他扩展工具。
+      for (const tool of extensions.tools) if (!WHISPER_TOOLS.has(tool.name) && !FFMPEG_TOOLS.has(tool.name) && tool !== visionTool) agent.tools.register(tool);
       const authorizedTools = new InMemoryToolRegistry();
       for (const tool of agent.tools.list()) authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
       agent = { ...agent, tools: authorizedTools };
@@ -1030,7 +1058,7 @@ function registerIpcHandlers(): void {
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(FFMPEG_TOOLS.has(tool.name) ? tool : extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(WHISPER_TOOLS.has(tool.name) || FFMPEG_TOOLS.has(tool.name) || tool.name === 'analyze_images' ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
       // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
@@ -1045,9 +1073,9 @@ function registerIpcHandlers(): void {
       }
       if (recovery === undefined) await runHostOperation(session, preparedStart.turnId, 'prompt-submit', '运行用户提示提交钩子。',
         () => extensions.runHooks('UserPromptSubmit', { prompt: prompt.trim(), session_id: activeSessionId }));
-      if (extensions.instructions !== '') {
+      if (extensions.instructions !== '' || whisperUnavailable !== undefined) {
         const base = agent.systemPrompt.build();
-        agent = { ...agent, systemPrompt: { build: () => base + extensions.instructions } };
+        agent = { ...agent, systemPrompt: { build: () => base + extensions.instructions + (whisperUnavailable === undefined ? '' : `\n${whisperUnavailable}`) } };
       }
       if (recovery === undefined && settings.memoryEnabled) {
         const memories = loadMemories(persistenceFilePath());

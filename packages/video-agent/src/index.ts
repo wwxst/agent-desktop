@@ -12,10 +12,8 @@ import {
 } from '@agent-desktop/local-tools';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type Session } from '@agent-desktop/session';
-import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
-import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 import {
   DeclareVideoOutputsTool,
   PublishVideoOutputTool,
@@ -61,13 +59,8 @@ export interface VideoAgentOptions {
   readonly modelProtocol?: 'chat-completions' | 'responses';
   readonly modelMaxOutputTokens?: number;
   readonly useDeepSeekThinking?: boolean;
-  readonly whisperModelPath?: string;
-  readonly whisperCliPath?: string;
-  readonly visionApiKey?: string;
-  readonly visionBaseUrl?: string;
-  readonly visionModel?: string;
-  readonly visionProtocol?: 'chat-completions' | 'responses';
-  readonly visionMaxOutputTokens?: number;
+  /** 入口提供已配置、已授权的视觉工具；公开调用与语义验收复用同一实例。 */
+  readonly visionTool?: Tool;
   readonly session?: Session;
   /**
    * 会话工作目录能力。只有能提供目录状态和目录访问确认的宿主才传入，
@@ -113,19 +106,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   }
   const mediaTools = options.mediaTools ?? [];
   for (const tool of mediaTools) tools.register(VIDEO_WRITE_TOOL_NAMES.has(tool.name) ? new ScopedVideoOutputTool(tool, readEvents) : tool);
-  if (options.visionApiKey !== undefined && options.visionApiKey.length > 0) {
-    tools.register(new AnalyzeImagesTool(
-      visionOptionsFor(options, options.visionApiKey),
-    ));
-  }
-  if (options.whisperModelPath !== undefined) {
-    tools.register(new TranscribeAudioTool(
-      options.whisperCliPath === undefined
-        ? { modelPath: options.whisperModelPath }
-        : { modelPath: options.whisperModelPath, command: options.whisperCliPath },
-    ));
-  }
-
+  if (options.visionTool !== undefined) tools.register(options.visionTool);
   // 交付闭环：声明预期集合、用真实证据验收候选、只把全项通过的候选发布为最终交付文件。
   tools.register(new DeclareVideoOutputsTool(readEvents));
   tools.register(new ValidateVideoCandidateTool(readEvents));
@@ -133,9 +114,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new CheckVideoSemanticsTool(readEvents, {
     model: new DeepSeekModel(modelOptionsFor(options)),
     mediaTools,
-    ...(options.visionApiKey === undefined || !options.visionApiKey ? {} : { vision: new AnalyzeImagesTool(visionOptionsFor(options, options.visionApiKey)) }),
-    ...(options.whisperModelPath === undefined ? {} : { speech: new TranscribeAudioTool({ modelPath: options.whisperModelPath,
-      ...(options.whisperCliPath === undefined ? {} : { command: options.whisperCliPath }) }) }),
+    ...(options.visionTool === undefined ? {} : { vision: options.visionTool }),
   }));
 
   const modelOptions = modelOptionsFor(options);
@@ -156,11 +135,4 @@ function modelOptionsFor(options: VideoAgentOptions) {
     ...(options.modelProtocol === undefined ? {} : { protocol: options.modelProtocol }),
     ...(options.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: options.modelMaxOutputTokens }),
     ...(options.useDeepSeekThinking === undefined ? {} : { disableThinking: options.useDeepSeekThinking }) };
-}
-
-function visionOptionsFor(options: VideoAgentOptions, apiKey: string) {
-  return { apiKey, ...(options.visionBaseUrl === undefined ? {} : { baseUrl: options.visionBaseUrl }),
-    ...(options.visionModel === undefined ? {} : { model: options.visionModel }),
-    ...(options.visionProtocol === undefined ? {} : { protocol: options.visionProtocol }),
-    ...(options.visionMaxOutputTokens === undefined ? {} : { maxOutputTokens: options.visionMaxOutputTokens }) };
 }

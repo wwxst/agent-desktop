@@ -16,20 +16,20 @@ describe('createVideoAgent', () => {
     for (const name of ['validate_video_candidate', 'publish_video_output', 'check_video_semantics']) expect(names).toContain(name);
   });
   it('assembles the formal video Agent dependencies and tools', () => {
+    const speech = { name: 'transcribe_audio', description: 'WAV', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: { text: '', segments: [] } }) };
+    const vision = { name: 'analyze_images', description: 'JPG', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: { frames: [] } }) };
     const agent = createVideoAgent({
       deepSeekApiKey: 'test-deepseek-key',
       mediaTools: [new ProbeMediaTool(), new DecodeVideoTool(), new DetectBlackSegmentsTool(), new ExtractVideoFramesTool(),
         new ExtractVideoRangeFramesTool(), new ExtractAudioTool(), new ExtractFullVideoFramesTool(), new TrimVideoTool(), new ConcatVideosTool(),
-        new AddAudioTool(), new AddSubtitlesTool(), new ResizeVideoTool(), new CropVideoTool(), new SetSpeedTool()],
+        new AddAudioTool(), new AddSubtitlesTool(), new ResizeVideoTool(), new CropVideoTool(), new SetSpeedTool(), speech],
       deepSeekBaseUrl: 'https://deepseek.test',
-      whisperModelPath: 'ggml-small.bin',
-      whisperCliPath: 'whisper-cli',
-      visionApiKey: 'test-vision-key',
-      visionBaseUrl: 'https://vision.test/v1',
+      visionTool: vision,
     });
 
     expect(agent.model).toBeInstanceOf(DeepSeekModel);
     expect(agent.session).toBeInstanceOf(InMemorySession);
+    expect(agent.tools.get('analyze_images')).toBe(vision);
     expect(agent.tools.list().map((tool) => tool.name)).toEqual([
       'probe_media',
       'decode_video',
@@ -45,8 +45,8 @@ describe('createVideoAgent', () => {
       'resize_video',
       'crop_video',
       'set_speed',
-      'analyze_images',
       'transcribe_audio',
+      'analyze_images',
       'declare_video_outputs',
       'validate_video_candidate',
       'publish_video_output',
@@ -90,7 +90,6 @@ describe('createVideoAgent', () => {
   it('can assemble a text-only Agent without registering media transcription', () => {
     const agent = createVideoAgent({
       deepSeekApiKey: 'test-deepseek-key',
-      visionApiKey: '',
     });
 
     expect(agent.tools.list().map((tool) => tool.name)).not.toContain('transcribe_audio');
@@ -157,12 +156,10 @@ describe('createVideoAgent', () => {
     };
     const restoredAgent = createVideoAgent({
       deepSeekApiKey: 'test-deepseek-key',
-      visionApiKey: '',
       session: injectedSession,
     });
     const newAgent = createVideoAgent({
       deepSeekApiKey: 'test-deepseek-key',
-      visionApiKey: '',
     });
 
     expect(restoredAgent.session).toBe(injectedSession);

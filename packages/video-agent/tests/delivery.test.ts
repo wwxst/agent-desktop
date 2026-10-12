@@ -462,6 +462,29 @@ describe('candidate validation', () => {
     expect(result).toMatchObject({ status: 'error' });
   });
 
+  it('rejects the latest same-path producer from a different source instead of reusing older matching production', async () => {
+    const directory = await temporaryDirectory();
+    const source = join(directory, 'source-a.mp4'); await writeFile(source, 'source a');
+    const otherSource = join(directory, 'source-b.mp4'); await writeFile(otherSource, 'source b');
+    const tools = createDeliveryTools();
+    const item = await declareItem(tools, source, { kind: 'automatic' });
+    const first = await produceCandidate(tools, item.workingDirectory, 'same-path.mp4', source);
+    appendCheck(tools.session, 'decode_video', first.path, decodableEvidence(first.path));
+    expect((await validateCandidate(tools, item.outputItemId, first.path)).checks[0]?.outcome).toBe('passed');
+
+    const second = await produceCandidate(tools, item.workingDirectory, 'same-path.mp4', otherSource);
+    await writeFile(second.path, 'candidate from source b');
+    // 补齐新文件检查仍不能修复来源错误；只允许最新生产事实决定当前候选归属。
+    appendCheck(tools.session, 'decode_video', second.path, decodableEvidence(second.path));
+    const result = await runTool(tools.session, tools.validate, {
+      outputItemId: item.outputItemId,
+      candidatePath: second.path,
+    });
+    expect(result).toMatchObject({ status: 'error', message: expect.stringContaining('来源匹配') });
+    expect(readVideoDeliveryFacts(tools.session.events()).validations).toHaveLength(1);
+    expect(await readFile(second.path, 'utf8')).toBe('candidate from source b');
+  });
+
   it('rejects a merge candidate that includes an undeclared source', async () => {
     const directory = await temporaryDirectory();
     const tools = createDeliveryTools();

@@ -196,6 +196,12 @@ describe('projectAgentActivity', () => {
     }, events)).toEqual({
       id: 'call-1', kind: 'tool', status: 'failed', toolName: 'trim_video', durationMs: 120, files,
     });
+    expect(projectAgentActivity({
+      type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1,
+    }, events)).toEqual({ id: 'call-1', kind: 'tool', status: 'cancelled', toolName: 'trim_video', files });
+    expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, [
+      ...events, { type: 'tool.result', turnId, stepId, toolCallId, result: { status: 'success', output: {} } },
+    ])).toBeUndefined();
   });
 
   it('uses the successful edit result path for the completed file-change activity', () => {

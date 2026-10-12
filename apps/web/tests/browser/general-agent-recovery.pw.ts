@@ -90,7 +90,7 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     databasePath = await app.evaluate(({ app }) => `${app.getPath('userData')}/agent-desktop.sqlite`);
     expect(resolve(databasePath)).toBe(resolve(profile, 'agent-desktop.sqlite'));
     // 模型密钥沿用原恢复测试的进程配置，只验收会话恢复，不覆盖系统密钥存储。
-    await page.evaluate(() => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, whisperModelPath: null }));
+    await page.evaluate(() => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false }));
 
     // 保留普通入口的未提交草稿；首次正式消息来自项目里的另一份输入草稿。
     await page.getByLabel('剪辑需求').fill(sparePrompt);
