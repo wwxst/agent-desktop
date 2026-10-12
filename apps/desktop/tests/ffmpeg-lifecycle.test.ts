@@ -5,6 +5,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { DesktopExtensions } from '../src/main/extensions.js';
 import { installFFmpegRuntime } from '../src/main/ffmpeg-runtime.js';
 
+// 本套已替换下载边界；间接加载的其它媒体运行时不能再触发 Electron 或外网下载。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in FFmpeg lifecycle test'); } } }));
+
 // 下载及程序边界在专属用例验证；本用例检查真实暂存、数据库和版本目录的组合行为。
 vi.mock('../src/main/ffmpeg-runtime.js', () => ({ installFFmpegRuntime: vi.fn(async (directory: string) => {
   await mkdir(join(directory, 'runtime/bin'), { recursive: true });

@@ -11,6 +11,9 @@ import { createVideoAgent, readVideoDeliveryFacts } from '@agent-desktop/video-a
 import { prepareExtensions } from '../src/main/extension-runtime.js';
 import type { PluginFiles } from '../src/main/extensions.js';
 
+// 保留真实文件和 MCP；本套不使用 Electron 运行资源或模型下载入口。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in Whisper test'); } } }));
+
 const context: ToolExecutionContext = { toolCallId: 'whisper-test' as never, reportProgress: () => {} };
 const roots: string[] = [];
 const rawTool = (result: Awaited<ReturnType<Tool['execute']>>): Tool => ({

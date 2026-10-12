@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExtensions, readPlugin } from '../src/main/extensions.js';
 import { readDesktopDocument } from '../src/main/desktop-database.js';
 
+// 本套使用真实文件和 SQLite；Electron 运行资源下载不属于这些安装用例。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extensions test'); } } }));
+
 // 只替换真实文件系统边界的 rename，其他读写与数据库保持真实。
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();

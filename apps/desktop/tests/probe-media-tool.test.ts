@@ -14,6 +14,9 @@ import type { PluginFiles } from '../src/main/extensions.js';
 import { taskToolGate } from '../src/main/agent-task-state.js';
 import { parseDesktopState } from '../src/main/session-persistence.js';
 
+// 保留真实 ffprobe、FFmpeg 和 MCP 调用；本套不使用 Electron 运行资源下载入口。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in Probe test'); } } }));
+
 let directory: string;
 let workspace: string;
 let selected: string[];

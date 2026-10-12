@@ -14,6 +14,9 @@ import type { ProbeFileAccess } from '../src/main/ffmpeg-tool.js';
 import { prepareExtensions } from '../src/main/extension-runtime.js';
 import type { PluginFiles } from '../src/main/extensions.js';
 
+// 保留真实回环 HTTP 和 MCP；Electron 运行资源下载不属于视觉适配器用例。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in Vision test'); } } }));
+
 const context: ToolExecutionContext = { toolCallId: 'vision-test' as never, reportProgress: () => {} };
 const roots: string[] = [];
 const observation = (timestamps: readonly number[]) => ({ summary: '红色画面', frames: timestamps.map(timestamp => ({

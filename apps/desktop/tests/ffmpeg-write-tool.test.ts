@@ -13,6 +13,9 @@ import { adaptFFmpegTool, authorizeVideoDeliveryTool, type ProbeFileAccess } fro
 import type { PluginFiles } from '../src/main/extensions.js';
 import { taskToolGate } from '../src/main/agent-task-state.js';
 
+// 保留真实 FFmpeg 和 MCP 调用；本套不使用 Electron 运行资源下载入口。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in FFmpeg write test'); } } }));
+
 const context = { toolCallId: 'test' as never, reportProgress: () => {} };
 const executable = (name: string) => execFileSync(process.platform === 'win32' ? 'where.exe' : 'which', [name], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
 const mediaInfo = (path: string) => JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', path], { encoding: 'utf8' })) as {

@@ -15,6 +15,9 @@ import { readPlugin, readSkill, type PluginFiles } from '../src/main/extensions.
 import { taskToolGate } from '../src/main/agent-task-state.js';
 import { ToolApprovalGate } from '../src/main/tool-approval.js';
 
+// 本套使用真实 MCP；只替换未消费的 Electron 下载入口，避免 Node 测试加载桌面二进制。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extension runtime test'); } } }));
+
 const temporary: string[] = [];
 async function temp() { const path = await mkdtemp(join(tmpdir(), 'extension-runtime-')); temporary.push(path); return path; }
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(temporary.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
