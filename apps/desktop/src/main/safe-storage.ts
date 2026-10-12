@@ -1,5 +1,5 @@
 import { watch } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 export interface SafeStoragePort {
@@ -27,8 +27,8 @@ async function hasPersistedKey(path: string): Promise<boolean> {
 
 /** Windows 首次启动的主密钥由 Chromium 延迟约十秒写入；文件事件只负责唤醒重新读取。 */
 export async function waitForSafeStorageKey(path: string): Promise<void> {
-  // 先建立监视再读现有文件，避免密钥恰好写入两步之间时漏掉唯一事件。
-  const watcher = watch(dirname(path), { persistent: false });
+  // Windows 短路径别名会触发 libuv 的目录前缀断言；监视真实目录，仍先监视再读密钥内容。
+  const watcher = watch(await realpath(dirname(path)), { persistent: false });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await new Promise<void>((resolve, reject) => {

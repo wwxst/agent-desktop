@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import * as files from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as secretStorage from '../src/main/safe-storage.js';
 import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
@@ -27,6 +29,7 @@ describe('Windows safe storage key persistence', () => {
     const completed = vi.fn();
     const pending = secretStorage.waitForSafeStorageKey(path).then(completed);
     // 先完成初次真实读取，再替换文件；不让测试自身的写入与未关闭的读取句柄竞争。
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
     await read.mock.results[0]!.value;
     await writeFile(join(directory, 'unrelated'), 'event');
     expect(completed).not.toHaveBeenCalled();
@@ -35,6 +38,26 @@ describe('Windows safe storage key persistence', () => {
     await rename(staged, path);
     await pending;
     expect(completed).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform !== 'win32')('watches a real Windows short path without aborting the native process', async () => {
+    const directory = await temp(); const command = join(directory, 'short-alias.cmd');
+    await writeFile(command, '@echo %~s1\r\n');
+    const shortDirectory = execFileSync('cmd.exe', ['/d', '/c', command, directory], { encoding: 'utf8', windowsHide: true }).trim();
+    expect(shortDirectory).not.toBe(await files.realpath(directory));
+    const source = pathToFileURL(fileURLToPath(new URL('../src/main/safe-storage.ts', import.meta.url))).href;
+    // 原缺陷会直接终止进程，不能在 Vitest 工作进程内尝试；子进程必须成功完成真实字段检查。
+    const child = spawnSync(process.execPath, ['--experimental-transform-types', '--input-type=module', '-e', `
+      import { writeFile } from 'node:fs/promises';
+      import { join } from 'node:path';
+      import { waitForSafeStorageKey } from ${JSON.stringify(source)};
+      const path = join(process.argv[1], 'Local State');
+      const pending = waitForSafeStorageKey(path);
+      await writeFile(path, JSON.stringify({ os_crypt: { encrypted_key: 'test-key' } }));
+      await pending;
+    `, shortDirectory], { encoding: 'utf8', windowsHide: true, timeout: 25_000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
   });
 
   it('returns immediately for a persisted key and clears its deadline timer', async () => {
@@ -49,6 +72,8 @@ describe('Windows safe storage key persistence', () => {
     const directory = await temp();
     vi.useFakeTimers();
     const pending = expect(secretStorage.waitForSafeStorageKey(join(directory, 'Local State'))).rejects.toThrow('20 秒');
+    // 真实目录解析是异步 I/O；先确认等待已设置期限，再推进假时钟。
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
     await vi.advanceTimersByTimeAsync(20_000);
     await pending;
     expect(vi.getTimerCount()).toBe(0);
