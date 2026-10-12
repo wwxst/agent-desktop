@@ -104,7 +104,11 @@ describe('Vision host adapter', () => {
 
   it.each(['responses', 'chat-completions'] as const)('runs the bundled service and selected provider over real MCP and HTTP: %s', async protocol => {
     const root = await mkdtemp(join(tmpdir(), 'vision-interoperability-')); roots.push(root);
-    const script = join(root, 'vision.cjs'); const image = join(root, '中文 frame.png');
+    const script = join(root, 'vision.cjs');
+    const imageDirectory = join(root, ...Array.from({ length: 6 }, (_, index) => `中文 空格 ${index}-${'path'.repeat(7)}`));
+    await mkdir(imageDirectory, { recursive: true });
+    const image = join(imageDirectory, '中文 frame.png');
+    expect(image.length).toBeGreaterThan(260);
     await writeFile(image, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64'));
     await build({ entryPoints: [resolve('apps/desktop/src/plugins/vision.ts')], outfile: script, bundle: true, platform: 'node', format: 'cjs' });
     const requests: { path: string | undefined; key: string | undefined; body: Record<string, unknown> }[] = [];

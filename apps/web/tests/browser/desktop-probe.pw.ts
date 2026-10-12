@@ -166,9 +166,12 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await expect.poll(pids).toBe('');
     cancellationProcesses = { before: activePids, after: pids() };
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'allow'; });
+    // 语义交付显式安装独立视觉插件；前面的 Probe 审批仍只覆盖 FFmpeg。
+    await page.evaluate(() => window.agentDesktop.extensions.install('plugin:vision'));
     const before = (await approvals()).filter(request => request.kind === 'plugin-tool').length;
     const delivered = await run('delivery');
-    expect((await approvals()).filter(request => request.kind === 'plugin-tool')).toHaveLength(before + 5);
+    expect((await approvals()).filter(request => request.kind === 'plugin-tool')).toHaveLength(before + 6);
+    expect((await approvals()).filter(request => request.kind === 'plugin-tool' && request.serverName === 'vision')).toHaveLength(1);
     expect(JSON.parse(delivered.results[4]!), delivered.results[4]).toMatchObject({ coverage: 'all-frames-and-transcript', frameCount: 3, checks: [{ outcome: 'passed' }] });
     const validation = JSON.parse(delivered.results[5]!) as { validation: { checks: { outcome: string; evidenceToolCallIds: string[] }[] } };
     expect(validation.validation.checks.every(check => check.outcome === 'passed')).toBe(true);

@@ -155,8 +155,10 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', images: true }] }, conversationModel: { providerId: 'fixture', modelId: 'fixture' }, visionModel: { providerId: 'fixture', modelId: 'fixture' } }), `http://127.0.0.1:${address.port}`);
     const existingWhisper = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:whisper');
     const existingFfmpeg = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:ffmpeg');
+    const existingVision = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:vision');
     if (existingFfmpeg?.enabled === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:ffmpeg', false));
     if (existingWhisper?.enabled === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:whisper', false));
+    if (existingVision?.enabled === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:vision', false));
     expect((await run('ordinary')).tools).not.toContain('transcribe_audio');
     if (existingWhisper?.installed !== true) {
       await page.getByRole('button', { name: '插件和技能', exact: true }).click();
@@ -221,7 +223,11 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
       expect((await page.evaluate(() => window.agentDesktop.extensions.list())).whisperModel).toMatchObject({ status: 'error', message: expect.stringContaining('SHA-256') });
     } finally { await modelFile.write(originalByte, 0, 1, 0); await modelFile.close(); }
     expect(JSON.parse((await run('model-restored', english)).results[0]!)).toMatchObject({ text: expect.stringMatching(/camera/i) });
+    // 语音独立验收完成后才启用视觉；语义验收显式拥有所需的独立插件。
+    if (existingVision?.installed === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:vision', true));
+    else await page.evaluate(() => window.agentDesktop.extensions.install('plugin:vision'));
     const semantic = await run('semantic', video);
+    expect(semantic.tools.filter(name => name === 'analyze_images')).toHaveLength(1);
     expect(JSON.parse(semantic.results[3]!)).toMatchObject({ coverage: 'all-frames-and-transcript', evidence: { transcript: { text: expect.stringMatching(/camera/i) } }, checks: [{ outcome: 'passed' }] });
     expect(JSON.parse(semantic.results[4]!)).toMatchObject({ validation: { checks: [{ outcome: 'passed' }, { outcome: 'passed' }] } });
     expect((await stat((JSON.parse(semantic.results[5]!) as { output: { path: string } }).output.path)).size).toBeGreaterThan(0);
