@@ -7,7 +7,7 @@ import { DEFAULT_MODEL_PROVIDERS } from '../src/model-defaults.js';
 import { ModelProvidersSettings } from '../src/components/ModelProvidersSettings.js';
 
 afterEach(cleanup);
-const initial: RuntimeSettings = { modelProviders: DEFAULT_MODEL_PROVIDERS, conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, whisper: { modelPath: '', cliPath: '' }, memoryEnabled: true, memoryFromToolChatsEnabled: true };
+const initial: RuntimeSettings = { modelProviders: DEFAULT_MODEL_PROVIDERS, conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, memoryEnabled: true, memoryFromToolChatsEnabled: true };
 function setup(save = vi.fn<AgentClientApi['saveRuntimeSettings']>(async () => initial), list = vi.fn<AgentClientApi['listProviderModels']>(async () => []), settings = initial) {
   // 本组件只消费这三个宿主方法，其余方法由 App 的完整契约测试覆盖。
   const api = { saveRuntimeSettings: save, listProviderModels: list, openModelConfig: async () => {} };

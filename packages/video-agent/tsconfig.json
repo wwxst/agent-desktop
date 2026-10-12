@@ -10,7 +10,6 @@
     { "path": "../agent" },
     { "path": "../model-deepseek" },
     { "path": "../session" },
-    { "path": "../speech-whisper-cpp" },
     { "path": "../system-prompt" },
     { "path": "../tools" },
     { "path": "../vision-openai" }

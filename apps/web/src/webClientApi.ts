@@ -21,7 +21,6 @@ export function createWebClientApi(): AgentClientApi {
     modelProviders: structuredClone(DEFAULT_MODEL_PROVIDERS),
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
     visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
-    whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
   };
@@ -90,8 +89,7 @@ export function createWebClientApi(): AgentClientApi {
       settings = { ...settings, modelProviders: providers,
         conversationModel: update.conversationModel ?? settings.conversationModel,
         visionModel: update.visionModel === undefined ? settings.visionModel : update.visionModel,
-        ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }),
-        whisper: { modelPath: update.whisperModelPath === undefined ? settings.whisper.modelPath : update.whisperModelPath ?? '', cliPath: update.whisperCliPath === undefined ? settings.whisper.cliPath : update.whisperCliPath ?? '' } };
+        ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }) };
       if (update.memoryEnabled !== undefined) settings = { ...settings, memoryEnabled: update.memoryEnabled };
       if (update.memoryFromToolChatsEnabled !== undefined) settings = { ...settings, memoryFromToolChatsEnabled: update.memoryFromToolChatsEnabled };
       return settings;

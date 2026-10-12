@@ -1,9 +1,15 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { build } from 'esbuild';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { adaptWhisperTool, type WhisperFileAccess } from '../src/main/whisper-tool.js';
+import { InMemorySession } from '@agent-desktop/session';
+import { createVideoAgent, readVideoDeliveryFacts } from '@agent-desktop/video-agent';
+import { prepareExtensions } from '../src/main/extension-runtime.js';
+import type { PluginFiles } from '../src/main/extensions.js';
 
 const context: ToolExecutionContext = { toolCallId: 'whisper-test' as never, reportProgress: () => {} };
 const roots: string[] = [];
@@ -12,9 +18,67 @@ const rawTool = (result: Awaited<ReturnType<Tool['execute']>>): Tool => ({
   execute: vi.fn(async () => result),
 });
 
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 describe('Whisper host adapter', () => {
+  it('keeps a progressing Whisper call alive beyond the SDK wait timeout without a total duration cap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'whisper-progress-')); roots.push(root);
+    const script = join(root, 'server.cjs'); const model = join(root, 'model.bin'); const audio = join(root, 'audio.wav');
+    await writeFile(model, 'model'); await writeFile(audio, 'WAV');
+    // 真实宿主、服务和 SDK；只缩短计时并替换昂贵推理，验证等待超时的协议行为。
+    await build({ entryPoints: [resolve('apps/desktop/src/plugins/whisper.ts')], outfile: script, bundle: true, platform: 'node', format: 'cjs',
+      plugins: [{ name: 'speech-boundary', setup(builder) {
+        builder.onResolve({ filter: /^@agent-desktop\/speech-whisper-cpp$/ }, () => ({ path: 'speech', namespace: 'fixture' }));
+        builder.onResolve({ filter: /^node:timers\/promises$/ }, () => ({ path: 'timer', namespace: 'fixture' }));
+        builder.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({ contents: path === 'speech'
+          ? `exports.TranscribeAudioTool = class { name = 'transcribe_audio'; description = 'WAV'; inputSchema = {type:'object',properties:{audioPath:{type:'string'}}}; async execute() { await new Promise(done => setTimeout(done, 700)); return {status:'success',output:{text:'spoken',segments:[{start:0,end:1,text:'spoken'}]}}; } };`
+          : `exports.setInterval = (_delay, value, options) => process.getBuiltinModule('timers/promises').setInterval(40, value, options);` }));
+      } }] });
+    const original = Client.prototype.callTool; const updates: unknown[] = [];
+    const request = vi.spyOn(Client.prototype, 'callTool').mockImplementation(function (this: Client, ...args) {
+      const options = args[2];
+      return original.call(this, args[0], args[1], { ...options, timeout: 250,
+        onprogress: progress => { updates.push(progress); options?.onprogress?.(progress); } });
+    });
+    const plugin: PluginFiles = { name: 'whisper', directory: root, skills: [], item: { id: 'plugin:whisper', name: 'Whisper', description: '', kind: 'plugin', source: 'builtin', enabled: true, installed: true }, servers: [{ name: 'whisper', command: 'node', args: [script] }] };
+    const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, undefined, undefined,
+      { whisperEnvironment: { WHISPER_CLI_PATH: process.execPath, WHISPER_MODEL_PATH: model }, whisperAccess: { workspace: { confirmedDirectory: () => root }, attachments: () => [], events: () => [] } });
+    try {
+      expect(await runtime.tools[0]!.execute({ audioPath: audio }, context)).toEqual({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 1, text: 'spoken' }] } });
+      expect(request.mock.calls[0]?.[2]).toMatchObject({ resetTimeoutOnProgress: true });
+      expect(request.mock.calls[0]?.[2]?.maxTotalTimeout).toBeUndefined();
+      expect(updates.length).toBeGreaterThan(1);
+    } finally { await runtime.close(); }
+  });
+  it('shares only authorized candidate-derived WAVs and rejects an attachment neighbour or directory junction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'whisper-derived-')); roots.push(root);
+    const outside = join(root, 'attachments'); const workspace = join(root, 'workspace'); await mkdir(outside); await mkdir(workspace);
+    const video = join(outside, 'source.mp4'); await writeFile(video, 'source');
+    const session = new InMemorySession(); const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+    const result = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [video], target: { kind: 'automatic' } }] }, context);
+    session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} });
+    session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, result });
+    const wav = join(readVideoDeliveryFacts(session.events()).items[0]!.workingDirectory, 'audio.wav'); await writeFile(wav, 'audio');
+    const raw = rawTool({ status: 'success', output: { structuredContent: { text: 'spoken', segments: [{ start: 0, end: 1, text: 'spoken' }] } } });
+    const access: WhisperFileAccess = { workspace: { confirmedDirectory: () => workspace }, attachments: () => [video], events: () => session.events() };
+    expect(await adaptWhisperTool(raw, access).execute({ audioPath: wav, modelPath: 'sensitive-file' }, context)).toMatchObject({ status: 'success' });
+    expect(raw.execute).toHaveBeenLastCalledWith({ audioPath: expect.any(String) }, context);
+    const neighbour = join(outside, 'neighbour.wav'); await writeFile(neighbour, 'audio');
+    await symlink(outside, join(workspace, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    for (const path of [neighbour, join(workspace, 'escape', 'neighbour.wav')]) expect(await adaptWhisperTool(raw, access).execute({ audioPath: path }, context)).toMatchObject({ status: 'error' });
+    expect(raw.execute).toHaveBeenCalledOnce();
+  });
+  it('isolates a failed Whisper MCP connection and preserves other capabilities without any fallback', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'whisper-connection-')); roots.push(root);
+    const script = join(root, 'closed.cjs'); await writeFile(script, 'process.exit(1)');
+    const plugin: PluginFiles = { name: 'whisper', directory: root, skills: [], item: { id: 'plugin:whisper', name: 'Whisper', description: '', kind: 'plugin', source: 'builtin', enabled: true, installed: true }, servers: [{ name: 'whisper', command: 'node', args: [script] }] };
+    const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true);
+    try { expect(runtime.tools).toEqual([]); expect(runtime.instructions).toContain('Whisper 连接失败'); }
+    finally { await runtime.close(); }
+    const refused = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => false);
+    try { expect(refused.tools).toEqual([]); } finally { await refused.close(); }
+  });
+
   it('preserves the public transcript contract and canonicalizes an authorized path', async () => {
     const root = await mkdtemp(join(tmpdir(), 'whisper-adapter-')); roots.push(root);
     const audio = join(root, '中文 audio.wav'); await writeFile(audio, 'RIFF fixture');

@@ -12,7 +12,6 @@ import {
 } from '@agent-desktop/local-tools';
 import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type Session } from '@agent-desktop/session';
-import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
@@ -61,8 +60,6 @@ export interface VideoAgentOptions {
   readonly modelProtocol?: 'chat-completions' | 'responses';
   readonly modelMaxOutputTokens?: number;
   readonly useDeepSeekThinking?: boolean;
-  readonly whisperModelPath?: string;
-  readonly whisperCliPath?: string;
   readonly visionApiKey?: string;
   readonly visionBaseUrl?: string;
   readonly visionModel?: string;
@@ -118,14 +115,6 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
       visionOptionsFor(options, options.visionApiKey),
     ));
   }
-  if (options.whisperModelPath !== undefined) {
-    tools.register(new TranscribeAudioTool(
-      options.whisperCliPath === undefined
-        ? { modelPath: options.whisperModelPath }
-        : { modelPath: options.whisperModelPath, command: options.whisperCliPath },
-    ));
-  }
-
   // 交付闭环：声明预期集合、用真实证据验收候选、只把全项通过的候选发布为最终交付文件。
   tools.register(new DeclareVideoOutputsTool(readEvents));
   tools.register(new ValidateVideoCandidateTool(readEvents));
@@ -134,8 +123,6 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     model: new DeepSeekModel(modelOptionsFor(options)),
     mediaTools,
     ...(options.visionApiKey === undefined || !options.visionApiKey ? {} : { vision: new AnalyzeImagesTool(visionOptionsFor(options, options.visionApiKey)) }),
-    ...(options.whisperModelPath === undefined ? {} : { speech: new TranscribeAudioTool({ modelPath: options.whisperModelPath,
-      ...(options.whisperCliPath === undefined ? {} : { command: options.whisperCliPath }) }) }),
   }));
 
   const modelOptions = modelOptionsFor(options);

@@ -47,7 +47,7 @@ export function buildAgentPrompt(
         : [
             '本次没有选择主视频，只有音轨文件：',
             ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
-            '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
+            '不要把这些音轨当作可剪辑的主视频；WAV 可交给已安装的 transcribe_audio 识别语音，也可作为 add_audio 的声音来源。',
           ]),
     ].join('\n');
   }
@@ -56,10 +56,10 @@ export function buildAgentPrompt(
     prompt,
     '',
     ...videos.map((video, index) => `输入视频 ${index + 1}：${toPromptPath(video.path)}`),
-    // 音轨单独成段：它的用途是配合 add_audio 替换或叠加声音，不是第二个可拼接的视频。
+    // 音轨单独成段：可独立识别或用于配音，不能作为第二个可拼接的视频。
     ...(audios.length === 0 ? [] : [
       '',
-      '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
+      '可用音轨（可用 transcribe_audio 识别 WAV 语音，或用 add_audio 配合主视频；不要当作视频输入）：',
       ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
     ]),
   ].join('\n');

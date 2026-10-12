@@ -3,7 +3,7 @@
   "arch": "x64",
   "version": "1.7.6",
   "url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.7.6/whisper-bin-x64.zip",
-  "sha256": "0d2eca299c248f965bd0341bcb219dd4b433c7f0c0ce2200d4df85765e8156a9",
+  "sha256": "0d2eca299c248f965bd0341bcb219db4b433c7f0c0ce2200d4df85765e8156a9",
   "archiveRoot": "Release",
   "files": {
     "whisper-cli.exe": { "sha256": "b7c6dc2e999a80bc2d23cd4c76701211f392ae55d5cabdf0d45eb2ca4faf09af", "size": 480256 },

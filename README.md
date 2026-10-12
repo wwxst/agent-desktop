@@ -8,6 +8,8 @@
 
 Desktop 的十四项 FFmpeg 专业工具由独立“FFmpeg”插件提供；Windows x64 用户在插件页安装后即可使用，无需另装 Node、FFmpeg 或填写程序路径。安装从可信固定来源下载并校验 FFmpeg 8.1.2，支持禁用、更新、回滚和卸载。“语义视频剪辑”仅提供工作方法并声明工具依赖。缺少 FFmpeg 插件时普通任务继续，依赖媒体工具的验收明确受阻；CLI 仍显式使用本机实现。权限、结果契约及分发边界见 [FFmpeg 插件边界](docs/architecture.md#desktop-ffmpeg-插件) 和 [验收记录](docs/acceptance/ffmpeg-plugin-20261011.md)。
 
+Whisper 独立提供 `transcribe_audio`：插件详情安装官方 CPU 运行资源及 Small 多语言模型，支持本地导入、完整性检查和模型删除；卸载插件保留模型。可独立识别 WAV，也可与 FFmpeg 和视频剪辑技能组合。禁用或卸载后没有 Desktop 内置语音回退，带音轨的语义验收明确受阻。边界及真实安装版证据见 [Whisper 插件](docs/architecture.md#desktop-whisper-插件) 和 [第三阶段验收](docs/acceptance/whisper-plugin-baseline-20261012.md)。
+
 技能支持 `agents/openai.yaml` 的图标、展示信息、工具依赖与显式调用策略，元数据缓存、正文按需加载。外部改文件后管理页自动刷新；“刷新”同步内置资源与市场目录，详情可检查更新并回滚。远程工具支持 HTTP/SSE 传输、加密配置和浏览器账户授权；命令钩子执行前审批。实现与外部服务边界见 [三轮核对记录](docs/acceptance/codex-extensions-three-reviews-20261004.md)。
 
 ```text
@@ -121,7 +123,7 @@ pnpm deepseek-agent
 
 视觉分析会先抽取六张代表性 JPG，再通过 OpenAI Vision 返回结构化画面描述；本地语音理解会先由 FFmpeg 提取单声道 16 kHz 16-bit PCM WAV，再由 whisper.cpp 在本机返回完整文字和按秒的段落时间轴；DeepSeek 负责调用 Tool 和回答问题。运行视觉分析需要 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ffmpeg` 和 `ffprobe`；运行本地语音理解需要 `DEEPSEEK_API_KEY`、`WHISPER_MODEL_PATH`、`ffmpeg`、`ffprobe` 和本机 `whisper-cli`，也可以通过 `WHISPER_CLI_PATH` 指定可执行文件路径。
 
-本地语音 Tool 接入、自动化测试、真实 FFmpeg WAV 提取、真实 whisper.cpp JSON 时间轴和 DeepSeek + Local Speech 端到端链路均已验证。`transcribe_audio` 返回完整 `text`，并通过 `segments.start`、`segments.end` 和 `segments.text` 表示每段语音在视频第几秒说了什么。真实运行仍需要在仓库外准备官方 whisper.cpp `whisper-cli` 和 `ggml-small.bin`。
+本地语音 Tool 接入、自动化测试、真实 FFmpeg WAV 提取、真实 whisper.cpp JSON 时间轴和 Desktop 插件端到端链路均已验证。`transcribe_audio` 返回完整 `text`，并通过 `segments.start`、`segments.end` 和 `segments.text` 表示每段语音在视频第几秒说了什么。Desktop 的 Whisper 插件在 Windows x64 上从锁定的官方来源安装 CPU 运行资源，模型在插件详情中单独下载或导入并校验；不要求用户安装 Node、配置 `WHISPER_CLI_PATH` 或填写模型路径。CLI 仍是显式本机实现消费者。
 
 基于内容剪辑时，Agent 会先分析整段画面，在需要时进一步检查局部时间范围，然后自主选择保留片段并使用现有裁剪和拼接 Tool 生成新视频。
 
@@ -133,13 +135,13 @@ pnpm ffmpeg-agent
 
 所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
 
-运行 Desktop（桌面应用）时，文字任务只需要 `DEEPSEEK_API_KEY`；选择视频后执行语音理解类剪辑时还必须提供 `WHISPER_MODEL_PATH`：
+运行 Desktop（桌面应用）时，文字任务只需要当前对话模型的 API 密钥；需要语音理解时，在“插件和技能”中安装 Whisper 插件及其模型：
 
 ```bash
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用已安装 FFmpeg 插件和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
+Desktop 根据任务按需调用已安装 FFmpeg 和 Whisper 插件；视觉分析按需读取 `OPENAI_API_KEY`。`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 仍可用于 CLI 或模型供应商配置。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
 
 ```text
 Layer                 中文名称         职责

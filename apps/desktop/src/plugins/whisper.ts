@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { stat } from 'node:fs/promises';
+import { setInterval } from 'node:timers/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -32,10 +33,32 @@ async function main(): Promise<void> {
       || /^[\\/]{2}/.test(input.audioPath) || /^(?:[a-z][a-z0-9+.-]*:)(?![\\/])/i.test(input.audioPath)) {
       return { isError: true, content: [{ type: 'text', text: 'transcribe_audio 只接受宿主授权的本地绝对 WAV 路径。' }] };
     }
-    const result = await tool.execute(input, { signal: context.signal, toolCallId: context.requestId as never, reportProgress: () => {} });
-    return result.status === 'error'
-      ? { isError: true, content: [{ type: 'text', text: result.message }] }
-      : { structuredContent: result.output as Record<string, unknown>, content: [{ type: 'text', text: JSON.stringify(result.output) }] };
+    const stop = new AbortController();
+    const signal = AbortSignal.any([context.signal, stop.signal]);
+    const started = Date.now();
+    const token = request.params._meta?.progressToken;
+    // SDK 默认等待 60 秒；报告实际运行秒数，让长任务保持连接，不伪造完成百分比。
+    const progress = (async () => {
+      if (token === undefined) return;
+      try {
+        for await (const _ of setInterval(10_000, undefined, { signal })) {
+          await context.sendNotification({ method: 'notifications/progress', params: {
+            progressToken: token, progress: (Date.now() - started) / 1000, message: 'Whisper 正在本地识别。',
+          } });
+        }
+      } catch (error) { if (!signal.aborted) throw error; }
+    })();
+    const executing = tool.execute(input, { signal, toolCallId: context.requestId as never, reportProgress: () => {} });
+    try {
+      const result = await Promise.race([executing, progress.then(() => executing)]);
+      return result.status === 'error'
+        ? { isError: true, content: [{ type: 'text', text: result.message }] }
+        : { structuredContent: result.output as Record<string, unknown>, content: [{ type: 'text', text: JSON.stringify(result.output) }] };
+    } finally {
+      stop.abort();
+      // 通知失败或连接关闭也必须等语音进程和工具临时目录收尾。
+      await Promise.allSettled([executing, progress]);
+    }
   });
 
   process.stdin.once('end', () => { void server.close(); });

@@ -337,9 +337,6 @@ importers:
       '@agent-desktop/session':
         specifier: workspace:*
         version: link:../session
-      '@agent-desktop/speech-whisper-cpp':
-        specifier: workspace:*
-        version: link:../speech-whisper-cpp
       '@agent-desktop/system-prompt':
         specifier: workspace:*
         version: link:../system-prompt

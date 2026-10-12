@@ -3,14 +3,13 @@ import { join, resolve } from 'node:path';
 import type { Model, ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
-import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { readVideoDeliveryFacts, type RequirementCheck } from './delivery.js';
 import type { SessionReader } from './delivery-tools.js';
 import { candidateDigest } from './candidate-digest.js';
 import { isInsideDirectory } from './delivery-tools.js';
 
 export interface SemanticCheckOptions {
-  readonly model: Model; readonly vision?: AnalyzeImagesTool; readonly speech?: TranscribeAudioTool;
+  readonly model: Model; readonly vision?: AnalyzeImagesTool;
   readonly mediaTools?: readonly Tool[];
 }
 /** 验收独立消费候选实际内容；父模型只提交身份，不能填写通过或覆盖范围。 */
@@ -68,18 +67,19 @@ export class CheckVideoSemanticsTool implements Tool {
       }
       let transcript: unknown = { text: '', segments: [], hasAudio: false };
       if (media.audioCodec !== null) {
-        if (this.options.speech === undefined) return blocked('候选有音轨，但未配置本地语音识别；不能省略声音内容验收。');
+        const speech = this.options.mediaTools?.find(tool => tool.name === 'transcribe_audio');
+        if (speech === undefined) return blocked('候选有音轨，但未配置本地语音识别；不能省略声音内容验收。');
         const wav = join(temporary, 'audio.wav');
         const extractAudio = this.options.mediaTools?.find(tool => tool.name === 'extract_audio');
         if (extractAudio === undefined) return blocked('未提供 extract_audio，不能检查候选声音。');
         const audio = await extractAudio.execute({ videoPath: inputPath, outputPath: wav }, context);
         if (audio.status === 'error') return blocked(`提取候选声音失败：${audio.message}`);
-        const speech = await this.options.speech.execute({ audioPath: wav }, context);
-        if (speech.status === 'error') return blocked(`语音检查失败：${speech.message}`);
-        const spoken = speech.output as { segments?: Array<{ start: number; end: number }>; text?: unknown };
+        const transcribed = await speech.execute({ audioPath: wav }, context);
+        if (transcribed.status === 'error') return blocked(`语音检查失败：${transcribed.message}`);
+        const spoken = transcribed.output as { segments?: Array<{ start: number; end: number }>; text?: unknown };
         if (typeof spoken.text !== 'string' || !Array.isArray(spoken.segments) || media.duration === null
           || spoken.segments.some((segment) => segment.start < 0 || segment.end < segment.start || segment.end > media.duration! + 0.1)) return blocked('语音时间轴与候选时长不一致。');
-        transcript = speech.output;
+        transcript = transcribed.output;
       }
       if (Buffer.byteLength(JSON.stringify(observations), 'utf8') > 250_000) return blocked('完整视觉观察超过当前单次判定的上下文预算。');
       const judged = await this.options.model.complete({

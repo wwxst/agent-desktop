@@ -5,8 +5,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installFFmpegRuntime } from '../src/main/ffmpeg-runtime.js';
 
-const boundary = vi.hoisted(() => ({ execute: vi.fn(), platform: vi.fn(() => 'win32'), arch: vi.fn(() => 'x64') }));
+const boundary = vi.hoisted(() => ({ execute: vi.fn(), platform: vi.fn(() => 'win32'), arch: vi.fn(() => 'x64'), failRuntimeRename: false, runtimeRenameAttempts: 0 }));
 vi.mock('electron', () => ({ net: { fetch: (...args: Parameters<typeof fetch>) => fetch(...args) } }));
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual, rename: async (source: string, destination: string) => {
+    if (source.endsWith('ffmpeg-fixture')) {
+      boundary.runtimeRenameAttempts += 1;
+      if (boundary.failRuntimeRename) { boundary.failRuntimeRename = false; throw Object.assign(new Error('sharing violation'), { code: 'EPERM' }); }
+    }
+    return actual.rename(source, destination);
+  } };
+});
 vi.mock('node:os', async original => ({ ...await original<typeof import('node:os')>(), platform: boundary.platform, arch: boundary.arch }));
 vi.mock('node:child_process', async original => {
   const actual = await original<typeof import('node:child_process')>();
@@ -14,7 +24,7 @@ vi.mock('node:child_process', async original => {
   return { ...actual, execFile: Object.assign(() => {}, { [promisify.custom]: boundary.execute }) };
 });
 const roots: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); boundary.execute.mockReset(); boundary.platform.mockReturnValue('win32'); boundary.arch.mockReturnValue('x64'); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); boundary.execute.mockReset(); boundary.platform.mockReturnValue('win32'); boundary.arch.mockReturnValue('x64'); boundary.failRuntimeRename = false; boundary.runtimeRenameAttempts = 0; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const hash = (data: string) => createHash('sha256').update(data).digest('hex');
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'ffmpeg-install-')); roots.push(root);
@@ -36,6 +46,12 @@ async function fixture() {
 }
 
 describe('controlled FFmpeg runtime installation boundary', () => {
+  it.skipIf(process.platform !== 'win32')('retries a transient Windows lock on the extracted runtime directory', async () => {
+    const { staging, cache } = await fixture(); boundary.failRuntimeRename = true;
+    await installFFmpegRuntime(staging, cache);
+    expect(boundary.runtimeRenameAttempts).toBe(2);
+    expect(await readFile(join(staging, 'runtime/LICENSE'), 'utf8')).toBe('GPLv3');
+  });
   it('verifies archive and executables, keeps vendor notices and reuses only a verified cache', async () => {
     const { staging, cache, fetcher } = await fixture();
     await installFFmpegRuntime(staging, cache);

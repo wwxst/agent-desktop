@@ -1,4 +1,6 @@
-import { access, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolExecutionContext } from '@agent-desktop/tools';
 import { executeFileCommand, TranscribeAudioTool, type CommandExecutor } from '../src/index.js';
@@ -26,6 +28,19 @@ async function writeWhisperOutput(args: readonly string[], contents: string): Pr
 }
 
 describe('whisper.cpp speech tools', () => {
+  it('rejects all-zero PCM16 before a real process can hallucinate speech', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'whisper-silence-'));
+    try {
+      const wav = Buffer.alloc(44 + 32000); wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8, 4);
+      wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20);
+      wav.writeUInt16LE(1, 22); wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28);
+      wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(32000, 40);
+      const path = join(root, 'silent.wav'); await writeFile(path, wav);
+      await expect(executeFileCommand('missing-whisper', ['-m', 'model.bin', '-f', path])).rejects.toThrow('静音');
+      wav[44] = 1; await writeFile(path, wav);
+      await expect(executeFileCommand('missing-whisper', ['-m', 'model.bin', '-f', path])).rejects.toThrow('not found');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('aborts a running whisper child process', async () => {
     const controller = new AbortController();
     const running = executeFileCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], controller.signal);

@@ -9,8 +9,6 @@ interface PersistedRuntimeSettings {
   readonly modelProviders?: readonly ProviderConfig[];
   readonly conversationModel?: RuntimeModelReference;
   readonly visionModel?: RuntimeModelReference | null;
-  readonly whisperModelPath?: string;
-  readonly whisperCliPath?: string;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
 }
@@ -27,8 +25,6 @@ export interface RuntimeConfiguration {
   readonly visionModel?: string;
   readonly visionProtocol?: ModelApiProtocol;
   readonly visionMaxOutputTokens?: number;
-  readonly whisperModelPath?: string;
-  readonly whisperCliPath?: string;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
 }
@@ -95,14 +91,11 @@ function providerUpdate(value: unknown): RuntimeModelProviderUpdate {
 }
 export function parseRuntimeSettingsUpdate(value: unknown): RuntimeSettingsUpdate {
   if (!record(value)) throw new Error('运行时设置更新无效。');
-  const update: { theme?: 'system' | 'light' | 'dark' | null; whisperModelPath?: string | null; whisperCliPath?: string | null; memoryEnabled?: boolean; memoryFromToolChatsEnabled?: boolean;
+  const update: { theme?: 'system' | 'light' | 'dark' | null; memoryEnabled?: boolean; memoryFromToolChatsEnabled?: boolean;
     modelProvider?: RuntimeModelProviderUpdate; deleteModelProviderId?: string; conversationModel?: RuntimeModelReference; visionModel?: RuntimeModelReference | null } = {};
   if (value.theme !== undefined) {
     if (value.theme !== null && !['system', 'light', 'dark'].includes(String(value.theme))) throw new Error('外观模式无效。');
     update.theme = value.theme as 'system' | 'light' | 'dark' | null;
-  }
-  for (const field of ['whisperModelPath', 'whisperCliPath'] as const) {
-    if (value[field] !== undefined) update[field] = value[field] === null ? null : optionalString(value[field], field)!;
   }
   if (value.modelProvider !== undefined) update.modelProvider = providerUpdate(value.modelProvider);
   if (value.deleteModelProviderId !== undefined) update.deleteModelProviderId = text(value.deleteModelProviderId, '供应商 ID');
@@ -138,8 +131,6 @@ export function parseStoredSettings(value: unknown): PersistedRuntimeSettings {
     ...(providers === undefined ? {} : { modelProviders: providers }),
     ...(common.conversationModel === undefined ? {} : { conversationModel: common.conversationModel }),
     ...(common.visionModel === undefined ? {} : { visionModel: common.visionModel }),
-    ...(common.whisperModelPath == null ? {} : { whisperModelPath: common.whisperModelPath }),
-    ...(common.whisperCliPath == null ? {} : { whisperCliPath: common.whisperCliPath }),
     ...(common.memoryEnabled === undefined ? {} : { memoryEnabled: common.memoryEnabled }),
     ...(common.memoryFromToolChatsEnabled === undefined ? {} : { memoryFromToolChatsEnabled: common.memoryFromToolChatsEnabled }) };
 }
@@ -189,7 +180,7 @@ export async function loadRuntimeSettings(path: string, storage: SafeStoragePort
       const key = decrypt(secrets.providerApiKeys?.[provider.id], storage);
       return { ...provider, apiKey: key !== undefined ? { configured: true, source: 'saved' as const }
         : environmentKey(provider.id, environment) === undefined ? { configured: false } : { configured: true, source: 'environment' as const } };
-    }), ...selections(saved, providers), whisper: { modelPath: saved.whisperModelPath ?? '', cliPath: saved.whisperCliPath ?? '' },
+    }), ...selections(saved, providers),
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
@@ -200,8 +191,6 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
   const conversationKey = keyFor(conversation.provider.id);
   const vision = choice.visionModel === null ? undefined : selectedModel(providers, choice.visionModel, true);
   const visionKey = vision === undefined ? undefined : keyFor(vision.provider.id);
-  const whisperModelPath = saved.whisperModelPath ?? envValue(environment, 'WHISPER_MODEL_PATH');
-  const whisperCliPath = saved.whisperCliPath ?? envValue(environment, 'WHISPER_CLI_PATH');
   return { ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
     deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
     useDeepSeekThinking: new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com',
@@ -209,16 +198,15 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
     ...(visionKey === undefined || vision === undefined ? {} : { visionApiKey: visionKey, visionBaseUrl: vision.provider.baseUrl,
       visionModel: vision.model.id, visionProtocol: vision.provider.protocol,
       ...(vision.model.maxOutputTokens === undefined ? {} : { visionMaxOutputTokens: vision.model.maxOutputTokens }) }),
-    ...(whisperModelPath === undefined ? {} : { whisperModelPath }), ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
 export async function saveRuntimeSettings(path: string, update: RuntimeSettingsUpdate, storage: SafeStoragePort): Promise<void> {
   let saved = savedSettings(path); let secrets = savedSecrets(path);
-  for (const field of ['theme', 'whisperModelPath', 'whisperCliPath', 'memoryEnabled', 'memoryFromToolChatsEnabled'] as const) {
+  for (const field of ['theme', 'memoryEnabled', 'memoryFromToolChatsEnabled'] as const) {
     if (update[field] === undefined) continue;
     const next = { ...saved };
-    if (update[field] === null || update[field] === '') delete next[field]; else Object.assign(next, { [field]: update[field] });
+    if (update[field] === null) delete next[field]; else Object.assign(next, { [field]: update[field] });
     saved = next;
   }
   if (update.modelProvider !== undefined || update.deleteModelProviderId !== undefined || update.conversationModel !== undefined || update.visionModel !== undefined) {

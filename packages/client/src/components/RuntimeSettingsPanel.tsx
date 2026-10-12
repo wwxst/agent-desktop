@@ -34,8 +34,6 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
   const [section, setSection] = useState('general');
   const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
   const [settings, setSettings] = useState<RuntimeSettings | null>(null);
-  const [whisperModelPath, setWhisperModelPath] = useState('');
-  const [whisperCliPath, setWhisperCliPath] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [hasError, setHasError] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
@@ -61,8 +59,6 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
     setSettings(next);
     setTheme(next.theme ?? 'system');
     document.documentElement.dataset.theme = next.theme ?? 'system';
-    setWhisperModelPath(next.whisper.modelPath);
-    setWhisperCliPath(next.whisper.cliPath);
   };
 
   useEffect(() => {
@@ -217,15 +213,11 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
               <h1>本地工具</h1>
               <section className="settings-section" aria-labelledby="settings-whisper">
                 <h2 id="settings-whisper">语音识别</h2>
-                <div className="settings-info-row"><div><strong>本机配置</strong><p>读取本机设置或环境变量中的语音程序和模型路径。</p></div><span>{settings.whisper.modelPath ? '模型路径已配置' : '使用环境配置'}</span></div>
-                <details className="settings-advanced"><summary>高级路径设置</summary>
-                <label><span>模型文件路径</span><input value={whisperModelPath} disabled={disabled} onChange={(event) => setWhisperModelPath(event.target.value)} onBlur={() => { if (whisperModelPath !== settings.whisper.modelPath) save({ whisperModelPath: whisperModelPath || null }); }} /></label>
-                <label><span>命令行路径</span><input value={whisperCliPath} disabled={disabled} onChange={(event) => setWhisperCliPath(event.target.value)} onBlur={() => { if (whisperCliPath !== settings.whisper.cliPath) save({ whisperCliPath: whisperCliPath || null }); }} /></label>
-                </details>
+                <button className="instructions-entry" type="button" onClick={() => onOpenExtensions('plugins')}><strong>Whisper</strong><ChevronRight size={17} /></button>
               </section>
               <section className="settings-section" aria-labelledby="settings-ffmpeg">
                 <h2 id="settings-ffmpeg">视频处理</h2>
-                <p className="settings-readonly">通过系统环境变量查找视频处理程序</p>
+                <button className="instructions-entry" type="button" onClick={() => onOpenExtensions('plugins')}><strong>FFmpeg</strong><ChevronRight size={17} /></button>
               </section>
               </div>
               <div hidden={section !== 'extensions'}>
