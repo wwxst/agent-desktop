@@ -29,6 +29,8 @@ Electron 44 的 Windows 全新配置目录中，`safeStorage.encryptString` 已�
 
 第二轮审查另有独立真实 SQLite 反证：`logs/phase5-integration/review-runtime-settings-race.json` 为修前失败；`review-runtime-settings-race-after.json` 为修后通过。旧证据保留，没有覆盖或清理。
 
+最终生产修复后重新执行同一冷配置脚本，证据为 `logs/phase5-integration/safe-storage-acceptance-1791810878878/evidence.json`，日志为 `safe-storage-final-source-acceptance.log`。模型、插件、独立 MCP、OAuth 保存等待 9829–9894 毫秒，保存后 106–169 毫秒内强杀，重启解密匹配；等待时强杀与并发设置场景也通过。六项修复场景全部通过，两个旧缺陷副本按预期失败。证据中的主进程构建 SHA-256 为 `15cc03f679511c9e1697646fcdd8dcc81c9949a2d3aa6007d3c8416c302d3279`，与最终安装资源一致；执行入口仍是构建后的 Electron，不将其改称安装版冷密钥专项。
+
 自动验证：四套相关测试 88/88 通过，生产类型检查、测试类型检查和 `git diff --check` 通过。覆盖实际文件事件、原子替换、期限清理、损坏文件、非缺失读取错误、等待失败不写入、设置并发保存及五类插件/OAuth 写入等待。
 
 ## 准确 Windows CI 暴露的短路径缺陷
@@ -37,7 +39,7 @@ Electron 44 的 Windows 全新配置目录中，`safeStorage.encryptString` 已�
 
 实际 NTFS 短路径反证在独立子进程重现：原 `waitForSafeStorageKey` 和原生短目录监视均退出 `3221226505`，相同目录解析成长路径后原生监视正常。用户指定短路径配置目录也可到达，因此没有只修改测试临时目录掩盖生产问题。最小修复先对监视目录调用 `realpath`，再建立监视，字段读取仍在建立监视之后，原二十秒期限和加密保存边界不变。
 
-修前证据 `logs/safe-storage-short-path-1791809907970/evidence.json` 保留；修后 `safe-storage-short-path-investigation-after.log` 的相同短路径生产子进程退出 0。新增 Windows 实际短路径子进程回归，避免旧原生缺陷终止测试宿主；目录解析成为异步操作后，现有文件事件及期限测试等待其真实准备完成。四套专项现在 89/89 通过。最终安装包和双系统结果以重新构建后的总报告为准，旧安装身份不能证明本增量。
+修前证据 `logs/phase5-integration/safe-storage-short-path-1791809907970/evidence.json` 保留；修后 `safe-storage-short-path-investigation-after.log` 的相同短路径生产子进程退出 0。新增 Windows 实际短路径子进程回归，避免旧原生缺陷终止测试宿主；目录解析成为异步操作后，现有文件事件及期限测试等待其真实准备完成。四套专项现在 89/89 通过。最终安装包和双系统结果以重新构建后的总报告为准，旧安装身份不能证明本增量。
 
 ## 限制与回滚
 
