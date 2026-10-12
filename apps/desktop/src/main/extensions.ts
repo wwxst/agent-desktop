@@ -341,11 +341,11 @@ export class DesktopExtensions {
       return { ...config, id: config.id, enabled: value.enabled };
     });
   }
-  private writeMcpRecords(records: readonly StandaloneMcpRecord[]): void {
+  private async writeMcpRecords(records: readonly StandaloneMcpRecord[]): Promise<void> {
     if (this.connections === undefined) throw new Error('凭据存储不可用。');
-    this.connections.configure('standalone-mcp', 'configuration', { records: JSON.stringify(records) });
+    await this.connections.configure('standalone-mcp', 'configuration', { records: JSON.stringify(records) });
   }
-  saveMcpServer(value: unknown): void {
+  async saveMcpServer(value: unknown): Promise<void> {
     const update = parseMcpUpdate(value); const records = this.mcpRecords();
     const previous = update.id === undefined ? undefined : records.find(server => server.id === update.id);
     if (update.id !== undefined && previous === undefined) throw new Error('找不到 MCP 服务器。');
@@ -354,17 +354,17 @@ export class DesktopExtensions {
     const secrets = (next: Readonly<Record<string, string>>, old: Readonly<Record<string, string>>) => Object.fromEntries(Object.entries(next).map(([key, input]) => [key, input === '' && key in old ? old[key]! : input]));
     const next: StandaloneMcpRecord = { ...update, id: previous?.id ?? `mcp:${randomUUID()}`, enabled: previous?.enabled ?? true,
       environment: secrets(update.environment, previous?.environment ?? {}), headers: secrets(update.headers, previous?.headers ?? {}) };
-    this.writeMcpRecords([...records.filter(server => server.id !== next.id), next]);
+    await this.writeMcpRecords([...records.filter(server => server.id !== next.id), next]);
   }
-  setMcpEnabled(id: string, enabled: boolean): void {
+  async setMcpEnabled(id: string, enabled: boolean): Promise<void> {
     const records = this.mcpRecords();
     if (!records.some(server => server.id === id)) throw new Error('找不到 MCP 服务器。');
-    this.writeMcpRecords(records.map(server => server.id === id ? { ...server, enabled } : server));
+    await this.writeMcpRecords(records.map(server => server.id === id ? { ...server, enabled } : server));
   }
-  removeMcpServer(id: string): void {
+  async removeMcpServer(id: string): Promise<void> {
     const records = this.mcpRecords();
     if (!records.some(server => server.id === id)) throw new Error('找不到 MCP 服务器。');
-    this.writeMcpRecords(records.filter(server => server.id !== id));
+    await this.writeMcpRecords(records.filter(server => server.id !== id));
   }
   private markets(): ExtensionMarketplaces { return this.marketStore ??= new ExtensionMarketplaces(this.databasePath, this.root); }
   /** 监视安装目录与当前项目；目录尚未创建时监视最近存在的父目录。 */
@@ -577,13 +577,13 @@ export class DesktopExtensions {
     if (!plugin?.servers.some(item => item.name === server) && !plugin?.appIds?.includes(server) && !skill?.toolDependencies?.some(dependency => dependency.value === server)) throw new Error('找不到插件连接。');
     if (values.url !== undefined) { const url = new URL(values.url); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('连接地址需要使用 HTTP。'); }
     if (this.connections === undefined) throw new Error('凭据存储不可用。');
-    this.connections.configure(id, server, values);
+    await this.connections.configure(id, server, values);
   }
   async connect(id: string, serverName: string, disconnect = false, workingDirectory?: string): Promise<void> {
     const files = await this.files(workingDirectory); const plugin = files.plugins.find(item => item.item.id === id);
     const server = plugin?.servers.find(item => item.name === serverName) ?? files.mcpServers.find(item => item.id === id && item.server.name === serverName)?.server ?? files.skills.find(item => item.item.id === id)?.toolDependencies?.find(dependency => dependency.value === serverName);
     if (server?.url === undefined || this.connections === undefined) throw new Error('请先配置远程连接地址。');
-    if (disconnect) this.connections.disconnect(id, serverName, server.url);
+    if (disconnect) await this.connections.disconnect(id, serverName, server.url);
     else await this.connections.authorize(id, serverName, server.url);
   }
   versions(id: string): NonNullable<ExtensionItem['versions']> {

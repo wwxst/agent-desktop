@@ -279,6 +279,8 @@ Desktop 使用 SQLite（本地嵌入式数据库）保存现有状态，驱动�
 
 模型设置的唯一目录类型和内置默认项位于 `@agent-desktop/client`；`runtime-settings` 保存供应商地址、协议、模型目录和对话/视觉选择，`runtime-secrets` 按供应商 ID 保存由 Electron `safeStorage`（系统安全存储）加密的密钥。目录与密钥一次 SQLite 事务提交；客户端只接收配置状态与来源。旧固定供应商字段在读取边界转换为新目录，保留原地址、模型与密钥；旧 Whisper 路径不再作为 Desktop 执行来源。
 
+模型密钥、插件配置和 OAuth 令牌共用 `safe-storage.ts` 的加密保存边界。Windows 首次启动时 Electron 内置浏览器将主密钥延迟约十秒写入现有 `userData/Local State`；宿主先监听目录，再读取 `os_crypt.encrypted_key`，确认非空主密钥已持久化后才提交凭据到 SQLite。已有有效主密钥立即继续；文件事件只唤醒重读，不作为保存成功证据。等待最多二十秒，到期或文件损坏、其他读取错误均明确失败，保留原数据库记录。模型密钥等待完成后，宿主再读取最新记录并同步合并提交，保留等待期间已保存的外观和记忆设置。宿主仍使用 Electron 原加密接口，不生成明文凭据文件、复制主密钥或用固定延时冒充持久化。
+
 ```text
 Model Provider           模型供应商        保存 API 地址、协议和模型目录，密钥由桌面宿主加密。
 Model Catalog            模型目录          保存 ID、名称、上下文窗口、输出上限和图片能力。

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { DEFAULT_MODEL_PROVIDERS, type RuntimeModelProviderUpdate } from '@agent-desktop/client';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,8 +11,8 @@ import {
   loadRuntimeConfiguration,
   loadRuntimeSettings,
   saveRuntimeSettings,
-  type SafeStoragePort,
 } from '../src/main/runtime-settings.js';
+import type { SafeStoragePort } from '../src/main/safe-storage.js';
 
 const temporaryDirectories: string[] = [];
 const storage: SafeStoragePort = {
@@ -24,6 +24,8 @@ const storage: SafeStoragePort = {
 async function paths() {
   const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-settings-'));
   temporaryDirectories.push(directory);
+  // 本文件使用加密替身；真实 Windows 主密钥的延迟落盘由安全存储专项与 Electron 验收覆盖。
+  await writeFile(join(directory, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: 'test-key' } }));
   return {
     database: join(directory, 'agent-desktop.sqlite'),
   };

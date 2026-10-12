@@ -157,6 +157,11 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
   writeFile: mainMocks.writeFile,
 }));
 
+vi.mock('../src/main/safe-storage.js', () => ({
+  // 此组装夹具没有真实 Electron 配置目录；系统主密钥持久性在独立专项与冷启动验收验证。
+  encryptSecret: async (_database: string, value: string, storage: { encryptString(value: string): Buffer }) => storage.encryptString(value),
+}));
+
 vi.mock('../src/main/desktop-database.js', async (importOriginal) => {
   mainMocks.writeDesktopDocuments.mockImplementation((_path: string, updates: readonly { name: string; value: object }[]) => {
     for (const update of updates) mainMocks.documents.set(update.name, update.value);

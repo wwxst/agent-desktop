@@ -13,9 +13,13 @@ import { ExtensionConnections } from '../src/main/extension-connections.js';
 import { prepareExtensions, skillCatalog, selectSkills } from '../src/main/extension-runtime.js';
 import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
 
+// 本套只测本地平台及回环 MCP；宿主运行时下载不应触发真实 Electron 或外网。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extension platform test'); } } }));
+
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
-async function temp() { const root = await mkdtemp(join(tmpdir(), 'extension-platform-')); directories.push(root); return root; }
+async function temp() { const root = await mkdtemp(join(tmpdir(), 'extension-platform-')); directories.push(root);
+  await writeFile(join(root, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: 'test-key' } })); return root; }
 async function market(root: string, name = 'test-market') {
   await mkdir(join(root, '.agents/plugins'), { recursive: true });
   await cp(resolve('apps/desktop/resources/plugins/video-editing'), join(root, 'plugins/video-editing'), { recursive: true });
@@ -34,7 +38,7 @@ describe('Desktop plugin platform boundaries', () => {
     await cp(resolve('apps/desktop/resources/plugins/whisper'), join(extensionRoot, 'plugins/whisper'), { recursive: true });
     writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:whisper', kind: 'plugin', name: 'whisper', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
     const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
-    connections.configure('plugin:whisper', 'whisper', { url: 'https://example.invalid/mcp', WHISPER_MODEL_PATH: 'C:\\outside\\model.bin' });
+    await connections.configure('plugin:whisper', 'whisper', { url: 'https://example.invalid/mcp', WHISPER_MODEL_PATH: 'C:\\outside\\model.bin' });
     const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
     const plugin = (await store.files()).plugins[0]!;
     expect(plugin.servers[0]).not.toHaveProperty('url');
@@ -46,7 +50,7 @@ describe('Desktop plugin platform boundaries', () => {
     await cp(resolve('apps/desktop/resources/plugins/vision'), join(extensionRoot, 'plugins/vision'), { recursive: true });
     writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:vision', kind: 'plugin', name: 'vision', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
     const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
-    connections.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp', VISION_API_KEY: 'wrong-secret' });
+    await connections.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp', VISION_API_KEY: 'wrong-secret' });
     const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
     const plugin = (await store.files()).plugins[0]!;
     expect(plugin.servers[0]).not.toHaveProperty('url');
@@ -60,24 +64,24 @@ describe('Desktop plugin platform boundaries', () => {
     const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
     const store = new DesktopExtensions(database, join(root, 'extensions'), resolve('apps/desktop/resources'), connections);
     const config = { name: 'local-tools', transport: 'stdio' as const, command: 'node', args: ['server.mjs'], url: '', environment: { TOKEN: 'standalone-secret-value' }, headers: {} };
-    store.saveMcpServer(config);
+    await store.saveMcpServer(config);
     const snapshot = await store.list(); const saved = snapshot.mcpServers![0]!;
     expect(saved).toMatchObject({ name: 'local-tools', enabled: true, environmentNames: ['TOKEN'] });
     expect(snapshot.plugins.every(plugin => plugin.id !== saved.id)).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('standalone-secret-value');
     expect((await readFile(database)).includes(Buffer.from('standalone-secret-value'))).toBe(false);
     const restored = new DesktopExtensions(database, join(root, 'extensions'), resolve('apps/desktop/resources'), connections);
-    restored.saveMcpServer({ ...config, id: saved.id, command: 'npx', environment: { TOKEN: '' } });
+    await restored.saveMcpServer({ ...config, id: saved.id, command: 'npx', environment: { TOKEN: '' } });
     expect((await restored.files(root)).mcpServers[0]).toMatchObject({ directory: root, server: { command: 'npx', env: { TOKEN: 'standalone-secret-value' } } });
-    expect(() => restored.saveMcpServer(config)).toThrow('已经存在');
-    expect(() => restored.saveMcpServer({ ...config, transport: 'http', url: 'file:///tmp/mcp' })).toThrow('HTTP');
-    restored.setMcpEnabled(saved.id, false);
+    await expect(restored.saveMcpServer(config)).rejects.toThrow('已经存在');
+    await expect(restored.saveMcpServer({ ...config, transport: 'http', url: 'file:///tmp/mcp' })).rejects.toThrow('HTTP');
+    await restored.setMcpEnabled(saved.id, false);
     expect((await restored.files()).mcpServers[0]?.enabled).toBe(false);
-    restored.saveMcpServer({ ...config, id: saved.id, transport: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer header-secret-value' } });
+    await restored.saveMcpServer({ ...config, id: saved.id, transport: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer header-secret-value' } });
     expect((await restored.list()).mcpServers![0]).toMatchObject({ enabled: false, transport: 'http', headerNames: ['Authorization'], environmentNames: [] });
     expect(JSON.stringify(await restored.list())).not.toContain('header-secret-value');
     expect((await restored.files()).mcpServers[0]?.server.headers).toEqual({ Authorization: 'Bearer header-secret-value' });
-    restored.removeMcpServer(saved.id);
+    await restored.removeMcpServer(saved.id);
     expect((await restored.list()).mcpServers).toEqual([]);
     expect((await restored.files()).mcpServers).toEqual([]);
   });
@@ -271,7 +275,7 @@ describe('Desktop plugin platform boundaries', () => {
       const restored = new ExtensionConnections(database, secureStorage, async () => undefined);
       expect(await restored.provider('plugin:test', 'service', `${base}/mcp`).tokens()).toMatchObject({ access_token: 'persistent-secret-token' });
       expect(JSON.stringify(readDesktopDocument(database, `extension-secret:plugin:test/service/${base}/mcp`))).not.toContain('persistent-secret-token');
-      restored.disconnect('plugin:test', 'service', `${base}/mcp`); expect(restored.connected('plugin:test', 'service', `${base}/mcp`)).toBe(false);
+      await restored.disconnect('plugin:test', 'service', `${base}/mcp`); expect(restored.connected('plugin:test', 'service', `${base}/mcp`)).toBe(false);
       let callbackUrl = '';
       const waiting = new ExtensionConnections(database, secureStorage, async authorization => {
         callbackUrl = new URL(authorization).searchParams.get('redirect_uri')!;

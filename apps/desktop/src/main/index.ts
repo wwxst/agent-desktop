@@ -634,12 +634,12 @@ function registerIpcHandlers(): void {
           await store.whisperModels.install(selected.filePaths[0]);
           break;
         }
-        case 'save-mcp-server': store.saveMcpServer(value.server); break;
+        case 'save-mcp-server': await store.saveMcpServer(value.server); break;
         case 'set-mcp-enabled': {
           if (typeof value.enabled !== 'boolean') throw new Error('MCP 启用状态无效。');
-          store.setMcpEnabled(extensionId(value.id), value.enabled); break;
+          await store.setMcpEnabled(extensionId(value.id), value.enabled); break;
         }
-        case 'remove-mcp-server': store.removeMcpServer(extensionId(value.id)); break;
+        case 'remove-mcp-server': await store.removeMcpServer(extensionId(value.id)); break;
         case 'add-marketplace': await store.addMarketplace(extensionId(value.source)); break;
         case 'remove-marketplace': await store.removeMarketplace(extensionId(value.id)); break;
         case 'update': await store.update(extensionId(value.id)); break;

@@ -1,4 +1,5 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
+import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client/model-defaults';
 import type { ModelApiProtocol, RuntimeModelDefinition, RuntimeModelProvider,
   RuntimeModelProviderUpdate, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/client';
@@ -29,11 +30,6 @@ export interface RuntimeConfiguration {
   readonly visionMaxOutputTokens?: number;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
-}
-export interface SafeStoragePort {
-  isEncryptionAvailable(): boolean;
-  encryptString(value: string): Buffer;
-  decryptString(value: Buffer): string;
 }
 type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
@@ -205,6 +201,13 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
 export async function saveRuntimeSettings(path: string, update: RuntimeSettingsUpdate, storage: SafeStoragePort): Promise<void> {
+  const apiKey = update.modelProvider?.apiKey;
+  let encryptedApiKey: string | undefined;
+  if (typeof apiKey === 'string' && apiKey.trim()) {
+    if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保存 API 密钥。');
+    encryptedApiKey = (await encryptSecret(path, apiKey.trim(), storage)).toString('base64');
+  }
+  // 等待加密依赖后再读取当前记录，合并到同步事务，保留等待期间已成功保存的外观和记忆设置。
   let saved = savedSettings(path); let secrets = savedSecrets(path);
   for (const field of ['theme', 'memoryEnabled', 'memoryFromToolChatsEnabled'] as const) {
     if (update[field] === undefined) continue;
@@ -223,10 +226,7 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       if (item.apiKey !== undefined) {
         const keys = { ...secrets.providerApiKeys };
         if (item.apiKey === null || !item.apiKey.trim()) delete keys[item.id];
-        else {
-          if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保存 API 密钥。');
-          keys[item.id] = storage.encryptString(item.apiKey.trim()).toString('base64');
-        }
+        else keys[item.id] = encryptedApiKey!;
         secrets = { providerApiKeys: keys };
       }
     }
