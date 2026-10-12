@@ -26,6 +26,7 @@ export interface ExtensionReconcileResult { readonly changed: readonly string[];
 const catalog = [
   { id: 'plugin:video-editing', kind: 'plugin' as const, name: 'video-editing', directory: 'plugins/video-editing' },
   { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'ffmpeg', directory: 'plugins/ffmpeg' },
+  { id: 'plugin:whisper', kind: 'plugin' as const, name: 'whisper', directory: 'plugins/whisper' },
   { id: 'skill:local-file-review', kind: 'skill' as const, name: 'local-file-review', directory: 'skills/local-file-review' },
 ];
 const MAX_SKILLS = 2000;

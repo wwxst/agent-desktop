@@ -1,0 +1,13 @@
+{
+  "name": "whisper",
+  "version": "1.0.0",
+  "description": "本地 whisper.cpp 语音转录与段落时间轴。",
+  "interface": {
+    "displayName": "Whisper",
+    "longDescription": "独立提供本地 WAV 语音转录和秒级段落时间轴。",
+    "developerName": "Agent Desktop",
+    "category": "Productivity",
+    "capabilities": ["Local", "Speech transcription"]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "whisper": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/whisper.cjs"],
+      "env": {
+        "WHISPER_CLI_PATH": "${PLUGIN_ROOT}/runtime/whisper-cli.exe",
+        "WHISPER_MODEL_PATH": "${WHISPER_MODEL_PATH}"
+      }
+    }
+  }
+}
