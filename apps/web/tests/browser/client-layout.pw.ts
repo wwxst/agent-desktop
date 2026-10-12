@@ -210,7 +210,7 @@ test('fits long attachments, expanded activity, failures and settings across win
     await expectContained(returnButton, page.locator('.settings-layout'));
     await returnButton.click({ trial: true });
     const returnBounds = (await returnButton.boundingBox())!;
-    await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeAttached();
+    await expect(page.getByText('FFmpeg', { exact: true })).toBeAttached();
     await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await expect(page.getByLabel('DeepSeek API 密钥')).toHaveValue('*'.repeat(64));
     await expect(page.getByLabel('DeepSeek API 密钥')).toHaveAttribute('type', 'password');
@@ -218,8 +218,8 @@ test('fits long attachments, expanded activity, failures and settings across win
     await expectNoHorizontalScroll(page);
     await page.getByRole('button', { name: '取消', exact: true }).click();
     await page.getByRole('button', { name: '本地工具', exact: true }).click();
-    await page.getByText('通过系统环境变量查找视频处理程序').scrollIntoViewIfNeeded();
-    await expect(page.getByText('通过系统环境变量查找视频处理程序')).toBeInViewport();
+    await page.getByRole('button', { name: 'FFmpeg', exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole('button', { name: 'FFmpeg', exact: true })).toBeInViewport();
     expect((await returnButton.boundingBox())!.y).toBe(returnBounds.y);
     await returnButton.click({ trial: true });
     await expectContained(returnButton, page.locator('body'));
