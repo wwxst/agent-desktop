@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type {
   AgentTaskOutputFile,
   AgentTaskOutputItemResult,
@@ -14,7 +15,7 @@ interface AssistantMessageProps {
   readonly onToggleActivity: (messageId: number) => void;
   readonly onRevealFile: (path: string) => Promise<void>;
   readonly onRecover?: (sourceTurnId: string, mode: 'continue' | 'verify') => void;
-  readonly onVerifyEffect?: (sourceEventIndex: number, outcome: 'completed' | 'not-applied') => void;
+  readonly onVerifyEffect?: (sourceEventIndex: number, outcome: 'completed' | 'not-applied', description: string) => void;
 }
 
 /** 已成功的持久产物：无论整轮成功、失败还是取消，都沿用同一张卡。 */
@@ -49,6 +50,8 @@ export function AssistantMessage({
   onRecover,
   onVerifyEffect,
 }: AssistantMessageProps) {
+  // 人工核验必须带上用户实际检查的事实，不能由按钮代填“已完成”。
+  const [verificationDescriptions, setVerificationDescriptions] = useState<Record<number, string>>({});
   const taskState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
   const recoverable = taskState !== undefined && (taskState.status === 'failed' || taskState.status === 'cancelled'
     || taskState.status === 'interrupted' || taskState.status === 'blocked');
@@ -75,9 +78,23 @@ export function AssistantMessage({
           {unknownEffects.map((effect) => (
             <div className="task-recovery-effect" key={effect.sourceEventIndex}>
               <p>{effect.description}</p>
+              <label className="task-recovery-description">
+                核验说明
+                <textarea
+                  aria-label={`${effect.label}核验说明`}
+                  rows={2}
+                  value={verificationDescriptions[effect.sourceEventIndex] ?? ''}
+                  onChange={event => setVerificationDescriptions(current => ({ ...current, [effect.sourceEventIndex]: event.target.value }))}
+                  placeholder={['open_terminal', 'write_terminal', 'close_terminal', 'terminal-connection-lost'].includes(effect.label)
+                    ? '请说明旧进程的实际状态和执行结果。'
+                    : '请说明实际检查的事实和结果。'}
+                />
+              </label>
               <div className="task-recovery-actions">
-                <button type="button" onClick={() => onVerifyEffect?.(effect.sourceEventIndex, 'completed')}>确认已完成</button>
-                <button type="button" onClick={() => onVerifyEffect?.(effect.sourceEventIndex, 'not-applied')}>确认未应用</button>
+                <button type="button" disabled={!verificationDescriptions[effect.sourceEventIndex]?.trim()}
+                  onClick={() => onVerifyEffect?.(effect.sourceEventIndex, 'completed', verificationDescriptions[effect.sourceEventIndex]!.trim())}>确认已完成</button>
+                <button type="button" disabled={!verificationDescriptions[effect.sourceEventIndex]?.trim()}
+                  onClick={() => onVerifyEffect?.(effect.sourceEventIndex, 'not-applied', verificationDescriptions[effect.sourceEventIndex]!.trim())}>确认未应用</button>
               </div>
             </div>
           ))}

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentRuntimeEvent } from '@agent-desktop/client';
+import type { AgentRuntimeEvent, AgentTaskStartRequest } from '@agent-desktop/client';
 import { createWebClientApi } from '../src/webClientApi.js';
+
+const taskRequest = (prompt: string): AgentTaskStartRequest => ({ sessionId: 'web-session-1', prompt,
+  userMessageId: 1, assistantMessageId: 2, clientState: { activeSessionId: 'web-session-1', conversations: [], drafts: [] } });
 
 describe('Web Dev API', () => {
   it('keeps sessions and emits a simulated activity timeline, live text, and artifact result', async () => {
@@ -10,7 +13,7 @@ describe('Web Dev API', () => {
     await api.switchSession(initial);
     const events: AgentRuntimeEvent[] = [];
     api.onAgentEvent((event) => events.push(event));
-    const result = await api.runAgentTask('测试任务');
+    const result = await api.runAgentTask(taskRequest('测试任务'));
 
     expect(second).not.toBe(initial);
     expect(events.map((event) => event.type)).toEqual([
@@ -45,10 +48,10 @@ describe('Web Dev API', () => {
 
   it('cancels a simulated turn and allows the next turn to run', async () => {
     const api = createWebClientApi();
-    const running = api.runAgentTask('长任务');
+    const running = api.runAgentTask(taskRequest('长任务'));
     await api.cancelTask!();
     await expect(running).rejects.toMatchObject({ name: 'AbortError' });
-    await expect(api.runAgentTask('下一条')).resolves.toMatchObject({
+    await expect(api.runAgentTask(taskRequest('下一条'))).resolves.toMatchObject({
       responseText: expect.stringContaining('下一条'),
     });
     await expect(api.cancelTask!()).rejects.toThrow('当前没有正在执行的任务');

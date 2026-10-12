@@ -202,7 +202,8 @@ export interface ClientAssistantMessageBase {
 
 /**
  * streamedText（实时文本）只存在于 processing 分支，完成、取消、失败三个分支没有该字段，
- * 终态转换会一并丢弃它。App 在 processing 期间不保存快照，Main 的持久化解析也不接受 processing 状态，
+ * 终态转换会一并丢弃它。App 在 processing 期间不做防抖保存；任务起点由 Main 原子保存，
+ * 只有 executionVersion:1 的明确消息绑定才允许持久化 processing，streamedText 内容不落盘，
  * 因此临时流式文本不会被写入磁盘。
  *
  * 取消与失败分支可以带 outputFiles：整轮失败不代表之前已成功的工具没有产出，
@@ -558,6 +559,15 @@ export interface AppUpdateApi {
   retry(): Promise<void>;
 }
 
+/** 用户消息、占位回复和同一份展示快照随任务起点交给宿主原子保存。 */
+export interface AgentTaskStartRequest {
+  readonly sessionId: string;
+  readonly prompt: string;
+  readonly userMessageId: number;
+  readonly assistantMessageId: number;
+  readonly clientState: ClientStateSnapshot;
+}
+
 export interface AgentClientApi {
   readonly appUpdates?: AppUpdateApi;
   readonly extensions: ExtensionClientApi;
@@ -586,9 +596,9 @@ export interface AgentClientApi {
   openProjectDirectory(directory: string): Promise<void>;
   switchSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<string>;
-  runAgentTask(prompt: string): Promise<AgentTaskResult>;
-  recoverTask?(sessionId: string, sourceTurnId: string, mode?: 'continue' | 'verify'): Promise<AgentTaskResult>;
-  verifyTaskEffect?(sessionId: string, sourceEventIndex: number, outcome?: 'completed' | 'not-applied', description?: string): Promise<AgentTaskState>;
+  runAgentTask(request: AgentTaskStartRequest): Promise<AgentTaskResult>;
+  recoverTask?(request: AgentTaskStartRequest, sourceTurnId: string, mode?: 'continue' | 'verify'): Promise<AgentTaskResult>;
+  verifyTaskEffect?(sessionId: string, sourceEventIndex: number, outcome: 'completed' | 'not-applied', description: string): Promise<AgentTaskState>;
   cancelTask(): Promise<void>;
   onAgentEvent(listener: (event: AgentRuntimeEvent) => void): () => void;
   /**

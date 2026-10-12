@@ -6,6 +6,7 @@ import type {
   AgentRuntimeEvent,
   AgentTaskOutputFile,
   AgentTaskOutputItemResult,
+  AgentTaskStartRequest,
   ApprovalRequest,
   ClientAssistantMessage,
   ClientAssistantMessageBase,
@@ -201,11 +202,15 @@ export function App({ api }: AppProps) {
       return;
     }
     if (event.type === 'task.state') {
-      // 任务投影按宿主会话归属进入当前回复，完成资格完全由 Session 的权威投影提供。
+      // 当前回复和同一任务的历史回复共享最新权威投影；正文仍保留各轮实际结果。
       updateConversation(event.sessionId, conversation => {
         const activeIndex = conversation.messages.findLastIndex(message => message.role === 'assistant' && message.status === 'processing');
-        return { ...conversation, messages: conversation.messages.map((message, index) => index === activeIndex
-          ? { ...message, taskState: event.taskState } : message) };
+        return { ...conversation, messages: conversation.messages.map((message, index) => {
+          if (message.role !== 'assistant') return message;
+          const currentState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
+          return index === activeIndex || currentState?.rootTurnId === event.taskState.rootTurnId
+            ? { ...message, taskState: event.taskState } : message;
+        }) };
       });
       return;
     }
@@ -505,7 +510,8 @@ export function App({ api }: AppProps) {
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
     followsLatest.current = true;
-    const assistantMessageId = nextMessageId.current + 1;
+    const userMessageId = nextMessageId.current;
+    const assistantMessageId = userMessageId + 1;
     const startedConversation: ClientConversation = {
       ...conversation,
       updatedAt: Date.now(),
@@ -513,7 +519,7 @@ export function App({ api }: AppProps) {
       messages: [
         ...conversation.messages,
         {
-          id: nextMessageId.current,
+          id: userMessageId,
           role: 'user',
           text: taskPrompt,
           attachments: recovery === undefined ? conversation.attachments.map((attachment) => attachment.name) : [],
@@ -532,17 +538,22 @@ export function App({ api }: AppProps) {
       ],
     };
     // 首次发送把草稿转成历史；失败或取消仍保留已提交的任务和执行事实。
-    setDrafts(current => current.filter(draft => draft.id !== sessionId));
-    setConversations(current => current.some(item => item.id === sessionId)
-      ? current.map(item => item.id === sessionId ? startedConversation : item)
-      : [...current, startedConversation]);
+    const nextDrafts = drafts.filter(draft => draft.id !== sessionId);
+    const nextConversations = conversations.some(item => item.id === sessionId)
+      ? conversations.map(item => item.id === sessionId ? startedConversation : item)
+      : [...conversations, startedConversation];
+    // IPC 与当前渲染使用同一个任务起点快照，不能等待执行结束后的防抖保存补齐首轮历史。
+    const request: AgentTaskStartRequest = { sessionId, prompt: taskPrompt, userMessageId, assistantMessageId,
+      clientState: { conversations: nextConversations, drafts: nextDrafts, activeSessionId: sessionId, sidebar } };
+    setDrafts(nextDrafts);
+    setConversations(nextConversations);
     nextMessageId.current += 2;
     setIsProcessing(true);
 
     try {
       const taskResult = recovery === undefined
-        ? await api.runAgentTask(taskPrompt)
-        : await api.recoverTask!(sessionId, recovery.sourceTurnId, recovery.mode);
+        ? await api.runAgentTask(request)
+        : await api.recoverTask!(request, recovery.sourceTurnId, recovery.mode);
       // 执行期间禁止切换会话，因此异步结果仍属于当前活动会话；这里也避开初始 ID 查询完成时的占位 ID 变化。
       updateConversation(activeSessionIdRef.current, (currentConversation) => ({
         ...currentConversation,
@@ -615,10 +626,10 @@ export function App({ api }: AppProps) {
     void sendTask({ sourceTurnId, mode });
   };
 
-  const verifyTaskEffect = async (sourceEventIndex: number, outcome: 'completed' | 'not-applied') => {
+  const verifyTaskEffect = async (sourceEventIndex: number, outcome: 'completed' | 'not-applied', description: string) => {
     if (isProcessing || api.verifyTaskEffect === undefined) return;
     try {
-      const state = await api.verifyTaskEffect(activeSessionIdRef.current, sourceEventIndex, outcome);
+      const state = await api.verifyTaskEffect(activeSessionIdRef.current, sourceEventIndex, outcome, description);
       setTaskActionError('');
       updateConversation(activeSessionIdRef.current, conversation => ({
         ...conversation,
@@ -785,7 +796,7 @@ export function App({ api }: AppProps) {
           onToggleActivity={toggleActivity}
           onRevealFile={(path) => api.revealFile(path)}
           onRecover={recoverTask}
-          onVerifyEffect={(sourceEventIndex, outcome) => void verifyTaskEffect(sourceEventIndex, outcome)}
+          onVerifyEffect={(sourceEventIndex, outcome, description) => void verifyTaskEffect(sourceEventIndex, outcome, description)}
         />
         </div>
       </div>

@@ -9,6 +9,22 @@ export class TaskPlanUpdateError extends Error {
   override readonly name = 'TaskPlanUpdateError';
 }
 
+// 计划只能引用执行结果、待核验操作和真实失败/中断事实；声明和消息不是证据来源。
+type TaskPlanEvidenceEvent = Extract<SessionEvent, { readonly type:
+  | 'tool.called' | 'tool.result' | 'tool.interaction.closed'
+  | 'host.operation.started' | 'host.operation.result' | 'effect.outcome.verified'
+  | 'turn.failed' | 'turn.cancelled' | 'turn.interrupted' }>;
+
+/** 模型输入、计划投影和磁盘读取共用合法来源类型，不各自维护允许列表。 */
+export function isTaskPlanEvidenceEvent(event: SessionEvent): event is TaskPlanEvidenceEvent {
+  switch (event.type) {
+    case 'tool.called': case 'tool.result': case 'tool.interaction.closed':
+    case 'host.operation.started': case 'host.operation.result': case 'effect.outcome.verified':
+    case 'turn.failed': case 'turn.cancelled': case 'turn.interrupted': return true;
+    default: return false;
+  }
+}
+
 export interface RecoveryAncestry {
   readonly rootTurnId: TurnId;
   readonly turnIds: readonly TurnId[];
@@ -207,7 +223,8 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
       for (const evidenceIndex of step.evidenceEventIndexes) {
         const evidence = events[evidenceIndex];
         // 模型/文件引用必须已存在且来自原任务链，不能引用未来或无关任务。
-        if (!Number.isSafeInteger(evidenceIndex) || evidenceIndex < 0 || evidenceIndex >= index || evidence === undefined || !turns.has(evidence.turnId)) continue;
+        if (!Number.isSafeInteger(evidenceIndex) || evidenceIndex < 0 || evidenceIndex >= index || evidence === undefined
+          || !isTaskPlanEvidenceEvent(evidence) || !turns.has(evidence.turnId)) continue;
         if (isUnknownEvidence(evidenceIndex)) blocked = true;
         if (evidence.type === 'tool.result' || evidence.type === 'effect.outcome.verified') {
           const source = evidence.type === 'effect.outcome.verified' ? events[evidence.sourceEventIndex]

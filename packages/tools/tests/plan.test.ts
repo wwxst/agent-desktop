@@ -70,6 +70,22 @@ describe('UpdatePlanTool', () => {
     expect(await new UpdatePlanTool(ineligible, () => ({ eligible: false, label: '仅工具返回' })).execute(input([step('completed', [2])]), context)).toMatchObject({ status: 'error' });
   });
 
+  it('rejects messages and declarations as pending plan evidence before appending a plan', async () => {
+    const unsupported: SessionEvent[] = [
+      { type: 'turn.started', turnId: root },
+      { type: 'user.message', turnId: root, content: '原任务' },
+      { type: 'assistant.message', turnId: root, stepId, content: '模型声明', toolCalls: [] },
+      { type: 'plan.updated', turnId: root, revision: 1, ...input() },
+    ];
+    for (const source of unsupported) {
+      const session = started([source]);
+      const original = [...session.events()];
+      expect(await new UpdatePlanTool(session, qualify).execute(input([step('pending', [1])]), context))
+        .toMatchObject({ status: 'error', failureKind: 'permanent' });
+      expect(session.events()).toEqual(original);
+    }
+  });
+
   it('confirms completion only from qualified real tool results in the current task chain', async () => {
     const session = started([call(), result()]); const tool = new UpdatePlanTool(session, qualify);
     expect(await tool.execute(input([step('completed', [2])]), context)).toMatchObject({ status: 'success', output: { steps: [{ id: 'work', status: 'completed' }] } });

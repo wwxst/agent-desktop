@@ -1,7 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDesktopApi } from '../src/preload/api.js';
+import type { AgentTaskStartRequest } from '@agent-desktop/client';
+
+const taskRequest = (prompt: string): AgentTaskStartRequest => ({ sessionId: 'session-a', prompt,
+  userMessageId: 1, assistantMessageId: 2, clientState: { activeSessionId: 'session-a', drafts: [], conversations: [{
+    id: 'session-a', title: prompt, titleManuallyRenamed: false, prompt, attachments: [], messages: [
+      { id: 1, role: 'user', text: prompt, attachments: [] },
+      { id: 2, role: 'assistant', status: 'processing', streamedText: '', activity: [], activityExpanded: true },
+    ],
+  }] } });
 
 describe('createDesktopApi', () => {
+  it('forwards one start snapshot for recovery and the explicit manual verification description', async () => {
+    const invoke = vi.fn(async () => ({ status: 'success', result: { responseText: 'continued', traceId: 'trace-recovery' } }));
+    const api = createDesktopApi({ invoke, send: () => {}, on: () => {}, removeListener: () => {} });
+    const request = taskRequest('继续未完成任务');
+    await api.recoverTask!(request, 'source-turn');
+    await api.recoverTask!(taskRequest('核验未确定的外部效果'), 'source-turn', 'verify');
+    await api.verifyTaskEffect!('session-a', 9, 'not-applied', '已检查旧进程已结束，目标文件未写入。');
+    expect(invoke.mock.calls).toEqual([
+      ['desktop:recover-task', { ...request, sourceTurnId: 'source-turn', mode: 'continue' }],
+      ['desktop:recover-task', { ...taskRequest('核验未确定的外部效果'), sourceTurnId: 'source-turn', mode: 'verify' }],
+      ['desktop:verify-task-effect', { sessionId: 'session-a', sourceEventIndex: 9, outcome: 'not-applied', description: '已检查旧进程已结束，目标文件未写入。' }],
+    ]);
+  });
   it('forwards update state, direct installation, retry and subscription cleanup', async () => {
     const invoke = vi.fn(async () => ({ status: 'ready' }));
     const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
@@ -118,7 +140,7 @@ describe('createDesktopApi', () => {
     await api.newSession();
     await api.switchSession('session-2');
     await api.deleteSession('session-2');
-    await api.runAgentTask('保留核心内容');
+    await api.runAgentTask(taskRequest('保留核心内容'));
     await api.cancelTask();
     // 审批只传请求标识和决定：待执行的操作参数不经过渲染层。
     await api.decideApproval('request-1', true);
@@ -136,7 +158,7 @@ describe('createDesktopApi', () => {
       { channel: 'desktop:new-session', args: [] },
       { channel: 'desktop:switch-session', args: ['session-2'] },
       { channel: 'desktop:delete-session', args: ['session-2'] },
-      { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
+      { channel: 'desktop:run-agent-task', args: [taskRequest('保留核心内容')] },
       { channel: 'desktop:cancel-task', args: [] },
       { channel: 'desktop:decide-approval', args: ['request-1', true] },
       { channel: 'desktop:reveal-file', args: ['D:\\videos\\step1.mp4'] },
@@ -173,7 +195,7 @@ describe('createDesktopApi', () => {
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toEqual(
+    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).rejects.toEqual(
       new Error('请先在设置中配置 DeepSeek API Key。'),
     );
   });
@@ -219,7 +241,7 @@ describe('createDesktopApi', () => {
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toMatchObject({
+    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).rejects.toMatchObject({
       name: 'AbortError', message: 'This operation was aborted',
     });
   });
@@ -238,7 +260,7 @@ describe('createDesktopApi', () => {
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toMatchObject({
+    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).rejects.toMatchObject({
       name: 'AbortError',
       message: 'This operation was aborted',
       outputFiles,

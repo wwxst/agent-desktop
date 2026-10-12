@@ -17,12 +17,13 @@ import type {
   AttachmentRole,
   TerminalSnapshot,
 } from '@agent-desktop/client';
-import { projectRecoveryAncestry, projectTurnState, type SessionEvent, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
+import { isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTurnState, type SessionEvent, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
 import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
 import { projectAgentTaskState } from './agent-task-state.js';
 import type { SubagentRecord } from './subagent.js';
 
 export interface PersistedDesktopSession {
+  readonly turnMessageBindings?: readonly TurnMessageBinding[];
   readonly terminalHistory?: TerminalSnapshot;
   readonly subagentHistory?: readonly SubagentRecord[];
   readonly id: string;
@@ -30,6 +31,14 @@ export interface PersistedDesktopSession {
   /** 会话工作目录；旧快照没有这个字段时按「尚未确认目录」读取。 */
   readonly workingDirectory?: string;
   readonly events: readonly SessionEvent[];
+}
+
+/** 仅宿主保存界面身份，不把消息 ID 或执行版本泄漏到通用 Session 事件。 */
+export interface TurnMessageBinding {
+  readonly executionVersion: 1;
+  readonly turnId: TurnId;
+  readonly userMessageId: number;
+  readonly assistantMessageId: number;
 }
 
 /** 持久化的输入附件：路径是身份，角色决定提示词用途。 */
@@ -58,14 +67,16 @@ export interface PersistedDesktopState {
 export class DesktopPersistentSession implements Session {
   private readonly memory: InMemorySession;
   private persistenceFailure: SessionPersistenceError | undefined;
+  private readonly bindings: TurnMessageBinding[];
 
   constructor(
     private readonly filePath: string,
     private readonly sessionId: string,
     initialEvents: readonly SessionEvent[],
-    private readonly stateForEvents: (sessionId: string, events: readonly SessionEvent[]) => PersistedDesktopState,
+    private readonly stateForEvents: (sessionId: string, events: readonly SessionEvent[], bindings: readonly TurnMessageBinding[], clientState?: ClientStateSnapshot) => PersistedDesktopState,
     private readonly onPersistenceFailure: (error: SessionPersistenceError) => void,
-  ) { this.memory = new InMemorySession(initialEvents); }
+    initialBindings: readonly TurnMessageBinding[] = [],
+  ) { this.memory = new InMemorySession(initialEvents); this.bindings = [...initialBindings]; }
 
   append(event: SessionEvent): void { this.appendMany([event]); }
 
@@ -73,7 +84,7 @@ export class DesktopPersistentSession implements Session {
     if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
     const candidateEvents = [...this.memory.events(), ...events];
     try {
-      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, candidateEvents) }]);
+      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, candidateEvents, this.bindings) }]);
     } catch (cause) {
       const error = new SessionPersistenceError(cause);
       this.persistenceFailure = error;
@@ -85,10 +96,29 @@ export class DesktopPersistentSession implements Session {
 
   events(): readonly SessionEvent[] { return this.memory.events(); }
 
+  turnMessageBindings(): readonly TurnMessageBinding[] { return this.bindings; }
+
+  /** 事件、从草稿迁移后的展示和身份关联同次提交；事务失败不推进任何内存事实。 */
+  commitStart(start: { readonly events: readonly SessionEvent[] }, clientState: ClientStateSnapshot, binding: TurnMessageBinding): void {
+    if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
+    const events = [...this.memory.events(), ...start.events];
+    const bindings = [...this.bindings, binding];
+    try {
+      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, events, bindings, clientState) }]);
+    } catch (cause) {
+      const error = new SessionPersistenceError(cause);
+      this.persistenceFailure = error;
+      this.onPersistenceFailure(error);
+      throw error;
+    }
+    this.memory.appendMany(start.events);
+    this.bindings.push(binding);
+  }
+
   /** 宿主资源状态（终端退出等）变化时复用同一全快照提交入口。 */
   persist(): void {
     if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
-    try { writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, this.memory.events()) }]); }
+    try { writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, this.memory.events(), this.bindings) }]); }
     catch (cause) {
       const error = new SessionPersistenceError(cause);
       this.persistenceFailure = error;
@@ -371,9 +401,8 @@ function readSessionEvents(value: unknown, field: string): readonly SessionEvent
         for (const [stepIndex, step] of event.steps.entries()) {
           for (const [offset, sourceIndex] of step.evidenceEventIndexes.entries()) {
             const sourceField = `${eventField}.steps[${stepIndex}].evidenceEventIndexes[${offset}]`;
-            const source = priorEvent(events, index, sourceIndex,
-              ['tool.called', 'tool.result', 'tool.interaction.closed', 'host.operation.started', 'host.operation.result',
-                'effect.outcome.verified', 'turn.failed', 'turn.cancelled', 'turn.interrupted'], sourceField);
+            const source = events[sourceIndex];
+            if (sourceIndex >= index || source === undefined || !isTaskPlanEvidenceEvent(source)) invalid(sourceField);
             if (projectRecoveryAncestry(priorEvents, source.turnId).rootTurnId !== root) invalid(sourceField);
           }
         }
@@ -695,6 +724,7 @@ function readClientMessage(
   field: string,
   legacyOutputFilePaths: Readonly<Record<string, string>>,
   events: readonly SessionEvent[],
+  bindings: readonly TurnMessageBinding[],
 ): ClientConversationMessage {
   if (!isRecord(value)) invalid(field);
   const id = readNonNegativeInteger(value.id, `${field}.id`);
@@ -722,13 +752,16 @@ function readClientMessage(
   if (role !== 'assistant') invalid(`${field}.role`);
   // UI 快照只携带关联提示；显示状态与完成证据必须从 Main 的原始事实重建。
   let taskState;
-  if (value.taskState !== undefined) {
+  const binding = bindings.find(item => item.assistantMessageId === id);
+  if (binding !== undefined) {
+    taskState = projectAgentTaskState(events, binding.turnId);
+  } else if (value.taskState !== undefined) {
     if (!isRecord(value.taskState) || typeof value.taskState.latestTurnId !== 'string') invalid(`${field}.taskState`);
     const turnId = value.taskState.latestTurnId as TurnId;
     if (projectTurnState(events, turnId) === undefined) invalid(`${field}.taskState.latestTurnId`);
     taskState = projectAgentTaskState(events, turnId);
   }
-  if (value.task !== undefined) {
+  if (binding === undefined && value.task !== undefined) {
     if (!isRecord(value.task)) invalid(`${field}.task`);
     const turnId = readString(value.task.turnId, `${field}.task.turnId`) as TurnId;
     if (projectTurnState(events, turnId) === undefined) invalid(`${field}.task.turnId`);
@@ -744,6 +777,10 @@ function readClientMessage(
       : readBoolean(value.activityExpanded, `${field}.activityExpanded`),
   } as const;
   const status = readString(value.status, `${field}.status`);
+  if (status === 'processing' && binding !== undefined) {
+    // 起点快照保留正在执行的身份；流式增量从不落盘，重启再由宿主终态投影。
+    return { ...base, status, streamedText: '' };
+  }
   if (status === 'completed') {
     return {
       ...base,
@@ -810,6 +847,7 @@ function readClientConversation(
   field: string,
   legacyOutputFilePaths: Readonly<Record<string, string>>,
   events: readonly SessionEvent[],
+  bindings: readonly TurnMessageBinding[] = [],
 ): ClientConversation {
   if (!isRecord(value)) invalid(field);
   if (!Array.isArray(value.messages)) invalid(`${field}.messages`);
@@ -831,7 +869,7 @@ function readClientConversation(
         ? value.titleManuallyRenamed
         : invalid(`${field}.titleManuallyRenamed`),
     messages: value.messages.map((item, index) => (
-      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths, events)
+      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths, events, bindings)
     )),
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
@@ -870,6 +908,7 @@ export function parseClientState(
   value: unknown,
   legacyOutputFilePathsFor: (sessionId: string) => Readonly<Record<string, string>> = () => ({}),
   eventsFor: (sessionId: string) => readonly SessionEvent[] = () => [],
+  bindingsFor: (sessionId: string) => readonly TurnMessageBinding[] = () => [],
 ): ClientStateSnapshot {
   if (!isRecord(value)) invalid('clientState');
   if (!Array.isArray(value.conversations)) {
@@ -881,6 +920,7 @@ export function parseClientState(
       `clientState.conversations[${index}]`,
       isRecord(item) && typeof item.id === 'string' ? legacyOutputFilePathsFor(item.id) : {},
       isRecord(item) && typeof item.id === 'string' ? eventsFor(item.id) : [],
+      isRecord(item) && typeof item.id === 'string' ? bindingsFor(item.id) : [],
     )
   ));
   if (value.drafts !== undefined && !Array.isArray(value.drafts)) invalid('clientState.drafts');
@@ -940,13 +980,32 @@ function parseDesktopSession(
   if (workingDirectory !== undefined && typeof workingDirectory !== 'string') {
     invalid(`${field}.workingDirectory`);
   }
+  const events = readSessionEvents(value.events, `${field}.events`);
+  let turnMessageBindings: readonly TurnMessageBinding[] | undefined;
+  if (value.turnMessageBindings !== undefined) {
+    if (!Array.isArray(value.turnMessageBindings)) invalid(`${field}.turnMessageBindings`);
+    turnMessageBindings = value.turnMessageBindings.map((item, index) => {
+      const bindingField = `${field}.turnMessageBindings[${index}]`;
+      if (!isRecord(item) || item.executionVersion !== 1) invalid(bindingField);
+      const turnId = readString(item.turnId, `${bindingField}.turnId`) as TurnId;
+      if (!events.some(event => event.type === 'turn.started' && event.turnId === turnId)
+        || !events.some(event => event.type === 'user.message' && event.turnId === turnId)) invalid(`${bindingField}.turnId`);
+      return { executionVersion: 1 as const, turnId,
+        userMessageId: readNonNegativeInteger(item.userMessageId, `${bindingField}.userMessageId`),
+        assistantMessageId: readNonNegativeInteger(item.assistantMessageId, `${bindingField}.assistantMessageId`) };
+    });
+    const messageIds = turnMessageBindings.flatMap(item => [item.userMessageId, item.assistantMessageId]);
+    if (new Set(turnMessageBindings.map(item => item.turnId)).size !== turnMessageBindings.length
+      || new Set(messageIds).size !== messageIds.length) invalid(`${field}.turnMessageBindings`);
+  }
   return {
     session: {
       id: readString(value.id, `${field}.id`),
       attachments: readAttachments(value, field),
       ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
-      events: readSessionEvents(value.events, `${field}.events`),
+      events,
+      ...(turnMessageBindings === undefined ? {} : { turnMessageBindings }),
       ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),
     },
     // 旧快照带按文件名索引的产物表；新快照没有，用空表表示「没有可还原的旧关联」。
@@ -997,6 +1056,7 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
     value.clientState,
     (sessionId) => legacyOutputFilePathsBySession.get(sessionId) ?? {},
     (sessionId) => sessions.find(session => session.id === sessionId)?.events ?? [],
+    (sessionId) => sessions.find(session => session.id === sessionId)?.turnMessageBindings ?? [],
   );
   const clientSessionIds = [...clientState.conversations, ...clientState.drafts ?? []].map((conversation) => conversation.id);
   if (!sessionIds.includes(activeSessionId)
@@ -1004,6 +1064,20 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
     || clientSessionIds.length !== sessionIds.length
     || clientSessionIds.some((id) => !sessionIds.includes(id))) {
     invalid('activeSessionId');
+  }
+
+  // 持久化文件中的绑定只接受同一正式会话里的确切消息身份；草稿没有已提交任务。
+  for (const session of sessions) {
+    const conversation = clientState.conversations.find(item => item.id === session.id);
+    for (const binding of session.turnMessageBindings ?? []) {
+      const messages = conversation?.messages ?? [];
+      const userIndex = messages.findIndex(item => item.id === binding.userMessageId && item.role === 'user');
+      const assistant = messages[userIndex + 1];
+      if (userIndex < 0 || assistant?.id !== binding.assistantMessageId || assistant.role !== 'assistant'
+        || messages.filter(item => item.id === binding.userMessageId || item.id === binding.assistantMessageId).length !== 2) {
+        invalid(`sessions.${session.id}.turnMessageBindings`);
+      }
+    }
   }
 
   return { activeSessionId, sessions, clientState };

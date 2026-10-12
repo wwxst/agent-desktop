@@ -157,6 +157,30 @@ describe('shared App', () => {
     await waitFor(() => expect(saveClientState.mock.calls.at(-1)?.[0]).toMatchObject({ drafts: [], conversations: [{ id: 'draft-session', title: '删除片头广告' }] }));
   });
 
+  it('submits a draft promotion and the two message identities in the same start snapshot while preserving other sessions and sidebar', async () => {
+    const draft = { ...savedConversation('draft-session', '新聊天'), messages: [], prompt: '检查附件',
+      attachments: [{ path: 'D:/draft.wav', name: 'draft.wav', role: 'audio' as const }], workingDirectory: 'D:/project' };
+    const other = savedConversation('other-session', '已有历史');
+    const remainingDraft = { ...savedConversation('remaining-draft', '新聊天'), messages: [], prompt: '保留输入' };
+    const sidebar = { projects: [{ id: 'project-a', name: 'project', directory: 'D:/project', collapsed: true, pinned: false }], projectsCollapsed: false, recentCollapsed: true, grouped: true };
+    const state: ClientStateSnapshot = { activeSessionId: draft.id, conversations: [other], drafts: [draft, remainingDraft], sidebar };
+    let resolveTask!: (result: AgentTaskResult) => void;
+    const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>(resolve => { resolveTask = resolve; }));
+    render(<App api={{ ...api, loadClientState: async () => state, runAgentTask }} />);
+    await screen.findByLabelText('音轨附件：draft.wav');
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledOnce());
+    expect(runAgentTask).toHaveBeenCalledWith({ sessionId: draft.id, prompt: '检查附件', userMessageId: 2, assistantMessageId: 3,
+      clientState: { activeSessionId: draft.id, sidebar, drafts: [remainingDraft], conversations: [other, {
+        ...draft, title: '检查附件', updatedAt: expect.any(Number), messages: [
+          { id: 2, role: 'user', text: '检查附件', attachments: ['draft.wav'], attachmentRoles: ['audio'] },
+          { id: 3, role: 'assistant', status: 'processing', streamedText: '', activity: [], activityExpanded: true },
+        ],
+      }] },
+    });
+    await act(async () => resolveTask({ responseText: '已检查', traceId: 'trace-start' }));
+  });
+
   it('keeps the successful reply when automatic naming fails and explains how to rename', async () => {
     render(<App api={{ ...api, runAgentTask: async () => ({ responseText: '任务已完成', traceId: 'trace-title-error', conversationTitleError: '服务不可用' }) }} />);
     fireEvent.change(await screen.findByLabelText('剪辑需求'), { target: { value: '检查项目配置' } });
@@ -176,7 +200,7 @@ describe('shared App', () => {
     fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
     expect(runAgentTask).not.toHaveBeenCalled();
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('保留精彩片段'));
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ prompt: '保留精彩片段' })));
   });
 
   it('shows a settings load failure instead of an endless loading label', async () => {
@@ -545,10 +569,52 @@ describe('shared App', () => {
     render(<App api={{ ...api, loadClientState: async () => state, verifyTaskEffect }} />);
 
     expect(await screen.findByText('写入结果的外部效果尚未确认。')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '确认已完成' }));
+    const confirmation = screen.getByRole('button', { name: '确认已完成' });
+    expect(confirmation).toHaveProperty('disabled', true);
+    fireEvent.change(screen.getByRole('textbox', { name: 'write_text_file核验说明' }), { target: { value: '   ' } });
+    expect(confirmation).toHaveProperty('disabled', true);
+    fireEvent.change(screen.getByRole('textbox', { name: 'write_text_file核验说明' }), { target: { value: ' 已检查文件字节，内容与目标一致。 ' } });
+    fireEvent.click(confirmation);
 
-    await waitFor(() => expect(verifyTaskEffect).toHaveBeenCalledWith('session-a', 7, 'completed'));
+    await waitFor(() => expect(verifyTaskEffect).toHaveBeenCalledWith('session-a', 7, 'completed', '已检查文件字节，内容与目标一致。'));
     await waitFor(() => expect(screen.queryByText('写入结果的外部效果尚未确认。')).toBeNull());
+  });
+
+  it('removes the old interrupted recovery action when authoritative recovery events complete the same task', async () => {
+    let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
+    let resolveTask: ((result: AgentTaskResult) => void) | undefined;
+    let savedState: ClientStateSnapshot | undefined;
+    const interrupted = { rootTurnId: 'turn-interrupted', latestTurnId: 'turn-interrupted', status: 'interrupted' as const };
+    const completed = { ...interrupted, latestTurnId: 'turn-recovered', status: 'completed' as const };
+    const unrelatedReply = { id: 2, role: 'assistant' as const, status: 'completed' as const, activity: [], activityExpanded: false,
+      result: { responseText: '原本已完成的回复', traceId: 'trace-other', taskState: { rootTurnId: 'turn-other', latestTurnId: 'turn-other', status: 'completed' as const } } };
+    const state: ClientStateSnapshot = { activeSessionId: 'session-a', drafts: [], conversations: [{
+      ...savedConversation('session-a', '中断任务'), messages: [
+        { id: 1, role: 'user', text: '另一项任务', attachments: [] }, unrelatedReply,
+        { id: 3, role: 'user', text: '等待恢复的任务', attachments: [] },
+        { id: 4, role: 'assistant', status: 'failed', activity: [], activityExpanded: false, errorMessage: '应用退出时任务被中断。', taskState: interrupted },
+      ],
+    }] };
+    render(<App api={{ ...api, loadClientState: async () => state,
+      recoverTask: () => new Promise<AgentTaskResult>(resolve => { resolveTask = resolve; }),
+      saveClientState: async snapshot => { savedState = snapshot; },
+      onAgentEvent: listener => { receiveEvent = listener; return () => undefined; },
+    }} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '继续未完成任务' }));
+    act(() => receiveEvent?.({ type: 'task.state', sessionId: 'session-a', taskState: { ...completed, status: 'started' } }));
+    act(() => receiveEvent?.({ type: 'task.state', sessionId: 'session-a', taskState: completed }));
+    await act(async () => resolveTask?.({ responseText: '恢复完成', traceId: 'trace-recovered', taskState: completed }));
+
+    expect(await screen.findByText('恢复完成')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '继续未完成任务' })).toBeNull();
+    expect(screen.getByText('应用退出时任务被中断。')).toBeTruthy();
+    expect(screen.getByText('原本已完成的回复')).toBeTruthy();
+    await waitFor(() => expect(savedState?.conversations[0]?.messages[3]).toMatchObject({
+      id: 4, role: 'assistant', status: 'failed', errorMessage: '应用退出时任务被中断。', taskState: completed,
+    }));
+    expect(savedState?.conversations[0]?.messages[1]).toEqual(unrelatedReply);
+    expect(savedState?.conversations[0]?.messages[5]).toMatchObject({ id: 6, role: 'assistant', status: 'completed', taskState: completed });
   });
 
   it('continues a failed task from the recovery card as a new execution round', async () => {
@@ -567,8 +633,32 @@ describe('shared App', () => {
     render(<App api={{ ...api, loadClientState: async () => state, recoverTask }} />);
 
     fireEvent.click(await screen.findByRole('button', { name: '继续未完成任务' }));
-    await waitFor(() => expect(recoverTask).toHaveBeenCalledWith('session-a', 'turn-failed', 'continue'));
+    await waitFor(() => expect(recoverTask).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-a', prompt: '继续未完成任务', userMessageId: 3, assistantMessageId: 4,
+      clientState: expect.objectContaining({ drafts: [], conversations: [expect.objectContaining({ messages: expect.arrayContaining([
+        expect.objectContaining({ id: 3, role: 'user', text: '继续未完成任务' }),
+        expect.objectContaining({ id: 4, role: 'assistant', status: 'processing' }),
+      ]) })] }),
+    }), 'turn-failed', 'continue'));
     expect(await screen.findByText('继续完成')).toBeTruthy();
+  });
+
+  it('asks for terminal facts before manual verification and sends the displayed verify prompt with new message identities', async () => {
+    const taskState = { rootTurnId: 'terminal-turn', latestTurnId: 'terminal-turn', status: 'blocked' as const,
+      unknownEffects: [{ sourceEventIndex: 8, source: 'tool' as const, label: 'write_terminal', description: '终端操作结果尚未确认。' }] };
+    const recoverTask = vi.fn(async () => ({ responseText: '已核验', traceId: 'trace-verify' }));
+    const state: ClientStateSnapshot = { activeSessionId: 'session-a', drafts: [], conversations: [{
+      ...savedConversation('session-a', '终端任务'), messages: [
+        { id: 1, role: 'user', text: '运行命令', attachments: [] },
+        { id: 2, role: 'assistant', status: 'failed', activity: [], activityExpanded: false, errorMessage: '连接中断。', taskState },
+      ],
+    }] };
+    render(<App api={{ ...api, loadClientState: async () => state, recoverTask }} />);
+    expect(await screen.findByPlaceholderText('请说明旧进程的实际状态和执行结果。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '确认未应用' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('button', { name: '先核验未确定效果' }));
+    await waitFor(() => expect(recoverTask).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-a',
+      prompt: '核验未确定的外部效果', userMessageId: 3, assistantMessageId: 4 }), 'terminal-turn', 'verify'));
+    expect(await screen.findByText('已核验')).toBeTruthy();
   });
 
   it('clears streamed text when the turn is cancelled', async () => {

@@ -1,6 +1,6 @@
 import type { ToolResult } from '@agent-desktop/model';
 import {
-  projectRecoveryAncestry, projectTaskPlan, projectTurnState, TaskPlanUpdateError,
+  isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTaskPlan, projectTurnState, TaskPlanUpdateError,
   type PlanUpdatedEvent, type QualifyToolEvidence, type Session, type TaskPlanStatus, type TaskPlanStep,
 } from '@agent-desktop/session';
 import type { Tool, ToolExecutionContext } from './index.js';
@@ -85,7 +85,9 @@ export class UpdatePlanTool implements Tool {
     const previous = projectTaskPlan(events, ancestry.rootTurnId, this.qualifyToolEvidence);
     for (const step of steps) for (const index of step.evidenceEventIndexes) {
       const source = events[index];
-      if (source === undefined || !taskTurns.has(source.turnId)) return failure('事实索引必须已存在且属于当前任务链。');
+      if (source === undefined || !isTaskPlanEvidenceEvent(source) || !taskTurns.has(source.turnId)) {
+        return failure('事实索引必须指向当前任务链中已存在的执行、核验或失败事实。');
+      }
       if (step.completionKind === 'tool' && step.requestedStatus === 'completed' && source.type === 'tool.result') {
         const call = events.slice(0, index).findLast(event => event.type === 'tool.called' && event.turnId === source.turnId
           && event.stepId === source.stepId && event.toolCallId === source.toolCallId);

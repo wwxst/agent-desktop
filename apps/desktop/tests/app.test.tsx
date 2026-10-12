@@ -219,7 +219,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     expect(screen.getByRole('status', { name: '进行中' })).toBeTruthy();
 
-    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('删除无关内容，只保留核心部分'));
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ prompt: '删除无关内容，只保留核心部分' })));
     expect(await screen.findByText('剪辑已经完成。')).toBeTruthy();
     expect(screen.queryByRole('status', { name: '进行中' })).toBeNull();
     expect(screen.queryByRole('region', { name: '开始视频任务' })).toBeNull();
@@ -399,7 +399,7 @@ describe('App', () => {
     expect(sendButton).toHaveProperty('disabled', false);
     fireEvent.click(sendButton);
 
-    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('介绍一下这个客户端的能力。'));
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ prompt: '介绍一下这个客户端的能力。' })));
     expect(await screen.findByText('这是一个文本回复。')).toBeTruthy();
     expect(screen.queryByLabelText(/视频附件：/)).toBeNull();
   });

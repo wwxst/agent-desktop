@@ -6,7 +6,7 @@ import type {
   DesktopApi,
 } from '../shared/ipc.js';
 import { DESKTOP_CHANNELS } from '../shared/ipc.js';
-import type { AppUpdateState } from '@agent-desktop/client';
+import type { AgentTaskStartRequest, AppUpdateState } from '@agent-desktop/client';
 
 type IpcListener = (event: unknown, payload: unknown) => void;
 
@@ -19,16 +19,13 @@ export interface IpcRendererPort {
 
 async function invokeAgentTask(
   ipc: IpcRendererPort,
-  prompt: string,
-  recovery?: { readonly sessionId: string; readonly sourceTurnId: string; readonly mode: 'continue' | 'verify' },
-  channel: string = DESKTOP_CHANNELS.runAgentTask,
+  request: AgentTaskStartRequest,
+  recovery?: { readonly sourceTurnId: string; readonly mode: 'continue' | 'verify' },
 ): ReturnType<DesktopApi['runAgentTask']> {
   try {
-    const ipcResult = await (channel === DESKTOP_CHANNELS.recoverTask
-      ? ipc.invoke(channel, recovery)
-      : recovery === undefined
-        ? ipc.invoke(channel, prompt)
-        : ipc.invoke(channel, prompt, recovery)) as AgentTaskIpcResult;
+    const ipcResult = await (recovery === undefined
+      ? ipc.invoke(DESKTOP_CHANNELS.runAgentTask, request)
+      : ipc.invoke(DESKTOP_CHANNELS.recoverTask, { ...request, ...recovery })) as AgentTaskIpcResult;
     if (ipcResult.status === 'success') return ipcResult.result;
 
     const taskError = new Error(ipcResult.errorMessage) as Error & {
@@ -205,13 +202,11 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       DESKTOP_CHANNELS.deleteSession,
       sessionId,
     ) as ReturnType<DesktopApi['deleteSession']>,
-    runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
-    recoverTask: (sessionId, sourceTurnId, mode = 'continue') => invokeAgentTask(ipc, '', {
-      sessionId, sourceTurnId, mode,
-    }, DESKTOP_CHANNELS.recoverTask),
-    verifyTaskEffect: async (sessionId, sourceEventIndex, outcome = 'completed', description) => {
+    runAgentTask: (request) => invokeAgentTask(ipc, request),
+    recoverTask: (request, sourceTurnId, mode = 'continue') => invokeAgentTask(ipc, request, { sourceTurnId, mode }),
+    verifyTaskEffect: async (sessionId, sourceEventIndex, outcome, description) => {
       const result = await ipc.invoke(DESKTOP_CHANNELS.verifyTaskEffect, {
-        sessionId, sourceEventIndex, outcome, ...(description === undefined ? {} : { description }),
+        sessionId, sourceEventIndex, outcome, description,
       });
       return result as import('@agent-desktop/client').AgentTaskState;
     },

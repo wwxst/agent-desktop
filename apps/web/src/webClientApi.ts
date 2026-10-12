@@ -135,7 +135,7 @@ export function createWebClientApi(): AgentClientApi {
       sessionIds.add(activeSessionId);
       return activeSessionId;
     },
-    runAgentTask: async (prompt): Promise<AgentTaskResult> => {
+    runAgentTask: async ({ prompt }): Promise<AgentTaskResult> => {
       if (activeTaskController !== undefined) throw new Error('已有任务正在执行。');
       const controller = new AbortController();
       activeTaskController = controller;

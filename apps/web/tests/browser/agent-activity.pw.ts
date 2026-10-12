@@ -20,7 +20,7 @@ test('orders real activity, reveals files and reports a real reveal failure', as
           onAgentEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
           // 定位失败必须是宿主返回的真实错误，界面只负责展示。
           async revealFile() { throw new Error('文件不存在或已被移动：E:/videos/moved-away.mp4'); },
-          async runAgentTask(prompt) {
+          async runAgentTask({ prompt }) {
             emit({id: 'model-1', kind: 'analysis', status: 'running'});
             emit({id: 'model-1', kind: 'analysis', status: 'completed', durationMs: 1500, plannedToolCallCount: 1});
             emit({id: 'tool-1', kind: 'tool', status: 'running', toolName: 'extract_audio', files: [input]});

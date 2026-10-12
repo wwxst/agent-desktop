@@ -10,11 +10,15 @@ Turn Terminal          轮次终态          循环保存完成、失败或取�
 Context Projection     上下文投影        完整步骤进入模型协议，原始历史不因投影而删除。
 Recovery Ancestry      恢复祖先链        新轮次关联源轮次，核验轮次不代替原任务完成。
 Persistence Health     持久化健康        原始保存错误致命传播，不能转换成普通工具失败。
+Plan Evidence          计划证据          模型输入、状态投影和磁盘读取共用合法事件来源规则。
+Turn Message Binding   轮次消息绑定      以明确消息标识绑定已原子保存的新版本任务起点。
 ```
 
 Session 提供同步 `appendMany`，供宿主一次提交执行起点与展示绑定。Loop 的 `prepareTurnStart` 只准备事实，`runTurn` 保存后调用 `runStartedTurn`；后者只接受最新、尚无模型步骤和终态的起点。Loop 独占自身终态，已提交完成后的宿主或诊断错误不改写该事实。工具结果仍按轮次、步骤、调用标识组合归属，模型调用 ID 不是全会话身份。
 
 计划意图、压缩来源、工具执行边界、执行前检查点、宿主操作与核验事实统一保存在 Session。纯投影重建计划及任务状态，宿主提供工具业务证据资格；Core 不理解插件协议、SQLite 或视频验收。具体批准方案及六阶段取舍见 [通用智能体最小设计](design/general-agent-core.md)。后续能力以实际消费者接入与验证为准。
+
+计划的 `evidenceEventIndexes` 由 `isTaskPlanEvidenceEvent` 统一约束，模型输入、计划投影和磁盘解析不各自维护允许列表。合法来源为当前任务链中已经存在的 `tool.called`、`tool.result`、`tool.interaction.closed`、`host.operation.started`、`host.operation.result`、`effect.outcome.verified`、`turn.failed`、`turn.cancelled`、`turn.interrupted`；用户消息、助手消息及其他生命周期事件不能作为计划证据。来源合法不等于完成：步骤完成、失败和受阻仍由同一事实投影及宿主资格回调确认。非法来源在计划工具的模型输入边界拒绝；合法历史沿用同一磁盘规则读取，不在每次追加时重复全量解析。
 
 Desktop 在每次工具调用前用 `taskToolGate` 读取同一 Session 的恢复事实：已有未知外部效果时阻止新外部操作，同一轮的相同拒绝不重复审批，恢复任务链中已经成功的相同外部操作不重复执行。Loop 将拦截与未知工具保存为 `not-executed` 调用及真实失败结果，不制造未知副作用；恢复轮次限制为 24 个模型步骤和 48 次工具调用尝试。轮次起点已有未知效果时不连接插件或执行其钩子，只提供本地读取、计划更新和效果核验工具；该轮工具集固定到结束，不注册 `save_memory`。
 
@@ -276,6 +280,12 @@ Agent 回复按最小 Markdown（轻量标记文本）子集渲染，链接只�
 Electron Main 同时只保存一个 `{ sessionId, controller, finished }` 活动任务。`AbortController` 产生的同一个 AbortSignal（取消信号）依次传入 `runTurn`、Model 请求和 Tool 执行；Agent Loop 在 Model 前、Tool 前和 Tool 后检查它，Provider 将它交给 `fetch`，FFmpeg 与 whisper.cpp 的进程执行边界在 abort 时终止 child process（子进程）。取消不清空 Session，不回滚已完成 Tool 结果，也不删除已生成 Artifact（产物）；旧 controller 只清理自身对应的活动任务。`finished` 只表示该轮已经结束，供关闭收尾等待终态。
 
 用户点击“新会话”时，客户端复用相同项目及目录的输入草稿；没有匹配草稿才请求 Main 创建新的 InMemorySession，并保留旧会话。首次提交把草稿转入历史；删除全部历史后，宿主剩余或新建的输入会话仍保存在草稿中。点击侧栏历史会话时切换 `activeSessionId` 并恢复对应界面历史。执行中的 Turn 不允许新建、切换会话或保存设置，当前仍只有一个前台任务。应用重启时从 SQLite 数据库恢复会话、SessionEvent、附件路径和 Client Snapshot（其中包含各轮产物的真实路径）；Web Dev Host 返回空快照且不做持久化。
+
+Desktop 任务起点通过 `DesktopPersistentSession.commitStart(start, clientState, turnMessageBinding)` 一次 SQLite 事务保存新事件批、从草稿迁入历史后的展示快照，以及 `{ executionVersion: 1, turnId, userMessageId, assistantMessageId }` 关联。Main 在 IPC 边界核对会话、两条新增消息的标识与角色、提示词和当前附件；重复提示词也按标识归属，不按文本或消息顺序猜测轮次。事务成功后才更新内存并准备插件、钩子和模型；保存失败不推进起点，也不启动这些外部操作。Renderer 的常规展示保存不能把已提交任务退回空消息草稿。
+
+重启只为具有 `executionVersion: 1` 消息绑定、且原事件仍处于 `started` 的任务追加 `turn.interrupted`，按绑定的助手消息恢复真实终态、计划和已有产物。旧历史没有绑定时保留其合法展示和已有明确关联，不按相同文本或消息顺序补造绑定，也不以缺少终态直接推断进程异常退出。已完成结果即使尚未送达 Renderer，仍由绑定及 Session 事实补回；恢复始终由用户主动开始新轮次，不重放旧工具、审批或进程。
+
+人工核验请求必须提供去除空白后非空、原字段不超过 512 字符的说明，说明作为 `effect.outcome.verified.evidence.description` 保存；按钮或宿主不自动填入“已完成”。核验只引用当前会话尚未解决的真实来源，不能改写原工具结果、增加产物或授予新的目录权限。终端效果的说明应包含旧进程的实际状态与执行结果；仅显示连接断开不能证明命令已经停止或成功。
 
 桌面首轮成功且开始前没有会话事件时，Main 用本轮已有 `agent.model` 独立请求任务标题：只提供命名指令与用户任务，工具列表为空，沿用本轮取消信号，不追加 Session 事件。有效标题随 `AgentTaskResult.conversationTitle` 返回；命名错误通过 `conversationTitleError` 单独展示，已完成任务与产物保持成功。客户端只替换未经手动重命名的标题。失败或取消的首轮保留首条任务作为临时标题，不承诺后续轮次补做模型命名。
 
@@ -768,4 +778,4 @@ DeepSeek 将 HTTP 429、502、503、504 和已识别临时连接错误转换为�
 
 Desktop 注入 `delegateTasks`，每轮合计最多两个子任务并行执行，父任务等待全部收尾。每个子任务有独立会话和模型实例，只注册 `list_directory`、`read_file`、`search_text`，继承已经确认的目录读取范围；没有写入、命令、终端、目录变更、审批或递归委派。每项最多八步骤和 120 秒，耗尽预算明确未完成。子活动嵌套在父工具内，完整子历史按父工具调用标识保存；父模型只接收摘要、状态与文件依据。父取消必须等待所有子请求终止，恢复不继续子任务。
 
-Desktop Main 每会话持有一个 ConPTY 终端，由 `node-pty` 创建。`open_terminal` 经审批启动 PowerShell，`write_terminal` 每次重新审批准确输入，`read_terminal` 最多等待两秒读取有界输出，`close_terminal` 结束进程树。归属按当前会话和宿主生成的终端标识校验。输出最多保留 64 KiB，约 50 毫秒合批推送，Shared Client 使用 xterm 展示控制序列；终端事件携带会话身份，完成当前轮次后仍可更新输出。取消本轮使用的终端、删除会话和正常关闭时等待进程树回收。快照不保存 PID 或句柄，重启统一显示连接已结束、不重连、不重跑；不承诺强杀宿主或崩溃后的回收。
+Desktop Main 每会话持有一个 ConPTY 终端，由 `node-pty` 创建。`open_terminal` 经审批启动 PowerShell，`write_terminal` 每次重新审批准确输入，`read_terminal` 最多等待两秒读取有界输出，`close_terminal` 结束进程树。归属按当前会话和宿主生成的终端标识校验。输出最多保留 64 KiB，约 50 毫秒合批推送，Shared Client 使用 xterm 展示控制序列；终端事件携带会话身份，完成当前轮次后仍可更新输出。取消本轮使用的终端、删除会话和正常关闭时等待进程树回收。快照不保存 PID 或句柄，重启统一显示连接已结束、不重连、不重跑；此前仍在运行的进程状态与结果未确认，需要人工核验，不承诺强杀宿主或崩溃后的回收。
