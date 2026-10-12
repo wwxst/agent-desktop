@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { net } from 'electron';
+import { renameDirectory } from './rename-directory.js';
 
 const execute = promisify(execFile);
 const runtimeFiles = ['whisper-cli.exe', 'ggml.dll', 'ggml-cpu.dll', 'ggml-base.dll', 'whisper.dll'] as const;
@@ -78,7 +79,7 @@ export async function installWhisperRuntime(staging: string, archiveDirectory: s
     }
     if (!process.env.SystemRoot) throw new Error('Windows SystemRoot 不可用。');
     await execute(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', archive, '-C', staging], { windowsHide: true });
-    await rename(join(staging, lock.archiveRoot), join(staging, 'runtime'));
+    await renameDirectory(join(staging, lock.archiveRoot), join(staging, 'runtime'));
   }
   await verifyWhisperRuntime(staging);
 }

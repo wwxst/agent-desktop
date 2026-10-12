@@ -5,8 +5,18 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installWhisperRuntime, verifyWhisperRuntime } from '../src/main/whisper-runtime.js';
 
-const boundary = vi.hoisted(() => ({ execute: vi.fn(), fetch: vi.fn() }));
+const boundary = vi.hoisted(() => ({ execute: vi.fn(), fetch: vi.fn(), failRuntimeRename: false, runtimeRenameAttempts: 0 }));
 vi.mock('electron', () => ({ net: { fetch: boundary.fetch } }));
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual, rename: async (source: string, destination: string) => {
+    if (source.endsWith('Release')) {
+      boundary.runtimeRenameAttempts += 1;
+      if (boundary.failRuntimeRename) { boundary.failRuntimeRename = false; throw Object.assign(new Error('sharing violation'), { code: 'EPERM' }); }
+    }
+    return actual.rename(source, destination);
+  } };
+});
 vi.mock('node:os', async original => ({ ...await original<typeof import('node:os')>(), platform: () => 'win32', arch: () => 'x64' }));
 vi.mock('node:child_process', async original => {
   const actual = await original<typeof import('node:child_process')>();
@@ -18,6 +28,7 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const names = ['whisper-cli.exe', 'ggml.dll', 'ggml-cpu.dll', 'ggml-base.dll', 'whisper.dll'];
 afterEach(async () => {
   vi.unstubAllEnvs(); boundary.execute.mockReset(); boundary.fetch.mockReset();
+  boundary.failRuntimeRename = false; boundary.runtimeRenameAttempts = 0;
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 async function fixture() {
@@ -40,6 +51,12 @@ async function fixture() {
 }
 
 describe('controlled Whisper runtime installation', () => {
+  it.skipIf(process.platform !== 'win32')('publishes and verifies the extracted runtime after a transient Windows directory lock', async () => {
+    const { staging, cache } = await fixture(); boundary.failRuntimeRename = true;
+    await installWhisperRuntime(staging, cache);
+    expect(boundary.runtimeRenameAttempts).toBe(2);
+    expect(await verifyWhisperRuntime(staging)).toBe(await realpath(join(staging, 'runtime', 'whisper-cli.exe')));
+  });
   it('installs all verified CPU libraries and reuses only the verified archive', async () => {
     const { staging, cache } = await fixture();
     await installWhisperRuntime(staging, cache);
