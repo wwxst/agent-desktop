@@ -15,6 +15,7 @@ export interface TranscribeAudioToolOptions {
 export interface CommandOutput {
   readonly stdout: string;
   readonly stderr: string;
+  readonly audioDuration?: number;
 }
 
 export type CommandExecutor = (
@@ -34,14 +35,15 @@ interface TranscriptionResult {
   readonly segments: readonly TranscriptSegment[];
 }
 
-/** 真实 Small 模型会给全零 PCM 静音生成文字；只排除能确定没有采样信号的标准 PCM16。 */
-async function rejectSilentPcm(path: string, signal?: AbortSignal): Promise<void> {
+/** 读取标准 PCM 的采样时长，并排除真实 Small 模型会产生幻觉的全零 PCM16 静音。 */
+async function inspectPcm(path: string, signal?: AbortSignal): Promise<number | undefined> {
   const file = await open(path, 'r');
   try {
     const header = Buffer.alloc(16);
     if ((await file.read(header, 0, 12, 0)).bytesRead !== 12 || header.toString('ascii', 0, 4) !== 'RIFF' || header.toString('ascii', 8, 12) !== 'WAVE') return;
     const size = (await file.stat()).size;
     let pcm16 = false;
+    let bytesPerSecond = 0;
     for (let position = 12; position + 8 <= size;) {
       signal?.throwIfAborted();
       if ((await file.read(header, 0, 8, position)).bytesRead !== 8) return;
@@ -51,14 +53,17 @@ async function rejectSilentPcm(path: string, signal?: AbortSignal): Promise<void
       if (kind === 'fmt ' && length >= 16) {
         await file.read(header, 0, 16, position);
         pcm16 = header.readUInt16LE(0) === 1 && header.readUInt16LE(14) === 16;
+        bytesPerSecond = header.readUInt16LE(0) === 1 ? header.readUInt32LE(8) : 0;
       }
-      if (kind === 'data' && pcm16 && length > 0) {
+      if (kind === 'data' && bytesPerSecond > 0 && length > 0) {
+        const duration = length / bytesPerSecond;
+        if (!pcm16) return duration;
         const samples = Buffer.alloc(64 * 1024);
         for (let offset = 0; offset < length;) {
           signal?.throwIfAborted();
           const { bytesRead } = await file.read(samples, 0, Math.min(samples.length, length - offset), position + offset);
           if (bytesRead === 0) return;
-          if (samples.subarray(0, bytesRead).some(byte => byte !== 0)) return;
+          if (samples.subarray(0, bytesRead).some(byte => byte !== 0)) return duration;
           offset += bytesRead;
         }
         throw new Error('Whisper 输入为全零 PCM 静音，没有可转录语音。');
@@ -71,7 +76,7 @@ async function rejectSilentPcm(path: string, signal?: AbortSignal): Promise<void
 /** 直接执行 whisper-cli，绕过 shell 并保留可注入的最小进程测试接缝。 */
 export const executeFileCommand: CommandExecutor = async (command, args, signal) => {
   const audioIndex = args.indexOf('-f');
-  if (args.includes('-m') && audioIndex >= 0) await rejectSilentPcm(args[audioIndex + 1]!, signal);
+  const audioDuration = args.includes('-m') && audioIndex >= 0 ? await inspectPcm(args[audioIndex + 1]!, signal) : undefined;
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const stop = () => { child.kill(); };
@@ -92,7 +97,7 @@ export const executeFileCommand: CommandExecutor = async (command, args, signal)
     const child = execFile(command, processArgs, { windowsHide: true, ...(cwd === undefined ? {} : { cwd }) }, (error, stdout, stderr) => {
       signal?.removeEventListener('abort', stop);
       if (error === null) {
-        resolve({ stdout, stderr });
+        resolve({ stdout, stderr, ...(audioDuration === undefined ? {} : { audioDuration }) });
         return;
       }
 
@@ -122,7 +127,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** 只解析当前业务消费的官方 JSON 字段，损坏的外部进程输出直接失败。 */
-function parseWhisperJson(contents: string): TranscriptionResult {
+function parseWhisperJson(contents: string, audioDuration?: number): TranscriptionResult {
   let root: unknown;
   try {
     root = JSON.parse(contents);
@@ -158,7 +163,10 @@ function parseWhisperJson(contents: string): TranscriptionResult {
     const text = value.text.trim();
     if (text.length === 0) continue;
     // whisper.cpp offsets 使用毫秒；Tool 在外部边界转换为 Agent 使用的秒。
-    segments.push({ start: from / 1000, end: to / 1000, text });
+    const start = from / 1000;
+    if (audioDuration !== undefined && start > audioDuration) throw new Error(`Whisper JSON segment ${index} starts outside the audio`);
+    // 实际长样本的尾段包含模型补齐的静音；结束时间以 WAV 采样长度为界。
+    segments.push({ start, end: audioDuration === undefined ? to / 1000 : Math.min(to / 1000, audioDuration), text });
   }
 
   if (segments.length === 0) throw new Error('Whisper produced an empty transcript');
@@ -222,7 +230,7 @@ export class TranscribeAudioTool implements Tool {
           signal?.throwIfAborted();
         }
         // 普通 JSON 已提供 segment offsets；不使用包含无消费者 token 信息的 -ojf。
-        await this.executeCommand(this.command, [
+        const commandOutput = await this.executeCommand(this.command, [
           '-m',
           this.modelPath,
           '-f',
@@ -236,7 +244,7 @@ export class TranscribeAudioTool implements Tool {
         ], ...(signal === undefined ? [] : [signal]));
         signal?.throwIfAborted();
         const json = await readFile(`${outputBase}.json`, 'utf8');
-        return { status: 'success', output: parseWhisperJson(json) };
+        return { status: 'success', output: parseWhisperJson(json, commandOutput.audioDuration) };
       } finally {
         // 只清理本次调用创建的目录，不扫描或管理其他临时资源。
         await rm(temporaryDirectory, { recursive: true, force: true });

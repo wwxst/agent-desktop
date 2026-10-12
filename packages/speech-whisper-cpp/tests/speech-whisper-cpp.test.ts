@@ -28,6 +28,22 @@ async function writeWhisperOutput(args: readonly string[], contents: string): Pr
 }
 
 describe('whisper.cpp speech tools', () => {
+  it('bounds padded process timestamps by the actual WAV sample duration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'whisper-duration-'));
+    try {
+      const audio = join(root, 'audio.wav'); const model = join(root, 'model.bin');
+      const wav = Buffer.alloc(44 + 80000); wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8, 4);
+      wav.write('WAVEfmt ', 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20);
+      wav.writeUInt16LE(1, 22); wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28);
+      wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(80000, 40); wav[44] = 1;
+      await writeFile(audio, wav); await writeFile(model, 'model');
+      const tool = new TranscribeAudioTool({ modelPath: model }, async (_command, args, signal) => executeFileCommand(process.execPath,
+        ['-e', `const args=process.argv; require('node:fs').writeFileSync(args[args.indexOf('-of')+1]+'.json',JSON.stringify({transcription:[{text:'spoken',offsets:{from:0,to:3000}}]}));`, '--', ...args], signal));
+      expect(await tool.execute({ audioPath: audio }, toolContext())).toEqual({ status: 'success', output: {
+        text: 'spoken', segments: [{ start: 0, end: 2.5, text: 'spoken' }],
+      } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('rejects all-zero PCM16 before a real process can hallucinate speech', async () => {
     const root = await mkdtemp(join(tmpdir(), 'whisper-silence-'));
     try {

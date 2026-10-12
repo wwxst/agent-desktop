@@ -125,7 +125,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     app = await launch(); page = await app.firstWindow(); await observeApprovals();
     await page.evaluate(async baseUrl => {
       await window.agentDesktop.extensions.install('plugin:ffmpeg');
-      await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, whisperModelPath: null,
+      await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false,
         modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', images: true }] },
         conversationModel: { providerId: 'fixture', modelId: 'fixture' }, visionModel: { providerId: 'fixture', modelId: 'fixture' } });
     }, `http://127.0.0.1:${address.port}`);
@@ -202,11 +202,13 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
         // 尚无线上新版；在隔离安装目录构造元数据升级，媒体二进制及工具契约保持原版。
         await writeFile(manifest, JSON.stringify({ ...JSON.parse(originalManifest), version: '1.0.1' }));
         const updated = await page.evaluate(() => window.agentDesktop.extensions.manage({ action: 'update', id: 'plugin:ffmpeg' }));
+        if (updated === null) throw new Error('插件更新不能返回目录选择取消。');
         const plugin = updated.plugins.find(item => item.id === 'plugin:ffmpeg')!;
         expect(plugin.version).toBe('1.0.1');
         expect((await run('updated')).results[0]).toContain('h264');
         const versionId = plugin.versions!.find(item => item.version === '1.0.0')!.id;
         const restored = await page.evaluate(versionId => window.agentDesktop.extensions.manage({ action: 'rollback', id: 'plugin:ffmpeg', versionId }), versionId);
+        if (restored === null) throw new Error('插件回滚不能返回目录选择取消。');
         expect(restored.plugins.find(item => item.id === 'plugin:ffmpeg')?.version).toBe('1.0.0');
         expect((await run('rolled-back')).results[0]).toContain('h264');
       } finally { await writeFile(manifest, originalManifest); }

@@ -19,9 +19,11 @@ test('automatically saves full-page settings with themes and extension navigatio
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.model-provider-editor')).toHaveCount(0);
   await page.getByRole('button', { name: '本地工具', exact: true }).click();
-  await expect(page.getByLabel('模型文件路径', { exact: true })).toBeHidden();
-  await page.getByText('高级路径设置', { exact: true }).click();
-  await page.getByLabel('模型文件路径', { exact: true }).fill('D:/models/draft.bin');
+  await expect(page.getByLabel('模型文件路径', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('Whisper CLI 路径', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Whisper', exact: true }).click();
+  await expect(page.getByRole('main', { name: '插件管理' })).toBeVisible();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
   await expect(page.getByLabel('模型 1 ID', { exact: true })).toHaveValue('保存的模型');

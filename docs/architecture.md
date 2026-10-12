@@ -94,7 +94,7 @@ Managed Model        受控语音模型      用户单独下载或导入已核�
 Media Authorization  媒体访问授权      宿主解析真实音频路径，再执行 MCP 调用审批。
 ```
 
-`apps/desktop/src/plugins/whisper.ts` 复用 `speech-whisper-cpp` 的进程执行和官方 JSON 解析，以自包含 CJS 资源运行于 Electron 自带 Node。输入仍为 `audioPath` 本地 WAV；成功返回完整 `text` 与秒级 `segments`，失败保留消息，取消传播 `AbortError`。服务每十秒上报实际已运行秒数，宿主复用 SDK 的进度重置等待超时，不以默认 60 秒限制任务总时长，也不伪造完成百分比。其他音频和视频先由 FFmpeg 转换，不在 Whisper 内打包 FFmpeg。第三方同名工具继续使用限定名。
+`apps/desktop/src/plugins/whisper.ts` 复用 `speech-whisper-cpp` 的进程执行和官方 JSON 解析，以自包含 CJS 资源运行于 Electron 自带 Node。输入仍为 `audioPath` 本地 WAV；成功返回完整 `text` 与秒级 `segments`，失败保留消息，取消传播 `AbortError`。标准 PCM 音频的实际采样长度限制上游补齐静音所造成的尾段结束时间，起始时间超出素材仍失败。服务每十秒上报实际已运行秒数，宿主复用 SDK 的进度重置等待超时，不以默认 60 秒限制任务总时长，也不伪造完成百分比。其他音频和视频先由 FFmpeg 转换，不在 Whisper 内打包 FFmpeg。第三方同名工具继续使用限定名。
 
 Desktop 在每轮准备扩展前校验模型与运行程序，只向受控 Whisper 服务传递其绝对路径；用户连接配置和模型输入均不能替换路径或改成远程服务。`createVideoAgent`、`CheckVideoSemanticsTool` 只消费 `mediaTools` 中的通用 `Tool`，不导入或创建 Whisper；CLI 在自身入口显式注入原本机实现。插件缺失、禁用、卸载、模型损坏或连接失败时移除 `transcribe_audio`，普通任务和其他插件继续；带音轨的语义验收明确 `blocked`，没有音轨仍按原规则处理。通用终端不属于专业工具卸载边界。
 
