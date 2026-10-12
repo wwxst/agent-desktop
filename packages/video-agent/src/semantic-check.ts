@@ -2,14 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Model, ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
-import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 import { readVideoDeliveryFacts, type RequirementCheck } from './delivery.js';
 import type { SessionReader } from './delivery-tools.js';
 import { candidateDigest } from './candidate-digest.js';
 import { isInsideDirectory } from './delivery-tools.js';
 
 export interface SemanticCheckOptions {
-  readonly model: Model; readonly vision?: AnalyzeImagesTool;
+  readonly model: Model; readonly vision?: Tool;
   readonly mediaTools?: readonly Tool[];
 }
 /** 验收独立消费候选实际内容；父模型只提交身份，不能填写通过或覆盖范围。 */

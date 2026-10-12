@@ -41,6 +41,19 @@ describe('Desktop plugin platform boundaries', () => {
     expect(plugin.servers[0]?.env?.WHISPER_MODEL_PATH).toBe('${WHISPER_MODEL_PATH}');
     expect(plugin.item.connections?.[0]?.variables).toEqual([]);
   });
+  it('keeps Vision model credentials in runtime settings and ignores historical plugin connection overrides', async () => {
+    const root = await temp(); const database = join(root, 'db.sqlite'); const extensionRoot = join(root, 'extensions');
+    await cp(resolve('apps/desktop/resources/plugins/vision'), join(extensionRoot, 'plugins/vision'), { recursive: true });
+    writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:vision', kind: 'plugin', name: 'vision', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
+    const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
+    connections.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp', VISION_API_KEY: 'wrong-secret' });
+    const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
+    const plugin = (await store.files()).plugins[0]!;
+    expect(plugin.servers[0]).not.toHaveProperty('url');
+    expect(plugin.servers[0]?.env).toEqual({});
+    expect(plugin.item.connections?.[0]?.variables).toEqual([]);
+    await expect(store.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp' })).rejects.toThrow('运行时设置');
+  });
 
   it('persists standalone MCP servers with encrypted secrets, edits without disclosure and removes them', async () => {
     const root = await temp(); const database = join(root, 'db.sqlite');
@@ -163,7 +176,7 @@ describe('Desktop plugin platform boundaries', () => {
     const root = await temp(); const source = join(root, 'market'); const resources = join(root, 'resources');
     await cp(resolve('apps/desktop/resources'), resources, { recursive: true }); await market(source, 'openai-curated');
     const store = new DesktopExtensions(join(root, 'db.sqlite'), join(root, 'extensions'), resources);
-    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper']);
+    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision']);
     await store.addMarketplace(source);
     expect((await store.list()).plugins.some(item => item.id === 'plugin:video-editing@openai-curated' && !item.installed)).toBe(true);
     await store.install('plugin:video-editing@openai-curated');

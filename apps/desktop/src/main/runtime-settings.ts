@@ -195,7 +195,7 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
     deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
     useDeepSeekThinking: new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com',
     ...(conversation.model.maxOutputTokens === undefined ? {} : { modelMaxOutputTokens: conversation.model.maxOutputTokens }),
-    ...(visionKey === undefined || vision === undefined ? {} : { visionApiKey: visionKey, visionBaseUrl: vision.provider.baseUrl,
+    ...(vision === undefined ? {} : { ...(visionKey === undefined ? {} : { visionApiKey: visionKey }), visionBaseUrl: vision.provider.baseUrl,
       visionModel: vision.model.id, visionProtocol: vision.provider.protocol,
       ...(vision.model.maxOutputTokens === undefined ? {} : { visionMaxOutputTokens: vision.model.maxOutputTokens }) }),
     memoryEnabled: saved.memoryEnabled ?? true,

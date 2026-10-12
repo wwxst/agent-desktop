@@ -28,7 +28,8 @@ class ScriptedModel implements Model {
 }
 
 function createVisualAgent(model: Model, session: InMemorySession, outputDir: string): Agent {
-  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  // 外部进程边界使用可解码的 16×16 JPEG；损坏头部不能再绕过 Vision 文件校验。
+  const jpeg = Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYyLjI4LjEwMQD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABMAAEBAAAAAAAAAAAAAAAAAAAABgEBAQAAAAAAAAAAAAAAAAAABgcQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAQABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCLAE1/f//Z', 'base64');
   const executeCommand: CommandExecutor = async (command, args) => {
     if (command === 'ffprobe') {
       return {
@@ -66,7 +67,9 @@ describe('Visual Media Inspection Agent', () => {
         type: 'message',
         content: [{
           type: 'output_text',
-          text: JSON.stringify({ summary: 'A sampled video.', frames: [] }),
+          text: JSON.stringify({ summary: 'A sampled video.', frames: framePaths.map((_path, index) => ({
+            timestamp: (42 * (index + 1)) / 7, description: 'A red scene.', subjects: [], actions: [], scene: 'red', visibleText: [],
+          })) }),
         }],
       }],
     }), { status: 200 }));
@@ -114,6 +117,7 @@ describe('Visual Media Inspection Agent', () => {
       expect(events.filter((event) => event.type === 'turn.completed')).toHaveLength(1);
       expect(events.filter((event) => event.type === 'step.completed')).toHaveLength(3);
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(events.find(event => event.type === 'tool.result' && event.toolCallId === ('analyze-call' as ToolCallId))).toMatchObject({ result: { status: 'success', output: { frames: expect.any(Array) } } });
       const extractResult = events.find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => (
         event.type === 'tool.result' && event.toolCallId === ('extract-call' as ToolCallId)
       ));

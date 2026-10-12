@@ -13,6 +13,8 @@ import type { McpServerFile, PluginFiles, SkillFile, StandaloneMcpFile } from '.
 import { readSkill } from './extensions.js';
 import { adaptFFmpegTool, FFMPEG_TOOLS, type ProbeFileAccess } from './ffmpeg-tool.js';
 import { adaptWhisperTool, WHISPER_TOOLS, type WhisperFileAccess } from './whisper-tool.js';
+import { adaptVisionTool, VISION_TOOLS } from './vision-tool.js';
+import type { RuntimeConfiguration } from './runtime-settings.js';
 
 type Approve = (request: PluginApproval, signal?: AbortSignal) => Promise<boolean>;
 
@@ -66,7 +68,9 @@ export async function prepareExtensions(
   approve: Approve,
   signal?: AbortSignal,
   prompt?: string,
-  options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider; readonly probeAccess?: ProbeFileAccess; readonly whisperAccess?: WhisperFileAccess; readonly whisperEnvironment?: { readonly WHISPER_MODEL_PATH: string; readonly WHISPER_CLI_PATH: string } },
+  options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider; readonly probeAccess?: ProbeFileAccess; readonly whisperAccess?: WhisperFileAccess; readonly visionAccess?: ProbeFileAccess;
+    readonly whisperEnvironment?: { readonly WHISPER_MODEL_PATH: string; readonly WHISPER_CLI_PATH: string };
+    readonly visionConfiguration?: Pick<RuntimeConfiguration, 'visionApiKey' | 'visionBaseUrl' | 'visionModel' | 'visionProtocol' | 'visionMaxOutputTokens'> },
 ): Promise<{ tools: Tool[]; instructions: string; runHooks(event: string, input: Readonly<Record<string, unknown>>): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
   const tools: Tool[] = [];
   const clients: Client[] = [];
@@ -142,6 +146,14 @@ export async function prepareExtensions(
         // 旧版技能包的内含服务不能绕过独立插件的禁用、卸载和宿主授权。
         if (plugin.item.source === 'builtin' && plugin.item.id === 'plugin:video-editing' && server.name === 'ffmpeg-probe') continue;
         const isWhisper = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper' && server.name === 'whisper';
+        const isVision = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:vision' && server.name === 'vision';
+        const vision = isVision ? options?.visionConfiguration : undefined;
+        // 未选择视觉模型或缺少密钥时不启动上传服务，普通对话与其它插件仍然可用。
+        if (isVision && (vision?.visionBaseUrl === undefined || vision.visionApiKey === undefined)) {
+          unavailableServices.push(vision?.visionBaseUrl === undefined ? 'Vision 不可用：请先在设置中选择视觉模型。'
+            : 'Vision 不可用：请先在设置中配置当前视觉模型的 API 密钥。');
+          continue;
+        }
         const firstTool = tools.length;
         let currentClient: Client | undefined;
         let connected = false;
@@ -167,7 +179,13 @@ export async function prepareExtensions(
         const transport = server.url !== undefined
           ? server.type === 'sse' ? new SSEClientTransport(new URL(server.url), remoteOptions) : new StreamableHTTPClientTransport(new URL(server.url), remoteOptions)
           : new StdioClientTransport({ command, args, cwd: plugin.directory,
-            env: { ...getDefaultEnvironment(), ...Object.fromEntries(Object.entries(server.env ?? {}).map(([key, value]) => [key, substitute(value)])), ...(isWhisper ? options?.whisperEnvironment : {}), ...(configuredCommand === 'node' ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } });
+            // 视觉密钥只在启动审批后交给随包服务，不写进清单、命令参数或公开审批内容。
+            env: { ...getDefaultEnvironment(), ...Object.fromEntries(Object.entries(server.env ?? {}).map(([key, value]) => [key, substitute(value)])), ...(isWhisper ? options?.whisperEnvironment : {}),
+              ...(vision === undefined ? {} : { VISION_API_KEY: vision.visionApiKey!, VISION_BASE_URL: vision.visionBaseUrl!,
+                ...(vision.visionModel === undefined ? {} : { VISION_MODEL: vision.visionModel }),
+                ...(vision.visionProtocol === undefined ? {} : { VISION_PROTOCOL: vision.visionProtocol }),
+                ...(vision.visionMaxOutputTokens === undefined ? {} : { VISION_MAX_OUTPUT_TOKENS: String(vision.visionMaxOutputTokens) }) }),
+              ...(configuredCommand === 'node' ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } });
         // SDK 的 HTTP sessionId 明确允许 undefined，与本仓库 exactOptionalPropertyTypes 的接口声明不一致。
         await client.connect(transport as Parameters<Client['connect']>[0]);
         connected = true;
@@ -184,7 +202,8 @@ export async function prepareExtensions(
               inputSchema: definition.inputSchema,
               async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
                 if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', message: '插件工具参数必须是对象。' };
-                if (!await approve({ kind: 'plugin-tool', pluginName: plugin.item.name, serverName: server.name,
+                // 图片上传审批显示目标服务，路径由视觉适配器先解析授权；密钥不进入审批。
+                if (!await approve({ kind: 'plugin-tool', pluginName: vision === undefined ? plugin.item.name : `${plugin.item.name} 图片上传 → ${new URL(vision.visionBaseUrl!).origin}`, serverName: server.name,
                   toolName: definition.name, arguments: JSON.stringify(input) }, context.signal)) return { status: 'error', message: '用户拒绝了插件工具调用。' };
                 context.signal?.throwIfAborted();
                 let result;
@@ -201,7 +220,8 @@ export async function prepareExtensions(
               ? adaptFFmpegTool(tool, options?.probeAccess, definition.name)
               : plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper'
                 && server.name === 'whisper' && WHISPER_TOOLS.has(definition.name)
-                ? adaptWhisperTool(tool, options?.whisperAccess) : tool;
+                ? adaptWhisperTool(tool, options?.whisperAccess)
+                : isVision && VISION_TOOLS.has(definition.name) ? adaptVisionTool(tool, options?.visionAccess) : tool;
             if (tools.some(existing => existing.name === mapped.name)) throw new Error(`插件工具名称冲突：${mapped.name}`);
             tools.push(mapped);
           }
@@ -210,10 +230,11 @@ export async function prepareExtensions(
         connectedServers.add(server.name);
         } catch (error) {
           signal?.throwIfAborted();
-          if (!isWhisper || connected || !(error instanceof Error) || error instanceof TypeError) throw error;
+          if ((!isWhisper && !isVision) || connected || !(error instanceof Error) || error instanceof TypeError) throw error;
           await currentClient?.close();
           tools.splice(firstTool);
-          unavailableServices.push(`Whisper 连接失败：${error.message}。语音识别不可用，请重新安装插件。`);
+          unavailableServices.push(isWhisper ? `Whisper 连接失败：${error.message}。语音识别不可用，请重新安装插件。`
+            : `Vision 连接失败：${error.message}。画面分析不可用，请重新安装插件。`);
         }
       }
     }

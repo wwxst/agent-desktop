@@ -11,7 +11,6 @@
     { "path": "../model-deepseek" },
     { "path": "../session" },
     { "path": "../system-prompt" },
-    { "path": "../tools" },
-    { "path": "../vision-openai" }
+    { "path": "../tools" }
   ]
 }

@@ -62,7 +62,7 @@ MCP 运行时支持 stdio、Streamable HTTP（可流式 HTTP 传输）和 SSE（
 
 用户已将实际服务端接入留待后续实施；对接交接见 [插件与技能自有后端对接文档](plugin-backend-integration.md)，其中待实现契约不表示当前已有接口或部署。
 
-每轮服务启动需审批，各次调用另行审批，SDK 和钩子只继承基础系统环境，不传递模型设置密钥。一般工具名以插件、服务及工具标识组成，特殊字符或超过 64 字符时附加摘要避免身份冲突；下述受控 FFmpeg 和 Whisper 服务映射既有公开工具名称。取消与收尾等待同一个关闭操作，进程不写入恢复数据。复制或卸载期间宿主拒绝新任务，防止使用正在修改的目录。
+每轮服务启动需审批，各次调用另行审批，SDK 和钩子只继承基础系统环境；只有受控 Vision 服务获得所选视觉供应商配置，其它服务不接收模型设置密钥。一般工具名以插件、服务及工具标识组成，特殊字符或超过 64 字符时附加摘要避免身份冲突；下述受控 FFmpeg、Whisper 和 Vision 服务映射既有公开工具名称。取消与收尾等待同一个关闭操作，进程不写入恢复数据。复制或卸载期间宿主拒绝新任务，防止使用正在修改的目录。
 
 ### Desktop FFmpeg 插件
 
@@ -103,6 +103,25 @@ Whisper 复用 FFmpeg 的宿主真实路径授权：已确认目录、精确选�
 程序安装复用扩展暂存、原子发布、更新和回滚，归档及 CPU 程序/DLL 按锁文件摘要验证，并以 `--help` 实际检查可加载性。默认模型位于用户数据的 `extensions/models/whisper`，官方 revision、体积和摘要独立锁定；安装前检查磁盘空间，流式下载显示真实字节进度，校验后才发布。失败残片删除，允许从头重试；已有合法文件复用。本地导入也必须匹配同一锁定模型。卸载插件保留模型，用户可主动删除；模型操作、插件更新和新任务复用宿主原有互斥边界，运行中的识别不更换资源。资源访问与用户媒体授权分开，不把模型目录授予普通媒体工具。
 
 仅声明 Windows x64 CPU，运行资源与模型不嵌入主安装包；来源及 MIT 许可证随插件保留。官方 Windows 构建不能可靠加载中文绝对模型路径，执行时以模型目录作为工作目录并传相对模型名；音频和结果路径仍为绝对路径。超过 Windows 传统长度限制的已授权音频复制到本次工具临时目录再调用，成功、失败和取消都清理该副本。全零 PCM16 静音直接失败，避免识别幻觉；不宣称解决所有背景噪声。真实安装、协同、性能和审查证据见 [Whisper 阶段验收](acceptance/whisper-plugin-baseline-20261012.md)。
+
+### Desktop Vision 插件
+
+```text
+Vision Plugin        视觉理解插件      独立 plugin:vision，只提供 analyze_images。
+Provider Selection   服务配置选择      宿主解析当前视觉供应商、模型、协议、输出上限及加密密钥。
+Image Authorization  图片访问授权      上传前复用真实本地路径授权，调用审批展示所选服务地址。
+Shared Observation   共享画面观察      公开调用和候选语义验收使用同一个适配后的通用 Tool。
+```
+
+`apps/desktop/src/plugins/vision.ts` 复用 `vision-openai` 的文件读取、图片请求与响应解析，构建为自包含 CJS 资源并使用 Electron 自带 Node；不下载运行程序或模型。输入保持 `images[{path,timestamp}]`，每批一至六张 JPG/PNG；成功返回 `summary` 与按输入顺序对应的 `frames`，每帧包含 `timestamp`、`description`、`subjects`、`actions`、`scene`、`visibleText`。视觉模型只观察，不决定剪辑或生成产物。
+
+Desktop 每轮从 `loadRuntimeConfiguration` 获取已选择的视觉供应商及模型，仅向内置 `plugin:vision` 的 `vision` stdio 服务注入 `VISION_API_KEY`、`VISION_BASE_URL`、`VISION_MODEL`、`VISION_PROTOCOL` 和可选 `VISION_MAX_OUTPUT_TOKENS`。连接配置及工具输入不能替换密钥或服务端点；密钥不进入审批文案、Renderer（渲染层）、Session（会话）和 Trace（执行追踪），也不传给第三方 MCP 服务或命令钩子。批准视觉调用会将已授权图片上传到所选供应商，审批明确显示地址，保留启动及逐次调用审批。
+
+宿主的 `vision-tool.ts` 先解析每张图片的真实路径，复用 FFmpeg/Whisper 的已确认目录、精确选定附件及来源已授权输出项规则；目录穿越、目录链接、网络路径及未选定邻居文件不能扩大权限。语义验收的临时帧位于同一输出项工作目录，结束后清理。MCP 结果在外部边界转换为完整观察契约，遗漏帧、时间戳不对应或字段畸形返回错误；HTTP、JSON 和服务错误不伪造成功，取消传播 `AbortError`。
+
+上传前检查实际 JPG/PNG 编码头部和尺寸，不把改扩展名的其它文件当作图片，也不声称替代完整解码。单张不超过 10 MiB，整批原始图片不超过 20 MiB，序列化请求不超过 30 MiB；单边不超过 8192 像素且总量不超过 4000 万像素。API 地址只接受无内嵌凭证、查询参数或片段的 HTTP(S)，不跟随重定向；单次网络请求有 50 秒预算，超时明确失败，不自动重试或重放图片上传。
+
+`createVideoAgent` 和 `CheckVideoSemanticsTool` 只消费显式注入的通用 `Tool`，不导入或创建 `AnalyzeImagesTool`。同一个 `analyze_images` 实例供公开调用及内部逐帧验收消费，内部调用仍经过审批和钩子，完整观察存入 `check_video_semantics` 证据而不伪造独立 Session 事件。CLI 在自身入口显式注入本机视觉实现。插件缺失、停用、卸载、启动拒绝、连接失败、未选择视觉模型或缺少密钥时没有视觉工具；普通任务及其它插件继续，依赖视觉的语义验收返回 `blocked`。第三方同名服务继续使用限定名称。当前自动化与真实外部验证范围见 [Vision 阶段验收](acceptance/vision-plugin-20261012.md)。
 
 ## Core Relationship（核心关系）
 
@@ -248,7 +267,7 @@ Responses                响应协议          将通用消息转换为输入与
 
 `loadRuntimeConfiguration` 解析所选供应商与模型，供主任务、语义验收和只读子智能体消费；协议转换只位于现有具体模型/视觉包，Agent Core（智能体核心）不持有供应商清单和协议字段。Chat 请求只向 DeepSeek 官方地址发送原有 thinking（思考开关）扩展。Responses（响应协议）以完成事件为完整结果，支持公开文本增量、函数往返和取消；截断、失败和不完整响应不能作为成功回复。视觉工具按所选协议发送结构化图片观察请求。上下文窗口仅为目录信息，不新增本地上下文裁剪；最大输出上限进入实际请求。
 
-模型发现经宿主实际请求 `/models`，只消费供应商返回的 ID 与可选名称，不推断图片能力或 token 上限。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源；浏览器开发宿主用内存目录夹具，目录网络获取和打开本地快照明确要求桌面应用。
+模型发现经宿主实际请求 `/models`，只消费供应商返回的 ID 与可选名称，不推断图片能力或 token 上限。该请求只验证目录连接和认证；视觉选择必须在当前目录中声明 `images: true`，实际供应商是否接受该模型的图片和协议仍由 `analyze_images` 的真实请求确认，错误明确保留。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源；浏览器开发宿主用内存目录夹具，目录网络获取和打开本地快照明确要求桌面应用。
 
 启动恢复前，`legacy-storage-migration.ts` 读取同一目录内尚未导入的 `session-state.json`、`runtime-settings.json` 与 `runtime-secrets.json`，先按现有规则解析，再由一个事务导入。旧文件保留且不再写入；已有数据库记录始终优先。任何旧文件解析失败都不提交部分迁移，数据库损坏也不会用空状态覆盖。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）仍使用现有写入链路。
 
@@ -286,7 +305,7 @@ Electron Main 同时只保存一个 `{ sessionId, controller, finished }` 活动
 
 `close` 事件必须先 `preventDefault()` 再判断该窗口是否已在收尾：收尾期间用户再次点关闭时，前一次收尾尚未结束，若先判断再阻止，第二次关闭就会直接销毁窗口，跳过等待落盘并留下半份状态。重复关闭不重复进入收尾流程，真正的关闭只发生在收尾通过后的 `window.destroy()`，它不会再触发 `close` 事件。
 
-非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。DeepSeek 与 Vision API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。Desktop 的 FFmpeg 和 Whisper 均由独立插件提供；Whisper 运行资源和模型由宿主管理，只有模型完整性和运行资源检查通过时才注册 `transcribe_audio`。缺少插件、模型或运行资源时，其它 Agent 能力继续运行，带音轨的语义验收返回 `blocked`。CLI 显式选择本机实现并使用系统 PATH。
+非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。DeepSeek 与 Vision API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。Desktop 的 FFmpeg、Whisper 和 Vision 均由独立插件提供；Whisper 运行资源和模型由宿主管理，只有模型完整性和运行资源检查通过时才注册 `transcribe_audio`。缺少插件、模型、运行资源或视觉配置时，其它 Agent 能力继续运行，依赖该能力的语义验收返回 `blocked`。CLI 显式选择本机实现并使用系统 PATH。
 
 ```text
 Layer                 中文名称         职责

@@ -80,6 +80,16 @@ describe('desktop runtime settings', () => {
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('deepSeekApiKey');
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
   });
+  it('retains the selected visual service without a key and removes it when vision is disabled', async () => {
+    const { database } = await paths();
+    await saveRuntimeSettings(database, { modelProvider: provider(), visionModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
+    const configuration = await loadRuntimeConfiguration(database, storage, {});
+    expect(configuration).toMatchObject({ visionBaseUrl: 'https://example.com/v1', visionModel: 'test-model', visionProtocol: 'responses', visionMaxOutputTokens: 4000 });
+    expect(configuration).not.toHaveProperty('visionApiKey');
+    await saveRuntimeSettings(database, { visionModel: null }, storage);
+    const disabled = await loadRuntimeConfiguration(database, storage, { OPENAI_API_KEY: 'unused-key' });
+    for (const field of ['visionApiKey', 'visionBaseUrl', 'visionModel', 'visionProtocol', 'visionMaxOutputTokens']) expect(disabled).not.toHaveProperty(field);
+  });
   it('clearing an internal saved key returns to the environment source', async () => {
     const { database } = await paths();
     const { apiKey: _key, builtin: _builtin, ...deepseek } = DEFAULT_MODEL_PROVIDERS[0]!;

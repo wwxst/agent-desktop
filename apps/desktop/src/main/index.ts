@@ -670,10 +670,18 @@ function registerIpcHandlers(): void {
         events: () => session.session.events() };
       const extensions = await prepareExtensions(availableExtensions, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
         { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
-          probeAccess: mediaAccess, whisperAccess: mediaAccess,
+          probeAccess: mediaAccess, whisperAccess: mediaAccess, visionAccess: mediaAccess,
+          visionConfiguration: {
+            ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
+            ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
+            ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
+            ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
+            ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
+          },
           ...(whisperModelPath === undefined || whisperExecutable === undefined ? {} : { whisperEnvironment: { WHISPER_MODEL_PATH: whisperModelPath, WHISPER_CLI_PATH: whisperExecutable } }) });
       closeExtensions = extensions.close;
       const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name) || WHISPER_TOOLS.has(tool.name)).map(extensions.wrapTool);
+      const visionTool = extensions.tools.find(tool => tool.name === 'analyze_images');
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
@@ -683,11 +691,7 @@ function registerIpcHandlers(): void {
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
         ...(settings.modelMaxOutputTokens === undefined ? {} : { modelMaxOutputTokens: settings.modelMaxOutputTokens }),
         ...(settings.useDeepSeekThinking === undefined ? {} : { useDeepSeekThinking: settings.useDeepSeekThinking }),
-        ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
-        ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
-        ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
-        ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
-        ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
+        ...(visionTool === undefined ? {} : { visionTool: extensions.wrapTool(visionTool) }),
         session: session.session,
         workspace: workspacePortFor(sessionId),
         // 命令能力由宿主提供解释器绝对路径和受限子进程环境；工具自己不做这些选择。
@@ -724,7 +728,7 @@ function registerIpcHandlers(): void {
         })(),
       });
       // 媒体工具已注入且已包装钩子，只追加其他扩展工具。
-      for (const tool of extensions.tools) if (!WHISPER_TOOLS.has(tool.name) && !FFMPEG_TOOLS.has(tool.name)) agent.tools.register(tool);
+      for (const tool of extensions.tools) if (!WHISPER_TOOLS.has(tool.name) && !FFMPEG_TOOLS.has(tool.name) && tool !== visionTool) agent.tools.register(tool);
       const authorizedTools = new InMemoryToolRegistry();
       for (const tool of agent.tools.list()) authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
       agent = { ...agent, tools: authorizedTools };
@@ -734,7 +738,7 @@ function registerIpcHandlers(): void {
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(WHISPER_TOOLS.has(tool.name) || FFMPEG_TOOLS.has(tool.name) ? tool : extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(WHISPER_TOOLS.has(tool.name) || FFMPEG_TOOLS.has(tool.name) || tool.name === 'analyze_images' ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
       if (session.pendingSessionStart !== undefined) {

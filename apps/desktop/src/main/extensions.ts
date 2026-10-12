@@ -30,6 +30,7 @@ const catalog = [
   { id: 'plugin:video-editing', kind: 'plugin' as const, name: 'video-editing', directory: 'plugins/video-editing' },
   { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'ffmpeg', directory: 'plugins/ffmpeg' },
   { id: 'plugin:whisper', kind: 'plugin' as const, name: 'whisper', directory: 'plugins/whisper' },
+  { id: 'plugin:vision', kind: 'plugin' as const, name: 'vision', directory: 'plugins/vision' },
   { id: 'skill:local-file-review', kind: 'skill' as const, name: 'local-file-review', directory: 'skills/local-file-review' },
 ];
 const MAX_SKILLS = 2000;
@@ -419,6 +420,8 @@ export class DesktopExtensions {
     }
     if (workingDirectory !== undefined) skills.push(...await scanSkills(join(workingDirectory, '.agents', 'skills'), 'project', 'project'));
     const configured = plugins.map(plugin => {
+      // 随包语音与视觉服务的运行资源、模型和密钥由宿主设置提供，不能改接远程 MCP。
+      const managed = plugin.item.source === 'builtin' && ['plugin:whisper', 'plugin:vision'].includes(plugin.item.id);
       const servers = [...plugin.servers];
       for (const appId of plugin.appIds ?? []) {
         const config = this.connections?.values(plugin.item.id, appId);
@@ -427,14 +430,14 @@ export class DesktopExtensions {
       const effectiveServers = servers.map(server => {
         const config = this.connections?.values(plugin.item.id, server.name) ?? {};
         const substitute = (value: string) => value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (original, name: string) => ['PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'].includes(name) ? original
-          : plugin.item.id === 'plugin:whisper' && plugin.item.source === 'builtin' ? original : config[name] ?? original);
-        const configuredUrl = plugin.item.id === 'plugin:whisper' && plugin.item.source === 'builtin' ? undefined : config.url;
+          : managed ? original : config[name] ?? original);
+        const configuredUrl = managed ? undefined : config.url;
         return { ...server, ...(configuredUrl === undefined ? {} : { url: configuredUrl }), ...(server.env === undefined ? {} : { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, substitute(value)])) }),
           ...(server.headers === undefined ? {} : { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) }) };
       });
       return { ...plugin, servers: effectiveServers, item: { ...plugin.item, connections: [
         ...effectiveServers.map(server => ({ name: server.name, transport: server.type ?? 'stdio', connected: server.url === undefined || this.connections?.connected(plugin.item.id, server.name, server.url) === true,
-          ...(server.url === undefined ? {} : { url: server.url }), variables: [...new Set([...Object.values(servers.find(original => original.name === server.name)?.env ?? {}), ...Object.values(servers.find(original => original.name === server.name)?.headers ?? {})].flatMap(value => [...value.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map(match => match[1]!).filter(name => name !== 'PLUGIN_ROOT' && name !== 'CODEX_PLUGIN_ROOT' && !(plugin.item.id === 'plugin:whisper' && plugin.item.source === 'builtin'))))] })),
+          ...(server.url === undefined ? {} : { url: server.url }), variables: [...new Set([...Object.values(servers.find(original => original.name === server.name)?.env ?? {}), ...Object.values(servers.find(original => original.name === server.name)?.headers ?? {})].flatMap(value => [...value.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)].map(match => match[1]!).filter(name => name !== 'PLUGIN_ROOT' && name !== 'CODEX_PLUGIN_ROOT' && !managed)))] })),
         ...(plugin.appIds ?? []).filter(id => !servers.some(server => server.name === id)).map(id => ({ name: id, transport: 'app', connected: false })),
       ] } };
     });
@@ -570,6 +573,7 @@ export class DesktopExtensions {
   async configure(id: string, server: string, values: Readonly<Record<string, string>>, workingDirectory?: string): Promise<void> {
     if (id === 'plugin:whisper') throw new Error('Whisper 的运行程序及模型由宿主管理，不能通过连接配置替换路径。');
     const files = await this.files(workingDirectory); const plugin = files.plugins.find(item => item.item.id === id); const skill = files.skills.find(item => item.item.id === id);
+    if (plugin?.item.id === 'plugin:vision' && plugin.item.source === 'builtin') throw new Error('Vision 的模型及 API 密钥由运行时设置管理，不能通过插件连接配置替换。');
     if (!plugin?.servers.some(item => item.name === server) && !plugin?.appIds?.includes(server) && !skill?.toolDependencies?.some(dependency => dependency.value === server)) throw new Error('找不到插件连接。');
     if (values.url !== undefined) { const url = new URL(values.url); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('连接地址需要使用 HTTP。'); }
     if (this.connections === undefined) throw new Error('凭据存储不可用。');

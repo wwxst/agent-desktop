@@ -18,7 +18,7 @@ Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；N
 
 Desktop 的 SQLite（本地嵌入式数据库）使用 Node.js 自带的 `node:sqlite`；当前 Electron 44 的主进程运行时已验证提供该模块，不引入第三方数据库依赖或额外原生模块重建步骤。数据库只由 Desktop Main（桌面主进程）访问，渲染层与 Agent Core（智能体核心）不持有数据库连接。
 
-Desktop 的 `build`、`start`、`dev` 与 Windows 打包均先执行 `build:ffmpeg`、`build:whisper`，将现有 MCP SDK、十四项媒体工具及独立语音工具分别打入插件 CJS 资源，并清理迁移前生成的旧 Probe 资源。插件运行使用 Electron 自带运行时，不要求最终用户安装 Node；Windows x64 安装插件时下载并验证锁定运行资源，路径只来自安装目录。Whisper 模型由插件详情单独下载或导入。生成资源不提交 Git，构建后的 `resources/**/*` 纳入现有安装包；不新增 package 或通用资产管理依赖。其他平台可继续使用通用 Agent 和 CLI，正式插件安装明确报告不支持。边界定义见 [FFmpeg 插件](architecture.md#desktop-ffmpeg-插件) 和 [Whisper 插件](architecture.md#desktop-whisper-插件)。
+Desktop 的 `build`、`start`、`dev` 与 Windows 打包均先执行 `build:ffmpeg`、`build:whisper`、`build:vision`，将现有 MCP SDK、十四项媒体工具、独立语音工具及视觉工具分别打入插件 CJS 资源，并清理迁移前生成的旧 Probe 资源。插件运行使用 Electron 自带运行时，不要求最终用户安装 Node；FFmpeg/Whisper 的 Windows x64 安装下载并验证锁定运行资源，路径只来自安装目录。Whisper 模型由插件详情单独下载或导入；Vision 使用所选网络供应商，不下载程序或模型。生成资源不提交 Git，构建后的 `resources/**/*` 纳入现有安装包；不新增 package 或通用资产管理依赖。其它平台可继续使用通用 Agent、CLI 和 Vision 插件，正式 FFmpeg/Whisper 资源安装明确报告不支持。边界定义见 [FFmpeg 插件](architecture.md#desktop-ffmpeg-插件)、[Whisper 插件](architecture.md#desktop-whisper-插件) 和 [Vision 插件](architecture.md#desktop-vision-插件)。
 
 ## Package Manager（包管理器）
 
@@ -154,7 +154,7 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 应用 package 可以依赖所需的 Core、应用层和运行诊断 package，应用依赖不得反向进入 Core。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model`、`session` 和 `tools`（只引用工具执行上下文与进度事件类型），`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`；`local-tools` 依赖 `model`、`tools` 和 `@vscode/ripgrep`；`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool、`local-tools` 和 `session`；Desktop 因主进程打包 external 直接依赖 `@vscode/ripgrep`。三个 example 与 `apps/desktop` 只依赖实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model`、`session` 和 `tools`（只引用工具执行上下文与进度事件类型），`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`；`local-tools` 依赖 `model`、`tools` 和 `@vscode/ripgrep`；`video-agent` 组装 `agent`、具体 Provider、通用注入工具、`local-tools` 和 `session`，不依赖具体媒体实现；Desktop 因主进程打包 external 直接依赖 `@vscode/ripgrep`，各专业插件显式复用对应工具 package。三个 example 与 `apps/desktop` 只依赖实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
@@ -356,10 +356,10 @@ Result           结果        是否通过以及可核对的证据
 ```text
 pnpm deepseek-agent   DeepSeek 真实模型链路       需要 DEEPSEEK_API_KEY，交互式输入任务
 pnpm ffmpeg-agent     完整视频 Agent 链路         入口启动需 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；执行对应 Tool 需 ffmpeg、ffprobe、whisper-cli，视觉调用时另需 OPENAI_API_KEY
-pnpm desktop           Desktop 真实桌面链路         启动不要求预先配置 Key；Settings 保存后每个 Turn 读取本机设置、环境变量和 Provider 默认值，执行视频 Tool 仍需对应本机二进制或模型
+pnpm desktop           Desktop 真实桌面链路         启动不要求预先配置 Key；设置保存后下一轮读取；专业媒体工具及语音模型从插件安装，视觉使用所选服务
 ```
 
-当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 仍由环境变量显式提供本机 Whisper 资源；Desktop 首次安装 Whisper 插件和模型后由宿主管理路径，不读取用户 Whisper 路径环境变量。Desktop 允许无 Key 启动，缺少当前对话模型密钥只在发送任务时明确失败。外部二进制、模型或 Vision Key 在 Tool 执行边界暴露失败。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。
+当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 仍由环境变量显式提供本机 Whisper 资源及视觉配置；Desktop 首次安装 Whisper 插件和模型后由宿主管理路径，不读取用户 Whisper 路径环境变量。Desktop 允许无 Key 启动，缺少当前对话模型密钥只在发送任务时明确失败；Vision 只在插件已启用且当前视觉配置完整时注册。外部二进制、模型、HTTP 或图片响应失败在 Tool 执行边界暴露。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。Vision 的本机 HTTP 协议夹具只证明实际 MCP/请求映射，不代表云模型观察质量或真实云服务通过。
 
 `pnpm ffmpeg-agent` 调用示例包的 `start`，用项目已有版本的 esbuild 构建 `examples/ffmpeg-agent/dist/index.cjs` 后由本机 Node 执行。原生 TypeScript 转换不会把源代码中的 `.js` 引用解析为 `.ts` 子模块，直接执行源入口会在导入阶段失败。构建保留 `@vscode/ripgrep` 为外部运行时依赖，避免破坏其平台二进制的模块定位；示例包显式声明同版本的 esbuild 与 ripgrep，不引入新库或框架。此修正不改变 CLI 模型、工具或交付逻辑。
 

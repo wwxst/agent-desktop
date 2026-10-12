@@ -9,7 +9,8 @@
   "scripts": {
     "build:ffmpeg": "node -e \"require('node:fs').rmSync('resources/plugins/video-editing/dist/probe-media.cjs', {force:true})\" && esbuild src/plugins/ffmpeg.ts --bundle --platform=node --target=node24 --format=cjs --outfile=resources/plugins/ffmpeg/dist/ffmpeg.cjs",
     "build:whisper": "esbuild src/plugins/whisper.ts --bundle --platform=node --target=node24 --format=cjs --outfile=resources/plugins/whisper/dist/whisper.cjs",
-    "build": "pnpm build:ffmpeg && pnpm build:whisper && esbuild src/main/index.ts --bundle --platform=node --target=node24 --format=cjs --external:electron --external:electron-updater --external:@vscode/ripgrep --external:node-pty --outfile=dist/main/index.cjs && esbuild src/preload/index.ts --bundle --platform=node --target=node24 --format=cjs --external:electron --outfile=dist/preload/index.cjs && vite build --config vite.config.ts",
+    "build:vision": "esbuild src/plugins/vision.ts --bundle --platform=node --target=node24 --format=cjs --outfile=resources/plugins/vision/dist/vision.cjs",
+    "build": "pnpm build:ffmpeg && pnpm build:whisper && pnpm build:vision && esbuild src/main/index.ts --bundle --platform=node --target=node24 --format=cjs --external:electron --external:electron-updater --external:@vscode/ripgrep --external:node-pty --outfile=dist/main/index.cjs && esbuild src/preload/index.ts --bundle --platform=node --target=node24 --format=cjs --external:electron --outfile=dist/preload/index.cjs && vite build --config vite.config.ts",
     "package:win": "pnpm build && electron-builder --win nsis --x64 --publish never",
     "start": "pnpm build && electron .",
     "dev": "node scripts/dev.mjs"
@@ -25,6 +26,7 @@
     "@agent-desktop/tools": "workspace:*",
     "@agent-desktop/video-agent": "workspace:*",
     "@agent-desktop/video-ffmpeg": "workspace:*",
+    "@agent-desktop/vision-openai": "workspace:*",
     "@modelcontextprotocol/sdk": "1.31.0",
     "@vscode/ripgrep": "1.18.0",
     "electron-updater": "6.8.9",

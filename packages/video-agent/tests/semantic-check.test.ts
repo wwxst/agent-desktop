@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Model } from '@agent-desktop/model';
+import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import type { Tool } from '@agent-desktop/tools';
 import { InMemorySession } from '@agent-desktop/session';
-import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 import { DeclareVideoOutputsTool } from '../src/delivery-tools.js';
 import { readVideoDeliveryFacts } from '../src/delivery.js';
 import { CheckVideoSemanticsTool } from '../src/semantic-check.js';
+import { createVideoAgent } from '../src/index.js';
 
 const context = { toolCallId: 'check' as never, reportProgress: () => {} };
 let directory: string;
@@ -20,6 +21,7 @@ let probe: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let fullFrames: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let audio: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let speech: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
+let vision: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 const frames = [{ path: 'frame-1.jpg', timestamp: 0 }, { path: 'frame-2.jpg', timestamp: 0.1 }];
 
 beforeEach(async () => {
@@ -37,12 +39,12 @@ beforeEach(async () => {
   audio = { name: 'extract_audio', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'audio' })) };
   speech = { name: 'transcribe_audio', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 0.2 }] } })) };
   probe = { name: 'probe_media', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { audioCodec: null, duration: 0.2 } })) };
-  vi.spyOn(AnalyzeImagesTool.prototype, 'execute').mockResolvedValue({ status: 'success', output: { frames: frames.map((frame) => ({ timestamp: frame.timestamp, description: '红色矩形' })) } });
+  vision = { name: 'analyze_images', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { frames: frames.map((frame) => ({ timestamp: frame.timestamp, description: '红色矩形' })) } })) };
   model = { complete: vi.fn(async () => ({ toolCalls: [{ id: 'judgment' as never, name: 'report_semantic_checks',
     input: { checks: [{ requirementId, outcome: 'passed', detail: '0 至 0.2 秒为红色矩形' }] } }] })) };
 });
 afterEach(async () => { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); });
-const tool = (vision = true) => new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], ...(vision ? { vision: new AnalyzeImagesTool({ apiKey: 'fixture' }) } : {}) });
+const tool = (includeVision = true) => new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], ...(includeVision ? { vision } : {}) });
 
 describe('semantic evidence completeness', () => {
   it('preserves all observations and binds the independent verdict to candidate bytes', async () => {
@@ -58,17 +60,17 @@ describe('semantic evidence completeness', () => {
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('rejects omitted frame observations and audio without transcription capability', async () => {
-    vi.mocked(AnalyzeImagesTool.prototype.execute).mockResolvedValueOnce({ status: 'success', output: { frames: [{ timestamp: 0, description: 'red' }] } });
+    vision.execute.mockResolvedValueOnce({ status: 'success', output: { frames: [{ timestamp: 0, description: 'red' }] } });
     expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked' }] } });
     probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
-    const withoutSpeech = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio], vision: new AnalyzeImagesTool({ apiKey: 'fixture' }) });
+    const withoutSpeech = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio], vision });
     expect(await withoutSpeech.execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('语音识别') }] } });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('blocks malformed external verdicts and candidate mutation during checking', async () => {
     vi.mocked(model.complete).mockResolvedValueOnce({ toolCalls: [{ id: 'bad' as never, name: 'report_semantic_checks', input: { checks: [null] } }] });
     expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked' }] } });
-    vi.mocked(AnalyzeImagesTool.prototype.execute).mockImplementationOnce(async () => {
+    vision.execute.mockImplementationOnce(async () => {
       await writeFile(input.candidatePath, 'modified while observing');
       return { status: 'success', output: { frames: frames.map((frame) => ({ timestamp: frame.timestamp, description: 'red' })) } };
     });
@@ -90,10 +92,25 @@ describe('semantic evidence completeness', () => {
     probe.execute.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
     await expect(tool().execute(input, execution)).rejects.toMatchObject({ name: 'AbortError' });
   });
+  it('uses the injected Vision context and preserves approval rejection and cancellation', async () => {
+    vi.spyOn(DeepSeekModel.prototype, 'complete').mockImplementation(model.complete);
+    const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: [probe, fullFrames, audio, speech], visionTool: vision });
+    const check = agent.tools.get('check_video_semantics')!;
+    const execution = { ...context, signal: new AbortController().signal };
+    expect(agent.tools.get('analyze_images')).toBe(vision);
+    await check.execute(input, execution);
+    expect(vision.execute).toHaveBeenCalledWith({ images: frames }, execution);
+    vision.execute.mockResolvedValueOnce({ status: 'error', message: '用户拒绝了插件工具调用。' });
+    vi.mocked(model.complete).mockClear();
+    expect(await check.execute(input, execution)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
+    expect(model.complete).not.toHaveBeenCalled();
+    vision.execute.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
+    await expect(check.execute(input, execution)).rejects.toMatchObject({ name: 'AbortError' });
+  });
   it('uses injected duration to reject a mismatched speech timeline', async () => {
     probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
     speech.execute.mockResolvedValueOnce({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 2 }] } });
-    const check = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], vision: new AnalyzeImagesTool({ apiKey: 'fixture' }) });
+    const check = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], vision });
     expect(await check.execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('时长不一致') }] } });
     expect(model.complete).not.toHaveBeenCalled();
   });

@@ -10,6 +10,8 @@ Desktop 的十四项 FFmpeg 专业工具由独立“FFmpeg”插件提供；Wind
 
 Whisper 独立提供 `transcribe_audio`：插件详情安装官方 CPU 运行资源及 Small 多语言模型，支持本地导入、完整性检查和模型删除；卸载插件保留模型。可独立识别 WAV，也可与 FFmpeg 和视频剪辑技能组合。禁用或卸载后没有 Desktop 内置语音回退，带音轨的语义验收明确受阻。边界及真实安装版证据见 [Whisper 插件](docs/architecture.md#desktop-whisper-插件) 和 [第三阶段验收](docs/acceptance/whisper-plugin-baseline-20261012.md)。
 
+Vision（视觉理解）独立提供 `analyze_images`：安装后使用设置页当前选择的视觉供应商、模型、协议和加密密钥，观察已授权的 JPG/PNG 图片及视频抽帧。插件没有模型或程序下载；视觉请求会发送图片内容到所选服务，调用前审批展示该服务地址。禁用、卸载或缺少视觉配置时没有 Desktop 内置回退，普通任务继续，视觉语义验收明确受阻。边界与本阶段验证范围见 [Vision 插件](docs/architecture.md#desktop-vision-插件) 和 [验收记录](docs/acceptance/vision-plugin-20261012.md)。
+
 技能支持 `agents/openai.yaml` 的图标、展示信息、工具依赖与显式调用策略，元数据缓存、正文按需加载。外部改文件后管理页自动刷新；“刷新”同步内置资源与市场目录，详情可检查更新并回滚。远程工具支持 HTTP/SSE 传输、加密配置和浏览器账户授权；命令钩子执行前审批。实现与外部服务边界见 [三轮核对记录](docs/acceptance/codex-extensions-three-reviews-20261004.md)。
 
 ```text
@@ -99,7 +101,7 @@ Command               中文入口           说明
 pnpm echo-agent       确定性示例入口     无需 API Key，不调用真实 LLM API
 pnpm deepseek-agent   DeepSeek 命令行    需要 DEEPSEEK_API_KEY，调用真实 DeepSeek API
 pnpm ffmpeg-agent     视频命令行入口     需要 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；按任务使用本机媒体工具
-pnpm desktop          桌面应用入口       构建并启动 Electron 单页客户端，环境与媒体工具要求同视频命令行入口
+pnpm desktop          桌面应用入口       构建并启动 Electron；模型在设置页配置，专业工具按插件安装
 pnpm client:web       Web 开发入口        启动共享 Agent Client 的浏览器开发宿主
 pnpm client:web:build Web 构建            构建 Web 开发宿主
 ```
@@ -141,7 +143,7 @@ pnpm ffmpeg-agent
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用已安装 FFmpeg 和 Whisper 插件；视觉分析按需读取 `OPENAI_API_KEY`。`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 仍可用于 CLI 或模型供应商配置。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
+Desktop 根据任务按需调用已安装 FFmpeg、Whisper 和 Vision 插件；Vision 只使用当前视觉模型配置，缺少密钥或选择“不使用视觉模型”时不注册 `analyze_images`。`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 仍可用于 CLI 或模型供应商配置。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
 
 ```text
 Layer                 中文名称         职责
