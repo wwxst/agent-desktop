@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -43,7 +43,7 @@ describe('controlled Whisper runtime installation', () => {
   it('installs all verified CPU libraries and reuses only the verified archive', async () => {
     const { staging, cache } = await fixture();
     await installWhisperRuntime(staging, cache);
-    expect(await verifyWhisperRuntime(staging)).toBe(join(staging, 'runtime', 'whisper-cli.exe'));
+    expect(await verifyWhisperRuntime(staging)).toBe(await realpath(join(staging, 'runtime', 'whisper-cli.exe')));
     expect(await readFile(join(staging, 'runtime', 'whisper.dll'), 'utf8')).toBe('whisper.dll');
     await rm(join(staging, 'runtime'), { recursive: true });
     await installWhisperRuntime(staging, cache); expect(boundary.fetch).toHaveBeenCalledOnce();
