@@ -1,5 +1,33 @@
 import { expect, test } from '@playwright/test';
 
+test('shows a pending installation on the matching row until the host completes it', async ({ page }, testInfo) => {
+  // 只延迟宿主安装返回；页面、组件状态和后续快照处理保持真实。
+  await page.route(/\/webClientApi\.ts$/, route => route.fulfill({ contentType: 'application/javascript', body: `
+    import { createWebClientApi as createHost } from '/webClientApi.ts?extension-install-fixture';
+    export function createWebClientApi() {
+      const api = createHost();
+      const install = api.extensions.install;
+      api.extensions.install = async id => {
+        await new Promise(resolve => window.addEventListener('fixture:finish-install', resolve, { once: true }));
+        return install(id);
+      };
+      return api;
+    }
+  ` }));
+  await page.goto('/');
+  await page.getByRole('button', { name: '插件和技能', exact: true }).click();
+  await page.getByRole('button', { name: '安装 语义视频剪辑', exact: true }).click();
+  const progress = page.getByRole('status');
+  await expect(progress).toHaveText('正在安装');
+  const row = page.locator('article').filter({ has: progress });
+  await expect(row).toContainText('语义视频剪辑');
+  await expect(page.getByRole('button', { name: '安装 语义视频剪辑' })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('plugin-installing-feedback.png') });
+  await page.evaluate(() => window.dispatchEvent(new Event('fixture:finish-install')));
+  await expect(page.getByRole('status')).toContainText('语义视频剪辑 插件已安装');
+  await expect(page.getByRole('button', { name: '立即试用', exact: true })).toBeEnabled();
+});
+
 test('manages plugin and skill views while preserving the conversation draft', async ({ page }, testInfo) => {
   await page.goto('/');
   const input = page.getByRole('textbox', { name: '剪辑需求' });
@@ -10,6 +38,11 @@ test('manages plugin and skill views while preserving the conversation draft', a
   await expect(page.getByRole('tab', { name: '公开', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('button', { name: '安装 语义视频剪辑', exact: true }).click();
   await expect(page.getByRole('button', { name: '语义视频剪辑操作', exact: true })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('语义视频剪辑 插件已安装');
+  await expect(page.getByRole('button', { name: '立即试用', exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('plugin-installed-feedback.png') });
+  await page.getByRole('button', { name: '关闭提示' }).click();
+  await expect(page.getByRole('status')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('plugins.png') });
   await page.getByRole('tab', { name: '个人', exact: true }).click();
   await expect(page.getByRole('main', { name: '插件管理' }).getByRole('button', { name: '查看 语义视频剪辑' })).toHaveCount(0);
@@ -45,8 +78,13 @@ test('manages plugin and skill views while preserving the conversation draft', a
   await skillDialog.getByRole('menuitem', { name: '卸载', exact: true }).click();
   await page.getByRole('button', { name: '确认卸载' }).click();
   await expect(page.getByRole('button', { name: '安装 local-file-review' })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('local-file-review 技能已卸载');
+  await page.screenshot({ path: testInfo.outputPath('skill-uninstalled-feedback.png') });
   await page.getByRole('button', { name: '添加技能' }).click();
   await expect(page.getByRole('alert')).toContainText('桌面应用');
+  await page.screenshot({ path: testInfo.outputPath('extension-error-feedback.png') });
+  await page.getByRole('button', { name: '关闭提示' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
   await page.getByRole('button', { name: '对话', exact: true }).click();
   await expect(input).toHaveValue('检查本地项目配置');
   expect(await input.evaluate((element, original) => element === original, inputNode)).toBe(true);
@@ -97,6 +135,30 @@ test('uses plugin trial prompts and confirms uninstall through the list menu', a
   await page.getByRole('menuitem', { name: '卸载' }).click();
   await page.getByRole('button', { name: '确认卸载' }).click();
   await expect(page.getByRole('button', { name: '安装 语义视频剪辑' })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('语义视频剪辑 插件已卸载');
+  await expect(page.getByRole('button', { name: '立即试用', exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath('plugin-uninstalled-dark-feedback.png') });
+});
+
+test('keeps skill installation feedback inside its modal and prepares trial only when requested', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 400, height: 740 });
+  await page.goto('/');
+  await page.getByRole('textbox', { name: '剪辑需求' }).fill('保留的草稿');
+  await page.getByRole('button', { name: '插件和技能', exact: true }).click();
+  await page.getByRole('button', { name: '技能', exact: true }).click();
+  await page.getByRole('button', { name: '查看 local-file-review' }).click();
+  const dialog = page.getByRole('dialog', { name: 'local-file-review技能详情' });
+  await dialog.getByRole('button', { name: '安装', exact: true }).click();
+  const feedback = dialog.getByRole('status');
+  await expect(feedback).toContainText('local-file-review 技能已安装');
+  await expect(page.getByRole('textbox', { name: '剪辑需求', includeHidden: true })).toHaveValue('保留的草稿');
+  const bounds = (await feedback.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(400);
+  await page.screenshot({ path: testInfo.outputPath('skill-installed-modal-feedback.png') });
+  await dialog.getByRole('button', { name: '立即试用', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '剪辑需求' })).toHaveValue('$local-file-review\n保留的草稿');
+  await expect(page.locator('.user-message')).toHaveCount(0);
 });
 
 test('shows a skill dialog at 400px and prepares a trial without sending the draft', async ({ page }, testInfo) => {
