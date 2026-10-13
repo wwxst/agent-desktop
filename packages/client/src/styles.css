@@ -102,11 +102,11 @@
 .extension-operation-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; flex: none; color: var(--text-muted); font-size: 12px; line-height: 20px; white-space: nowrap; }
 .extension-operation-status svg, .extension-toast-spinner { animation: extension-spin 1s linear infinite; }
 @keyframes extension-spin { to { transform: rotate(360deg); } }
-.extension-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; width: max-content; max-width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-primary); box-shadow: 0 4px 14px #00000012; font-size: 13px; line-height: 20px; }
+.extension-toast { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 8px; width: max-content; max-width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-primary); box-shadow: 0 4px 14px #00000012; font-size: 13px; line-height: 20px; }
 .skill-dialog > .extension-toast { position: static; transform: none; align-self: center; flex: none; order: 2; max-width: 100%; margin-top: 12px; }
 .skill-dialog > .skill-dialog-body { order: 1; }
 .skill-dialog > footer { order: 3; }
-.extension-dialog > .extension-toast { position: sticky; bottom: 0; left: auto; transform: none; max-width: 100%; margin: 16px auto 0; }
+.extension-dialog > .extension-toast { position: sticky; top: auto; bottom: 0; left: auto; transform: none; max-width: 100%; margin: 16px auto 0; }
 .extension-toast > svg { flex: none; color: var(--success); }
 .extension-toast-progress > svg { color: var(--text-muted); }
 .extension-toast-success { border-color: light-dark(#b8e7cc, #345f47); background: light-dark(#eefbf3, #203a2b); color: var(--success); }
