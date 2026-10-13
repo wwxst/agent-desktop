@@ -15,12 +15,13 @@ test('keeps composer model selection synchronized, focused and contained across 
       ...provider.models, { id: 'long-model', displayName: 'Long Model Name With Many Words And A Very Long Configuration Name', capabilities: textCapabilities },
       ...Array.from({ length: 12 }, (_, index) => ({ id: `extra-${index}`, displayName: `目录模型 ${index}`, capabilities: textCapabilities })),
     ] }),
-    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, fallbackVisionModel: null, fallbackVisionEnabled: false,
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionEnabled: false,
     whisper: { modelPath: '', cliPath: '' }, memoryEnabled: true, memoryFromToolChatsEnabled: true,
   };
   await page.evaluate(settings => { localStorage.setItem('agent-desktop:web-runtime-settings', JSON.stringify(settings)); }, fixture);
   // 网页宿主通过真实脱敏配置边界加载夹具；无需额外暴露 Desktop API。
   await page.reload();
+  const savedSettings = () => page.evaluate(() => JSON.parse(localStorage.getItem('agent-desktop:web-runtime-settings')!) as RuntimeSettings);
   const input = page.getByRole('textbox', { name: '剪辑需求' });
   await input.fill('模型切换不丢失草稿');
   await page.getByRole('button', { name: '选择输入文件' }).click();
@@ -68,18 +69,44 @@ test('keeps composer model selection synchronized, focused and contained across 
   await menu.getByRole('menuitem', { name: '配置自定义模型' }).click();
   await expect(page.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
   await expect(page.getByLabel('当前视觉模型')).toHaveCount(0);
-  await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
-  await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · DeepSeek V4.1 Flash');
-  await page.screenshot({ path: info.outputPath('settings-current-model-readonly.png') });
+  await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
+  await expect(page.getByText('当前对话模型', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: '启用备用视觉模型' })).toHaveCount(0);
+  const fallback = page.getByRole('combobox', { name: '备用视觉模型' });
+  await expect(fallback).toBeHidden();
+  await page.getByText('高级设置', { exact: true }).click();
+  await expect(fallback).toHaveValue('');
+  await expect(fallback.locator('option:checked')).toHaveText('关闭');
+  await expect(page.getByText('主模型不支持图片时使用。', { exact: true })).toBeVisible();
+  expect(await savedSettings()).toMatchObject({
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionEnabled: false,
+    fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' },
+  });
+  // 显式选择才启用；关闭只改变开关，旧候选仍保存在同一配置中。
+  await fallback.selectOption(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-flash' }));
+  await expect(fallback).toHaveValue(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-flash' }));
+  await expect.poll(savedSettings).toMatchObject({
+    conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionEnabled: true,
+    fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' },
+  });
+  await fallback.selectOption('');
+  await expect(fallback).toHaveValue('');
+  await expect.poll(savedSettings).toMatchObject({
+    fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' },
+  });
+  await page.screenshot({ path: info.outputPath('settings-vision-backup-simplified.png') });
+  await page.getByText('高级设置', { exact: true }).click();
   await page.getByRole('button', { name: '关闭设置' }).click();
+  await expect(trigger).toBeVisible();
   await trigger.click();
   await menu.getByRole('menuitemradio', { name: /Long Model Name/ }).click();
   trigger = page.getByRole('button', { name: /选择对话模型：Long Model Name/ });
   await trigger.click();
   await menu.getByRole('menuitem', { name: '配置自定义模型' }).click();
-  await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
-  await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · Long Model Name With Many Words And A Very Long Configuration Name');
+  await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
+  expect((await savedSettings()).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'long-model' });
   await page.getByRole('button', { name: '关闭设置' }).click();
+  await expect(trigger).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     for (const [width, height, zoom] of [[1280, 720, 1], [800, 600, 1], [400, 500, 1], [800, 600, 1.5]]) {
@@ -108,16 +135,34 @@ test('keeps composer model selection synchronized, focused and contained across 
       await page.setViewportSize({ width, height: 720 });
       await page.getByRole('button', { name: '设置', exact: true }).click();
       await page.getByRole('button', { name: '模型与执行', exact: true }).click();
-      await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
-      await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · Long Model Name With Many Words And A Very Long Configuration Name');
+      await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
+      await expect(page.getByRole('checkbox', { name: '启用备用视觉模型' })).toHaveCount(0);
+      await page.getByText('高级设置', { exact: true }).click();
+      await expect(fallback).toHaveValue('');
+      await expect(fallback.locator('option:checked')).toHaveText('关闭');
+      await expect(page.getByText('主模型不支持图片时使用。', { exact: true })).toBeVisible();
+      expect((await savedSettings()).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'long-model' });
       expect(await page.locator('.settings-page').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
-      await page.screenshot({ path: info.outputPath(`settings-current-model-${theme}-${width}.png`) });
+      await page.screenshot({ path: info.outputPath(`settings-vision-backup-${theme}-${width}.png`) });
+      await page.getByText('高级设置', { exact: true }).click();
       await page.getByRole('button', { name: '关闭设置' }).click();
+      await expect(trigger).toBeVisible();
     }
   }
   await page.evaluate(() => { document.documentElement.style.zoom = '1'; });
   await page.reload();
   await expect(page.getByRole('button', { name: /选择对话模型：Long Model Name/ })).toBeVisible();
+  expect(await savedSettings()).toMatchObject({
+    conversationModel: { providerId: 'deepseek', modelId: 'long-model' }, fallbackVisionEnabled: false,
+    fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' },
+  });
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+  await expect(fallback).toBeHidden();
+  await page.getByText('高级设置', { exact: true }).click();
+  await expect(fallback).toHaveValue('');
+  await page.getByRole('button', { name: '关闭设置' }).click();
+  await expect(trigger).toBeVisible();
 });
 
 test('migrates Desktop visual candidate disabled and preserves active request model across switching and restart', async ({}, info) => {
@@ -178,5 +223,43 @@ test('migrates Desktop visual candidate disabled and preserves active request mo
     await expect(page.getByRole('button', { name: '选择对话模型：第二模型' })).toBeVisible();
     expect(await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({ conversationModel: { providerId: 'deepseek', modelId: 'second-model' }, fallbackVisionEnabled: false });
     await page.screenshot({ path: resolve(evidence, 'desktop-model-restored.png') });
+    const fallbackReference = { providerId: 'deepseek', modelId: 'second-model' };
+    const fallbackValue = JSON.stringify(fallbackReference);
+    const openFallbackSettings = async () => {
+      await page.getByRole('button', { name: '设置', exact: true }).click();
+      await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+      const select = page.getByRole('combobox', { name: '备用视觉模型' });
+      await expect(select).toBeHidden();
+      await page.getByText('高级设置', { exact: true }).click();
+      return select;
+    };
+    let fallback = await openFallbackSettings();
+    await expect(fallback).toHaveValue('');
+    await expect(fallback.locator('option:checked')).toHaveText('关闭');
+    await fallback.selectOption(fallbackValue);
+    await expect.poll(() => page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({
+      fallbackVisionEnabled: true, fallbackVisionModel: fallbackReference,
+    });
+    await expect(fallback).toHaveValue(fallbackValue);
+    await app.close(); app = await launch(); page = await app.firstWindow();
+    expect(await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({
+      conversationModel: fallbackReference, fallbackVisionEnabled: true, fallbackVisionModel: fallbackReference,
+    });
+    fallback = await openFallbackSettings();
+    await expect(fallback).toHaveValue(fallbackValue);
+    await page.screenshot({ path: resolve(evidence, 'desktop-vision-backup-enabled-restored.png') });
+    await fallback.selectOption('');
+    await expect.poll(() => page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({
+      fallbackVisionEnabled: false, fallbackVisionModel: fallbackReference,
+    });
+    await expect(fallback).toHaveValue('');
+    await app.close(); app = await launch(); page = await app.firstWindow();
+    expect(await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({
+      conversationModel: fallbackReference, fallbackVisionEnabled: false, fallbackVisionModel: fallbackReference,
+    });
+    fallback = await openFallbackSettings();
+    await expect(fallback).toHaveValue('');
+    await expect(fallback.locator('option:checked')).toHaveText('关闭');
+    await page.screenshot({ path: resolve(evidence, 'desktop-vision-backup-disabled-restored.png') });
   } finally { release?.(); if (app) await app.close(); await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); }
 });

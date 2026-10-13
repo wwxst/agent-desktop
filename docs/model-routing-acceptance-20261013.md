@@ -49,6 +49,8 @@ Real API                真实模型接口    请求真实供应商服务并核�
 
 按后续取消设置页重复选择入口的要求，“当前对话模型”改为共享已保存配置的只读文本，切换统一在聊天输入框完成。供应商编辑、删除目录后的有效引用调整与高级备用视觉配置保留。`corepack pnpm check` 58 个文件、665 项测试 PASS，19 个工作区包架构检查 PASS；移除的一项是旧设置页选择器保存失败测试，聊天保存失败测试仍在。`corepack pnpm client:web:test` 含桌面构建 PASS，69 项通过、9 项按原项目条件跳过；全部浏览器修改完成后测试类型检查再次 PASS。真实桌面 IPC（进程通信）覆盖聊天选择、自定义供应商两种协议请求、持久化、重启及运行中任务快照；接口使用本地夹具，不代表外部模型验证。浅深主题与 400px 长名换行经截图查看，实际开发窗口刷新后确认只有只读名称并保持运行。证据为 `desktop-current-model-readonly.jpg`、`settings-current-model-dark-400.png` 与 `settings-current-model-light-1280.png`。独立审查 PASS，无待改项；本次不涉及运行时路由或外部 API，未重复真实视频调用。
 
+按后续确认的简化要求，删除设置页整个当前对话模型块、独立备用启用开关和长说明；高级设置只保留“备用视觉模型”下拉与一句短说明。默认显示“关闭”，主动选择有效模型同次保存候选并启用，关闭保留旧候选；保存失败保持原状态。关闭候选所属供应商被用户删除时，同次清空候选，当前对话或启用的备用引用仍受到保护。`corepack pnpm check` 58 个文件、672 项测试 PASS，19 个工作区包架构检查 PASS，桌面构建 PASS。初次浏览器执行中两项网页测试误用桌面接口，修正为读取现有网页持久化配置后，`corepack pnpm --filter @agent-desktop/web exec playwright test --config playwright.config.ts --workers=4` 完整回归 69 项 PASS、9 项按原条件跳过。补充真实桌面单下拉启用、关闭及两次重启恢复后，模型专项 3 项 PASS、1 项跳过重复执行，测试类型检查 PASS；夹具请求不冒充真实外部模型验证。浅深主题、400px 窄窗口及正式开发入口重启后真实窗口经查看通过，窗口保持运行。证据为 `desktop-vision-backup-simplified.jpg`、`settings-vision-backup-dark-400.png`、`settings-vision-backup-light-1280.png`、`desktop-vision-backup-enabled-restored.png` 与 `desktop-vision-backup-disabled-restored.png`。独立审查 PASS；视觉路由及任务快照未修改，未重复真实视频调用。
+
 ## 审查
 
 ```text

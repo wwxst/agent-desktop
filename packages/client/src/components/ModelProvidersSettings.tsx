@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { AgentClientApi, RuntimeModelDefinition, RuntimeModelProvider, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '../api.js';
 import { DEFAULT_MODEL_PROVIDERS, usesDefaultModelEndpoint } from '../model-defaults.js';
-import { getConversationCapability, getVisionCapability, resolveCatalogModel, UNKNOWN_MODEL_CAPABILITIES } from '../model-capabilities.js';
+import { getConversationCapability, getVisionCapability, UNKNOWN_MODEL_CAPABILITIES } from '../model-capabilities.js';
 
 // 固定长度的显示掩码，不读取真实密钥及其长度，也不写入供应商草稿。
 const MASKED_API_KEY = '*'.repeat(64);
@@ -57,9 +57,6 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
   const [deleting, setDeleting] = useState<string | null>(null);
   useEffect(() => { if (!isOpen) { setDraft(null); setExpandedModel(null); setDeleting(null); setError(''); } }, [isOpen]);
   const disabled = busy || isProcessing;
-  // 设置页只展示已保存的当前模型；切换入口统一放在聊天输入框。
-  const current = resolveCatalogModel(settings.modelProviders, settings.conversationModel);
-  const currentModelReason = !current.provider.apiKey.configured ? '未配置 API 密钥' : getConversationCapability(current.model) === 'unknown' ? '对话能力未知' : getConversationCapability(current.model) === 'unsupported' ? '不支持对话' : '';
   const conversationDraftError = draft !== null && settings.conversationModel.providerId === draft.id
     && !draft.models.some(model => model.id.trim() === settings.conversationModel.modelId && getConversationCapability(model) === 'supported')
     && !draft.models.some(model => getConversationCapability(model) === 'supported')
@@ -166,17 +163,16 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
     </section>)}
     {draft !== null && !settings.modelProviders.some(provider => provider.id === draft.id) && <section className="model-provider-card">{editor(undefined)}</section>}
     <button className="model-add-provider" type="button" disabled={disabled || draft !== null} onClick={() => { setDraft({ id: `custom-${crypto.randomUUID()}`, displayName: '', baseUrl: '', protocol: 'chat-completions', models: [modelDraft({ id: '', displayName: '', capabilities: UNKNOWN_MODEL_CAPABILITIES })] }); setError(''); setMessage(''); }}><Plus size={16} />添加模型提供商</button>
-    <section className="model-active-selection" aria-label="任务使用的模型"><div className="model-provider-field"><span>当前对话模型</span><p className="settings-readonly" aria-label="当前对话模型">{current.provider.displayName} · {current.model.displayName}{currentModelReason && `（${currentModelReason}）`}</p></div>
-      <p className="model-settings-description">在聊天输入框中切换对话模型。视觉理解默认使用当前对话模型；图片能力未知时，请在模型参数中确认后再使用。</p>
-      <details className="model-provider-custom model-advanced-settings"><summary>高级设置</summary>
-        <label className="model-fallback-toggle"><input type="checkbox" aria-label="启用备用视觉模型" checked={settings.fallbackVisionEnabled} disabled={disabled} onChange={event => void save({ fallbackVisionEnabled: event.target.checked })} />启用备用视觉模型</label>
-        <label className="model-provider-field"><span>备用视觉模型</span><select aria-label="备用视觉模型" value={choiceValue(settings.fallbackVisionModel)} disabled={disabled} onChange={event => void save({ fallbackVisionModel: event.target.value ? JSON.parse(event.target.value) as RuntimeModelReference : null })}><option value="">未配置备用模型</option>{modelOptions.filter(({ provider, model, reference }) => (provider.apiKey.configured && getVisionCapability(model) === 'supported') || choiceValue(reference) === choiceValue(settings.fallbackVisionModel)).map(({ provider, model, reference }) => {
+    <details className="model-provider-custom model-advanced-settings"><summary>高级设置</summary>
+        <label className="model-provider-field"><span>备用视觉模型</span><select aria-label="备用视觉模型" value={settings.fallbackVisionEnabled ? choiceValue(settings.fallbackVisionModel) : ''} disabled={disabled} onChange={event => {
+          // 选择模型才显式启用；关闭保留旧候选，两者都以保存成功后的配置显示。
+          void save(event.target.value ? { fallbackVisionModel: JSON.parse(event.target.value) as RuntimeModelReference, fallbackVisionEnabled: true } : { fallbackVisionEnabled: false });
+        }}><option value="">关闭</option>{modelOptions.filter(({ provider, model, reference }) => (provider.apiKey.configured && getVisionCapability(model) === 'supported') || choiceValue(reference) === choiceValue(settings.fallbackVisionModel)).map(({ provider, model, reference }) => {
           const capability = getVisionCapability(model);
           const reason = !provider.apiKey.configured ? '未配置 API 密钥' : capability === 'unknown' ? '视觉能力未知' : capability === 'unsupported' ? '不支持视觉理解' : '';
           return <option key={choiceValue(reference)} value={choiceValue(reference)} disabled={!!reason}>{provider.displayName} · {model.displayName}{reason && `（${reason}）`}</option>;
         })}</select></label>
-        <p className="model-settings-description">仅当当前对话模型明确不支持图片理解，且此开关已启用、备用模型配置有效时使用。超时、限流、鉴权失败或余额不足不会触发备用模型。</p>
-      </details>
-    </section>
+        <p className="model-settings-description">主模型不支持图片时使用。</p>
+    </details>
   </div>;
 }

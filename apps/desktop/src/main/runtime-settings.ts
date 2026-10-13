@@ -280,8 +280,11 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       const keys = { ...secrets.providerApiKeys }; delete keys[id]; secrets = { providerApiKeys: keys };
     }
     const conversationModel = update.conversationModel ?? choices.conversationModel;
-    const fallbackVisionModel = update.fallbackVisionModel === undefined ? choices.fallbackVisionModel : update.fallbackVisionModel;
+    let fallbackVisionModel = update.fallbackVisionModel === undefined ? choices.fallbackVisionModel : update.fallbackVisionModel;
     const fallbackVisionEnabled = update.fallbackVisionEnabled ?? choices.fallbackVisionEnabled;
+    // 关闭时保留候选；只有用户删除其供应商时才清除，显式改选仍按新引用校验。
+    if (update.deleteModelProviderId !== undefined && !fallbackVisionEnabled && update.fallbackVisionModel === undefined
+      && fallbackVisionModel?.providerId === update.deleteModelProviderId) fallbackVisionModel = null;
     if (getConversationCapability(selectedModel(providers, conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
     if (fallbackVisionModel !== null) selectedModel(providers, fallbackVisionModel);
     if (fallbackVisionEnabled) {

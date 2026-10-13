@@ -121,27 +121,40 @@ it('keeps the display mask out of model discovery and unrelated provider updates
   await waitFor(() => expect(save).toHaveBeenCalledOnce());
   expect(save.mock.calls[0]![0].modelProvider).not.toHaveProperty('apiKey');
 });
-it('keeps the fallback candidate in advanced settings and requires an explicit enable action', async () => {
+it('keeps the fallback closed until a model is selected and preserves its candidate when closed again', async () => {
   let settings: RuntimeSettings = { ...initial, modelProviders: initial.modelProviders.map(provider => ({ ...provider, apiKey: { configured: true, source: 'saved' } })) };
   const save = vi.fn<AgentClientApi['saveRuntimeSettings']>(async update => { settings = { ...settings,
     ...(update.fallbackVisionEnabled === undefined ? {} : { fallbackVisionEnabled: update.fallbackVisionEnabled }),
     ...(update.fallbackVisionModel === undefined ? {} : { fallbackVisionModel: update.fallbackVisionModel }) }; return settings; });
   setup(save, undefined, settings, { openEditor: false, isProcessing: false });
   expect(screen.queryByLabelText('当前视觉模型')).toBeNull();
+  expect(screen.queryByLabelText('当前对话模型')).toBeNull();
+  expect(screen.queryByLabelText('启用备用视觉模型')).toBeNull();
   expect(screen.getByText('高级设置').parentElement).toHaveProperty('open', false);
   fireEvent.click(screen.getByText('高级设置'));
-  const toggle = screen.getByLabelText('启用备用视觉模型');
-  expect(toggle).toHaveProperty('checked', false);
-  expect(screen.getByLabelText('备用视觉模型')).toHaveProperty('value', JSON.stringify(initial.fallbackVisionModel));
+  const select = screen.getByLabelText('备用视觉模型');
+  expect(select).toHaveProperty('value', '');
+  expect(within(select).getByRole('option', { name: '关闭' })).toBeTruthy();
   expect(save).not.toHaveBeenCalled();
-  fireEvent.click(toggle);
-  await waitFor(() => expect(toggle).toHaveProperty('checked', true));
-  expect(save).toHaveBeenLastCalledWith({ fallbackVisionEnabled: true });
-  fireEvent.click(toggle);
-  await waitFor(() => expect(toggle).toHaveProperty('checked', false));
+  fireEvent.change(select, { target: { value: JSON.stringify(initial.fallbackVisionModel) } });
+  await waitFor(() => expect(select).toHaveProperty('value', JSON.stringify(initial.fallbackVisionModel)));
+  expect(save).toHaveBeenLastCalledWith({ fallbackVisionModel: initial.fallbackVisionModel, fallbackVisionEnabled: true });
+  fireEvent.change(select, { target: { value: '' } });
+  await waitFor(() => expect(select).toHaveProperty('value', ''));
   expect(save).toHaveBeenLastCalledWith({ fallbackVisionEnabled: false });
-  expect(screen.getByLabelText('备用视觉模型')).toHaveProperty('value', JSON.stringify(initial.fallbackVisionModel));
-  expect(screen.getByText(/超时、限流、鉴权失败或余额不足不会触发备用模型/)).toBeTruthy();
+  expect(settings.fallbackVisionModel).toEqual(initial.fallbackVisionModel);
+  expect(settings.conversationModel).toEqual(initial.conversationModel);
+  expect(screen.getByText('主模型不支持图片时使用。')).toBeTruthy();
+});
+it.each([false, true])('keeps committed fallback selection after a failed save with enabled=%s', async enabled => {
+  const settings: RuntimeSettings = { ...initial, fallbackVisionEnabled: enabled, modelProviders: initial.modelProviders.map(provider => ({ ...provider, apiKey: { configured: true, source: 'saved' } })) };
+  const { save } = setup(vi.fn<AgentClientApi['saveRuntimeSettings']>().mockRejectedValue(new Error('备用配置保存失败')), undefined, settings, { openEditor: false, isProcessing: false });
+  fireEvent.click(screen.getByText('高级设置'));
+  const select = screen.getByLabelText('备用视觉模型');
+  fireEvent.change(select, { target: { value: enabled ? '' : JSON.stringify(initial.fallbackVisionModel) } });
+  await screen.findByText('备用配置保存失败');
+  expect(select).toHaveProperty('value', enabled ? JSON.stringify(initial.fallbackVisionModel) : '');
+  expect(save).toHaveBeenCalledWith(enabled ? { fallbackVisionEnabled: false } : { fallbackVisionModel: initial.fallbackVisionModel, fallbackVisionEnabled: true });
 });
 it('adds custom models with unknown capabilities and saves only explicit capability choices', async () => {
   const { save } = setup(undefined, undefined, initial, { openEditor: false, isProcessing: false });
@@ -180,22 +193,23 @@ it('adjusts deleted model references without enabling a disabled fallback candid
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ conversationModel: { providerId: 'deepseek', modelId: 'replacement' }, fallbackVisionModel: { providerId: 'deepseek', modelId: 'replacement' } })));
   expect(save.mock.calls[0]![0]).not.toHaveProperty('fallbackVisionEnabled');
 });
-it('keeps the current model readonly during a turn while provider and fallback edits stay disabled', () => {
+it('keeps provider and fallback edits disabled during a turn without a duplicate conversation model field', () => {
   const settings: RuntimeSettings = { ...initial, modelProviders: initial.modelProviders.map(provider => ({ ...provider, apiKey: { configured: true, source: 'saved' } })) };
   const { save } = setup(undefined, undefined, settings, { openEditor: false, isProcessing: true });
-  expect(screen.queryByRole('combobox', { name: '当前对话模型' })).toBeNull();
-  expect(screen.getByLabelText('当前对话模型')).toHaveProperty('textContent', `DeepSeek · ${deepseekModel.displayName}`);
+  expect(screen.queryByLabelText('当前对话模型')).toBeNull();
   expect(within(screen.getByRole('region', { name: 'DeepSeek供应商' })).getByRole('button', { name: '编辑' })).toHaveProperty('disabled', true);
   fireEvent.click(screen.getByText('高级设置'));
-  expect(screen.getByLabelText('启用备用视觉模型')).toHaveProperty('disabled', true);
+  expect(screen.queryByLabelText('启用备用视觉模型')).toBeNull();
   expect(screen.getByLabelText('备用视觉模型')).toHaveProperty('disabled', true);
   expect(save).not.toHaveBeenCalled();
 });
-it('shows the current model as readonly with its configuration reason and points switching to the composer', () => {
-  const settings: RuntimeSettings = { ...initial, fallbackVisionEnabled: false, fallbackVisionModel: null,
+it('keeps an unverified fallback candidate disabled and closed', () => {
+  const settings: RuntimeSettings = { ...initial, fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'unknown' },
     modelProviders: initial.modelProviders.map(provider => provider.id === 'openai' ? { ...provider, apiKey: { configured: true, source: 'saved' }, models: [{ id: 'unknown', displayName: '未知模型', capabilities: UNKNOWN_MODEL_CAPABILITIES }, { id: 'image-only', displayName: '仅图片模型', capabilities: { textInput: 'unsupported', textOutput: 'unsupported', imageInput: 'supported', imageUnderstanding: 'supported' } }] } : provider) };
   setup(undefined, undefined, settings, { openEditor: false, isProcessing: false });
-  expect(screen.getByLabelText('当前对话模型')).toHaveProperty('textContent', `DeepSeek · ${deepseekModel.displayName}（未配置 API 密钥）`);
-  expect(screen.queryByRole('combobox', { name: '当前对话模型' })).toBeNull();
-  expect(screen.getByText(/在聊天输入框中切换对话模型/)).toBeTruthy();
+  fireEvent.click(screen.getByText('高级设置'));
+  const select = screen.getByLabelText('备用视觉模型');
+  expect(select).toHaveProperty('value', '');
+  expect(within(select).getByRole('option', { name: /未知模型（视觉能力未知）/ })).toHaveProperty('disabled', true);
+  expect(within(select).queryByRole('option', { name: /仅图片模型/ })).toBeNull();
 });

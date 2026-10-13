@@ -2136,7 +2136,6 @@ input:focus-visible {
 .composer-model-menu .composer-model-configure { flex: none; justify-content: space-between; min-height: 35px; margin-top: 5px; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; font-size: 12px; }
 .composer-model-error { flex: none; margin: 6px 9px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
 .model-advanced-settings { margin-top: 18px; }
-.model-fallback-toggle { display: flex; align-items: center; gap: 8px; margin: 14px 0; font-size: 12px; }
 @media (max-width: 560px) { .composer-model-trigger { max-width: 145px; } .composer-trailing { gap: 5px; } .composer-state { font-size: 10px; } }
 
 .sidebar-new-session:active:not(:disabled),
@@ -2750,8 +2749,6 @@ input:focus-visible {
 .model-validation { color: var(--danger); font-size: 12px; margin-bottom: 0; }
 .model-settings-message { color: var(--success); font-size: 12px; }
 .model-add-provider { width: 100%; min-height: 44px; border: 1px dashed var(--border-strong); border-radius: 12px; background: transparent; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; gap: 8px; }
-.model-active-selection { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--border); }
-.model-active-selection .settings-readonly { overflow-wrap: anywhere; }
 .model-delete-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 16px; }
 .model-delete-confirm span { width: 100%; }
 @media (max-width: 560px) {

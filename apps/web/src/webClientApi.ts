@@ -86,7 +86,6 @@ export function createWebClientApi(): AgentClientApi {
       if (update.deleteModelProviderId) {
         const id = update.deleteModelProviderId;
         if (providers.find(item => item.id === id)?.builtin) throw new Error('不能删除内置供应商。');
-        if (settings.conversationModel.providerId === id || settings.fallbackVisionModel?.providerId === id) throw new Error('请先切换正在使用的模型。');
         providers = providers.filter(item => item.id !== id);
       }
       const nextSettings = { ...settings, modelProviders: providers,
@@ -95,6 +94,9 @@ export function createWebClientApi(): AgentClientApi {
         fallbackVisionEnabled: update.fallbackVisionEnabled ?? settings.fallbackVisionEnabled,
         ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }),
         whisper: { modelPath: update.whisperModelPath === undefined ? settings.whisper.modelPath : update.whisperModelPath ?? '', cliPath: update.whisperCliPath === undefined ? settings.whisper.cliPath : update.whisperCliPath ?? '' } };
+      // 关闭的候选不阻止删除供应商；显式改选与启用状态都依据本次更新校验。
+      if (update.deleteModelProviderId !== undefined && !nextSettings.fallbackVisionEnabled && update.fallbackVisionModel === undefined
+        && nextSettings.fallbackVisionModel?.providerId === update.deleteModelProviderId) nextSettings.fallbackVisionModel = null;
       if (getConversationCapability(resolveCatalogModel(providers, nextSettings.conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
       if (nextSettings.fallbackVisionModel !== null) resolveCatalogModel(providers, nextSettings.fallbackVisionModel);
       if (nextSettings.fallbackVisionEnabled) {

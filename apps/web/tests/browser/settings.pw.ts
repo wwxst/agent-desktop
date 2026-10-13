@@ -14,6 +14,8 @@ test('automatically saves full-page settings with themes and extension navigatio
   await expect(page.getByRole('complementary', { name: '工作区导航' })).toHaveCount(0);
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   await expect(page.getByRole('button', { name: '保存设置' })).toHaveCount(0);
+  await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: '启用备用视觉模型' })).toHaveCount(0);
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
   await page.getByLabel('模型 1 ID', { exact: true }).fill('保存的模型');
     await page.getByLabel('模型 1 参数').click();
@@ -230,8 +232,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByRole('button', { name: /^选择对话模型：/ }).click();
     await page.getByRole('menuitemradio', { name: /本地模型/ }).click();
     await models();
-    await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
-    await expect(page.getByLabel('当前对话模型')).toContainText('本地测试供应商 · 本地模型');
+    await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
+    expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: custom.id, modelId: 'local-model' });
     await expect(page.getByLabel('当前视觉模型', { exact: true })).toHaveCount(0);
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await expect(page.getByLabel('本地测试供应商 API 密钥')).toHaveValue('*'.repeat(64));
@@ -279,7 +281,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByRole('button', { name: '选择对话模型：本地模型' }).click();
     await page.getByRole('menuitemradio', { name: /DeepSeek V4 Pro/ }).click();
     await models();
-    await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · DeepSeek V4 Pro');
+    await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
+    expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'deepseek-v4-pro' });
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '删除', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('region', { name: '本地测试供应商供应商' })).toHaveCount(0);

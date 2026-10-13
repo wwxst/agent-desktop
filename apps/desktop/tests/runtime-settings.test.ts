@@ -106,6 +106,29 @@ describe('desktop runtime settings', () => {
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: {} });
     await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage)).rejects.toThrow('内置');
   });
+  it('preserves a disabled visual candidate until its supplier is explicitly deleted', async () => {
+    const { database } = await paths();
+    const fallbackVisionModel = { providerId: 'custom-test', modelId: 'test-model' };
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'test-key' }), fallbackVisionModel, fallbackVisionEnabled: true }, storage);
+    await saveRuntimeSettings(database, { fallbackVisionEnabled: false }, storage);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel });
+    await saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test' }, storage);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: null });
+    expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(2);
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: {} });
+  });
+  it('protects an enabled visual supplier unless the same update selects a valid replacement', async () => {
+    const { database } = await paths();
+    const fallbackVisionModel = { providerId: 'custom-test', modelId: 'test-model' };
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'test-key' }), fallbackVisionModel, fallbackVisionEnabled: true }, storage);
+    await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test' }, storage)).rejects.toThrow('切换模型');
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel });
+    const replacement = { providerId: 'replacement', modelId: 'test-model' };
+    await saveRuntimeSettings(database, { modelProvider: provider({ id: 'replacement', apiKey: 'next-key' }), deleteModelProviderId: 'custom-test', fallbackVisionModel: replacement }, storage);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel: replacement });
+    expect((await loadRuntimeSettings(database, storage, {})).modelProviders.some(item => item.id === 'custom-test')).toBe(false);
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ visionApiKey: 'next-key' });
+  });
   it('requires an existing model and image capability for visual selection', async () => {
     const { database } = await paths();
     await expect(saveRuntimeSettings(database, { conversationModel: { providerId: 'deepseek', modelId: 'missing' } }, storage)).rejects.toThrow('不在目录');
