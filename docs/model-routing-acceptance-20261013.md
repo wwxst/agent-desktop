@@ -43,6 +43,8 @@ Real API                真实模型接口    请求真实供应商服务并核�
 
 按用户后续截图要求，模型菜单的 DeepSeek 与 OpenAI 字母占位改为对应品牌的本地单色图标；自定义供应商继续使用首字占位。只改选择器、样式和界面文档，未改变模型路由。`corepack pnpm check` 666 项 PASS、`corepack pnpm desktop:build` PASS，模型选择器浏览器专项 3 项 PASS、1 项跳过重复 Electron 项目。浅色实际开发窗口及深色 400px 截图经查看通过；窗口刷新后显示鲸鱼与结绳图标。证据为 `desktop-provider-brand-icons.jpg` 与浏览器测试输出的 `model-menu-dark-400-1.png`。独立审查无待修改项，结论 PASS；本次纯图标修改不涉及外部 API。
 
+按后续“弹窗窄一点”要求，菜单由 300px 收窄为 240px。完整检查仍为 666 项 PASS，桌面构建 PASS，原模型选择器专项 3 项 PASS、1 项跳过重复执行；实际开发窗口、深色 400px 长名截图均通过，正常 Flash 名称完整可读，发送与配置入口可达。独立审查 PASS，无待改项；证据为 `desktop-model-menu-240px.jpg`。仅修改样式与对应文档，不涉及外部 API。
+
 ## 审查
 
 ```text
