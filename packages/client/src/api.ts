@@ -278,7 +278,6 @@ export interface RuntimeModelDefinition {
 export interface RuntimeModelProvider {
   readonly id: string;
   readonly displayName: string;
-  readonly builtin: boolean;
   readonly baseUrl: string;
   readonly protocol: ModelApiProtocol;
   readonly apiKey: RuntimeSecretStatus;

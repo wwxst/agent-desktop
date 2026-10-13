@@ -90,7 +90,7 @@ describe('desktop runtime settings', () => {
   });
   it('clearing an internal saved key returns to the environment source', async () => {
     const { database } = await paths();
-    const { apiKey: _key, builtin: _builtin, ...deepseek } = DEFAULT_MODEL_PROVIDERS[0]!;
+    const { apiKey: _key, ...deepseek } = DEFAULT_MODEL_PROVIDERS[0]!;
     await saveRuntimeSettings(database, { modelProvider: { ...deepseek, apiKey: 'saved-key' } }, storage);
     expect(await loadRuntimeConfiguration(database, storage, { DEEPSEEK_API_KEY: 'env-key' })).toHaveProperty('deepSeekApiKey', 'saved-key');
     await saveRuntimeSettings(database, { modelProvider: { ...deepseek, apiKey: null } }, storage);
@@ -106,10 +106,10 @@ describe('desktop runtime settings', () => {
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: {} });
     await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage)).rejects.toThrow('切换模型');
   });
-  it('deletes unused built-in suppliers and their secrets without restoring them on reload', async () => {
+  it('deletes unused initially supplied providers and their secrets without restoring them on reload', async () => {
     const { database } = await paths();
-    for (const { apiKey: _key, builtin: _builtin, ...builtin } of DEFAULT_MODEL_PROVIDERS) {
-      await saveRuntimeSettings(database, { modelProvider: { ...builtin, apiKey: `${builtin.id}-saved-key` } }, storage);
+    for (const { apiKey: _key, ...item } of DEFAULT_MODEL_PROVIDERS) {
+      await saveRuntimeSettings(database, { modelProvider: { ...item, apiKey: `${item.id}-saved-key` } }, storage);
     }
     const fallbackVisionModel = { providerId: 'openai', modelId: DEFAULT_MODEL_PROVIDERS[1]!.models[0]!.id };
     await saveRuntimeSettings(database, { fallbackVisionModel, fallbackVisionEnabled: true }, storage);
@@ -172,20 +172,27 @@ describe('desktop runtime settings', () => {
     expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('deepSeekModel');
     expect(readDesktopDocument(database, 'runtime-secrets')).toHaveProperty('providerApiKeys.deepseek');
   });
-  it('migrates old visual selection to a disabled candidate, preserves catalog and secrets across reload', async () => {
+  it('drops prior provider identities while migrating visual selection, preserving catalog and secrets across reload', async () => {
     const { database } = await paths();
     writeDesktopDocuments(database, [
-      { name: 'runtime-settings', value: { modelProviders: DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...item }) => ({ ...item, models: item.models.map(({ capabilities, ...model }) => ({ ...model, images: capabilities.imageInput === 'supported' })) })),
+      { name: 'runtime-settings', value: { modelProviders: DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...item }, index) => ({ ...item, builtin: index === 0, models: item.models.map(({ capabilities, ...model }) => ({ ...model, images: capabilities.imageInput === 'supported' })) })),
         conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } } },
       { name: 'runtime-secrets', value: { providerApiKeys: { openai: storage.encryptString('legacy-vision-key').toString('base64') } } },
     ]);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
+    const loaded = await loadRuntimeSettings(database, storage, {});
+    expect(loaded).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
+    for (const [index, item] of loaded.modelProviders.entries()) {
+      expect(item).not.toHaveProperty('builtin');
+      const expected = DEFAULT_MODEL_PROVIDERS[index]!;
+      expect(item).toMatchObject({ id: expected.id, displayName: expected.displayName, baseUrl: expected.baseUrl, protocol: expected.protocol, models: expected.models });
+    }
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
     await saveRuntimeSettings(database, { fallbackVisionEnabled: true }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ visionModel: 'gpt-5.6-luna', visionApiKey: 'legacy-vision-key', visionProtocol: 'responses' });
     await saveRuntimeSettings(database, { fallbackVisionEnabled: false }, storage);
     expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
     expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('visionModel');
+    expect(JSON.stringify(readDesktopDocument(database, 'runtime-settings'))).not.toContain('builtin');
   });
   it('keeps an already resolved task snapshot while later selections drive new tasks', async () => {
     const { database } = await paths();

@@ -2718,7 +2718,6 @@ input:focus-visible {
 .model-provider-card { border: 1px solid var(--border); border-radius: 16px; margin-bottom: 12px; overflow: hidden; }
 .model-provider-header { min-height: 54px; padding: 12px 16px; display: flex; align-items: center; gap: 8px; }
 .model-provider-header strong { font-size: 14px; overflow-wrap: anywhere; }
-.model-custom-badge { font-size: 10px; border: 1px solid var(--border); color: var(--text-secondary); padding: 2px 5px; border-radius: 5px; }
 .model-provider-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); flex-shrink: 0; }
 .model-provider-dot.configured { background: var(--success); }
 .model-provider-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }

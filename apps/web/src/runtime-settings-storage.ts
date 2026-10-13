@@ -15,7 +15,7 @@ export function loadWebRuntimeSettings(): RuntimeSettings | null {
   if (value.theme !== undefined && !['system', 'light', 'dark'].includes(String(value.theme))) throw new Error('网页外观配置无效。');
   for (const provider of value.modelProviders) {
     if (!record(provider) || typeof provider.id !== 'string' || typeof provider.displayName !== 'string' || typeof provider.baseUrl !== 'string'
-      || !['chat-completions', 'responses'].includes(String(provider.protocol)) || typeof provider.builtin !== 'boolean'
+      || !['chat-completions', 'responses'].includes(String(provider.protocol))
       || !record(provider.apiKey) || typeof provider.apiKey.configured !== 'boolean' || !Array.isArray(provider.models)) throw new Error('网页供应商配置无效。');
     for (const model of provider.models) {
       if (!record(model) || typeof model.id !== 'string' || typeof model.displayName !== 'string' || !record(model.capabilities)) throw new Error('网页模型能力配置无效。');
@@ -25,7 +25,12 @@ export function loadWebRuntimeSettings(): RuntimeSettings | null {
   }
   const isReference = (reference: unknown) => record(reference) && typeof reference.providerId === 'string' && typeof reference.modelId === 'string';
   if (!isReference(value.conversationModel) || (value.fallbackVisionModel !== null && !isReference(value.fallbackVisionModel))) throw new Error('网页模型选择无效。');
-  const settings = value as unknown as RuntimeSettings;
+  // 旧配置的供应商身份标记不再进入共享状态，目录和密钥状态保持原值。
+  const providers = value.modelProviders.map((provider: Record<string, unknown>) => {
+    const { builtin: _legacyBuiltin, ...ordinary } = provider;
+    return ordinary;
+  });
+  const settings = { ...value, modelProviders: providers } as unknown as RuntimeSettings;
   resolveCatalogModel(settings.modelProviders, settings.conversationModel);
   if (settings.fallbackVisionModel !== null) resolveCatalogModel(settings.modelProviders, settings.fallbackVisionModel);
   return settings;

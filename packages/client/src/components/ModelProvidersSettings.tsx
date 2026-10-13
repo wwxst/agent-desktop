@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { AgentClientApi, RuntimeModelDefinition, RuntimeModelProvider, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '../api.js';
-import { DEFAULT_MODEL_PROVIDERS, usesDefaultModelEndpoint } from '../model-defaults.js';
 import { getConversationCapability, getVisionCapability, UNKNOWN_MODEL_CAPABILITIES } from '../model-capabilities.js';
 
 // 固定长度的显示掩码，不读取真实密钥及其长度，也不写入供应商草稿。
@@ -125,13 +124,6 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
       <label className="model-provider-field"><span>API 协议</span><select aria-label="API 协议" value={draft.protocol} disabled={disabled} onChange={event => setDraft({ ...draft, protocol: event.target.value as ProviderDraft['protocol'], models: draft.models.map(model => ({ ...model, capabilities: UNKNOWN_MODEL_CAPABILITIES })) })}><option value="chat-completions">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option></select></label>
     </details>
     <div className="model-catalog-heading"><div><span>模型目录</span><small>模型 ID 和能力按供应商实际支持填写</small></div><div>
-      {provider?.builtin && <button type="button" disabled={disabled} onClick={() => {
-        const defaults = DEFAULT_MODEL_PROVIDERS.find(item => item.id === draft.id)!;
-        // 官方目录能力只适用于已确认的地址和协议；自定义入口需由用户再次确认。
-        const useDefaultCapabilities = usesDefaultModelEndpoint(draft);
-        setDraft({ ...draft, models: defaults.models.map(model => modelDraft({ ...model, capabilities: useDefaultCapabilities ? model.capabilities : UNKNOWN_MODEL_CAPABILITIES })) });
-        setExpandedModel(null);
-      }}>恢复默认模型</button>}
       <button type="button" disabled={disabled || !draft.baseUrl.trim()} onClick={() => void fetchModels()}>获取可用模型</button>
     </div></div>
     <div className="model-catalog">{draft.models.map((model, index) => <div className="model-catalog-entry" key={index}>
@@ -156,7 +148,7 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
     <p className="model-settings-description">填入各提供商的 API 密钥即可使用其模型。</p>
     {error && <p className="settings-error" role="alert">{error}</p>}{message && <p className="model-settings-message" role="status">{message}</p>}
     {settings.modelProviders.map(provider => <section className="model-provider-card" key={provider.id} aria-label={`${provider.displayName}供应商`}>
-      <div className="model-provider-header"><strong>{provider.displayName}</strong>{!provider.builtin && <span className="model-custom-badge">自定义</span>}<span className={`model-provider-dot${provider.apiKey.configured ? ' configured' : ''}`} aria-label={provider.apiKey.configured ? '密钥已配置' : '密钥未配置'} title={provider.apiKey.configured ? '密钥已配置' : '密钥未配置'} />
+      <div className="model-provider-header"><strong>{provider.displayName}</strong><span className={`model-provider-dot${provider.apiKey.configured ? ' configured' : ''}`} aria-label={provider.apiKey.configured ? '密钥已配置' : '密钥未配置'} title={provider.apiKey.configured ? '密钥已配置' : '密钥未配置'} />
         <div className="model-provider-actions"><button type="button" disabled={disabled} onClick={() => draft?.id === provider.id ? setDraft(null) : openEditor(provider)}>编辑</button><button className="icon-button model-provider-delete" type="button" aria-label={`删除${provider.displayName}供应商`} title={`删除${provider.displayName}供应商`} disabled={disabled} onClick={() => { setDeleting(provider.id); setDraft(null); setError(''); }}><Trash2 size={15} /></button></div>
       </div>{draft?.id === provider.id && editor(provider)}
       {deleting === provider.id && <div className="model-delete-confirm"><span>删除“{provider.displayName}”及其本机密钥？</span><button type="button" disabled={busy} onClick={() => setDeleting(null)}>取消</button><button type="button" className="model-delete" disabled={disabled} onClick={() => void save({ deleteModelProviderId: provider.id })}>确认删除</button></div>}

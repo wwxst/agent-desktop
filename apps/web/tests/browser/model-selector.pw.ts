@@ -82,6 +82,7 @@ test('keeps composer model selection synchronized, focused and contained across 
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionEnabled: false,
     fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' },
   });
+  expect((await savedSettings()).modelProviders.every(provider => !('builtin' in provider))).toBe(true);
   // 显式选择才启用；关闭只改变开关，旧候选仍保存在同一配置中。
   await fallback.selectOption(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-flash' }));
   await expect(fallback).toHaveValue(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-flash' }));
@@ -187,7 +188,7 @@ test('migrates Desktop visual candidate disabled and preserves active request mo
   const models = [{ id: 'first-model', displayName: '第一模型', images: false }, { id: 'second-model', displayName: '第二模型', images: true }];
   await writeFile(resolve(profile, 'runtime-settings.json'), JSON.stringify({ modelProviders: [
     { id: 'deepseek', displayName: 'DeepSeek', builtin: true, baseUrl: `http://127.0.0.1:${address.port}`, protocol: 'chat-completions', models },
-    { id: 'openai', displayName: 'OpenAI', builtin: true, baseUrl: 'https://api.openai.com/v1', protocol: 'responses', models: [{ id: 'gpt-5.6-luna', displayName: 'Luna', images: true }] },
+    { id: 'openai', displayName: 'OpenAI', baseUrl: 'https://api.openai.com/v1', protocol: 'responses', models: [{ id: 'gpt-5.6-luna', displayName: 'Luna', images: true }] },
   ], conversationModel: { providerId: 'deepseek', modelId: 'first-model' }, visionModel: { providerId: 'deepseek', modelId: 'second-model' } }));
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
@@ -199,6 +200,7 @@ test('migrates Desktop visual candidate disabled and preserves active request mo
     app = await launch(); let page = await app.firstWindow();
     const saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
     expect(saved).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'deepseek', modelId: 'second-model' } });
+    expect(saved.modelProviders.every(provider => !('builtin' in provider))).toBe(true);
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('开始第一任务');
     await page.getByRole('button', { name: '发送' }).click();
     await expect.poll(() => requests.length).toBe(1);
@@ -221,13 +223,16 @@ test('migrates Desktop visual candidate disabled and preserves active request mo
     await page.keyboard.press('Escape');
     await app.close(); app = await launch(); page = await app.firstWindow();
     await expect(page.getByRole('button', { name: '选择对话模型：第二模型' })).toBeVisible();
-    expect(await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({ conversationModel: { providerId: 'deepseek', modelId: 'second-model' }, fallbackVisionEnabled: false });
+    const restored = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
+    expect(restored).toMatchObject({ conversationModel: { providerId: 'deepseek', modelId: 'second-model' }, fallbackVisionEnabled: false });
+    expect(restored.modelProviders.every(provider => !('builtin' in provider))).toBe(true);
     await page.screenshot({ path: resolve(evidence, 'desktop-model-restored.png') });
     const fallbackReference = { providerId: 'deepseek', modelId: 'second-model' };
     const fallbackValue = JSON.stringify(fallbackReference);
     const openFallbackSettings = async () => {
       await page.getByRole('button', { name: '设置', exact: true }).click();
       await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+      await expect(page.locator('.model-provider-card').getByText('自定义', { exact: true })).toHaveCount(0);
       const select = page.getByRole('combobox', { name: '备用视觉模型' });
       await expect(select).toBeHidden();
       await page.getByText('高级设置', { exact: true }).click();

@@ -17,12 +17,14 @@ test('automatically saves full-page settings with themes and extension navigatio
   await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
   await expect(page.getByRole('checkbox', { name: '启用备用视觉模型' })).toHaveCount(0);
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(page.getByRole('button', { name: '恢复默认模型', exact: true })).toHaveCount(0);
   await page.getByLabel('模型 1 ID', { exact: true }).fill('保存的模型');
     await page.getByLabel('模型 1 参数').click();
     await page.getByLabel('模型 1 文本输入').selectOption('supported');
     await page.getByLabel('模型 1 文本输出').selectOption('supported');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.model-provider-editor')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('agent-desktop:web-runtime-settings'))).not.toContain('"builtin"');
   await page.getByRole('button', { name: '本地工具', exact: true }).click();
   await expect(page.getByLabel('模型文件路径', { exact: true })).toBeHidden();
   await page.getByText('高级路径设置', { exact: true }).click();
@@ -76,14 +78,16 @@ test('edits provider catalogs and validates drafts at desktop and narrow widths'
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   for (const provider of ['DeepSeek', 'OpenAI']) await expect(page.getByRole('button', { name: `删除${provider}供应商`, exact: true })).toBeVisible();
+  await expect(page.locator('.model-provider-card').getByText('自定义', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: info.outputPath('providers-default.png') });
-  // 内置目录与自定义目录使用同一删除确认；取消不会修改已经保存的目录。
+  // 所有供应商使用同一删除确认；取消不会修改已经保存的目录。
   await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
   await expect(page.getByText('删除“OpenAI”及其本机密钥？', { exact: true })).toBeVisible();
   await page.getByRole('region', { name: 'OpenAI供应商' }).getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toBeVisible();
   await expect(page.getByRole('button', { name: '确认删除', exact: true })).toHaveCount(0);
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
+  await expect(page.getByRole('button', { name: '恢复默认模型', exact: true })).toHaveCount(0);
   await page.getByLabel('模型 1 参数', { exact: true }).click();
   await page.getByLabel('模型 1 上下文窗口').fill('128K');
   await page.getByLabel('模型 1 最大输出 token 数').fill('4K');
@@ -123,6 +127,7 @@ test('edits provider catalogs and validates drafts at desktop and narrow widths'
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除DeepSeek供应商', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('agent-desktop:web-runtime-settings'))).not.toContain('"builtin"');
 });
 
 test('manages installed plugins, MCP and markets from Desktop settings', async ({}, info) => {
@@ -249,6 +254,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.locator('.model-provider-editor')).toHaveCount(0);
     let saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
+    expect(saved.modelProviders.every(provider => !('builtin' in provider))).toBe(true);
+    await expect(page.locator('.model-provider-card').getByText('自定义', { exact: true })).toHaveCount(0);
     const custom = saved.modelProviders.find(provider => provider.displayName === '本地测试供应商')!;
     expect(custom.models[0]).toMatchObject({ contextWindow: 128000, maxOutputTokens: 4000, capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } });
     expect(JSON.stringify(saved)).not.toContain('desktop-test-key');
@@ -260,6 +267,7 @@ test('persists providers and encrypted credentials and executes both protocols t
     expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: custom.id, modelId: 'local-model' });
     await expect(page.getByLabel('当前视觉模型', { exact: true })).toHaveCount(0);
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
+    await expect(page.getByRole('button', { name: '恢复默认模型', exact: true })).toHaveCount(0);
     await expect(page.getByLabel('本地测试供应商 API 密钥')).toHaveValue('*'.repeat(64));
     await page.getByRole('region', { name: '本地测试供应商供应商' }).screenshot({ path: resolve(evidence, 'desktop-provider-masked-key.png') });
     await page.getByLabel('模型 1 参数', { exact: true }).click();
@@ -288,6 +296,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await models();
     saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
+    expect(saved.modelProviders.every(provider => !('builtin' in provider))).toBe(true);
+    await expect(page.locator('.model-provider-card').getByText('自定义', { exact: true })).toHaveCount(0);
     expect(saved.modelProviders.some(provider => provider.id === 'openai')).toBe(false);
     await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
     expect(saved.conversationModel).toEqual({ providerId: custom.id, modelId: 'local-model' });

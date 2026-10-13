@@ -147,7 +147,7 @@ export function parseStoredSettings(value: unknown): PersistedRuntimeSettings {
       if (!record(item)) throw new Error('保存的供应商配置无效。');
       const parsed = { ...parseProviderQuery(item), displayName: text(item.displayName, '显示名称'), models: parseModelDefinitions(item.models, true) };
       return { id: parsed.id, displayName: parsed.displayName, baseUrl: parsed.baseUrl, protocol: parsed.protocol,
-        models: parsed.models, builtin: DEFAULT_MODEL_PROVIDERS.some(defaultProvider => defaultProvider.id === parsed.id) };
+        models: parsed.models };
     });
     if (new Set(providers.map(item => item.id)).size !== providers.length) throw new Error('保存的供应商 ID 重复。');
   } else if (['deepSeekBaseUrl', 'deepSeekModel', 'visionBaseUrl'].some(key => value[key] !== undefined)) {
@@ -257,8 +257,7 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
     let providers = [...providerConfigs(saved, process.env)]; const choices = selections(saved, providers);
     if (update.modelProvider !== undefined) {
       const item = update.modelProvider;
-      const builtin = DEFAULT_MODEL_PROVIDERS.some(provider => provider.id === item.id);
-      const provider: ProviderConfig = { id: item.id, displayName: item.displayName, baseUrl: item.baseUrl, protocol: item.protocol, models: item.models, builtin };
+      const provider: ProviderConfig = { id: item.id, displayName: item.displayName, baseUrl: item.baseUrl, protocol: item.protocol, models: item.models };
       const index = providers.findIndex(provider => provider.id === item.id);
       if (index < 0) providers.push(provider); else providers[index] = provider;
       if (item.apiKey !== undefined) {

@@ -80,7 +80,7 @@ export function createWebClientApi(): AgentClientApi {
       if (update.modelProvider) {
         const { apiKey, ...provider } = update.modelProvider;
         const current = providers.find(item => item.id === provider.id);
-        const next = { ...provider, builtin: current?.builtin ?? false, apiKey: apiKey === undefined ? current?.apiKey ?? { configured: false } : apiKey === null ? { configured: false } : { configured: true, source: 'saved' as const } };
+        const next = { ...provider, apiKey: apiKey === undefined ? current?.apiKey ?? { configured: false } : apiKey === null ? { configured: false } : { configured: true, source: 'saved' as const } };
         providers = current ? providers.map(item => item.id === provider.id ? next : item) : [...providers, next];
       }
       if (update.deleteModelProviderId) {

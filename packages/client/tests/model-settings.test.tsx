@@ -59,25 +59,31 @@ it('cancels invalid edits without saving and retains the draft when the host rej
   expect(save).toHaveBeenCalledTimes(2);
   expect(screen.queryByDisplayValue('discarded')).toBeNull();
 });
-it('keeps existing model metadata when discovering new models and restores only the built-in catalog', async () => {
+it('keeps existing model metadata when discovering new models without a privileged restore action', async () => {
   const { list, save } = setup(undefined, vi.fn<AgentClientApi['listProviderModels']>(async () => [{ id: deepseekModel.id, displayName: 'remote', capabilities: UNKNOWN_MODEL_CAPABILITIES }, { id: 'discovered', displayName: '新模型', capabilities: UNKNOWN_MODEL_CAPABILITIES }]));
   fireEvent.click(screen.getByRole('button', { name: '获取可用模型' }));
   await screen.findByText('已获取 2 个模型，保存后生效。');
   expect(list).toHaveBeenCalledWith({ id: 'deepseek', baseUrl: 'https://api.deepseek.com', protocol: 'chat-completions' });
   expect(screen.getByLabelText('模型 1 显示名称')).toHaveProperty('value', deepseekModel.displayName);
   expect(screen.getByLabelText('模型 2 ID')).toHaveProperty('value', 'discovered');
-  fireEvent.click(screen.getByRole('button', { name: '恢复默认模型' }));
-  expect(screen.queryByDisplayValue('discovered')).toBeNull();
+  expect(screen.queryByRole('button', { name: '恢复默认模型' })).toBeNull();
+  fireEvent.click(screen.getByLabelText('模型 1 参数'));
+  expect(screen.getByLabelText('模型 1 图片输入')).toHaveProperty('value', deepseekModel.capabilities.imageInput);
   expect(save).not.toHaveBeenCalled();
 });
 it.each([
   { label: 'API 地址', value: 'https://custom.example/v1' },
   { label: 'API 协议', value: 'responses' },
-])('restores default model identities with unknown capabilities for a changed $label', ({ label, value }) => {
-  const { save } = setup();
+])('keeps capability confirmation unknown after discovery through a changed $label', async ({ label, value }) => {
+  const { save, list } = setup(undefined, vi.fn<AgentClientApi['listProviderModels']>(async () => [{ ...deepseekModel, displayName: 'remote' }, { id: 'discovered', displayName: '新模型', capabilities: UNKNOWN_MODEL_CAPABILITIES }]));
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
-  fireEvent.click(screen.getByRole('button', { name: '恢复默认模型' }));
+  fireEvent.click(screen.getByRole('button', { name: '获取可用模型' }));
+  await screen.findByText('已获取 2 个模型，保存后生效。');
+  expect(list).toHaveBeenCalledWith({ id: 'deepseek', baseUrl: label === 'API 地址' ? value : initial.modelProviders[0]!.baseUrl, protocol: label === 'API 协议' ? value : initial.modelProviders[0]!.protocol });
   expect(screen.getByLabelText('模型 1 ID')).toHaveProperty('value', deepseekModel.id);
+  expect(screen.getByLabelText('模型 1 显示名称')).toHaveProperty('value', deepseekModel.displayName);
+  expect(screen.getByLabelText('模型 2 ID')).toHaveProperty('value', 'discovered');
+  expect(screen.queryByRole('button', { name: '恢复默认模型' })).toBeNull();
   fireEvent.click(screen.getByLabelText('模型 1 参数'));
   for (const capability of ['文本输入', '文本输出', '图片输入', '视觉理解']) expect(screen.getByLabelText(`模型 1 ${capability}`)).toHaveProperty('value', 'unknown');
   expect(screen.getByRole('button', { name: '保存' })).toHaveProperty('disabled', true);

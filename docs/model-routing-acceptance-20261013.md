@@ -55,6 +55,10 @@ Real API                真实模型接口    请求真实供应商服务并核�
 
 按后续截图要求，供应商行“编辑”右侧增加垃圾桶，内置与自定义供应商使用同一删除确认和保存入口。当前对话或已启用备用引用仍受保护，关闭候选随所属供应商删除清空；成功后移除目录和本机密钥，重启不补回默认供应商。`corepack pnpm check` 58 个文件、675 项测试 PASS，19 个工作区包架构检查 PASS；桌面构建 PASS。`corepack pnpm --filter @agent-desktop/web exec playwright test --config playwright.config.ts tests/browser/settings.pw.ts --workers=2` 专项 7 项 PASS、3 项按原项目条件跳过，覆盖取消、删除失败、成功删除、网页恢复及真实 Electron 删除与重启。默认桌面、浅色 400px 与深色 400px 截图经查看，无横向溢出；正式开发窗口已重启并停留在模型页，截图为 `logs/provider-trash-20261013/desktop-provider-trash.jpg`，浏览器证据在本机 `apps/web/test-results/`。独立审查 PASS，无待改项。此次未修改模型调用与视觉路由，未重复外部模型或视频验证。
 
+## 普通供应商身份补充验收
+
+按后续要求，DeepSeek、OpenAI 与所有后续添加项统一为普通供应商配置。共享类型与持久化输出移除 `builtin`，读取旧标记时丢弃身份而保留模型、地址、协议、能力、引用及密钥。设置页移除“自定义”身份标签与专属恢复默认模型按钮，首次预填目录仍可编辑和删除。`corepack pnpm check` 58 个文件、675 项测试 PASS，19 个工作区包架构检查 PASS，桌面构建 PASS；供应商聚焦测试 3 个文件、50 项 PASS。`corepack pnpm --filter @agent-desktop/web exec playwright test --config playwright.config.ts tests/browser/settings.pw.ts tests/browser/model-selector.pw.ts --workers=2` 10 项 PASS、4 项按原项目条件跳过，包含旧身份迁移、两种协议、目录查询、删除与重启、主题、窄窗、键盘选择和活动任务快照。实际开发窗口已重启，旧密钥仍显示掩码，编辑区只保留统一目录获取入口；截图为 `logs/ordinary-providers-20261013/desktop-provider-editor.jpg`，深色 400px 浏览器截图经查看通过。独立审查 PASS，无待改项。此次未修改模型请求或视觉路由，未重复外部模型及视频调用。
+
 ## 审查
 
 ```text

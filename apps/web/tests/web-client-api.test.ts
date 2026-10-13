@@ -91,14 +91,23 @@ describe('Web Dev API', () => {
     await api.saveRuntimeSettings({ modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unknown', imageUnderstanding: 'unknown' } }] },
       conversationModel: { providerId: 'custom-web', modelId: 'web-model' } });
     expect(persisted).not.toContain('web-only-secret');
+    const before = await api.loadRuntimeSettings();
+    // 已保存的旧身份字段在读边界被丢弃，其余脱敏供应商与当前选择完整保留。
+    persisted = JSON.stringify({ ...before, modelProviders: before.modelProviders.map((provider, index) => ({ ...provider, builtin: index === 0 })) });
     const restored = createWebClientApi();
-    expect(await restored.loadRuntimeSettings()).toMatchObject({ conversationModel: { providerId: 'custom-web', modelId: 'web-model' }, fallbackVisionEnabled: false });
+    const loaded = await restored.loadRuntimeSettings();
+    expect(loaded).toEqual(before);
+    for (const item of loaded.modelProviders) expect(item).not.toHaveProperty('builtin');
+    expect(loaded).toMatchObject({ conversationModel: { providerId: 'custom-web', modelId: 'web-model' }, fallbackVisionEnabled: false });
     setItem.mockImplementationOnce(() => { throw new Error('浏览器存储失败'); });
     await expect(restored.saveRuntimeSettings({ conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } })).rejects.toThrow('浏览器存储失败');
     expect((await restored.loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
     expect((await createWebClientApi().loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
+    await restored.saveRuntimeSettings({ theme: 'dark' });
+    expect(persisted).not.toContain('builtin');
+    expect((await createWebClientApi().loadRuntimeSettings()).modelProviders).toEqual(before.modelProviders);
   });
-  it('deletes unused built-in suppliers without restoring them in a new Web host', async () => {
+  it('deletes unused initially supplied providers without restoring them in a new Web host', async () => {
     let persisted: string | null = null;
     vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
     const api = createWebClientApi();
