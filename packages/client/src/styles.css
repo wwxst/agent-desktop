@@ -2123,7 +2123,7 @@ input:focus-visible {
 .composer-model-trigger svg, .send-button { flex: none; }
 .composer-model-trigger:hover:not(:disabled), .composer-model-trigger:focus-visible { color: var(--text-primary); background: var(--surface-hover); }
 .composer-model-trigger:disabled { opacity: .55; cursor: default; }
-.composer-model-menu { position: fixed; inset: auto; width: 240px; max-width: calc(100vw - 24px); max-height: min(350px, calc(100dvh - 24px)); margin: 7px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; color: var(--text-primary); background: var(--surface); box-shadow: 0 8px 28px rgb(0 0 0 / 14%); position-area: top span-left; position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline; }
+.composer-model-menu { position: fixed; inset: auto; width: 210px; max-width: calc(100vw - 24px); max-height: min(350px, calc(100dvh - 24px)); margin: 7px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; color: var(--text-primary); background: var(--surface); box-shadow: 0 8px 28px rgb(0 0 0 / 14%); position-area: top span-left; position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline; }
 .composer-model-menu:popover-open { display: flex; flex-direction: column; }
 .composer-model-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .composer-model-menu button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 42px; padding: 7px 9px; border: 0; border-radius: 8px; color: var(--text-secondary); background: transparent; text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
