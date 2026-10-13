@@ -2751,6 +2751,7 @@ input:focus-visible {
 .model-settings-message { color: var(--success); font-size: 12px; }
 .model-add-provider { width: 100%; min-height: 44px; border: 1px dashed var(--border-strong); border-radius: 12px; background: transparent; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; gap: 8px; }
 .model-active-selection { margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--border); }
+.model-active-selection .settings-readonly { overflow-wrap: anywhere; }
 .model-delete-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 16px; }
 .model-delete-confirm span { width: 100%; }
 @media (max-width: 560px) {

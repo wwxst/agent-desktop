@@ -68,10 +68,18 @@ test('keeps composer model selection synchronized, focused and contained across 
   await menu.getByRole('menuitem', { name: '配置自定义模型' }).click();
   await expect(page.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
   await expect(page.getByLabel('当前视觉模型')).toHaveCount(0);
-  await expect(page.getByLabel('当前对话模型')).toHaveValue(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-flash' }));
-  await page.getByLabel('当前对话模型').selectOption(JSON.stringify({ providerId: 'deepseek', modelId: 'long-model' }));
+  await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
+  await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · DeepSeek V4.1 Flash');
+  await page.screenshot({ path: info.outputPath('settings-current-model-readonly.png') });
   await page.getByRole('button', { name: '关闭设置' }).click();
+  await trigger.click();
+  await menu.getByRole('menuitemradio', { name: /Long Model Name/ }).click();
   trigger = page.getByRole('button', { name: /选择对话模型：Long Model Name/ });
+  await trigger.click();
+  await menu.getByRole('menuitem', { name: '配置自定义模型' }).click();
+  await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
+  await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · Long Model Name With Many Words And A Very Long Configuration Name');
+  await page.getByRole('button', { name: '关闭设置' }).click();
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     for (const [width, height, zoom] of [[1280, 720, 1], [800, 600, 1], [400, 500, 1], [800, 600, 1.5]]) {
@@ -94,6 +102,17 @@ test('keeps composer model selection synchronized, focused and contained across 
       await expect(menu).toBeVisible();
       await page.screenshot({ path: info.outputPath(`model-menu-${theme}-${width}-${zoom}.png`) });
       await page.keyboard.press('Escape');
+    }
+    await page.evaluate(() => { document.documentElement.style.zoom = '1'; });
+    for (const width of [1280, 400]) {
+      await page.setViewportSize({ width, height: 720 });
+      await page.getByRole('button', { name: '设置', exact: true }).click();
+      await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+      await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
+      await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · Long Model Name With Many Words And A Very Long Configuration Name');
+      expect(await page.locator('.settings-page').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+      await page.screenshot({ path: info.outputPath(`settings-current-model-${theme}-${width}.png`) });
+      await page.getByRole('button', { name: '关闭设置' }).click();
     }
   }
   await page.evaluate(() => { document.documentElement.style.zoom = '1'; });

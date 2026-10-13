@@ -47,6 +47,8 @@ Real API                真实模型接口    请求真实供应商服务并核�
 
 按后续“继续收窄”要求，菜单进一步由 240px 收窄为 210px。`corepack pnpm check` 58 个文件、666 项测试 PASS，19 个工作区包架构检查 PASS；`corepack pnpm desktop:build` PASS。现有模型选择器浏览器专项 3 项 PASS、1 项跳过重复 Electron 执行，覆盖主题、窄窗口、缩放、长名及键盘操作。实际开发窗口与深色 400px 长名截图经查看，品牌图标、选中标记、配置入口和发送按钮正常可达；开发窗口保持运行。独立审查 PASS，无待改项；实际窗口证据为 `desktop-model-menu-210px.jpg`。仅修改样式与对应文档，不涉及外部 API。
 
+按后续取消设置页重复选择入口的要求，“当前对话模型”改为共享已保存配置的只读文本，切换统一在聊天输入框完成。供应商编辑、删除目录后的有效引用调整与高级备用视觉配置保留。`corepack pnpm check` 58 个文件、665 项测试 PASS，19 个工作区包架构检查 PASS；移除的一项是旧设置页选择器保存失败测试，聊天保存失败测试仍在。`corepack pnpm client:web:test` 含桌面构建 PASS，69 项通过、9 项按原项目条件跳过；全部浏览器修改完成后测试类型检查再次 PASS。真实桌面 IPC（进程通信）覆盖聊天选择、自定义供应商两种协议请求、持久化、重启及运行中任务快照；接口使用本地夹具，不代表外部模型验证。浅深主题与 400px 长名换行经截图查看，实际开发窗口刷新后确认只有只读名称并保持运行。证据为 `desktop-current-model-readonly.jpg`、`settings-current-model-dark-400.png` 与 `settings-current-model-light-1280.png`。独立审查 PASS，无待改项；本次不涉及运行时路由或外部 API，未重复真实视频调用。
+
 ## 审查
 
 ```text

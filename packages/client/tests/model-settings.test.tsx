@@ -180,31 +180,22 @@ it('adjusts deleted model references without enabling a disabled fallback candid
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ conversationModel: { providerId: 'deepseek', modelId: 'replacement' }, fallbackVisionModel: { providerId: 'deepseek', modelId: 'replacement' } })));
   expect(save.mock.calls[0]![0]).not.toHaveProperty('fallbackVisionEnabled');
 });
-it('allows conversation switching during a turn while provider and fallback edits stay disabled', async () => {
+it('keeps the current model readonly during a turn while provider and fallback edits stay disabled', () => {
   const settings: RuntimeSettings = { ...initial, modelProviders: initial.modelProviders.map(provider => ({ ...provider, apiKey: { configured: true, source: 'saved' } })) };
   const { save } = setup(undefined, undefined, settings, { openEditor: false, isProcessing: true });
-  expect(screen.getByLabelText('当前对话模型')).toHaveProperty('disabled', false);
+  expect(screen.queryByRole('combobox', { name: '当前对话模型' })).toBeNull();
+  expect(screen.getByLabelText('当前对话模型')).toHaveProperty('textContent', `DeepSeek · ${deepseekModel.displayName}`);
   expect(within(screen.getByRole('region', { name: 'DeepSeek供应商' })).getByRole('button', { name: '编辑' })).toHaveProperty('disabled', true);
   fireEvent.click(screen.getByText('高级设置'));
   expect(screen.getByLabelText('启用备用视觉模型')).toHaveProperty('disabled', true);
   expect(screen.getByLabelText('备用视觉模型')).toHaveProperty('disabled', true);
-  const reference = { providerId: 'openai', modelId: openaiModel.id };
-  fireEvent.change(screen.getByLabelText('当前对话模型'), { target: { value: JSON.stringify(reference) } });
-  await waitFor(() => expect(save).toHaveBeenCalledWith({ conversationModel: reference }));
+  expect(save).not.toHaveBeenCalled();
 });
-it('keeps the selected conversation model unchanged when persistence fails', async () => {
-  const settings: RuntimeSettings = { ...initial, modelProviders: initial.modelProviders.map(provider => ({ ...provider, apiKey: { configured: true, source: 'saved' } })) };
-  setup(vi.fn<AgentClientApi['saveRuntimeSettings']>().mockRejectedValue(new Error('模型配置保存失败')), undefined, settings, { openEditor: false, isProcessing: false });
-  fireEvent.change(screen.getByLabelText('当前对话模型'), { target: { value: JSON.stringify({ providerId: 'openai', modelId: openaiModel.id }) } });
-  await screen.findByText('模型配置保存失败');
-  expect(screen.getByLabelText('当前对话模型')).toHaveProperty('value', JSON.stringify(settings.conversationModel));
-});
-it('shows unavailable current models with a reason and excludes other unknown or unsupported conversation models', () => {
+it('shows the current model as readonly with its configuration reason and points switching to the composer', () => {
   const settings: RuntimeSettings = { ...initial, fallbackVisionEnabled: false, fallbackVisionModel: null,
     modelProviders: initial.modelProviders.map(provider => provider.id === 'openai' ? { ...provider, apiKey: { configured: true, source: 'saved' }, models: [{ id: 'unknown', displayName: '未知模型', capabilities: UNKNOWN_MODEL_CAPABILITIES }, { id: 'image-only', displayName: '仅图片模型', capabilities: { textInput: 'unsupported', textOutput: 'unsupported', imageInput: 'supported', imageUnderstanding: 'supported' } }] } : provider) };
   setup(undefined, undefined, settings, { openEditor: false, isProcessing: false });
-  const select = screen.getByLabelText('当前对话模型');
-  expect(within(select).getByRole('option', { name: /未配置 API 密钥/ })).toHaveProperty('disabled', true);
-  expect(within(select).queryByRole('option', { name: /未知模型/ })).toBeNull();
-  expect(within(select).queryByRole('option', { name: /仅图片模型/ })).toBeNull();
+  expect(screen.getByLabelText('当前对话模型')).toHaveProperty('textContent', `DeepSeek · ${deepseekModel.displayName}（未配置 API 密钥）`);
+  expect(screen.queryByRole('combobox', { name: '当前对话模型' })).toBeNull();
+  expect(screen.getByText(/在聊天输入框中切换对话模型/)).toBeTruthy();
 });

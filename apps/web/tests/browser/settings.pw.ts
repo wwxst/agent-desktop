@@ -201,6 +201,7 @@ test('persists providers and encrypted credentials and executes both protocols t
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.DESKTOP_RENDERER_URL; delete env.ELECTRON_RUN_AS_NODE;
+  env.DEEPSEEK_API_KEY = 'desktop-model-choice-fixture-key';
   const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   try {
@@ -225,9 +226,12 @@ test('persists providers and encrypted credentials and executes both protocols t
     const custom = saved.modelProviders.find(provider => provider.displayName === '本地测试供应商')!;
     expect(custom.models[0]).toMatchObject({ contextWindow: 128000, maxOutputTokens: 4000, capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } });
     expect(JSON.stringify(saved)).not.toContain('desktop-test-key');
-    const choice = JSON.stringify({ providerId: custom.id, modelId: 'local-model' });
-    await page.getByLabel('当前对话模型', { exact: true }).selectOption(choice);
-    await expect(page.getByLabel('当前对话模型')).toBeEnabled();
+    await page.getByRole('button', { name: '关闭设置' }).click();
+    await page.getByRole('button', { name: /^选择对话模型：/ }).click();
+    await page.getByRole('menuitemradio', { name: /本地模型/ }).click();
+    await models();
+    await expect(page.getByRole('combobox', { name: '当前对话模型' })).toHaveCount(0);
+    await expect(page.getByLabel('当前对话模型')).toContainText('本地测试供应商 · 本地模型');
     await expect(page.getByLabel('当前视觉模型', { exact: true })).toHaveCount(0);
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await expect(page.getByLabel('本地测试供应商 API 密钥')).toHaveValue('*'.repeat(64));
@@ -271,8 +275,11 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '删除', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('切换模型');
-    await page.getByLabel('当前对话模型').selectOption(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-v4-pro' }));
-    await expect(page.getByLabel('当前对话模型')).toBeEnabled();
+    await page.getByRole('button', { name: '关闭设置' }).click();
+    await page.getByRole('button', { name: '选择对话模型：本地模型' }).click();
+    await page.getByRole('menuitemradio', { name: /DeepSeek V4 Pro/ }).click();
+    await models();
+    await expect(page.getByLabel('当前对话模型')).toContainText('DeepSeek · DeepSeek V4 Pro');
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '删除', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('region', { name: '本地测试供应商供应商' })).toHaveCount(0);

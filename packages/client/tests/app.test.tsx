@@ -79,7 +79,7 @@ function artifactTypeText(fileName: string): string {
 }
 
 describe('shared App', () => {
-  it('shares committed model selection between composer and settings without replacing the draft or attachments', async () => {
+  it('shows committed composer selection as readonly in settings without replacing the draft or attachments', async () => {
     let settings = { ...await api.loadRuntimeSettings(), modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })) };
     const save = vi.fn<AgentClientApi['saveRuntimeSettings']>(async update => { settings = { ...settings, conversationModel: update.conversationModel ?? settings.conversationModel }; return settings; });
     render(<App api={{ ...api, loadRuntimeSettings: async () => settings, saveRuntimeSettings: save, selectAttachmentFiles: async () => [{ path: 'D:/draft.mp4', name: 'draft.mp4', role: 'video' }] }} />);
@@ -95,12 +95,19 @@ describe('shared App', () => {
     expect(screen.getByLabelText('视频附件：draft.mp4')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4.1 Flash' }));
     fireEvent.click(screen.getByRole('menuitem', { name: '配置自定义模型' }));
-    expect(await screen.findByLabelText('当前对话模型')).toHaveProperty('value', JSON.stringify(settings.conversationModel));
-    fireEvent.change(screen.getByLabelText('当前对话模型'), { target: { value: JSON.stringify({ providerId: 'openai', modelId: 'gpt-5.6-luna' }) } });
-    await waitFor(() => expect(settings.conversationModel.providerId).toBe('openai'));
+    expect(await screen.findByLabelText('当前对话模型')).toHaveProperty('textContent', 'DeepSeek · DeepSeek V4.1 Flash');
+    expect(screen.queryByRole('combobox', { name: '当前对话模型' })).toBeNull();
+    expect(save).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4.1 Flash' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /GPT-5.6 Luna/ }));
     await screen.findByRole('button', { name: '选择对话模型：GPT-5.6 Luna' });
     expect(screen.getByLabelText('剪辑需求')).toBe(input);
+    expect(input).toHaveProperty('value', '保留草稿');
+    expect(screen.getByLabelText('视频附件：draft.mp4')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '选择对话模型：GPT-5.6 Luna' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '配置自定义模型' }));
+    expect(screen.getByLabelText('当前对话模型')).toHaveProperty('textContent', 'OpenAI · GPT-5.6 Luna');
   });
   it('holds the old model and send action until save completes, and reports a rejected selection', async () => {
     const settings = { ...await api.loadRuntimeSettings(), modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })) };
