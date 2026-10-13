@@ -47,6 +47,9 @@ test('automatically saves full-page settings with themes and extension navigatio
     for (const name of ['常规', '模型与执行', '本地工具', '插件与技能', '外观']) {
       await page.getByRole('button', { name, exact: true }).click();
       await expect(page.getByRole('heading', { name: name === '模型与执行' ? '模型' : name === '插件与技能' ? '插件' : name, exact: true })).toBeVisible();
+      if (name === '模型与执行') {
+        for (const provider of ['DeepSeek', 'OpenAI']) await expect(page.getByRole('button', { name: `删除${provider}供应商`, exact: true })).toBeVisible();
+      }
       expect(await page.locator('.settings-page').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
       await page.getByRole('button', { name: '关闭设置' }).click({ trial: true });
       await page.screenshot({ path: info.outputPath(`${name}-${width}.png`) });
@@ -72,7 +75,14 @@ test('edits provider catalogs and validates drafts at desktop and narrow widths'
   await page.goto('/');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+  for (const provider of ['DeepSeek', 'OpenAI']) await expect(page.getByRole('button', { name: `删除${provider}供应商`, exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('providers-default.png') });
+  // 内置目录与自定义目录使用同一删除确认；取消不会修改已经保存的目录。
+  await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
+  await expect(page.getByText('删除“OpenAI”及其本机密钥？', { exact: true })).toBeVisible();
+  await page.getByRole('region', { name: 'OpenAI供应商' }).getByRole('button', { name: '取消', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '确认删除', exact: true })).toHaveCount(0);
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
   await page.getByLabel('模型 1 参数', { exact: true }).click();
   await page.getByLabel('模型 1 上下文窗口').fill('128K');
@@ -102,6 +112,17 @@ test('edits provider catalogs and validates drafts at desktop and narrow widths'
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
   await page.screenshot({ path: info.outputPath('provider-dark.png') });
+  await page.getByRole('button', { name: '取消', exact: true }).click();
+  for (const provider of ['DeepSeek', 'OpenAI']) await expect(page.getByRole('button', { name: `删除${provider}供应商`, exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('provider-trash-dark-400.png') });
+  await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
+  await page.getByRole('button', { name: '确认删除', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '删除DeepSeek供应商', exact: true })).toBeVisible();
 });
 
 test('manages installed plugins, MCP and markets from Desktop settings', async ({}, info) => {
@@ -210,6 +231,9 @@ test('persists providers and encrypted credentials and executes both protocols t
     app = await launch(); let page = await app.firstWindow();
     const models = async () => { await page.getByRole('button', { name: '设置', exact: true }).click(); await page.getByRole('button', { name: '模型与执行', exact: true }).click(); };
     await models();
+    await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
+    await page.getByRole('button', { name: '确认删除', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
     await page.screenshot({ path: resolve(evidence, 'desktop-models-default.png') });
     await page.getByRole('button', { name: '添加模型提供商' }).click();
     await page.getByLabel('显示名称', { exact: true }).fill('本地测试供应商');
@@ -264,6 +288,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await models();
     saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
+    expect(saved.modelProviders.some(provider => provider.id === 'openai')).toBe(false);
+    await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
     expect(saved.conversationModel).toEqual({ providerId: custom.id, modelId: 'local-model' });
     expect(saved.modelProviders.find(provider => provider.id === custom.id)).toMatchObject({ protocol: 'responses', apiKey: { configured: true, source: 'saved' } });
     await page.screenshot({ path: resolve(evidence, 'desktop-provider-dark-restored.png') });
@@ -274,7 +300,7 @@ test('persists providers and encrypted credentials and executes both protocols t
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     expect(requests.some(item => item.url === '/v1/responses' && item.body.model === 'local-model' && item.body.max_output_tokens === 4000)).toBe(true);
     await models();
-    await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByRole('button', { name: '删除本地测试供应商供应商', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('切换模型');
     await page.getByRole('button', { name: '关闭设置' }).click();
@@ -283,7 +309,7 @@ test('persists providers and encrypted credentials and executes both protocols t
     await models();
     await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
     expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'deepseek-v4-pro' });
-    await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByRole('button', { name: '删除本地测试供应商供应商', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('region', { name: '本地测试供应商供应商' })).toHaveCount(0);
     // 密钥只能存在于系统加密后的数据库值中，文件字节不能包含明文。

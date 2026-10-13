@@ -104,7 +104,29 @@ describe('desktop runtime settings', () => {
     await saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test', conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' } }, storage);
     expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(2);
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: {} });
-    await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage)).rejects.toThrow('内置');
+    await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage)).rejects.toThrow('切换模型');
+  });
+  it('deletes unused built-in suppliers and their secrets without restoring them on reload', async () => {
+    const { database } = await paths();
+    for (const { apiKey: _key, builtin: _builtin, ...builtin } of DEFAULT_MODEL_PROVIDERS) {
+      await saveRuntimeSettings(database, { modelProvider: { ...builtin, apiKey: `${builtin.id}-saved-key` } }, storage);
+    }
+    const fallbackVisionModel = { providerId: 'openai', modelId: DEFAULT_MODEL_PROVIDERS[1]!.models[0]!.id };
+    await saveRuntimeSettings(database, { fallbackVisionModel, fallbackVisionEnabled: true }, storage);
+    await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'openai' }, storage)).rejects.toThrow('切换模型');
+    expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(2);
+    await saveRuntimeSettings(database, { deleteModelProviderId: 'openai', fallbackVisionEnabled: false }, storage);
+    expect(await loadRuntimeSettings(database, storage, { OPENAI_API_KEY: 'environment-key' })).toMatchObject({
+      modelProviders: [{ id: 'deepseek' }], fallbackVisionModel: null, fallbackVisionEnabled: false,
+    });
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: { deepseek: expect.any(String) } });
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'custom-key' }), conversationModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
+    await saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage);
+    const restored = await loadRuntimeSettings(database, storage, { DEEPSEEK_API_KEY: 'environment-key' });
+    expect(restored.modelProviders.map(item => item.id)).toEqual(['custom-test']);
+    expect(restored.conversationModel).toEqual({ providerId: 'custom-test', modelId: 'test-model' });
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: { 'custom-test': expect.any(String) } });
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'custom-key', deepSeekModel: 'test-model' });
   });
   it('preserves a disabled visual candidate until its supplier is explicitly deleted', async () => {
     const { database } = await paths();

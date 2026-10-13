@@ -2721,8 +2721,10 @@ input:focus-visible {
 .model-custom-badge { font-size: 10px; border: 1px solid var(--border); color: var(--text-secondary); padding: 2px 5px; border-radius: 5px; }
 .model-provider-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); flex-shrink: 0; }
 .model-provider-dot.configured { background: var(--success); }
-.model-provider-actions { margin-left: auto; display: flex; gap: 10px; flex-shrink: 0; }
+.model-provider-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .model-provider-actions button, .model-catalog-heading button { border: 0; background: transparent; color: var(--text-secondary); font-size: 12px; padding: 4px; }
+.model-provider-actions .model-provider-delete { width: 28px; height: 28px; padding: 0; }
+.model-provider-actions .model-provider-delete:hover:not(:disabled) { background: var(--surface-hover); color: var(--danger); }
 .model-provider-settings .model-delete { color: var(--danger); }
 .model-provider-editor { background: transparent; margin: 0; padding: 0 16px 16px; border: 0; border-radius: 0; }
 .model-provider-editor-title { display: flex; flex-direction: column; gap: 4px; margin-bottom: 18px; }

@@ -98,6 +98,21 @@ describe('Web Dev API', () => {
     expect((await restored.loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
     expect((await createWebClientApi().loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
   });
+  it('deletes unused built-in suppliers without restoring them in a new Web host', async () => {
+    let persisted: string | null = null;
+    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
+    const api = createWebClientApi();
+    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'deepseek' })).rejects.toThrow('切换模型');
+    expect((await api.loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek', 'openai']);
+    await api.saveRuntimeSettings({ deleteModelProviderId: 'openai' });
+    expect((await createWebClientApi().loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek']);
+    const conversationModel = { providerId: 'custom-web', modelId: 'web-model' };
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), conversationModel });
+    await api.saveRuntimeSettings({ deleteModelProviderId: 'deepseek' });
+    const restored = await createWebClientApi().loadRuntimeSettings();
+    expect(restored.modelProviders.map(item => item.id)).toEqual(['custom-web']);
+    expect(restored.conversationModel).toEqual(conversationModel);
+  });
   it('preserves a disabled visual candidate until its supplier is explicitly deleted and persists the cleared choice', async () => {
     let persisted: string | null = null;
     vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });

@@ -275,7 +275,6 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       const id = update.deleteModelProviderId;
       const found = providers.find(provider => provider.id === id);
       if (found === undefined) throw new Error('找不到模型供应商。');
-      if (found.builtin) throw new Error('内置供应商不能删除。');
       providers = providers.filter(provider => provider.id !== id);
       const keys = { ...secrets.providerApiKeys }; delete keys[id]; secrets = { providerApiKeys: keys };
     }

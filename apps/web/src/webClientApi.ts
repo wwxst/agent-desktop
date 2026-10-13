@@ -85,7 +85,6 @@ export function createWebClientApi(): AgentClientApi {
       }
       if (update.deleteModelProviderId) {
         const id = update.deleteModelProviderId;
-        if (providers.find(item => item.id === id)?.builtin) throw new Error('不能删除内置供应商。');
         providers = providers.filter(item => item.id !== id);
       }
       const nextSettings = { ...settings, modelProviders: providers,
