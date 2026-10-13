@@ -39,6 +39,10 @@ Real API                真实模型接口    请求真实供应商服务并核�
 
 对应原始证据为 `real-vision-result.json`、`real-video-result.json`、`real-video-console.jsonl`、`real-fallback-result.json`，不含 API 密钥。纯色视频证明现有工具闭环与路由有效，不代表自然视频语义准确率。
 
+## 品牌图标补充验收
+
+按用户后续截图要求，模型菜单的 DeepSeek 与 OpenAI 字母占位改为对应品牌的本地单色图标；自定义供应商继续使用首字占位。只改选择器、样式和界面文档，未改变模型路由。`corepack pnpm check` 666 项 PASS、`corepack pnpm desktop:build` PASS，模型选择器浏览器专项 3 项 PASS、1 项跳过重复 Electron 项目。浅色实际开发窗口及深色 400px 截图经查看通过；窗口刷新后显示鲸鱼与结绳图标。证据为 `desktop-provider-brand-icons.jpg` 与浏览器测试输出的 `model-menu-dark-400-1.png`。独立审查无待修改项，结论 PASS；本次纯图标修改不涉及外部 API。
+
 ## 审查
 
 ```text

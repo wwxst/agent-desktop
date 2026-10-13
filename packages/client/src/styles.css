@@ -2132,6 +2132,7 @@ input:focus-visible {
 .composer-model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-model-name small { display: block; margin-top: 2px; font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 .model-provider-icon { display: grid; flex: none; place-items: center; width: 23px; height: 23px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; font-weight: 600; }
+.model-provider-brand { border: 0; border-radius: 0; }
 .composer-model-menu .composer-model-configure { flex: none; justify-content: space-between; min-height: 35px; margin-top: 5px; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; font-size: 12px; }
 .composer-model-error { flex: none; margin: 6px 9px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
 .model-advanced-settings { margin-top: 18px; }
