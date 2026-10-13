@@ -1,9 +1,19 @@
 import type { RuntimeModelProvider } from './api.js';
 
-/** 只列当前正式运行时已经使用的模型，不凭名称猜测其它模型能力。 */
+/** 默认能力以具体官方模型资料和实际协议为依据，不凭供应商名称推断。 */
 export const DEFAULT_MODEL_PROVIDERS: readonly RuntimeModelProvider[] = [
   { id: 'deepseek', displayName: 'DeepSeek', builtin: true, baseUrl: 'https://api.deepseek.com', protocol: 'chat-completions',
-    apiKey: { configured: false }, models: [{ id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', images: false }] },
+    // 2026-10-13 官方 /models 元数据：Flash 为图片输入，Pro 仍声明仅文本，不凭临时重定向猜测。
+    apiKey: { configured: false }, models: [
+      { id: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } },
+      { id: 'deepseek-flash', displayName: 'DeepSeek V4.1 Flash', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } },
+    ] },
   { id: 'openai', displayName: 'OpenAI', builtin: true, baseUrl: 'https://api.openai.com/v1', protocol: 'responses',
-    apiKey: { configured: false }, models: [{ id: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', images: true }] },
+    apiKey: { configured: false }, models: [{ id: 'gpt-5.6-luna', displayName: 'GPT-5.6 Luna', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] },
 ];
+
+/** 官方目录的验证结论只适用于同一地址与协议，自定义入口必须重新确认能力。 */
+export function usesDefaultModelEndpoint(provider: Pick<RuntimeModelProvider, 'id' | 'baseUrl' | 'protocol'>): boolean {
+  const defaults = DEFAULT_MODEL_PROVIDERS.find(item => item.id === provider.id);
+  return defaults !== undefined && provider.baseUrl.trim().replace(/\/+$/, '') === defaults.baseUrl && provider.protocol === defaults.protocol;
+}

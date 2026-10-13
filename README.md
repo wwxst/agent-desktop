@@ -129,15 +129,17 @@ pnpm deepseek-agent
 pnpm ffmpeg-agent
 ```
 
-所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件，也不会保存或输出 API Key。
+所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件；CLI 不保存或输出 API Key，Desktop 设置中的密钥由系统安全存储加密保存。
 
-运行 Desktop（桌面应用）时，文字任务只需要 `DEEPSEEK_API_KEY`；选择视频后执行语音理解类剪辑时还必须提供 `WHISPER_MODEL_PATH`：
+运行 Desktop（桌面应用）时，文字任务需要当前对话模型所属供应商的有效 API 密钥；默认 DeepSeek 可通过 `DEEPSEEK_API_KEY` 或设置页配置。选择视频后执行语音理解类剪辑时还必须提供 `WHISPER_MODEL_PATH`：
 
 ```bash
 pnpm desktop
 ```
 
-Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析按需读取 `OPENAI_API_KEY`。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 与 `ffmpeg-agent` 使用相同含义。设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和对话/视觉模型选择；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
+Desktop 根据任务按需调用 `ffmpeg`、`ffprobe` 和 `whisper-cli`；视觉分析使用本轮解析出的供应商密钥。可选的 `WHISPER_CLI_PATH`、`DEEPSEEK_BASE_URL` 和 `OPENAI_BASE_URL` 保持已有含义。用户可在输入框发送按钮左侧选择已配置的对话模型，与设置页同步并持久化；视觉默认跟随，只有主模型明确不支持且高级设置中的备用视觉模型已主动启用并有效时才用备用。能力未知、超时、限流或鉴权错误不会触发备用。旧视觉选择迁移为关闭的备用候选。DeepSeek 按具体模型区分：目前官方目录与实测确认 `deepseek-flash` 支持图片理解，`deepseek-v4-pro` 仍按目录声明视为文本模型。
+
+设置页可新增、编辑与删除自定义模型供应商，支持 Chat Completions（对话补全）与 Responses（响应）协议、真实模型目录查询和三态能力配置；模型输出上限进入请求，密钥由系统安全存储加密，保存后下一次任务生效，运行中的任务保持启动快照。网页开发宿主恢复脱敏模型设置，仍只模拟任务。模型能力及后续生成任务的扩展边界见 [架构文档](docs/architecture.md)。每个窗口持有多个独立的 InMemorySession（内存会话），每个 Turn（任务轮次）使用该会话创建对应的 Video Agent（视频智能体）；侧栏可添加本地项目、在项目中新建会话，并支持项目与最近分区、折叠、置顶、重命名、归档恢复和删除；项目管理状态随会话自动保存。已有会话移到项目只改变归属，保留其原工作目录。会话事件、消息、草稿、附件、Tool Activity（工具活动）、Artifact（产物）和 Trace（执行追踪）展示保存在本机并可在重启后恢复；Renderer History（渲染层历史）只负责界面显示，模型上下文仍只来自对应 InMemorySession。当前不提供会话搜索。
 
 ```text
 Layer                 中文名称         职责

@@ -81,6 +81,7 @@ export interface VideoAgentOptions {
   readonly visionModel?: string;
   readonly visionProtocol?: 'chat-completions' | 'responses';
   readonly visionMaxOutputTokens?: number;
+  readonly visionUnavailableReason?: string;
   readonly session?: Session;
   /**
    * 会话工作目录能力。只有能提供目录状态和目录访问确认的宿主才传入，
@@ -166,7 +167,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     model: new DeepSeekModel(modelOptions),
     session,
     tools,
-    systemPrompt: new StaticSystemPrompt(AGENT_SYSTEM_PROMPT),
+    systemPrompt: new StaticSystemPrompt(options.visionUnavailableReason === undefined ? AGENT_SYSTEM_PROMPT : `${AGENT_SYSTEM_PROMPT}\n当前视觉不可用：${options.visionUnavailableReason}`),
   };
 }
 

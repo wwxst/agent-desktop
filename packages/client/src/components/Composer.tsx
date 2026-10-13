@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Check, ChevronDown, Folder, Plus, X } from 'lucide-react';
-import type { Attachment } from '../api.js';
+import type { Attachment, RuntimeModelReference, RuntimeSettings } from '../api.js';
 import type { ClientProject } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
+import { ModelSelector } from './ModelSelector.js';
 
 function finalDirectoryName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -32,6 +33,11 @@ interface ComposerProps {
   readonly onRemoveAttachment: (index: number) => void;
   readonly onSend: () => void;
   readonly onCancel: () => void;
+  readonly settings: RuntimeSettings | null;
+  readonly settingsError: string;
+  readonly isSavingSettings: boolean;
+  readonly onSelectModel: (reference: RuntimeModelReference) => Promise<RuntimeSettings>;
+  readonly onConfigureModels: () => void;
 }
 
 /** Composer 集中承载输入附件、自然语言输入和发送动作。 */
@@ -52,6 +58,7 @@ export function Composer({
   onRemoveAttachment,
   onSend,
   onCancel,
+  settings, settingsError, isSavingSettings, onSelectModel, onConfigureModels,
 }: ComposerProps) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -144,7 +151,7 @@ export function Composer({
           // 输入法确认和 Shift+Enter 留给文本框，只有普通 Enter 提交真实任务。
           if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
-          if (!isProcessing && !isArchived && prompt.trim()) onSend();
+          if (!isProcessing && !isArchived && !isSavingSettings && prompt.trim()) onSend();
         }}
       />
 
@@ -163,12 +170,14 @@ export function Composer({
         </button>
         <div className="composer-trailing">
           {isProcessing && <span className="composer-state">处理中</span>}
+          <ModelSelector settings={settings} settingsError={settingsError} busy={isSavingSettings} disabled={isArchived}
+            onSelect={onSelectModel} onConfigure={onConfigureModels} />
           <button
             className="icon-button send-button"
             type="submit"
             aria-label={isProcessing ? '停止' : '发送'}
             title={isProcessing ? '停止' : '发送'}
-            disabled={isArchived || (!isProcessing && !prompt.trim())}
+            disabled={isArchived || (!isProcessing && (!prompt.trim() || isSavingSettings))}
             onClick={isProcessing ? (event) => { event.preventDefault(); onCancel(); } : undefined}
           >
             {isProcessing ? (

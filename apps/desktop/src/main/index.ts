@@ -481,16 +481,18 @@ function registerIpcHandlers(): void {
     const path = join(app.getPath('temp'), 'agent-desktop-model-config.json');
     // 提供可阅读的配置快照；权威配置仍由设置页写入数据库，快照从不包含密钥。
     await writeFile(path, JSON.stringify({ modelProviders: settings.modelProviders.map(({ apiKey: _key, ...provider }) => provider),
-      conversationModel: settings.conversationModel, visionModel: settings.visionModel }, null, 2), 'utf8');
+      conversationModel: settings.conversationModel, fallbackVisionModel: settings.fallbackVisionModel, fallbackVisionEnabled: settings.fallbackVisionEnabled }, null, 2), 'utf8');
     const failure = await shell.openPath(path);
     if (failure) throw new Error(failure);
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.saveRuntimeSettings, async (_event, update: unknown) => {
-    if (isTaskRunning) throw new Error('Agent 正在执行，无法保存设置。');
+    const parsed = parseRuntimeSettingsUpdate(update);
+    // 当前轮已经持有启动快照；只有对话模型选择允许为下一轮提前保存。
+    if (isTaskRunning && (parsed.conversationModel === undefined || Object.keys(parsed).some(field => field !== 'conversationModel'))) throw new Error('Agent 正在执行，无法保存设置。');
     await saveRuntimeSettings(
       persistenceFilePath(),
-      parseRuntimeSettingsUpdate(update),
+      parsed,
       safeStorage,
     );
     return loadRuntimeSettings(persistenceFilePath(), safeStorage);
@@ -651,6 +653,7 @@ function registerIpcHandlers(): void {
         ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
         ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
         ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
+        ...(settings.visionUnavailableReason === undefined ? {} : { visionUnavailableReason: settings.visionUnavailableReason }),
         ...(settings.whisperModelPath === undefined ? {} : { whisperModelPath: settings.whisperModelPath }),
         ...(settings.whisperCliPath === undefined ? {} : { whisperCliPath: settings.whisperCliPath }),
         session: session.session,

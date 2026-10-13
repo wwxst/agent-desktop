@@ -2113,7 +2113,30 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
+
+/* 右下角模型文字与发送按钮共用操作区；原生顶层浮层不受输入框裁剪。 */
+.composer-model-picker { min-width: 0; }
+.composer-model-trigger { display: flex; align-items: center; gap: 5px; max-width: 210px; min-height: 30px; padding: 4px 6px; border: 0; border-radius: 7px; color: var(--text-secondary); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+.composer-model-trigger span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composer-model-trigger svg, .send-button { flex: none; }
+.composer-model-trigger:hover:not(:disabled), .composer-model-trigger:focus-visible { color: var(--text-primary); background: var(--surface-hover); }
+.composer-model-trigger:disabled { opacity: .55; cursor: default; }
+.composer-model-menu { position: fixed; inset: auto; width: 300px; max-width: calc(100vw - 24px); max-height: min(350px, calc(100dvh - 24px)); margin: 7px; padding: 5px; border: 1px solid var(--border); border-radius: 13px; color: var(--text-primary); background: var(--surface); box-shadow: 0 8px 28px rgb(0 0 0 / 14%); position-area: top span-left; position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline; }
+.composer-model-menu:popover-open { display: flex; flex-direction: column; }
+.composer-model-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.composer-model-menu button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 42px; padding: 7px 9px; border: 0; border-radius: 8px; color: var(--text-secondary); background: transparent; text-align: left; font: inherit; font-size: 13px; cursor: pointer; }
+.composer-model-menu button:hover:not(:disabled), .composer-model-menu button:focus-visible, .composer-model-menu button[aria-checked="true"] { color: var(--text-primary); background: var(--surface-hover); }
+.composer-model-menu button:disabled { cursor: default; opacity: .5; }
+.composer-model-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-name small { display: block; margin-top: 2px; font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
+.model-provider-icon { display: grid; flex: none; place-items: center; width: 23px; height: 23px; border: 1px solid var(--border); border-radius: 7px; font-size: 12px; font-weight: 600; }
+.composer-model-menu .composer-model-configure { flex: none; justify-content: space-between; min-height: 35px; margin-top: 5px; border-top: 1px solid var(--border); border-radius: 0 0 8px 8px; font-size: 12px; }
+.composer-model-error { flex: none; margin: 6px 9px; color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
+.model-advanced-settings { margin-top: 18px; }
+.model-fallback-toggle { display: flex; align-items: center; gap: 8px; margin: 14px 0; font-size: 12px; }
+@media (max-width: 560px) { .composer-model-trigger { max-width: 145px; } .composer-trailing { gap: 5px; } .composer-state { font-size: 10px; } }
 
 .sidebar-new-session:active:not(:disabled),
 .sidebar-settings:active,

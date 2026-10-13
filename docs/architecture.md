@@ -115,7 +115,7 @@ Published Output       已交付文件  必要检查全部通过并成功复制�
 
 `validate_video_candidate` 只接受输出项与候选路径：应用层按这条路径反查写出它的成功生产调用，并逐条计算检查结论——`decode_video` 提供全文件解码事实，`probe_media` 提供真实时长，`detect_black_segments` 提供该参数下的黑段区间，`check_video_semantics` 提供独立内容判定。证据必须对应实际候选；语义证据还必须匹配输出项与候选的 SHA-256 内容摘要。缺少证据记为 `blocked`，明确不满足记为 `failed`。检查不通过是验收工具成功执行后的业务结果，不是外层工具错误。
 
-`check_video_semantics` 由应用层读取已声明的内容要求，父模型不能填写结论。FFprobe 提供全部解码帧时间戳，FFmpeg 按原始帧率抽取每帧；每批六帧通过已有 Vision 视觉服务观察。有音轨时提取完整音频并调用 whisper.cpp，再由独立 DeepSeek 请求逐项判定。观察、转录和结论存入成功工具结果供核对；临时媒体在检查后删除。首期上限为 600 帧和 250 KB 视觉观察，超过预算不能降成采样。有明确反例时失败；服务缺失、观察遗漏、判据不清、非语言声音或音画同步等现有证据无法确认时受阻。模型观察与转录仍有识别误差，逐帧覆盖不等于证明任意自然语言要求。
+`check_video_semantics` 由应用层读取已声明的内容要求，父模型不能填写结论。FFprobe 提供全部解码帧时间戳，FFmpeg 按原始帧率抽取每帧；每批六帧通过已有 Vision 视觉服务观察。有音轨时提取完整音频并调用 whisper.cpp，再由独立的当前对话模型请求逐项判定。观察、转录和结论存入成功工具结果供核对；临时媒体在检查后删除。首期上限为 600 帧和 250 KB 视觉观察，超过预算不能降成采样。有明确反例时失败；服务缺失、观察遗漏、判据不清、非语言声音或音画同步等现有证据无法确认时受阻。模型观察与转录仍有识别误差，逐帧覆盖不等于证明任意自然语言要求。
 
 新验收保存候选的 SHA-256 内容摘要。语义检查前后复核文件内容一致，发布前再次复核验收摘要；候选字节改变后必须重新验收。旧历史没有摘要时仍可阅读，但不能直接使用旧验收发布。
 
@@ -194,23 +194,31 @@ Desktop 使用 SQLite（本地嵌入式数据库）保存现有状态，驱动�
 
 外观模式 `theme` 与当前运行时设置一起保存在 `runtime-settings` 记录；未设置时跟随系统。客户端启动时加载并设置根节点主题，点选后自动保存并即时应用；`loadRuntimeConfiguration` 不返回该字段，主题不进入智能体或模型上下文。本地工具路径失焦时提交单字段更新，客户端按用户操作顺序调用现有保存接口；模型供应商使用完整草稿显式保存。完整设置页的分类、尺寸、字段布局和视觉验收以 `docs/desktop-ui.md` 为准。
 
-模型设置的唯一目录类型和内置默认项位于 `@agent-desktop/client`；`runtime-settings` 保存供应商地址、协议、模型目录和对话/视觉选择，`runtime-secrets` 按供应商 ID 保存由 Electron `safeStorage`（系统安全存储）加密的密钥。目录与密钥一次 SQLite 事务提交；客户端只接收配置状态与来源。旧固定供应商字段在读取边界转换为新目录，保留原地址、模型、密钥与语音路径。
+模型设置的唯一目录类型和内置默认项位于 `@agent-desktop/client`；`runtime-settings` 保存供应商地址、协议、模型目录、当前对话模型、备用视觉候选与启用开关，`runtime-secrets` 按供应商 ID 保存由 Electron `safeStorage`（系统安全存储）加密的密钥。目录与密钥一次 SQLite 事务提交；客户端只接收配置状态与来源。旧固定供应商字段在读取边界转换为新目录，保留原地址、模型、密钥与语音路径；旧 `visionModel` 转为备用候选，开关默认关闭。旧目录中用户已填写的 `images` 只在读取边界转换成具体能力；环境或旧固定配置改变官方地址时图片能力保持未知。
 
 ```text
 Model Provider           模型供应商        保存 API 地址、协议和模型目录，密钥由桌面宿主加密。
-Model Catalog            模型目录          保存 ID、名称、上下文窗口、输出上限和图片能力。
-Model Selection          模型选择          使用供应商 ID 与模型 ID 引用目录，视觉选择要求图片能力。
+Model Catalog            模型目录          保存 ID、名称、上下文窗口、输出上限及具体输入输出能力。
+Model Selection          模型选择          使用供应商 ID 与模型 ID 引用目录，当前对话模型全局统一。
+Capability Status        能力状态          支持、不支持、未知三态，未知不能被视为支持或触发备用。
+Vision Routing           视觉路由          默认跟随对话模型，仅明确不支持时允许显式启用的备用。
 Chat Completions         对话补全协议      使用消息与工具调用的流式请求，输出上限进入 max_tokens。
 Responses                响应协议          将通用消息转换为输入与函数结果，输出上限进入 max_output_tokens。
 ```
 
-`loadRuntimeConfiguration` 解析所选供应商与模型，供主任务、语义验收和只读子智能体消费；协议转换只位于现有具体模型/视觉包，Agent Core（智能体核心）不持有供应商清单和协议字段。Chat 请求只向 DeepSeek 官方地址发送原有 thinking（思考开关）扩展。Responses（响应协议）以完成事件为完整结果，支持公开文本增量、函数往返和取消；截断、失败和不完整响应不能作为成功回复。视觉工具按所选协议发送结构化图片观察请求。上下文窗口仅为目录信息，不新增本地上下文裁剪；最大输出上限进入实际请求。
+`loadRuntimeConfiguration` 解析所选供应商与模型，供主任务、语义验收和只读子智能体消费；视觉统一通过 `resolveVisionModel` 解析。当前模型的文本输入输出、图片输入与视觉理解均支持时跟随当前模型；必要能力未知时报告不可用；只有明确不支持、备用开关开启且候选能力和密钥有效时使用备用。此入口只接受配置，不接收请求异常，超时、限流、鉴权及余额错误都保留原失败语义。返回的地址、密钥、模型 ID、协议和输出上限形成该轮快照。
 
-模型发现经宿主实际请求 `/models`，只消费供应商返回的 ID 与可选名称，不推断图片能力或 token 上限。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源；浏览器开发宿主用内存目录夹具，目录网络获取和打开本地快照明确要求桌面应用。
+协议转换只位于现有具体模型/视觉包，Agent Core（智能体核心）不持有供应商清单和协议字段。Chat 请求只向 DeepSeek 官方地址发送原有 thinking（思考开关）扩展。Responses（响应协议）以完成事件为完整结果，支持公开文本增量、函数往返和取消；截断、失败和不完整响应不能作为成功回复。视觉工具职责仍为画面观察，抽帧、剪辑规划与候选验收保持原工具链。DeepSeek 官方 Chat 视觉使用已实测的 `json_object`，在提示中给出原观察结构；其他结构化协议沿用 `json_schema`。工具在 JSON 解析边界检查摘要与全部帧的时间戳、描述，缺少观察直接失败。上下文窗口仅为目录信息，不新增本地上下文裁剪；最大输出上限进入实际请求。
+
+能力按具体模型与协议配置，当前只保存 `textInput`、`textOutput`、`imageInput`、`imageUnderstanding` 四项三态字段。2026-10-13 DeepSeek 官方目录及真实图片调用确认 `deepseek-flash` 支持图片理解；`deepseek-v4-pro` 目录声明仅文本，不根据品牌或服务临时重定向统一标记视觉。修改模型 ID、地址或协议后，设置草稿的能力需要再次确认。官方默认能力只在默认地址和协议下恢复；用户可以按实际协议明确填写能力。
+
+后续图片生成、图片编辑、视频理解、视频生成及音频输入输出各自增加独立能力和有生产消费者的任务选择，继续复用供应商目录与模型引用。视觉理解默认跟随对话的规则只属于视觉任务，不要求生成任务使用对话模型。本期不添加未消费的能力字段、生成模型选择器或调度平台。
+
+模型发现经宿主实际请求 `/models`，消费供应商返回的 ID、可选名称和明确声明的 `input_modalities`、`output_modalities`；未声明的能力保持未知，不从名称推断图片能力或 token 上限。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源。`App` 持有聊天选择器与设置页共用的已保存配置，并按操作顺序提交；宿主保存成功后更新显示，失败保持原选择，保存期间阻止新发送，停止当前任务仍可用。模型选择不是会话字段，切换不改变草稿、附件、历史或会话身份。
 
 启动恢复前，`legacy-storage-migration.ts` 读取同一目录内尚未导入的 `session-state.json`、`runtime-settings.json` 与 `runtime-secrets.json`，先按现有规则解析，再由一个事务导入。旧文件保留且不再写入；已有数据库记录始终优先。任何旧文件解析失败都不提交部分迁移，数据库损坏也不会用空状态覆盖。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）仍使用现有写入链路。
 
-`@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Runtime Settings UI（运行时设置界面）、Agent Activity、Artifact Card 和样式实现。`cancelTask`（取消任务）与 `revealFile`（定位文件）由同一接口提供；`apps/desktop` 通过 preload API 提供真实 Electron 宿主，`apps/web` 提供可取消的内存模拟 Turn，不执行本地视频 Agent，也不使用浏览器存储。
+`@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Runtime Settings UI（运行时设置界面）、Agent Activity、Artifact Card 和样式实现。`cancelTask`（取消任务）与 `revealFile`（定位文件）由同一接口提供；`apps/desktop` 通过 preload API 提供真实 Electron 宿主，`apps/web` 提供可取消的内存模拟 Turn，不执行本地视频 Agent。网页开发宿主仅将脱敏运行时设置写入浏览器 `localStorage`，刷新后恢复模型选择；模拟密钥状态不代表真实密钥存储，会话仍仅在内存中。写入失败不提交新状态，目录网络获取和本地配置文件仍明确要求桌面应用。
 
 `apps/desktop` 是 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4 组成的桌面宿主。它只负责当前视频任务所需的入口和展示：选择或移除一个或多个待提交的输入附件、提交自然语言剪辑任务、按轮展示由共享 Execution Trace（执行追踪）与 Session 事实投影的 Agent Activity（活动轨迹）、执行期间的实时助手文本、最终回复与输出文件。任务文本可以在没有视频附件时独立提交；选择视频后仍沿用视频剪辑链路。
 
@@ -228,6 +236,8 @@ Responses                响应协议          将通用消息转换为输入与
 
 每次用户 Turn（用户任务轮次）开始时，Electron Main 重新读取最新 Runtime Settings（运行时设置）并创建一个 Video Agent（视频智能体）；该 Agent 在完整 Turn 内保持不变，下一个 Turn 才重新创建。每次创建都注入会话原有的同一个 InMemorySession，因此 Agent Loop 仍只根据 Session 事件重建 Model Context（模型上下文）。Renderer 为每个会话保存消息、草稿和附件等 UI History（界面历史），但不把这些消息重新拼接进模型请求。每轮 Agent Activity（活动轨迹）、Artifact（产物）和 Trace ID 都归属发起该轮任务的会话与 Agent 回复。
 
+运行中的任务允许单独保存 `conversationModel`，仅影响后续任务；供应商、密钥、能力和备用设置仍在任务期间禁止修改。原任务的主模型、视觉、语义验收、子智能体与标题概括继续使用启动快照。
+
 Turn 执行期间，Model 的 assistant text 增量沿现有 `desktop:agent-event` 通道实时推送到 Renderer，只更新当前 `processing`（处理中）的 Agent 回复。该临时文本不写入 Session，也不进入持久化快照；完成、取消或失败时由完整回复替换或直接丢弃。
 
 Agent 回复按最小 Markdown（轻量标记文本）子集渲染，链接只在明确的 web 协议上成为可点击锚点。链接的去向由桌面宿主决定：Main 用 `setWindowOpenHandler` 拒绝新窗口，用 `will-navigate` 只拦截外部地址，两者都把地址交给系统浏览器，因此 Renderer 既不导航当前窗口，也不创建新的 Electron 窗口。
@@ -244,7 +254,7 @@ Electron Main 同时只保存一个 `{ sessionId, controller, finished }` 活动
 
 `close` 事件必须先 `preventDefault()` 再判断该窗口是否已在收尾：收尾期间用户再次点关闭时，前一次收尾尚未结束，若先判断再阻止，第二次关闭就会直接销毁窗口，跳过等待落盘并留下半份状态。重复关闭不重复进入收尾流程，真正的关闭只发生在收尾通过后的 `window.destroy()`，它不会再触发 `close` 事件。
 
-非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。DeepSeek 与 Vision API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；缺少 Vision Key 或 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。FFmpeg 继续只使用系统 PATH。
+非敏感设置与加密密钥写入 `app.getPath('userData')/agent-desktop.sqlite` 的独立记录；两者由同一事务提交。各供应商 API Key（接口密钥）继续由 Electron `safeStorage` 加密，只以密文保存；Renderer 只能读取“已配置 / 未配置”和来源，不能读取真实 Key。`safeStorage` 不可用时保存或读取本机密钥明确失败，不降级为明文。运行配置优先级为本机保存值、环境变量、Provider 默认值；视觉路由不可用或缺少 Whisper Model Path 时分别不注册 `analyze_images` 或 `transcribe_audio`，其余能力继续运行。FFmpeg 继续只使用系统 PATH。
 
 ```text
 Layer                 中文名称         职责

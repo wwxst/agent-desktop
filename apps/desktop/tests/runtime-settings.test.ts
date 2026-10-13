@@ -37,7 +37,7 @@ afterEach(async () => {
 
 const provider = (changes: Partial<RuntimeModelProviderUpdate> = {}): RuntimeModelProviderUpdate => ({
   id: 'custom-test', displayName: '测试供应商', baseUrl: 'https://example.com/v1', protocol: 'responses',
-  models: [{ id: 'test-model', displayName: '测试模型', images: true, contextWindow: 128000, maxOutputTokens: 4000 }], ...changes,
+  models: [{ id: 'test-model', displayName: '测试模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' }, contextWindow: 128000, maxOutputTokens: 4000 }], ...changes,
 });
 describe('desktop runtime settings', () => {
   it('preserves appearance and local paths independently of selected models', async () => {
@@ -65,7 +65,7 @@ describe('desktop runtime settings', () => {
   it('saves encrypted credentials and drives both conversation and vision configuration after reload', async () => {
     const { database } = await paths();
     const choice = { providerId: 'custom-test', modelId: 'test-model' };
-    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'plain-test-secret' }), conversationModel: choice, visionModel: choice }, storage);
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'plain-test-secret' }), conversationModel: choice }, storage);
     const settings = await loadRuntimeSettings(database, storage, {});
     expect(settings.conversationModel).toEqual(choice);
     expect(settings.modelProviders.at(-1)).toMatchObject({ apiKey: { configured: true, source: 'saved' } });
@@ -74,9 +74,19 @@ describe('desktop runtime settings', () => {
     expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'plain-test-secret', deepSeekModel: 'test-model', modelProtocol: 'responses', modelMaxOutputTokens: 4000, visionProtocol: 'responses', visionModel: 'test-model', visionMaxOutputTokens: 4000 });
     await saveRuntimeSettings(database, { modelProvider: provider({ displayName: '修改名称' }) }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).toHaveProperty('deepSeekApiKey', 'plain-test-secret');
-    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: null }), visionModel: null }, storage);
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: null }), fallbackVisionModel: null, fallbackVisionEnabled: false }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('deepSeekApiKey');
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
+  });
+  it('keeps official capabilities scoped to the verified endpoint for environment and old fixed settings', async () => {
+    const { database } = await paths();
+    const official = { DEEPSEEK_API_KEY: 'environment-key', DEEPSEEK_MODEL: 'deepseek-flash' };
+    expect(await loadRuntimeConfiguration(database, storage, official)).toHaveProperty('visionModel', 'deepseek-flash');
+    const relay = { ...official, DEEPSEEK_BASE_URL: 'https://relay.test/v1' };
+    expect(await loadRuntimeConfiguration(database, storage, relay)).toMatchObject({ deepSeekModel: 'deepseek-flash', visionUnavailableReason: expect.stringContaining('未知') });
+    expect(await loadRuntimeConfiguration(database, storage, relay)).not.toHaveProperty('visionApiKey');
+    writeDesktopDocuments(database, [{ name: 'runtime-settings', value: { visionBaseUrl: 'https://old-relay.test/v1' } }]);
+    expect((await loadRuntimeSettings(database, storage, {})).modelProviders[1]!.models[0]!.capabilities.imageInput).toBe('unknown');
   });
   it('clearing an internal saved key returns to the environment source', async () => {
     const { database } = await paths();
@@ -99,7 +109,7 @@ describe('desktop runtime settings', () => {
   it('requires an existing model and image capability for visual selection', async () => {
     const { database } = await paths();
     await expect(saveRuntimeSettings(database, { conversationModel: { providerId: 'deepseek', modelId: 'missing' } }, storage)).rejects.toThrow('不在目录');
-    await expect(saveRuntimeSettings(database, { visionModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' } }, storage)).rejects.toThrow('图片输入');
+    await expect(saveRuntimeSettings(database, { fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, fallbackVisionEnabled: true }, storage)).rejects.toThrow('图片输入');
   });
   it('does not write a provider when system encryption is unavailable', async () => {
     const { database } = await paths();
@@ -117,14 +127,38 @@ describe('desktop runtime settings', () => {
     expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('deepSeekModel');
     expect(readDesktopDocument(database, 'runtime-secrets')).toHaveProperty('providerApiKeys.deepseek');
   });
+  it('migrates old visual selection to a disabled candidate, preserves catalog and secrets across reload', async () => {
+    const { database } = await paths();
+    writeDesktopDocuments(database, [
+      { name: 'runtime-settings', value: { modelProviders: DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...item }) => ({ ...item, models: item.models.map(({ capabilities, ...model }) => ({ ...model, images: capabilities.imageInput === 'supported' })) })),
+        conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } } },
+      { name: 'runtime-secrets', value: { providerApiKeys: { openai: storage.encryptString('legacy-vision-key').toString('base64') } } },
+    ]);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
+    expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
+    await saveRuntimeSettings(database, { fallbackVisionEnabled: true }, storage);
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ visionModel: 'gpt-5.6-luna', visionApiKey: 'legacy-vision-key', visionProtocol: 'responses' });
+    await saveRuntimeSettings(database, { fallbackVisionEnabled: false }, storage);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
+    expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('visionModel');
+  });
+  it('keeps an already resolved task snapshot while later selections drive new tasks', async () => {
+    const { database } = await paths();
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'custom-key' }), conversationModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
+    const snapshot = await loadRuntimeConfiguration(database, storage, {});
+    await saveRuntimeSettings(database, { conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } }, storage);
+    const next = await loadRuntimeConfiguration(database, storage, { DEEPSEEK_API_KEY: 'main-key' });
+    expect(snapshot).toMatchObject({ deepSeekModel: 'test-model', deepSeekApiKey: 'custom-key', visionModel: 'test-model', visionApiKey: 'custom-key', visionProtocol: 'responses' });
+    expect(next).toMatchObject({ deepSeekModel: 'deepseek-flash', deepSeekApiKey: 'main-key', visionModel: 'deepseek-flash', visionApiKey: 'main-key', visionProtocol: 'chat-completions' });
+  });
   it.each([
     { modelProvider: provider({ models: [] }) },
     { modelProvider: provider({ baseUrl: 'file:///a' }) },
     { modelProvider: provider({ baseUrl: 'https://user:secret@example.com' }) },
-    { modelProvider: provider({ models: [{ id: '', displayName: 'name', images: false }] }) },
-    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', images: false, maxOutputTokens: -1 }] }) },
-    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', images: false, contextWindow: 10, maxOutputTokens: 20 }] }) },
-    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', images: false }, { id: 'a', displayName: 'a', images: false }] }) },
+    { modelProvider: provider({ models: [{ id: '', displayName: 'name', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }) },
+    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' }, maxOutputTokens: -1 }] }) },
+    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' }, contextWindow: 10, maxOutputTokens: 20 }] }) },
+    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }, { id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }) },
     { theme: 'purple' },
   ])('validates user configuration at IPC boundary: %j', value => {
     expect(() => parseRuntimeSettingsUpdate(value)).toThrow();
@@ -135,7 +169,9 @@ describe('desktop runtime settings', () => {
       expect(request.url).toBe('/v1/models');
       expect(request.headers.authorization).toBe('Bearer saved-key');
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ data: [{ id: 'discovered-model', name: '供应商模型' }] }));
+      response.end(JSON.stringify({ data: [{ id: 'discovered-model', name: '供应商模型' },
+        { id: 'deepseek-flash', name: 'DeepSeek V4.1 Flash', input_modalities: ['text', 'image'], output_modalities: ['text'] },
+        { id: 'deepseek-v4-pro', input_modalities: ['text'], output_modalities: ['text'] }] }));
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server port');
@@ -143,7 +179,11 @@ describe('desktop runtime settings', () => {
     try {
       await saveRuntimeSettings(database, { modelProvider: query }, storage);
       const { apiKey: _key, ...savedQuery } = query;
-      expect(await listProviderModels(database, savedQuery, storage)).toEqual([{ id: 'discovered-model', displayName: '供应商模型', images: false }]);
+      expect(await listProviderModels(database, savedQuery, storage)).toEqual([
+        { id: 'discovered-model', displayName: '供应商模型', capabilities: { textInput: 'unknown', textOutput: 'unknown', imageInput: 'unknown', imageUnderstanding: 'unknown' } },
+        { id: 'deepseek-flash', displayName: 'DeepSeek V4.1 Flash', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } },
+        { id: 'deepseek-v4-pro', displayName: 'deepseek-v4-pro', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } },
+      ]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   });
 });

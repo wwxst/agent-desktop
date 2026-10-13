@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRuntimeEvent } from '@agent-desktop/client';
 import { createWebClientApi } from '../src/webClientApi.js';
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('Web Dev API', () => {
   it('keeps sessions and emits a simulated activity timeline, live text, and artifact result', async () => {
@@ -67,7 +69,7 @@ describe('Web Dev API', () => {
   it('keeps runtime settings in memory and returns only secret status', async () => {
     const api = createWebClientApi();
     const saved = await api.saveRuntimeSettings({
-      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', images: false }] },
+      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] },
     });
 
     expect(saved.modelProviders.find(provider => provider.id === 'custom-web')).toMatchObject({
@@ -75,5 +77,20 @@ describe('Web Dev API', () => {
       models: [{ id: 'web-model' }],
     });
     expect(JSON.stringify(await api.loadRuntimeSettings())).not.toContain('web-only-secret');
+  });
+  it('restores desensitized model selection in a new Web host and keeps the prior state after storage failure', async () => {
+    let persisted: string | null = null;
+    const setItem = vi.fn((_key: string, value: string) => { persisted = value; });
+    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem });
+    const api = createWebClientApi();
+    await api.saveRuntimeSettings({ modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unknown', imageUnderstanding: 'unknown' } }] },
+      conversationModel: { providerId: 'custom-web', modelId: 'web-model' } });
+    expect(persisted).not.toContain('web-only-secret');
+    const restored = createWebClientApi();
+    expect(await restored.loadRuntimeSettings()).toMatchObject({ conversationModel: { providerId: 'custom-web', modelId: 'web-model' }, fallbackVisionEnabled: false });
+    setItem.mockImplementationOnce(() => { throw new Error('浏览器存储失败'); });
+    await expect(restored.saveRuntimeSettings({ conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } })).rejects.toThrow('浏览器存储失败');
+    expect((await restored.loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
+    expect((await createWebClientApi().loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
   });
 });

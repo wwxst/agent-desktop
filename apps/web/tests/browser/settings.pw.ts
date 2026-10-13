@@ -16,6 +16,9 @@ test('automatically saves full-page settings with themes and extension navigatio
   await expect(page.getByRole('button', { name: '保存设置' })).toHaveCount(0);
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
   await page.getByLabel('模型 1 ID', { exact: true }).fill('保存的模型');
+    await page.getByLabel('模型 1 参数').click();
+    await page.getByLabel('模型 1 文本输入').selectOption('supported');
+    await page.getByLabel('模型 1 文本输出').selectOption('supported');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.model-provider-editor')).toHaveCount(0);
   await page.getByRole('button', { name: '本地工具', exact: true }).click();
@@ -214,19 +217,18 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByLabel('模型 1 参数', { exact: true }).click();
     await page.getByLabel('模型 1 上下文窗口').fill('128K');
     await page.getByLabel('模型 1 最大输出 token 数').fill('4K');
-    await page.getByLabel('图片', { exact: true }).check();
+    for (const label of ['文本输入', '文本输出', '图片输入', '视觉理解']) await page.getByLabel(`模型 1 ${label}`).selectOption('supported');
     // 先保存密钥，重新编辑时只显示配置状态，截图不包含新密钥草稿。
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.locator('.model-provider-editor')).toHaveCount(0);
     let saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
     const custom = saved.modelProviders.find(provider => provider.displayName === '本地测试供应商')!;
-    expect(custom.models[0]).toMatchObject({ contextWindow: 128000, maxOutputTokens: 4000, images: true });
+    expect(custom.models[0]).toMatchObject({ contextWindow: 128000, maxOutputTokens: 4000, capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } });
     expect(JSON.stringify(saved)).not.toContain('desktop-test-key');
     const choice = JSON.stringify({ providerId: custom.id, modelId: 'local-model' });
     await page.getByLabel('当前对话模型', { exact: true }).selectOption(choice);
     await expect(page.getByLabel('当前对话模型')).toBeEnabled();
-    await page.getByLabel('当前视觉模型', { exact: true }).selectOption(choice);
-    await expect(page.getByLabel('当前视觉模型')).toBeEnabled();
+    await expect(page.getByLabel('当前视觉模型', { exact: true })).toHaveCount(0);
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await expect(page.getByLabel('本地测试供应商 API 密钥')).toHaveValue('*'.repeat(64));
     await page.getByRole('region', { name: '本地测试供应商供应商' }).screenshot({ path: resolve(evidence, 'desktop-provider-masked-key.png') });
@@ -245,6 +247,8 @@ test('persists providers and encrypted credentials and executes both protocols t
     await models();
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByLabel('API 协议', { exact: true }).selectOption('responses');
+    await page.getByLabel('模型 1 参数').click();
+    for (const label of ['文本输入', '文本输出', '图片输入', '视觉理解']) await page.getByLabel(`模型 1 ${label}`).selectOption('supported');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.locator('.model-provider-editor')).toHaveCount(0);
     await page.getByRole('button', { name: '外观', exact: true }).click();
@@ -269,8 +273,6 @@ test('persists providers and encrypted credentials and executes both protocols t
     await expect(page.getByRole('alert')).toContainText('切换模型');
     await page.getByLabel('当前对话模型').selectOption(JSON.stringify({ providerId: 'deepseek', modelId: 'deepseek-v4-pro' }));
     await expect(page.getByLabel('当前对话模型')).toBeEnabled();
-    await page.getByLabel('当前视觉模型').selectOption('');
-    await expect(page.getByLabel('当前视觉模型')).toBeEnabled();
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '删除', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('region', { name: '本地测试供应商供应商' })).toHaveCount(0);
@@ -356,7 +358,7 @@ test('adds standalone MCP through settings and runs its real tool after restart'
     await page.getByRole('button', { name: '添加插件' }).click();
     await page.screenshot({ path: resolve(evidence, 'add-menu-dark.png') });
     await page.keyboard.press('Escape');
-    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'local-test-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'Test', images: false }] } }), `http://127.0.0.1:${address.port}`);
+    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'local-test-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'Test', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), `http://127.0.0.1:${address.port}`);
     await page.getByRole('button', { name: '关闭设置' }).click();
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('调用独立 MCP echo 工具');
     await page.getByRole('button', { name: '发送', exact: true }).click();

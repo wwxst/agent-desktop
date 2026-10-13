@@ -113,7 +113,7 @@ async function imageDataUrl(path: string): Promise<string> {
 
 export class AnalyzeImagesTool implements Tool {
   readonly name = 'analyze_images';
-  readonly description = '使用 OpenAI Vision 分析视频抽取的 JPG 画面并返回结构化描述';
+  readonly description = '使用本次配置的视觉模型分析视频抽取的 JPG / PNG 画面并返回结构化描述';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -164,10 +164,13 @@ export class AnalyzeImagesTool implements Tool {
     }
 
     const images = input.images as AnalyzeImageInput[];
+    // DeepSeek 官方 Chat 协议尚不接收 json_schema；按已验证协议使用 JSON 模式，不按错误重试其它模型。
+    const chat = this.options.protocol === 'chat-completions';
+    const deepseekJson = chat && new URL(this.baseUrl).hostname === 'api.deepseek.com';
 
     try {
       const content: Array<Record<string, unknown>> = [
-        { type: 'input_text', text: observationPrompt(images) },
+        { type: 'input_text', text: deepseekJson ? `${observationPrompt(images)} JSON must match this schema: ${JSON.stringify(VISUAL_ANALYSIS_SCHEMA)}` : observationPrompt(images) },
       ];
       for (const [index, image] of images.entries()) {
         // 每张图片紧跟对应的顺序标记，保证模型能把描述映射回 timestamp。
@@ -179,7 +182,6 @@ export class AnalyzeImagesTool implements Tool {
         });
       }
 
-      const chat = this.options.protocol === 'chat-completions';
       const format = { type: 'json_schema', name: 'visual_media_analysis', strict: true, schema: VISUAL_ANALYSIS_SCHEMA };
       const response = await fetch(`${this.baseUrl}/${chat ? 'chat/completions' : 'responses'}`, {
         method: 'POST',
@@ -191,7 +193,8 @@ export class AnalyzeImagesTool implements Tool {
           model: this.options.model ?? VISION_MODEL,
           messages: [{ role: 'user', content: content.map(part => part.type === 'input_image'
             ? { type: 'image_url', image_url: { url: part.image_url, detail: part.detail } } : { type: 'text', text: part.text }) }],
-          response_format: { type: 'json_schema', json_schema: { name: format.name, strict: format.strict, schema: format.schema } },
+          response_format: deepseekJson ? { type: 'json_object' } : { type: 'json_schema', json_schema: { name: format.name, strict: format.strict, schema: format.schema } },
+          ...(deepseekJson ? { thinking: { type: 'disabled' } } : {}),
           ...(this.options.maxOutputTokens === undefined ? {} : { max_tokens: this.options.maxOutputTokens }),
         } : {
           model: this.options.model ?? VISION_MODEL, input: [{ role: 'user', content }], text: { format },
@@ -216,6 +219,14 @@ export class AnalyzeImagesTool implements Tool {
       } catch (error) {
         if (error instanceof SyntaxError) throw new Error('OpenAI Vision API returned invalid JSON');
         throw error;
+      }
+
+      // JSON 模式只保证可解析；观察结构缺失或漏帧必须保留失败语义，不能交付空观察。
+      if (!isRecord(parsed) || typeof parsed.summary !== 'string' || !parsed.summary.trim()
+        || !Array.isArray(parsed.frames) || parsed.frames.length !== images.length
+        || !parsed.frames.every(frame => isRecord(frame) && Number.isFinite(frame.timestamp)
+          && typeof frame.description === 'string' && !!frame.description.trim())) {
+        throw new Error('Vision API returned incomplete frame observations');
       }
 
       return { status: 'success', output: parsed };
