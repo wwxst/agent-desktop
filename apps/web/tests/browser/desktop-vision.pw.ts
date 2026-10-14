@@ -149,12 +149,18 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
       await page.getByRole('button', { name: '选择输入文件', exact: true }).click();
     }
     await page.getByRole('textbox', { name: '剪辑需求' }).fill(`CASE:${scenario}`);
+    await expect(page.getByRole('textbox', { name: '剪辑需求' })).toHaveValue(`CASE:${scenario}`);
     await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.locator('.user-message-content p')).toHaveText(`CASE:${scenario}`);
   };
   const finish = async (scenario: string) => {
-    await expect(page.locator('.agent-response').filter({ hasText: `完成 ${scenario}` })).toBeVisible({ timeout: 120_000 });
+    const reply = page.locator('.agent-response').filter({ hasText: `完成 ${scenario}` });
+    await expect(reply).toBeVisible({ timeout: 120_000 });
+    // 场景身份必须完全一致；子串匹配曾误认末尾多出字符的另一场景。
+    await expect(reply).toHaveText(`完成 ${scenario}`);
     await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
     const record = records.findLast(entry => entry.scenario === scenario)!;
+    expect(record).toBeDefined();
     await writeFile(resolve(evidence, `${scenario}.json`), JSON.stringify(record, null, 2));
     return record;
   };
