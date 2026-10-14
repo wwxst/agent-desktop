@@ -189,7 +189,7 @@ test('persists real Desktop extension installation and enabled state across rest
     await page.getByRole('button', { name: '技能', exact: true }).click();
     await page.getByRole('switch', { name: '启用 local-file-review' }).click();
     await expect(page.getByRole('switch', { name: '启用 local-file-review' })).toBeChecked();
-    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'test-fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'DeepSeek', images: false }] } }), `http://127.0.0.1:${address.port}`);
+    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'test-fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'DeepSeek', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), `http://127.0.0.1:${address.port}`);
     await page.getByRole('button', { name: '对话', exact: true }).click();
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('$local-file-review 检查项目，调用插件 echo 返回 extension-e2e');
     await page.getByRole('button', { name: '发送', exact: true }).click();

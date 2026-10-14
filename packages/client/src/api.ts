@@ -260,17 +260,24 @@ export interface RuntimeSecretStatus {
 }
 
 export type ModelApiProtocol = 'chat-completions' | 'responses';
+export type ModelCapabilityStatus = 'supported' | 'unsupported' | 'unknown';
+/** 只保存当前有消费者的能力；生成图片、编辑图片、视频和音频能力以后各自增加，不复用视觉字段。 */
+export interface RuntimeModelCapabilities {
+  readonly textInput: ModelCapabilityStatus;
+  readonly textOutput: ModelCapabilityStatus;
+  readonly imageInput: ModelCapabilityStatus;
+  readonly imageUnderstanding: ModelCapabilityStatus;
+}
 export interface RuntimeModelDefinition {
   readonly id: string;
   readonly displayName: string;
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
-  readonly images: boolean;
+  readonly capabilities: RuntimeModelCapabilities;
 }
 export interface RuntimeModelProvider {
   readonly id: string;
   readonly displayName: string;
-  readonly builtin: boolean;
   readonly baseUrl: string;
   readonly protocol: ModelApiProtocol;
   readonly apiKey: RuntimeSecretStatus;
@@ -293,7 +300,8 @@ export interface RuntimeSettings {
   readonly theme?: 'system' | 'light' | 'dark';
   readonly modelProviders: readonly RuntimeModelProvider[];
   readonly conversationModel: RuntimeModelReference;
-  readonly visionModel: RuntimeModelReference | null;
+  readonly fallbackVisionModel: RuntimeModelReference | null;
+  readonly fallbackVisionEnabled: boolean;
   readonly whisper: {
     readonly modelPath: string;
     readonly cliPath: string;
@@ -308,7 +316,8 @@ export interface RuntimeSettingsUpdate {
   readonly modelProvider?: RuntimeModelProviderUpdate;
   readonly deleteModelProviderId?: string;
   readonly conversationModel?: RuntimeModelReference;
-  readonly visionModel?: RuntimeModelReference | null;
+  readonly fallbackVisionModel?: RuntimeModelReference | null;
+  readonly fallbackVisionEnabled?: boolean;
   readonly whisperModelPath?: string | null;
   readonly whisperCliPath?: string | null;
   readonly memoryEnabled?: boolean;

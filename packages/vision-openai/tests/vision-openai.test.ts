@@ -32,6 +32,22 @@ afterEach(() => {
 });
 
 describe('AnalyzeImagesTool', () => {
+  it.each([200, 401, 402, 429, 503])('uses DeepSeek JSON mode and never switches model after HTTP %s', async status => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-deepseek-vision-'));
+    try {
+      const imagePath = join(directory, 'frame.png');
+      await writeFile(imagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jX1sAAAAASUVORK5CYII=', 'base64'));
+      const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(analysis) } }] }), { status }));
+      vi.stubGlobal('fetch', fetchMock);
+      const result = await new AnalyzeImagesTool({ apiKey: 'main-key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'chat-completions' }).execute({ images: [{ path: imagePath, timestamp: 1.5 }] }, toolContext());
+      expect(result.status).toBe(status === 200 ? 'success' : 'error');
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const request = fetchMock.mock.calls[0]!;
+      expect(request[0]).toBe('https://api.deepseek.com/chat/completions');
+      expect(request[1]?.headers).toMatchObject({ Authorization: 'Bearer main-key' });
+      expect(JSON.parse(request[1]!.body as string)).toMatchObject({ model: 'deepseek-flash', response_format: { type: 'json_object' }, thinking: { type: 'disabled' } });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it.each(['chat-completions', 'responses'] as const)('uses the configured vision model and token limit over real HTTP: %s', async protocol => {
     const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-provider-'));
     const imagePath = join(directory, 'frame.png');
@@ -83,10 +99,11 @@ describe('AnalyzeImagesTool', () => {
       const secondPath = join(directory, 'frame-002.jpg');
       await writeFile(firstPath, Buffer.from([0xff, 0xd8, 0xff]));
       await writeFile(secondPath, Buffer.from([0xff, 0xd9]));
+      const twoFrameAnalysis = { ...analysis, frames: [...analysis.frames, { ...analysis.frames[0]!, timestamp: 3 }] };
       const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
         output: [{
           type: 'message',
-          content: [{ type: 'output_text', text: JSON.stringify(analysis) }],
+          content: [{ type: 'output_text', text: JSON.stringify(twoFrameAnalysis) }],
         }],
       }), { status: 200 }));
       vi.stubGlobal('fetch', fetchMock);
@@ -96,7 +113,7 @@ describe('AnalyzeImagesTool', () => {
           { path: firstPath, timestamp: 1.5 },
           { path: secondPath, timestamp: 3 },
         ],
-      }, toolContext())).resolves.toEqual({ status: 'success', output: analysis });
+      }, toolContext())).resolves.toEqual({ status: 'success', output: twoFrameAnalysis });
 
       const [url, request] = fetchMock.mock.calls[0] ?? [];
       expect(url).toBe('https://api.openai.com/v1/responses');
@@ -191,6 +208,15 @@ describe('AnalyzeImagesTool', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([null, {}, { summary: '观察', frames: [] }, { summary: '观察', frames: [{ timestamp: 0 }] }])('rejects incomplete observations in DeepSeek JSON mode: %j', async output => {
+    const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-incomplete-'));
+    try {
+      const imagePath = join(directory, 'frame.png');
+      await writeFile(imagePath, Buffer.from([0xff, 0xd8]));
+      vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(output) } }] }), { status: 200 })));
+      expect(await new AnalyzeImagesTool({ apiKey: 'key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', protocol: 'chat-completions' }).execute({ images: [{ path: imagePath, timestamp: 0 }] }, toolContext())).toEqual({ status: 'error', message: 'Vision API returned incomplete frame observations' });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   it('returns clear errors for HTTP failures, missing output text, and invalid JSON', async () => {
     const tool = new AnalyzeImagesTool({ apiKey: 'test-key' });
     const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-vision-error-'));

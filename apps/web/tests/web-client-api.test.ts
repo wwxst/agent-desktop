@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import type { AgentRuntimeEvent } from '@agent-desktop/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentRuntimeEvent, RuntimeModelProviderUpdate } from '@agent-desktop/client';
 import { createWebClientApi } from '../src/webClientApi.js';
+
+afterEach(() => vi.unstubAllGlobals());
+
+const visualProvider = (id = 'custom-web'): RuntimeModelProviderUpdate => ({
+  id, displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret',
+  models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }],
+});
 
 describe('Web Dev API', () => {
   it('keeps sessions and emits a simulated activity timeline, live text, and artifact result', async () => {
@@ -67,7 +74,7 @@ describe('Web Dev API', () => {
   it('keeps runtime settings in memory and returns only secret status', async () => {
     const api = createWebClientApi();
     const saved = await api.saveRuntimeSettings({
-      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', images: false }] },
+      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] },
     });
 
     expect(saved.modelProviders.find(provider => provider.id === 'custom-web')).toMatchObject({
@@ -75,5 +82,76 @@ describe('Web Dev API', () => {
       models: [{ id: 'web-model' }],
     });
     expect(JSON.stringify(await api.loadRuntimeSettings())).not.toContain('web-only-secret');
+  });
+  it('restores desensitized model selection in a new Web host and keeps the prior state after storage failure', async () => {
+    let persisted: string | null = null;
+    const setItem = vi.fn((_key: string, value: string) => { persisted = value; });
+    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem });
+    const api = createWebClientApi();
+    await api.saveRuntimeSettings({ modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unknown', imageUnderstanding: 'unknown' } }] },
+      conversationModel: { providerId: 'custom-web', modelId: 'web-model' } });
+    expect(persisted).not.toContain('web-only-secret');
+    const before = await api.loadRuntimeSettings();
+    // 已保存的旧身份字段在读边界被丢弃，其余脱敏供应商与当前选择完整保留。
+    persisted = JSON.stringify({ ...before, modelProviders: before.modelProviders.map((provider, index) => ({ ...provider, builtin: index === 0 })) });
+    const restored = createWebClientApi();
+    const loaded = await restored.loadRuntimeSettings();
+    expect(loaded).toEqual(before);
+    for (const item of loaded.modelProviders) expect(item).not.toHaveProperty('builtin');
+    expect(loaded).toMatchObject({ conversationModel: { providerId: 'custom-web', modelId: 'web-model' }, fallbackVisionEnabled: false });
+    setItem.mockImplementationOnce(() => { throw new Error('浏览器存储失败'); });
+    await expect(restored.saveRuntimeSettings({ conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } })).rejects.toThrow('浏览器存储失败');
+    expect((await restored.loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
+    expect((await createWebClientApi().loadRuntimeSettings()).conversationModel).toEqual({ providerId: 'custom-web', modelId: 'web-model' });
+    await restored.saveRuntimeSettings({ theme: 'dark' });
+    expect(persisted).not.toContain('builtin');
+    expect((await createWebClientApi().loadRuntimeSettings()).modelProviders).toEqual(before.modelProviders);
+  });
+  it('deletes unused initially supplied providers without restoring them in a new Web host', async () => {
+    let persisted: string | null = null;
+    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
+    const api = createWebClientApi();
+    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'deepseek' })).rejects.toThrow('切换模型');
+    expect((await api.loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek', 'openai']);
+    await api.saveRuntimeSettings({ deleteModelProviderId: 'openai' });
+    expect((await createWebClientApi().loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek']);
+    const conversationModel = { providerId: 'custom-web', modelId: 'web-model' };
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), conversationModel });
+    await api.saveRuntimeSettings({ deleteModelProviderId: 'deepseek' });
+    const restored = await createWebClientApi().loadRuntimeSettings();
+    expect(restored.modelProviders.map(item => item.id)).toEqual(['custom-web']);
+    expect(restored.conversationModel).toEqual(conversationModel);
+  });
+  it('preserves a disabled visual candidate until its supplier is explicitly deleted and persists the cleared choice', async () => {
+    let persisted: string | null = null;
+    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
+    const api = createWebClientApi();
+    const fallbackVisionModel = { providerId: 'custom-web', modelId: 'web-model' };
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), fallbackVisionModel, fallbackVisionEnabled: true });
+    expect(await api.saveRuntimeSettings({ fallbackVisionEnabled: false })).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel });
+    await api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' });
+    const restored = await createWebClientApi().loadRuntimeSettings();
+    expect(restored).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: null });
+    expect(restored.modelProviders.some(item => item.id === 'custom-web')).toBe(false);
+  });
+  it('protects an enabled visual supplier unless the same update selects a valid replacement', async () => {
+    const api = createWebClientApi();
+    const fallbackVisionModel = { providerId: 'custom-web', modelId: 'web-model' };
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), fallbackVisionModel, fallbackVisionEnabled: true });
+    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' })).rejects.toThrow('切换模型');
+    expect(await api.loadRuntimeSettings()).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel });
+    const replacement = { providerId: 'replacement', modelId: 'web-model' };
+    const saved = await api.saveRuntimeSettings({ modelProvider: visualProvider('replacement'), deleteModelProviderId: 'custom-web', fallbackVisionModel: replacement });
+    expect(saved).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel: replacement });
+    expect(saved.modelProviders.some(item => item.id === 'custom-web')).toBe(false);
+  });
+  it('protects the conversation supplier unless the same update selects a valid replacement', async () => {
+    const api = createWebClientApi();
+    const conversationModel = { providerId: 'custom-web', modelId: 'web-model' };
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), conversationModel });
+    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' })).rejects.toThrow('切换模型');
+    expect(await api.loadRuntimeSettings()).toMatchObject({ conversationModel });
+    const replacement = { providerId: 'deepseek', modelId: 'deepseek-v4-pro' };
+    expect(await api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web', conversationModel: replacement })).toMatchObject({ conversationModel: replacement });
   });
 });

@@ -14,6 +14,12 @@ interface RuntimeSettingsPanelProps {
   readonly onOpenConversation: (id: string) => Promise<void>;
   readonly onRestoreConversation: (id: string) => Promise<void>;
   readonly onRequestDelete: (id: string, trigger: HTMLElement) => void;
+  readonly settings: RuntimeSettings | null;
+  readonly settingsError: string;
+  readonly onSaveSettings: (update: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
+  readonly onSettings: (settings: RuntimeSettings) => void;
+  readonly section: string;
+  readonly onSectionChange: (section: string) => void;
 }
 
 const sections = [
@@ -26,14 +32,10 @@ const sections = [
   { id: 'archives', label: '已归档的对话', icon: Archive, group: '已归档' },
 ] as const;
 
-export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpenExtensions, archivedConversations, onOpenConversation, onRestoreConversation, onRequestDelete }: RuntimeSettingsPanelProps) {
+export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpenExtensions, archivedConversations, onOpenConversation, onRestoreConversation, onRequestDelete, settings, settingsError, onSaveSettings, onSettings, section, onSectionChange }: RuntimeSettingsPanelProps) {
   const closeButton = useRef<HTMLButtonElement>(null);
   const page = useRef<HTMLElement>(null);
-  // 失焦和主题点击可以连续触发保存；按用户操作顺序写入，避免宿主的读取后写入互相覆盖。
-  const pendingSave = useRef(Promise.resolve());
-  const [section, setSection] = useState('general');
-  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
-  const [settings, setSettings] = useState<RuntimeSettings | null>(null);
+  const theme = settings?.theme ?? 'system';
   const [whisperModelPath, setWhisperModelPath] = useState('');
   const [whisperCliPath, setWhisperCliPath] = useState('');
   const [message, setMessage] = useState<string | null>(null);
@@ -57,26 +59,11 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
 
   }, [isOpen]);
 
-  const applySettings = (next: RuntimeSettings) => {
-    setSettings(next);
-    setTheme(next.theme ?? 'system');
-    document.documentElement.dataset.theme = next.theme ?? 'system';
-    setWhisperModelPath(next.whisper.modelPath);
-    setWhisperCliPath(next.whisper.cliPath);
-  };
-
   useEffect(() => {
-    let mounted = true;
-    void api.loadRuntimeSettings().then((next) => {
-      if (mounted) applySettings(next);
-    }).catch((error: unknown) => {
-      if (mounted) {
-        setHasError(true);
-        setMessage(error instanceof Error ? error.message : '无法加载设置。');
-      }
-    });
-    return () => { mounted = false; };
-  }, [api]);
+    if (settings === null) return;
+    setWhisperModelPath(settings.whisper.modelPath);
+    setWhisperCliPath(settings.whisper.cliPath);
+  }, [settings?.whisper.modelPath, settings?.whisper.cliPath]);
 
   useEffect(() => {
     if (section !== 'personalization' || !isOpen) return;
@@ -91,22 +78,15 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
     if (isProcessing) return;
     setMessage(null);
     setHasError(false);
-    const request = pendingSave.current.then(async () => {
+    void (async () => {
       try {
-        const next = await api.saveRuntimeSettings(update);
-        // 仅刷新宿主状态；其他输入可能正在编辑，不能被较早的保存响应覆盖。
-        setSettings(next);
-        if (update.theme !== undefined) {
-          setTheme(next.theme ?? 'system');
-          document.documentElement.dataset.theme = next.theme ?? 'system';
-        }
+        await onSaveSettings(update);
         setHasError(false);
       } catch (error) {
         setHasError(true);
         setMessage(error instanceof Error ? error.message : '无法自动保存设置。');
       }
-    });
-    pendingSave.current = request;
+    })();
   };
 
   const disabled = isProcessing;
@@ -125,7 +105,7 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
           <div key={item.id}>
             {'group' in item && <p className="settings-group">{item.group}</p>}
             <button type="button" title={item.label} aria-label={item.label} aria-current={section === item.id ? 'page' : undefined}
-              onClick={() => { setSection(item.id); page.current!.scrollTop = 0; }}>
+              onClick={() => { onSectionChange(item.id); page.current!.scrollTop = 0; }}>
               <item.icon size={17} aria-hidden="true" /><span>{item.label}</span>
             </button>
           </div>
@@ -161,7 +141,7 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
               {archivedConversations.length === 0 && <p className="settings-readonly">没有已归档的对话。</p>}
             </div>
           ) : settings === null ? (
-            <p role={hasError ? 'alert' : 'status'} className={hasError ? 'settings-error' : undefined}>{message ?? '正在加载设置…'}</p>
+            <p role={settingsError ? 'alert' : 'status'} className={settingsError ? 'settings-error' : undefined}>{settingsError || '正在加载设置…'}</p>
           ) : (
             <div className="settings-content">
               <div hidden={section !== 'general'}>
@@ -211,7 +191,7 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
                 </dialog>
               </div>
               <div hidden={section !== 'models'}>
-                <ModelProvidersSettings api={api} settings={settings} isProcessing={isProcessing} isOpen={isOpen} onSettings={setSettings} />
+                <ModelProvidersSettings api={{ ...api, saveRuntimeSettings: onSaveSettings }} settings={settings} isProcessing={isProcessing} isOpen={isOpen} onSettings={onSettings} />
               </div>
               <div hidden={section !== 'tools'}>
               <h1>本地工具</h1>

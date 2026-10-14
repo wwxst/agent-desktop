@@ -39,7 +39,7 @@ const persistenceMethods = {
   loadRuntimeSettings: async () => ({
     modelProviders: DEFAULT_MODEL_PROVIDERS,
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
-    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
+    fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: false,
     whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
@@ -47,7 +47,7 @@ const persistenceMethods = {
   saveRuntimeSettings: async () => ({
     modelProviders: DEFAULT_MODEL_PROVIDERS,
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
-    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
+    fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: false,
     whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,

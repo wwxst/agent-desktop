@@ -1,3 +1,5 @@
+import { getConversationCapability, getVisionCapability, resolveCatalogModel } from '@agent-desktop/client/model-capabilities';
+import { loadWebRuntimeSettings, saveWebRuntimeSettings } from './runtime-settings-storage.js';
 import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 import type {
   AgentActivityItem,
@@ -17,10 +19,10 @@ export function createWebClientApi(): AgentClientApi {
   const sessionIds = new Set([activeSessionId]);
   const listeners = new Set<(event: AgentRuntimeEvent) => void>();
   const extensionListeners = new Set<() => void>();
-  let settings: RuntimeSettings = {
+  let settings: RuntimeSettings = loadWebRuntimeSettings() ?? {
     modelProviders: structuredClone(DEFAULT_MODEL_PROVIDERS),
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
-    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
+    fallbackVisionModel: null, fallbackVisionEnabled: false,
     whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
@@ -78,22 +80,33 @@ export function createWebClientApi(): AgentClientApi {
       if (update.modelProvider) {
         const { apiKey, ...provider } = update.modelProvider;
         const current = providers.find(item => item.id === provider.id);
-        const next = { ...provider, builtin: current?.builtin ?? false, apiKey: apiKey === undefined ? current?.apiKey ?? { configured: false } : apiKey === null ? { configured: false } : { configured: true, source: 'saved' as const } };
+        const next = { ...provider, apiKey: apiKey === undefined ? current?.apiKey ?? { configured: false } : apiKey === null ? { configured: false } : { configured: true, source: 'saved' as const } };
         providers = current ? providers.map(item => item.id === provider.id ? next : item) : [...providers, next];
       }
       if (update.deleteModelProviderId) {
         const id = update.deleteModelProviderId;
-        if (providers.find(item => item.id === id)?.builtin) throw new Error('不能删除内置供应商。');
-        if (settings.conversationModel.providerId === id || settings.visionModel?.providerId === id) throw new Error('请先切换正在使用的模型。');
         providers = providers.filter(item => item.id !== id);
       }
-      settings = { ...settings, modelProviders: providers,
+      const nextSettings = { ...settings, modelProviders: providers,
         conversationModel: update.conversationModel ?? settings.conversationModel,
-        visionModel: update.visionModel === undefined ? settings.visionModel : update.visionModel,
+        fallbackVisionModel: update.fallbackVisionModel === undefined ? settings.fallbackVisionModel : update.fallbackVisionModel,
+        fallbackVisionEnabled: update.fallbackVisionEnabled ?? settings.fallbackVisionEnabled,
         ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }),
         whisper: { modelPath: update.whisperModelPath === undefined ? settings.whisper.modelPath : update.whisperModelPath ?? '', cliPath: update.whisperCliPath === undefined ? settings.whisper.cliPath : update.whisperCliPath ?? '' } };
-      if (update.memoryEnabled !== undefined) settings = { ...settings, memoryEnabled: update.memoryEnabled };
-      if (update.memoryFromToolChatsEnabled !== undefined) settings = { ...settings, memoryFromToolChatsEnabled: update.memoryFromToolChatsEnabled };
+      // 关闭的候选不阻止删除供应商；显式改选与启用状态都依据本次更新校验。
+      if (update.deleteModelProviderId !== undefined && !nextSettings.fallbackVisionEnabled && update.fallbackVisionModel === undefined
+        && nextSettings.fallbackVisionModel?.providerId === update.deleteModelProviderId) nextSettings.fallbackVisionModel = null;
+      if (getConversationCapability(resolveCatalogModel(providers, nextSettings.conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
+      if (nextSettings.fallbackVisionModel !== null) resolveCatalogModel(providers, nextSettings.fallbackVisionModel);
+      if (nextSettings.fallbackVisionEnabled) {
+        if (nextSettings.fallbackVisionModel === null) throw new Error('请先配置备用视觉模型。');
+        const fallback = resolveCatalogModel(providers, nextSettings.fallbackVisionModel);
+        if (!fallback.provider.apiKey.configured || getVisionCapability(fallback.model) !== 'supported') throw new Error('备用视觉模型配置无效。');
+      }
+      if (update.memoryEnabled !== undefined) nextSettings.memoryEnabled = update.memoryEnabled;
+      if (update.memoryFromToolChatsEnabled !== undefined) nextSettings.memoryFromToolChatsEnabled = update.memoryFromToolChatsEnabled;
+      saveWebRuntimeSettings(nextSettings);
+      settings = nextSettings;
       return settings;
     },
     loadMemories: async () => [...memories],

@@ -24,7 +24,7 @@ const api: AgentClientApi = {
   loadRuntimeSettings: async () => ({
     modelProviders: DEFAULT_MODEL_PROVIDERS,
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
-    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
+    fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: false,
     whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
@@ -32,7 +32,7 @@ const api: AgentClientApi = {
   saveRuntimeSettings: async () => ({
     modelProviders: DEFAULT_MODEL_PROVIDERS,
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
-    visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' },
+    fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: false,
     whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
@@ -67,6 +67,7 @@ beforeAll(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   HTMLElement.prototype.scrollIntoView = vi.fn();
   HTMLElement.prototype.showPopover = function () { this.style.display = 'block'; };
+  HTMLElement.prototype.hidePopover = function () { this.style.display = 'none'; };
 });
 
 afterEach(() => cleanup());
@@ -78,6 +79,78 @@ function artifactTypeText(fileName: string): string {
 }
 
 describe('shared App', () => {
+  it('keeps model selection in the composer when visiting settings without replacing the draft or attachments', async () => {
+    let settings = { ...await api.loadRuntimeSettings(), modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })) };
+    const save = vi.fn<AgentClientApi['saveRuntimeSettings']>(async update => { settings = { ...settings, conversationModel: update.conversationModel ?? settings.conversationModel }; return settings; });
+    render(<App api={{ ...api, loadRuntimeSettings: async () => settings, saveRuntimeSettings: save, selectAttachmentFiles: async () => [{ path: 'D:/draft.mp4', name: 'draft.mp4', role: 'video' }] }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '保留草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '选择输入文件' }));
+    await screen.findByLabelText('视频附件：draft.mp4');
+    fireEvent.click(await screen.findByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /DeepSeek V4.1 Flash/ }));
+    await screen.findByRole('button', { name: '选择对话模型：DeepSeek V4.1 Flash' });
+    expect(save).toHaveBeenCalledWith({ conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } });
+    expect(input).toHaveProperty('value', '保留草稿');
+    expect(screen.getByLabelText('视频附件：draft.mp4')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4.1 Flash' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '配置自定义模型' }));
+    expect(await screen.findByRole('heading', { name: '模型' })).toBeTruthy();
+    expect(screen.queryByLabelText('当前对话模型')).toBeNull();
+    expect(save).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: '关闭设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4.1 Flash' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /GPT-5.6 Luna/ }));
+    await screen.findByRole('button', { name: '选择对话模型：GPT-5.6 Luna' });
+    expect(screen.getByLabelText('剪辑需求')).toBe(input);
+    expect(input).toHaveProperty('value', '保留草稿');
+    expect(screen.getByLabelText('视频附件：draft.mp4')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '选择对话模型：GPT-5.6 Luna' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '配置自定义模型' }));
+    expect(screen.queryByLabelText('当前对话模型')).toBeNull();
+    expect(save).toHaveBeenLastCalledWith({ conversationModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
+  });
+  it('holds the old model and send action until save completes, and reports a rejected selection', async () => {
+    const settings = { ...await api.loadRuntimeSettings(), modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })) };
+    let rejectSave!: (error: Error) => void;
+    const save = vi.fn<AgentClientApi['saveRuntimeSettings']>(() => new Promise((_resolve, reject) => { rejectSave = reject; }));
+    const run = vi.fn(api.runAgentTask);
+    render(<App api={{ ...api, loadRuntimeSettings: async () => settings, saveRuntimeSettings: save, runAgentTask: run }} />);
+    const input = await screen.findByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '下一条消息' } });
+    fireEvent.click(await screen.findByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /DeepSeek V4.1 Flash/ }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(run).not.toHaveBeenCalled();
+    act(() => rejectSave(new Error('配置保存失败')));
+    await screen.findByText('配置保存失败');
+    expect(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', false));
+    expect(input).toHaveProperty('value', '下一条消息');
+  });
+  it('supports menu keyboard focus and keeps Stop available while saving the next model', async () => {
+    const settings = { ...await api.loadRuntimeSettings(), modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })) };
+    const cancel = vi.fn(async () => {});
+    render(<App api={{ ...api, loadRuntimeSettings: async () => settings, runAgentTask: () => new Promise(() => {}), cancelTask: cancel, saveRuntimeSettings: () => new Promise(() => {}) }} />);
+    fireEvent.change(await screen.findByLabelText('剪辑需求'), { target: { value: '当前任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    await screen.findByRole('button', { name: '停止' });
+    const trigger = screen.getByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' });
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: /DeepSeek V4 Pro/ }));
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: /DeepSeek V4.1 Flash/ }));
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger).toHaveProperty('ariaExpanded', 'false');
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /DeepSeek V4.1 Flash/ }));
+    expect(screen.getByRole('button', { name: '停止' })).toHaveProperty('disabled', false);
+    fireEvent.click(screen.getByRole('button', { name: '停止' }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  });
   it('installs directly from above Settings without a version dialog and displays save failures', async () => {
     const install = vi.fn(async () => { throw new Error('无法保存本地会话：磁盘不可写'); });
     render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'ready' }), onStateChanged: () => () => {}, install, retry: async () => {} } }} />);

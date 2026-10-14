@@ -42,6 +42,8 @@ export type {
   RuntimeModelProvider,
   RuntimeModelProviderUpdate,
   RuntimeModelReference,
+  RuntimeModelCapabilities,
+  ModelCapabilityStatus,
   MemoryEntry,
   CustomInstructions,
   Attachment,

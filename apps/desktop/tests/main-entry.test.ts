@@ -279,6 +279,11 @@ describe('desktop main session lifecycle', () => {
       'Agent 正在执行，无法保存设置。',
     );
     expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
+    const startedModel = mainMocks.createVideoAgent.mock.calls[0]![0];
+    await saveRuntimeSettings!({}, { conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } });
+    expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
+    expect(mainMocks.createVideoAgent.mock.calls[0]![0]).toBe(startedModel);
+    await expect(saveRuntimeSettings!({}, { conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, theme: 'dark' })).rejects.toThrow('无法保存设置');
 
     resolveRunningTask?.({
       responseText: '已记住。',

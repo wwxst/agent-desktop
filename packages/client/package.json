@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./model-defaults": "./src/model-defaults.ts",
+    "./model-capabilities": "./src/model-capabilities.ts",
     "./styles.css": "./src/styles.css"
   },
   "dependencies": {

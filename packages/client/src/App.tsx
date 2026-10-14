@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type {
   AgentActivityItem,
@@ -15,6 +15,8 @@ import type {
   ClientProject,
   ClientSidebarState,
   QuestionRequest,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
 } from './api.js';
 import { ApprovalRequest as ApprovalRequestCard } from './components/ApprovalRequest.js';
 import { Composer } from './components/Composer.js';
@@ -76,6 +78,34 @@ export function App({ api }: AppProps) {
   const [activeSessionId, setActiveSessionId] = useState(INITIAL_RENDERER_SESSION_ID);
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  // 聊天与设置只消费宿主保存成功后的同一份配置，避免菜单名称先于实际请求更新。
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings | null>(null);
+  const [settingsError, setSettingsError] = useState('');
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const pendingSettingsSave = useRef<Promise<unknown>>(Promise.resolve());
+  const [settingsSection, setSettingsSection] = useState('general');
+  const saveSettings = useCallback((update: RuntimeSettingsUpdate): Promise<RuntimeSettings> => {
+    setIsSavingSettings(true);
+    const request = pendingSettingsSave.current.then(async () => {
+      const next = await api.saveRuntimeSettings(update);
+      setRuntimeSettings(next);
+      return next;
+    });
+    // 调用方显示本次错误；队列仍可执行用户后续修正，不回写失败的选择。
+    pendingSettingsSave.current = request.catch(() => undefined);
+    const tail = pendingSettingsSave.current;
+    void tail.then(() => { if (pendingSettingsSave.current === tail) setIsSavingSettings(false); });
+    return request;
+  }, [api]);
+  useEffect(() => {
+    let mounted = true;
+    void api.loadRuntimeSettings().then(next => { if (mounted) { setRuntimeSettings(next); setSettingsError(''); } })
+      .catch((error: unknown) => { if (!(error instanceof Error)) throw error; if (mounted) setSettingsError(error.message); });
+    return () => { mounted = false; };
+  }, [api]);
+  useEffect(() => {
+    if (runtimeSettings !== null) document.documentElement.dataset.theme = runtimeSettings.theme ?? 'system';
+  }, [runtimeSettings]);
   const [sidebar, setSidebar] = useState<ClientSidebarState>(INITIAL_SIDEBAR);
   // 侧栏与设置归档列表共用同一份删除确认，不改变宿主删除接口。
   const [deleteTarget, setDeleteTarget] = useState<ClientConversation | undefined>(undefined);
@@ -486,7 +516,7 @@ export function App({ api }: AppProps) {
     const conversation = activeConversation;
     if (conversation === undefined) return;
     const taskPrompt = conversation.prompt.trim();
-    if (!taskPrompt || isProcessing || conversation.archived) return;
+    if (!taskPrompt || isProcessing || isSavingSettings || conversation.archived) return;
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
     followsLatest.current = true;
@@ -660,6 +690,11 @@ export function App({ api }: AppProps) {
       prompt={prompt}
       isProcessing={isProcessing}
       isArchived={!!activeConversation.archived}
+      settings={runtimeSettings}
+      settingsError={settingsError}
+      isSavingSettings={isSavingSettings}
+      onSelectModel={reference => saveSettings({ conversationModel: reference })}
+      onConfigureModels={() => { setSettingsSection('models'); setActiveView('settings'); }}
       approval={approval}
       projects={sidebar.projects}
       {...(activeConversation.projectId === undefined ? {} : { activeProjectId: activeConversation.projectId })}
@@ -723,6 +758,8 @@ export function App({ api }: AppProps) {
             document.querySelector<HTMLTextAreaElement>('#agent-prompt')!.focus();
           }} />}
           <RuntimeSettingsPanel api={api} isProcessing={isProcessing} isOpen={activeView === 'settings'}
+            settings={runtimeSettings} settingsError={settingsError} onSaveSettings={saveSettings} onSettings={setRuntimeSettings}
+            section={settingsSection} onSectionChange={setSettingsSection}
             archivedConversations={conversations.filter(conversation => conversation.archived)}
             onOpenConversation={switchSession} onRestoreConversation={id => archiveSessions([id], false)} onRequestDelete={requestDelete}
             onOpenExtensions={view => { setExtensionSelection(undefined); setActiveView(view); }} onClose={() => {
