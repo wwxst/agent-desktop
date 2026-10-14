@@ -34,12 +34,14 @@ afterAll(async () => {
 
 describe('readActivityFiles', () => {
   it('separates real input and output paths declared by the video tools', () => {
+    const inputPath = join(tmpdir(), 'videos', 'input.mp4');
+    const outputPath = join(tmpdir(), 'videos', 'edited.mp4');
     expect(readActivityFiles({
-      videoPath: 'D:\\videos\\input.mp4',
-      outputPath: 'D:\\videos\\edited.mp4',
+      videoPath: inputPath,
+      outputPath,
     })).toEqual([
-      { path: 'D:\\videos\\input.mp4', label: 'input.mp4', role: 'input' },
-      { path: 'D:\\videos\\edited.mp4', label: 'edited.mp4', role: 'output' },
+      { path: inputPath, label: 'input.mp4', role: 'input' },
+      { path: outputPath, label: 'edited.mp4', role: 'output' },
     ]);
   });
 
@@ -194,6 +196,26 @@ describe('projectAgentActivity', () => {
     }, events)).toEqual({
       id: 'call-1', kind: 'tool', status: 'failed', toolName: 'trim_video', durationMs: 120, files,
     });
+    expect(projectAgentActivity({
+      type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1,
+    }, events)).toEqual({ id: 'call-1', kind: 'tool', status: 'cancelled', toolName: 'trim_video', files });
+    expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, [
+      ...events, { type: 'tool.result', turnId, stepId, toolCallId, result: { status: 'success', output: {} } },
+    ])).toBeUndefined();
+  });
+
+  it('keeps the current cancelled call when an older turn or step reused its model id', () => {
+    for (const previous of [
+      { turnId: 'older-turn' as TurnId, stepId },
+      { turnId, stepId: 'older-step' as StepId },
+    ]) {
+      const events: readonly SessionEvent[] = [
+        { type: 'tool.result', ...previous, toolCallId, result: { status: 'success', output: {} } },
+        toolCalled({ videoPath: 'E:/videos/current.mp4' }),
+      ];
+      expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, events))
+        .toMatchObject({ id: toolCallId, status: 'cancelled', toolName: 'trim_video' });
+    }
   });
 
   it('uses the successful edit result path for the completed file-change activity', () => {

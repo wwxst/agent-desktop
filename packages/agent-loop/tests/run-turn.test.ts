@@ -60,6 +60,31 @@ function createTestTrace(events: ExecutionTraceEvent[]): ExecutionTrace {
 }
 
 describe('runTurn', () => {
+  it('persists a tool effect checkpoint before the tool side effect', async () => {
+    const callId = 'checkpoint-call' as ToolCallId;
+    const session = new InMemorySession();
+    const model = new ScriptedModel([
+      { toolCalls: [{ id: callId, name: 'write', input: { path: 'a.txt' } }] },
+      { text: 'done', toolCalls: [] },
+    ]);
+    const order: string[] = [];
+    const tools = new TestToolRegistry();
+    tools.register({
+      name: 'write', description: 'write', inputSchema: {}, executionBoundary: 'checkpointed',
+      execute: async (_input, context) => {
+        context.checkpoint?.({ kind: 'test-write', path: 'a.txt' });
+        order.push('side-effect');
+        return { status: 'success', output: 'ok' };
+      },
+    });
+
+    await runTurn(createTestAgent(model, session, tools), 'checkpoint');
+    const checkpoint = session.events().find(event => event.type === 'tool.effect.prepared');
+    expect(checkpoint).toMatchObject({ type: 'tool.effect.prepared', sourceEventIndex: 4, data: { kind: 'test-write' } });
+    expect(order).toEqual(['side-effect']);
+    expect(session.events()[5]?.type).toBe('tool.effect.prepared');
+  });
+
   it('excludes a cancelled incomplete Tool Calling step from the next Turn model context', async () => {
     const callId = 'cancel-pending-tool' as ToolCallId;
     const controller = new AbortController();
@@ -101,6 +126,7 @@ describe('runTurn', () => {
       'step.started',
       'assistant.message',
       'tool.called',
+      'turn.cancelled',
     ]);
 
     const result = await runTurn(agent, 'continue');
@@ -109,6 +135,7 @@ describe('runTurn', () => {
     expect(model.requests).toHaveLength(2);
     expect(model.requests[1]?.messages).toEqual([
       { role: 'user', content: 'cancel during tool' },
+      { role: 'user', content: expect.stringContaining('未知效果须先核验') },
       { role: 'user', content: 'continue' },
     ]);
   });
@@ -424,7 +451,7 @@ describe('runTurn', () => {
     await runTurn(createTestAgent(model, session), 'use missing');
 
     const result = session.events().find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => event.type === 'tool.result');
-    expect(result?.result).toEqual({ status: 'error', message: 'Tool not found: missing' });
+    expect(result?.result).toEqual({ status: 'error', failureKind: 'permanent', message: 'Tool not found: missing' });
     expect(model.requests[1]?.messages.at(-1)).toEqual({
       role: 'tool',
       toolCallId: callId,
@@ -457,10 +484,7 @@ describe('runTurn', () => {
       'turn.completed',
     ]);
     const failedEvent = traceEvents.find((event) => event.type === 'tool.failed');
-    expect(failedEvent).toMatchObject({
-      toolCallId: callId,
-      toolName: 'missing',
-    });
+    expect(failedEvent).toMatchObject({ toolCallId: callId, toolName: 'missing' });
     expect(failedEvent).not.toHaveProperty('errorMessage');
   });
 
@@ -599,7 +623,7 @@ describe('runTurn', () => {
     const session = new InMemorySession();
 
     await expect(runTurn(createTestAgent(model, session), 'hello')).rejects.toThrow('model down');
-    expect(eventTypes(session)).toEqual(['turn.started', 'user.message', 'step.started']);
+    expect(eventTypes(session)).toEqual(['turn.started', 'user.message', 'step.started', 'turn.failed']);
   });
 
   it('traces successful Model and Tool boundaries in execution order', async () => {
@@ -817,6 +841,7 @@ describe('runTurn', () => {
       'turn.completed',
       'turn.started',
       'user.message',
+      'turn.cancelled',
     ]);
     // 流式增量、未完成 Step 与 dangling Tool Call 都不是可恢复事实。
     expect(JSON.stringify(recoveredEvents)).not.toContain('正在裁剪');

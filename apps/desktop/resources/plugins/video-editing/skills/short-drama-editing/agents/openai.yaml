@@ -4,3 +4,7 @@ interface:
   default_prompt: 使用 $short-drama-editing 整理短剧素材，先确认画幅、时长与剧情重点。
 policy:
   allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: mcp
+      value: ffmpeg

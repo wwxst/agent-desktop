@@ -21,7 +21,7 @@ description: Use when Codex changes, reviews, verifies, or records work in the A
 
 ## Current Reality（当前现实）
 
-项目处于 `0.x` 视频 Agent 阶段，当前重点是视频自动剪辑的可解释运行时。现有能力包括 Agent Runtime、Echo 示例、DeepSeek Provider、FFmpeg 编辑和抽帧、OpenAI Vision 画面观察、whisper.cpp 语音段落时间轴、Agent Execution Trace（智能体执行追踪）以及基于这些结果的多步和内容剪辑。Execution Trace 当前由 `ffmpeg-agent` 写入本地 JSONL，仅用于运行诊断。
+项目使命、当前阶段与已实现能力以根 `AGENTS.md` 和 `docs/architecture.md` 为准。Agent Core（智能体核心）保持通用；视频剪辑是重点场景。Execution Trace（执行追踪）由 `ffmpeg-agent` 与 Desktop 写入本地 JSONL，仅用于运行诊断，不参与 Agent 推理。
 
 每次工作先读根 `AGENTS.md`，并用 `rg --files -g AGENTS.md` 检查子目录规则；再按风险加载：
 
@@ -46,9 +46,9 @@ Docs, decision, handoff  文档、决定、交接        references/knowledge-co
 
 - `AGENTS.md` 的永久强规则优先于本 Skill；`docs/architecture.md` 和 `docs/engineering.md` 是当前架构与工程基线。
 - 删除前必须确认真实调用链、运行时注册、配置引用、公共 API 和当前消费者。未覆盖、难测试或没有静态调用只能触发 Review signal（审查信号）。
-- Coverage 依次处理：`Uncovered Code → Why does it exist? → Needed now? → No: Delete → Yes: meaningful test when behavior matters`。
+- Coverage 依次处理：`Uncovered Code → Why does it exist? → Needed now? → No: Delete → Yes: verify with existing tests`；新增测试仅在任务明确要求时进行。
 - 只在真实外部边界校验数据；信任同进程 TypeScript 类型，程序错误直接暴露，不用 fallback（兜底）或默认值伪装成功。
-- 新 Gate、测试、脚本、Framework、Manager、Runner、Factory、Plugin Runtime、Retry 或兼容层必须证明当前真实价值；否则不实施。
+- 新 Gate、脚本、Framework、Manager、Runner、Factory、Plugin Runtime、Retry 或兼容层必须证明当前真实价值；否则不实施。新增测试遵循根 `AGENTS.md` 的最小实现规范。
 - Real Verification（真实验证）优先复用现有 `pnpm deepseek-agent` 和 `pnpm ffmpeg-agent`。本地缺少依赖或凭据时明确 `SKIP`，但对本次确实要求真实链路的变更，`SKIP` 表示合并条件未完成；专用 CI 承诺环境却缺配置时 `FAIL`，禁止 False Green（假通过）。
 - 遵循 `One Fact, One Home`、`One Rule, Smallest Applicable Scope` 和 `Canonical Ownership`；默认只审查本次修改及直接调用链，不借机清理全仓库历史代码。
 

@@ -4,7 +4,7 @@
 
 ## 产品与阶段
 
-项目使命是开发以视频自动剪辑为核心的 Agent Client。Agent Core 可以保持供应商无关，但新增能力必须服务已确认的视频剪辑需求。当前处于 `0.x`，Timeline-aware Understanding（带时间轴的视频内容理解）、Agent Execution Trace（智能体执行追踪）和 Video Agent Application Layer（视频智能体应用层）已完成并合并到 `main`；Commit 18 的 Agent Desktop Shell（智能体桌面应用外壳）功能分支开发已完成，尚未合并 `main`；下一阶段尚未开始。
+项目使命与当前阶段以根 [`AGENTS.md`](../../../../AGENTS.md) 为准：开发通用智能体客户端，视频自动剪辑是重点场景，普通问答、文本与本地文件任务不以视频附件为前提。新增能力服务当前明确需求，Agent Core（智能体核心）保持通用与供应商无关。
 
 当前生产意图中的主要能力：
 
@@ -115,8 +115,8 @@ ENG-005   No empty shells for future features.                   不为未来功
 
 ## 非目标与边界
 
-当前明确不实现的方向包括历史记录、设置、任务管理、播放器、独立 Trace 日志 UI、日志上传与搜索、Plugin Runtime、Hook/Event Bus、Workflow Engine、统一 E2E Framework、重试基础设施、数据库契约、发布流水线、Mutation/Stress 平台和未来兼容 API。Desktop 已消费共享 Trace callback（追踪回调）中的 Tool 活动；`packages/execution-trace` 仍只负责本地 JSONL 运行诊断，不扩展为通用 Trace 平台。
+当前能力与非目标以根 `AGENTS.md` 和 `docs/architecture.md` 为准；已实现的会话历史、设置、任务执行、插件、命令钩子和 SQLite 持久化不再列为未来功能。新增能力仍须有当前明确需求和生产消费者，不为未来兼容创建接口。Desktop 已消费共享 Trace callback（追踪回调）中的 Tool 活动；`packages/execution-trace` 仍只负责本地 JSONL 运行诊断，不扩展为通用 Trace 平台。
 
-`apps/desktop` 仅在应用包内使用 Electron（桌面运行时）44.0.0、React（界面库）19.2.8、Vite（构建工具）8.2.2 和 esbuild（打包工具）0.27.4；根 workspace 的 `allowBuilds` 只允许 `electron` 和 `esbuild`。
+桌面依赖与允许的安装脚本以 `docs/engineering.md`、当前包清单和 `pnpm-workspace.yaml` 为准，不在本指引维护另一份允许列表。
 
 发现真实需求时，先写 Design（目标、问题、影响范围、非目标）并给出生产调用链和证据；不要因为通用方法论列出该能力就提前实施。

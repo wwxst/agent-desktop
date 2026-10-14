@@ -6,7 +6,11 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,8 +30,36 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install real media test tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Windows media test tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # 使用插件已有的资源锁；Chocolatey 的元数据 504 曾返回成功却未安装任何程序。
+          $mediaLock = Get-Content apps/desktop/resources/plugins/ffmpeg/runtime.lock.json -Raw | ConvertFrom-Json
+          $mediaRoot = Join-Path $env:RUNNER_TEMP 'agent-desktop-media'
+          New-Item -ItemType Directory -Path $mediaRoot | Out-Null
+          $mediaArchive = Join-Path $mediaRoot 'ffmpeg.zip'
+          Invoke-WebRequest -Uri $mediaLock.url -OutFile $mediaArchive
+          if ((Get-FileHash -LiteralPath $mediaArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mediaLock.sha256) { throw 'FFmpeg archive SHA-256 mismatch.' }
+          Expand-Archive -LiteralPath $mediaArchive -DestinationPath $mediaRoot
+          $mediaBin = Join-Path (Join-Path $mediaRoot $mediaLock.archiveRoot) 'bin'
+          foreach ($mediaName in @('ffmpeg', 'ffprobe')) {
+            $mediaExecutable = Join-Path $mediaBin "$mediaName.exe"
+            if ((Get-FileHash -LiteralPath $mediaExecutable -Algorithm SHA256).Hash.ToLowerInvariant() -ne $mediaLock.executables.$mediaName) { throw "$mediaName executable SHA-256 mismatch." }
+            & $mediaExecutable -version
+            if ($LASTEXITCODE -ne 0) { throw "$mediaName version check failed." }
+          }
+          $mediaBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Run engineering gate
         run: pnpm check
+
+      - name: Build Desktop
+        run: pnpm desktop:build
 
       - name: Check committed diff formatting
         shell: bash

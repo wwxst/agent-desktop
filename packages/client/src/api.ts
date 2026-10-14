@@ -41,9 +41,35 @@ export type AgentTaskOutputItemResult =
     readonly reason: string;
   };
 
+/** 宿主从 Session 事实生成的任务展示投影；Client 不重新判断完成资格。 */
+export interface AgentTaskState {
+  readonly rootTurnId: string;
+  readonly latestTurnId: string;
+  readonly status: 'started' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'blocked';
+  /** 当前仍待事实核验的外部效果；索引来自 Session，不是模型可伪造的调用 ID。 */
+  readonly unknownEffects?: readonly {
+    readonly sourceEventIndex: number;
+    readonly source: 'tool' | 'host';
+    readonly label: string;
+    readonly description: string;
+  }[];
+  readonly plan?: {
+    readonly revision: number;
+    readonly explanation: string;
+    readonly steps: readonly {
+      readonly id: string;
+      readonly description: string;
+      readonly status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
+      readonly completionKind: 'tool' | 'response';
+      readonly evidenceLabels: readonly string[];
+    }[];
+  };
+}
+
 export interface AgentTaskResult {
   readonly responseText: string;
   readonly traceId: string;
+  readonly taskState?: AgentTaskState;
   /** 首轮由宿主模型概括任务；命名失败独立说明，不改变已完成任务的结果。 */
   readonly conversationTitle?: string;
   readonly conversationTitleError?: string;
@@ -171,11 +197,13 @@ export interface ClientAssistantMessageBase {
   readonly role: 'assistant';
   readonly activity: readonly AgentActivityItem[];
   readonly activityExpanded: boolean;
+  readonly taskState?: AgentTaskState;
 }
 
 /**
  * streamedText（实时文本）只存在于 processing 分支，完成、取消、失败三个分支没有该字段，
- * 终态转换会一并丢弃它。App 在 processing 期间不保存快照，Main 的持久化解析也不接受 processing 状态，
+ * 终态转换会一并丢弃它。App 在 processing 期间不做防抖保存；任务起点由 Main 原子保存，
+ * 只有 executionVersion:1 的明确消息绑定才允许持久化 processing，streamedText 内容不落盘，
  * 因此临时流式文本不会被写入磁盘。
  *
  * 取消与失败分支可以带 outputFiles：整轮失败不代表之前已成功的工具没有产出，
@@ -302,10 +330,6 @@ export interface RuntimeSettings {
   readonly conversationModel: RuntimeModelReference;
   readonly fallbackVisionModel: RuntimeModelReference | null;
   readonly fallbackVisionEnabled: boolean;
-  readonly whisper: {
-    readonly modelPath: string;
-    readonly cliPath: string;
-  };
   readonly memoryEnabled: boolean;
   readonly memoryFromToolChatsEnabled: boolean;
 }
@@ -318,8 +342,6 @@ export interface RuntimeSettingsUpdate {
   readonly conversationModel?: RuntimeModelReference;
   readonly fallbackVisionModel?: RuntimeModelReference | null;
   readonly fallbackVisionEnabled?: boolean;
-  readonly whisperModelPath?: string | null;
-  readonly whisperCliPath?: string | null;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
 }
@@ -408,6 +430,7 @@ export interface AgentWorkspaceEvent {
 
 /** Host 在 Turn 执行期间推送给 Client 的运行期事件：活动轨迹、实时文本增量、待决审批或已确认的工作目录。 */
 export type AgentRuntimeEvent =
+  | { readonly type: 'task.state'; readonly sessionId: string; readonly taskState: AgentTaskState }
   | AgentActivityEvent
   | AgentActivityDetailEvent
   | AgentTextDeltaEvent
@@ -489,6 +512,7 @@ export interface McpServerUpdate {
   readonly headers: Readonly<Record<string, string>>;
 }
 export type ExtensionManagementRequest =
+  | { readonly action: 'install-whisper-model' | 'import-whisper-model' | 'delete-whisper-model' }
   | { readonly action: 'save-mcp-server'; readonly server: McpServerUpdate }
   | { readonly action: 'set-mcp-enabled'; readonly id: string; readonly enabled: boolean }
   | { readonly action: 'remove-mcp-server'; readonly id: string }
@@ -505,6 +529,16 @@ export interface ExtensionSnapshot {
   readonly marketplaces?: readonly ExtensionMarketplace[];
   readonly mcpServers?: readonly McpServerSettings[];
   readonly errors?: readonly string[];
+  readonly whisperModel?: WhisperModelStatus;
+}
+/** 单个已核实模型的安装事实；路径只由 Desktop 持有，不接收模型调用参数覆盖。 */
+export interface WhisperModelStatus {
+  readonly name: string;
+  readonly size: number;
+  readonly diskBytes: number;
+  readonly downloadedBytes: number;
+  readonly status: 'missing' | 'downloading' | 'verifying' | 'ready' | 'error';
+  readonly message?: string;
 }
 export interface ExtensionClientApi {
   list(): Promise<ExtensionSnapshot>;
@@ -522,12 +556,12 @@ export interface ExtensionClientApi {
   reconcile(): Promise<ExtensionSnapshot>;
   /** 对照 Codex `skills/changed` 的失效通知。 */
   onChanged(listener: () => void): () => void;
-  manage(request: ExtensionManagementRequest): Promise<ExtensionSnapshot>;
+  manage(request: ExtensionManagementRequest): Promise<ExtensionSnapshot | null>;
 }
 
 /** 更新事实由桌面宿主提供；浏览器开发宿主不具有安装应用的能力。 */
 export type AppUpdateState =
-  | { readonly status: 'idle' | 'checking' }
+  | { readonly status: 'idle' | 'checking' | 'unavailable' }
   | { readonly status: 'downloading'; readonly percent: number }
   | { readonly status: 'ready' | 'installing' }
   | { readonly status: 'error'; readonly message: string };
@@ -537,6 +571,15 @@ export interface AppUpdateApi {
   onStateChanged(listener: (state: AppUpdateState) => void): () => void;
   install(): Promise<void>;
   retry(): Promise<void>;
+}
+
+/** 用户消息、占位回复和同一份展示快照随任务起点交给宿主原子保存。 */
+export interface AgentTaskStartRequest {
+  readonly sessionId: string;
+  readonly prompt: string;
+  readonly userMessageId: number;
+  readonly assistantMessageId: number;
+  readonly clientState: ClientStateSnapshot;
 }
 
 export interface AgentClientApi {
@@ -567,7 +610,9 @@ export interface AgentClientApi {
   openProjectDirectory(directory: string): Promise<void>;
   switchSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<string>;
-  runAgentTask(prompt: string): Promise<AgentTaskResult>;
+  runAgentTask(request: AgentTaskStartRequest): Promise<AgentTaskResult>;
+  recoverTask?(request: AgentTaskStartRequest, sourceTurnId: string, mode?: 'continue' | 'verify'): Promise<AgentTaskResult>;
+  verifyTaskEffect?(sessionId: string, sourceEventIndex: number, outcome: 'completed' | 'not-applied', description: string): Promise<AgentTaskState>;
   cancelTask(): Promise<void>;
   onAgentEvent(listener: (event: AgentRuntimeEvent) => void): () => void;
   /**

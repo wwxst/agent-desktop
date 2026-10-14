@@ -50,8 +50,8 @@ describe('desktop SQLite storage', () => {
     const { directory, databasePath } = await fixture();
     const documents = {
       'session-state': legacyState,
-      'runtime-settings': { deepSeekModel: 'legacy-model' },
-      'runtime-secrets': { deepSeekApiKey: Buffer.from('encrypted-key').toString('base64') },
+      'runtime-settings': { theme: 'dark' },
+      'runtime-secrets': { providerApiKeys: { deepseek: Buffer.from('encrypted-key').toString('base64') } },
     };
     for (const [name, value] of Object.entries(documents)) {
       await writeFile(join(directory, `${name}.json`), JSON.stringify(value));
@@ -61,7 +61,7 @@ describe('desktop SQLite storage', () => {
     for (const [name, value] of Object.entries(documents)) {
       expect(await readFile(join(directory, `${name}.json`), 'utf8')).toBe(JSON.stringify(value));
     }
-    expect(readDesktopDocument(databasePath, 'runtime-secrets')).toEqual({ providerApiKeys: { deepseek: documents['runtime-secrets'].deepSeekApiKey } });
+    expect(readDesktopDocument(databasePath, 'runtime-secrets')).toEqual(documents['runtime-secrets']);
 
     writeDesktopDocuments(databasePath, [{ name: 'runtime-settings', value: { deepSeekModel: 'sqlite-model' } }]);
     await writeFile(join(directory, 'runtime-settings.json'), JSON.stringify({ deepSeekModel: 'stale-model' }));
@@ -77,10 +77,10 @@ describe('desktop SQLite storage', () => {
     expect(readDesktopDocument(databasePath, 'session-state')).toBeNull();
     expect(await readFile(join(directory, 'runtime-settings.json'), 'utf8')).toBe('{not json');
 
-    await writeFile(join(directory, 'runtime-settings.json'), JSON.stringify({ deepSeekModel: 'repaired-model' }));
+    await writeFile(join(directory, 'runtime-settings.json'), JSON.stringify({ theme: 'light' }));
     await migrateLegacyDesktopFiles(databasePath);
     expect(await loadDesktopState(databasePath)).toEqual(legacyState);
-    expect(readDesktopDocument(databasePath, 'runtime-settings')).toMatchObject({ modelProviders: [{ id: 'deepseek', models: [{ id: 'repaired-model' }] }, { id: 'openai' }] });
+    expect(readDesktopDocument(databasePath, 'runtime-settings')).toEqual({ theme: 'light', fallbackVisionEnabled: false });
   });
 
   it('does not overwrite a damaged database with a fresh empty state', async () => {

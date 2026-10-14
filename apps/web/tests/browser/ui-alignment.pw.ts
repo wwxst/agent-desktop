@@ -14,7 +14,7 @@ test('renders processing, cancellation, completion and failure without losing th
         return {
           ...createHost(),
           onAgentEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-          async runAgentTask(prompt) {
+          async runAgentTask({ prompt }) {
             const item = {id: 'tool-1', kind: 'tool', toolName: 'trim_video', status: 'running'};
             listeners.forEach(fn => fn({type: 'activity', item}));
             if (prompt === '测试处理中') {

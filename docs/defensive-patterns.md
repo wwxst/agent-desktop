@@ -7,6 +7,7 @@ English rule                      中文规则              中文介绍
 Malformed External Data           第三方异常数据        当前依赖结构缺失时直接失败，不用默认值伪装成功。
 Trust Typed Same-process Data     同进程强类型数据      信任 TypeScript 已保证的数据，不制造理论异常。
 Expose Program Errors             程序错误暴露          未被当前契约表示的程序错误直接向上暴露。
+Persist Encryption Dependency     加密依赖先持久化      密钥落盘前不能提交依赖它才能恢复的加密凭据。
 ```
 
 ## 1. Malformed External Data Must Fail（第三方异常数据不能伪装成功）
@@ -28,3 +29,9 @@ Expose Program Errors             程序错误暴露          未被当前契约
 真实证据：Agent Loop 和 Tool 错误处理曾把非 `Error` 抛出值或无法表示的结果转换为默认文本，掩盖实际程序错误。
 
 程序错误必须直接暴露，不得转换成看似正常的默认结果、模糊错误或成功状态。真实外部边界产生的标准 `Error` 可以按 Tool 契约转换为失败结果；非 `Error` 抛出值和不可能状态继续向上暴露。
+
+## 4. 加密依赖先持久化
+
+真实证据：Electron 44 在 Windows 首次配置目录中已完成凭据加密，但 `Local State` 的 `os_crypt.encrypted_key` 尚未写入。立即强制结束进程后，SQLite 中的密文无法解密；异步加密接口也不能改变这个持久化顺序。正常退出过一次、主密钥已持久化的目录可以恢复。
+
+模型、插件和 OAuth 凭据提交前，必须等待共同系统加密边界确认该主密钥文件已写入。等待依据文件实际内容，有明确期限；期限、解析或读取失败不能写入新凭据，不能用固定延时、默认成功、明文副本或重做加密掩盖问题。

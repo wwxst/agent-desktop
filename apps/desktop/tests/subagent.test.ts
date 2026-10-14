@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +19,7 @@ describe('desktop read-only child execution', () => {
         .mockResolvedValueOnce({ text: 'notes.txt 内容为 checked content', toolCalls: [] });
       const records: SubagentRecord[] = [];
       expect(await runReadOnlySubagent({ title: '检查', instruction: '只检查 notes.txt' }, context, directory,
-        { deepSeekApiKey: 'fixture' }, vi.fn(), (record) => records.push(record))).toMatchObject({ status: 'completed', evidence: [join(directory, 'notes.txt')] });
+        { deepSeekApiKey: 'fixture' }, vi.fn(), (record) => records.push(record))).toMatchObject({ status: 'completed', evidence: [await realpath(join(directory, 'notes.txt'))] });
       const request = fake.complete.mock.calls[0]![0] as ModelRequest;
       expect(request.tools.map((tool) => tool.name)).toEqual(['list_directory', 'read_file', 'search_text']);
       expect(request.messages).toEqual([{ role: 'user', content: '只检查 notes.txt' }]);
@@ -33,7 +33,7 @@ describe('desktop read-only child execution', () => {
     const save = vi.fn();
     expect(await runReadOnlySubagent({ title: '检查', instruction: '检查文件' }, context, process.cwd(),
       { deepSeekApiKey: 'fixture' }, vi.fn(), save)).toMatchObject({ status: 'failed', evidence: [] });
-    expect(save.mock.calls[0]![0].events).toContainEqual(expect.objectContaining({ type: 'tool.result', result: { status: 'error', message: 'Tool not found: write_text_file' } }));
+    expect(save.mock.calls[0]![0].events).toContainEqual(expect.objectContaining({ type: 'tool.result', result: expect.objectContaining({ status: 'error', failureKind: 'permanent', message: 'Tool not found: write_text_file' }) }));
   });
   it('enforces the eight-step and time budgets and saves an unfinished result', async () => {
     fake.complete.mockResolvedValue({ toolCalls: [{ id: 'x' as never, name: 'unknown', input: {} }] });

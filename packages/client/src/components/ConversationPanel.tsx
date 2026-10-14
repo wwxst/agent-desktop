@@ -12,6 +12,8 @@ interface ConversationPanelProps {
   readonly onHistoryScroll: () => void;
   readonly onToggleActivity: (messageId: number) => void;
   readonly onRevealFile: (path: string) => Promise<void>;
+  readonly onRecover?: (sourceTurnId: string, mode: 'continue' | 'verify') => void;
+  readonly onVerifyEffect?: (sourceEventIndex: number, outcome: 'completed' | 'not-applied', description: string) => void;
 }
 
 /**
@@ -27,6 +29,8 @@ export function ConversationPanel({
   onHistoryScroll,
   onToggleActivity,
   onRevealFile,
+  onRecover,
+  onVerifyEffect,
 }: ConversationPanelProps) {
   return (
     <main
@@ -48,6 +52,8 @@ export function ConversationPanel({
               message={message}
               onToggleActivity={onToggleActivity}
               onRevealFile={onRevealFile}
+              {...(onRecover === undefined ? {} : { onRecover })}
+              {...(onVerifyEffect === undefined ? {} : { onVerifyEffect })}
             />
           ))}
         </div>

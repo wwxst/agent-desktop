@@ -1,18 +1,18 @@
 import { createServer } from 'node:http';
 import { DEFAULT_MODEL_PROVIDERS, type RuntimeModelProviderUpdate } from '@agent-desktop/client';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
+import { readDesktopDocument } from '../src/main/desktop-database.js';
 import {
   parseRuntimeSettingsUpdate,
   listProviderModels,
   loadRuntimeConfiguration,
   loadRuntimeSettings,
   saveRuntimeSettings,
-  type SafeStoragePort,
 } from '../src/main/runtime-settings.js';
+import type { SafeStoragePort } from '../src/main/safe-storage.js';
 
 const temporaryDirectories: string[] = [];
 const storage: SafeStoragePort = {
@@ -24,6 +24,8 @@ const storage: SafeStoragePort = {
 async function paths() {
   const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-settings-'));
   temporaryDirectories.push(directory);
+  // 本文件使用加密替身；真实 Windows 主密钥的延迟落盘由安全存储专项与 Electron 验收覆盖。
+  await writeFile(join(directory, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: 'test-key' } }));
   return {
     database: join(directory, 'agent-desktop.sqlite'),
   };
@@ -40,12 +42,12 @@ const provider = (changes: Partial<RuntimeModelProviderUpdate> = {}): RuntimeMod
   models: [{ id: 'test-model', displayName: '测试模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' }, contextWindow: 128000, maxOutputTokens: 4000 }], ...changes,
 });
 describe('desktop runtime settings', () => {
-  it('preserves appearance and local paths independently of selected models', async () => {
+  it('preserves appearance independently of selected models', async () => {
     const { database } = await paths();
-    await saveRuntimeSettings(database, { theme: 'dark', whisperModelPath: 'D:/models/a.bin' }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ theme: 'dark', whisper: { modelPath: 'D:/models/a.bin' } });
+    await saveRuntimeSettings(database, { theme: 'dark' }, storage);
+    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ theme: 'dark' });
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('theme');
-    await saveRuntimeSettings(database, { theme: null, whisperModelPath: null }, storage);
+    await saveRuntimeSettings(database, { theme: null }, storage);
     expect(await loadRuntimeSettings(database, storage, {})).not.toHaveProperty('theme');
   });
   it('persists memory controls with enabled defaults', async () => {
@@ -60,7 +62,9 @@ describe('desktop runtime settings', () => {
     const settings = await loadRuntimeSettings(database, storage, env);
     expect(settings.modelProviders[0]).toMatchObject({ baseUrl: 'https://proxy.test/v1', apiKey: { configured: true, source: 'environment' }, models: [{ id: 'environment-model' }] });
     expect(JSON.stringify(settings)).not.toContain('environment-key');
-    expect(await loadRuntimeConfiguration(database, storage, env)).toMatchObject({ deepSeekApiKey: 'environment-key', deepSeekModel: 'environment-model', whisperModelPath: 'a.bin', useDeepSeekThinking: false });
+    const configuration = await loadRuntimeConfiguration(database, storage, env);
+    expect(configuration).toMatchObject({ deepSeekApiKey: 'environment-key', deepSeekModel: 'environment-model', useDeepSeekThinking: false });
+    expect(configuration).not.toHaveProperty('whisperModelPath');
   });
   it('saves encrypted credentials and drives both conversation and vision configuration after reload', async () => {
     const { database } = await paths();
@@ -71,22 +75,59 @@ describe('desktop runtime settings', () => {
     expect(settings.modelProviders.at(-1)).toMatchObject({ apiKey: { configured: true, source: 'saved' } });
     expect(JSON.stringify(settings)).not.toContain('plain-test-secret');
     expect((await readFile(database)).includes(Buffer.from('plain-test-secret'))).toBe(false);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'plain-test-secret', deepSeekModel: 'test-model', modelProtocol: 'responses', modelMaxOutputTokens: 4000, visionProtocol: 'responses', visionModel: 'test-model', visionMaxOutputTokens: 4000 });
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'plain-test-secret', deepSeekModel: 'test-model', modelProtocol: 'responses', modelContextWindow: 128000, modelMaxOutputTokens: 4000, visionProtocol: 'responses', visionModel: 'test-model', visionMaxOutputTokens: 4000 });
     await saveRuntimeSettings(database, { modelProvider: provider({ displayName: '修改名称' }) }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).toHaveProperty('deepSeekApiKey', 'plain-test-secret');
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: null }), fallbackVisionModel: null, fallbackVisionEnabled: false }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('deepSeekApiKey');
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
   });
-  it('keeps official capabilities scoped to the verified endpoint for environment and old fixed settings', async () => {
+  it('keeps official capabilities scoped to the verified endpoint for environment settings', async () => {
     const { database } = await paths();
     const official = { DEEPSEEK_API_KEY: 'environment-key', DEEPSEEK_MODEL: 'deepseek-flash' };
     expect(await loadRuntimeConfiguration(database, storage, official)).toHaveProperty('visionModel', 'deepseek-flash');
     const relay = { ...official, DEEPSEEK_BASE_URL: 'https://relay.test/v1' };
     expect(await loadRuntimeConfiguration(database, storage, relay)).toMatchObject({ deepSeekModel: 'deepseek-flash', visionUnavailableReason: expect.stringContaining('未知') });
     expect(await loadRuntimeConfiguration(database, storage, relay)).not.toHaveProperty('visionApiKey');
-    writeDesktopDocuments(database, [{ name: 'runtime-settings', value: { visionBaseUrl: 'https://old-relay.test/v1' } }]);
-    expect((await loadRuntimeSettings(database, storage, {})).modelProviders[1]!.models[0]!.capabilities.imageInput).toBe('unknown');
+  });
+  it('keeps independently configured window and output limits without inventing the missing value', async () => {
+    const { database } = await paths();
+    const choice = { providerId: 'custom-test', modelId: 'test-model' };
+    const model = { id: 'test-model', displayName: '测试模型', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const } };
+    await saveRuntimeSettings(database, {
+      modelProvider: provider({ models: [{ ...model, contextWindow: 64000 }] }), conversationModel: choice,
+    }, storage);
+    const windowOnly = await loadRuntimeConfiguration(database, storage, {});
+    expect(windowOnly).toHaveProperty('modelContextWindow', 64000);
+    expect(windowOnly).not.toHaveProperty('modelMaxOutputTokens');
+
+    await saveRuntimeSettings(database, { modelProvider: provider({ models: [{ ...model, maxOutputTokens: 2048 }] }) }, storage);
+    const outputOnly = await loadRuntimeConfiguration(database, storage, {});
+    expect(outputOnly).toHaveProperty('modelMaxOutputTokens', 2048);
+    expect(outputOnly).not.toHaveProperty('modelContextWindow');
+
+    await saveRuntimeSettings(database, { modelProvider: provider({ models: [model] }) }, storage);
+    const unspecified = await loadRuntimeConfiguration(database, storage, {});
+    expect(unspecified).not.toHaveProperty('modelContextWindow');
+    expect(unspecified).not.toHaveProperty('modelMaxOutputTokens');
+  });
+  it('reloads both limits from the newly selected model instead of retaining the prior model budget', async () => {
+    const { database } = await paths();
+    await saveRuntimeSettings(database, {
+      modelProvider: provider({ models: [
+        { id: 'large', displayName: '大窗口', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const }, contextWindow: 128000, maxOutputTokens: 4096 },
+        { id: 'small', displayName: '小窗口', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const }, contextWindow: 16000, maxOutputTokens: 1024 },
+        { id: 'unspecified', displayName: '未配置预算', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const } },
+      ] }),
+      conversationModel: { providerId: 'custom-test', modelId: 'large' },
+    }, storage);
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ modelContextWindow: 128000, modelMaxOutputTokens: 4096 });
+    await saveRuntimeSettings(database, { conversationModel: { providerId: 'custom-test', modelId: 'small' } }, storage);
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekModel: 'small', modelContextWindow: 16000, modelMaxOutputTokens: 1024 });
+    await saveRuntimeSettings(database, { conversationModel: { providerId: 'custom-test', modelId: 'unspecified' } }, storage);
+    const configuration = await loadRuntimeConfiguration(database, storage, {});
+    expect(configuration).not.toHaveProperty('modelContextWindow');
+    expect(configuration).not.toHaveProperty('modelMaxOutputTokens');
   });
   it('clearing an internal saved key returns to the environment source', async () => {
     const { database } = await paths();
@@ -160,39 +201,6 @@ describe('desktop runtime settings', () => {
     const { database } = await paths();
     await expect(saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'secret' }) }, { ...storage, isEncryptionAvailable: () => false })).rejects.toThrow('无法保存');
     expect(readDesktopDocument(database, 'runtime-settings')).toBeNull();
-  });
-  it('migrates prior SQLite settings and encrypted credentials without losing their values', async () => {
-    const { database } = await paths();
-    writeDesktopDocuments(database, [
-      { name: 'runtime-settings', value: { deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test', visionBaseUrl: 'https://vision.test/v1', whisperModelPath: 'legacy.bin' } },
-      { name: 'runtime-secrets', value: { deepSeekApiKey: storage.encryptString('legacy-secret').toString('base64') } },
-    ]);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'legacy-secret', deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test', whisperModelPath: 'legacy.bin' });
-    await saveRuntimeSettings(database, { theme: 'light' }, storage);
-    expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('deepSeekModel');
-    expect(readDesktopDocument(database, 'runtime-secrets')).toHaveProperty('providerApiKeys.deepseek');
-  });
-  it('drops prior provider identities while migrating visual selection, preserving catalog and secrets across reload', async () => {
-    const { database } = await paths();
-    writeDesktopDocuments(database, [
-      { name: 'runtime-settings', value: { modelProviders: DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...item }, index) => ({ ...item, builtin: index === 0, models: item.models.map(({ capabilities, ...model }) => ({ ...model, images: capabilities.imageInput === 'supported' })) })),
-        conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, visionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } } },
-      { name: 'runtime-secrets', value: { providerApiKeys: { openai: storage.encryptString('legacy-vision-key').toString('base64') } } },
-    ]);
-    const loaded = await loadRuntimeSettings(database, storage, {});
-    expect(loaded).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
-    for (const [index, item] of loaded.modelProviders.entries()) {
-      expect(item).not.toHaveProperty('builtin');
-      const expected = DEFAULT_MODEL_PROVIDERS[index]!;
-      expect(item).toMatchObject({ id: expected.id, displayName: expected.displayName, baseUrl: expected.baseUrl, protocol: expected.protocol, models: expected.models });
-    }
-    expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
-    await saveRuntimeSettings(database, { fallbackVisionEnabled: true }, storage);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ visionModel: 'gpt-5.6-luna', visionApiKey: 'legacy-vision-key', visionProtocol: 'responses' });
-    await saveRuntimeSettings(database, { fallbackVisionEnabled: false }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
-    expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('visionModel');
-    expect(JSON.stringify(readDesktopDocument(database, 'runtime-settings'))).not.toContain('builtin');
   });
   it('keeps an already resolved task snapshot while later selections drive new tasks', async () => {
     const { database } = await paths();

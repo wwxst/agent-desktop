@@ -70,3 +70,30 @@ test('keeps downloading disabled and shows a real failure with a retry action', 
   await expect(error).toHaveCount(0);
   await expect(page.getByRole('button', { name: '正在下载更新 0%' })).toBeDisabled();
 });
+
+test('shows an unavailable release as a compact neutral notice without a failed update action', async ({ page }, info) => {
+  await page.route('**/webClientApi.ts', route => route.fulfill({ contentType: 'application/javascript', body: `
+    import { createWebClientApi as createHost } from '/webClientApi.ts?update-unavailable';
+    export function createWebClientApi() {
+      return { ...createHost(), appUpdates: {
+        getState: async () => ({ status: 'unavailable' }),
+        onStateChanged: () => () => {},
+        install: async () => { throw new Error('无发行版不应调用安装器'); },
+        retry: async () => { throw new Error('无发行版不展示错误重试入口'); },
+      } };
+    }
+  ` }));
+  await page.goto('/');
+  const notice = page.getByRole('status').filter({ hasText: '暂未提供在线更新' });
+  await expect(notice).toHaveText('暂未提供在线更新');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '重试更新' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '安装更新' })).toHaveCount(0);
+  const box = (await notice.boundingBox())!;
+  expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.height).toBeLessThan(60);
+  expect(await notice.evaluate(element => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight)).toBe(true);
+  await mkdir(resolve('../../logs/app-update-20261011'), { recursive: true });
+  await page.screenshot({ path: resolve(`../../logs/app-update-20261011/${info.project.name}-unavailable.png`) });
+});

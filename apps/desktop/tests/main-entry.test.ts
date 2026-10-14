@@ -3,6 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DesktopTaskOptions } from '../src/main/agent-task.js';
+import type { Tool } from '@agent-desktop/tools';
+import { projectRecoveryFacts } from '@agent-desktop/session';
+import { DesktopExtensions, type PluginFiles } from '../src/main/extensions.js';
+import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
+import type { AgentTaskStartRequest, Attachment, ClientConversation } from '@agent-desktop/client';
+import type { DesktopPersistentSession, PersistedDesktopState } from '../src/main/session-persistence.js';
 
 type IpcHandler = (...args: unknown[]) => unknown;
 
@@ -16,6 +22,7 @@ const mainMocks = vi.hoisted(() => {
   }> = [];
   // 组装参数要保留：宿主注入的工作目录端口只有在这里才能验证真实形状。
   const agentOptions: Array<{
+    readonly mediaTools?: readonly Tool[];
     readonly workspace?: {
       confirmedDirectory(): string | undefined;
       requestApproval(target: { kind: 'directory' | 'create-file'; path: string }, signal?: AbortSignal): Promise<boolean>;
@@ -30,8 +37,14 @@ const mainMocks = vi.hoisted(() => {
     window: Map<string, (event: { preventDefault(): void }) => void>;
   } = { webContents: new Map(), window: new Map() };
   const onceHandlers = new Map<string, (event: unknown, payload: unknown) => void>();
+  const clientSessionIds = new Set<string>();
+  const clientAttachments = new Map<string, readonly Attachment[]>();
 
   return {
+    documents: new Map<string, object>(),
+    clientSessionIds,
+    clientAttachments,
+    writeDesktopDocuments: vi.fn(),
     handlers,
     agents,
     agentOptions,
@@ -69,7 +82,7 @@ const mainMocks = vi.hoisted(() => {
       return agent;
     }),
     runDesktopAgentTask: vi.fn(),
-    extensionRuntimes: [] as Array<{ runHooks: (event: string, input: Readonly<Record<string, unknown>>) => Promise<void> }>,
+    extensionRuntimes: [] as Array<{ runHooks: (event: string, input: Readonly<Record<string, unknown>>) => Promise<void>; close: () => Promise<void> }>,
     showOpenDialog: vi.fn(),
     showErrorBox: vi.fn(),
     showItemInFolder: vi.fn(),
@@ -83,7 +96,45 @@ const mainMocks = vi.hoisted(() => {
     rename: vi.fn(async () => undefined),
     traceWrite: vi.fn(async () => undefined),
     ipcHandle: vi.fn((channel: string, handler: IpcHandler) => {
-      handlers.set(channel, handler);
+      if (channel === 'desktop:get-active-session-id') {
+        clientSessionIds.clear();
+        clientAttachments.clear();
+        const saved = mainMocks.documents.get('session-state') as PersistedDesktopState | undefined;
+        for (const session of saved?.sessions ?? []) {
+          clientSessionIds.add(session.id);
+          clientAttachments.set(session.id, session.attachments.map(item => ({ ...item, name: item.path.split(/[\\/]/).at(-1)! })));
+        }
+      }
+      // 模拟 Client 对新建、删除和附件选择返回值的接收；任务快照不能读取陈旧磁盘替代当前界面。
+      if (channel === 'desktop:new-session') {
+        handlers.set(channel, async (...args) => {
+          const id = await handler(...args) as string;
+          clientSessionIds.add(id);
+          return id;
+        });
+      } else if (channel === 'desktop:delete-session') {
+        handlers.set(channel, async (...args) => {
+          const id = await handler(...args) as string;
+          clientSessionIds.delete(args[1] as string);
+          clientAttachments.delete(args[1] as string);
+          clientSessionIds.add(id);
+          return id;
+        });
+      } else if (channel === 'desktop:select-attachment-files') {
+        handlers.set(channel, async (...args) => {
+          const id = handlers.get('desktop:get-active-session-id')!({}) as string;
+          const result = await handler(...args) as readonly Attachment[] | null;
+          if (result !== null) clientAttachments.set(id, result);
+          return result;
+        });
+      } else if (channel === 'desktop:remove-attachment') {
+        handlers.set(channel, (...args) => {
+          const result = handler(...args);
+          const id = handlers.get('desktop:get-active-session-id')!({}) as string;
+          clientAttachments.set(id, (clientAttachments.get(id) ?? []).filter((_, index) => index !== args[1]));
+          return result;
+        });
+      } else handlers.set(channel, handler);
     }),
     ipcOnce: vi.fn((channel: string, handler: (event: unknown, payload: unknown) => void) => {
       onceHandlers.set(channel, handler);
@@ -106,14 +157,19 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
   writeFile: mainMocks.writeFile,
 }));
 
+vi.mock('../src/main/safe-storage.js', () => ({
+  // 此组装夹具没有真实 Electron 配置目录；系统主密钥持久性在独立专项与冷启动验收验证。
+  encryptSecret: async (_database: string, value: string, storage: { encryptString(value: string): Buffer }) => storage.encryptString(value),
+}));
+
 vi.mock('../src/main/desktop-database.js', async (importOriginal) => {
-  const documents = new Map<string, object>();
+  mainMocks.writeDesktopDocuments.mockImplementation((_path: string, updates: readonly { name: string; value: object }[]) => {
+    for (const update of updates) mainMocks.documents.set(update.name, update.value);
+  });
   return {
     ...(await importOriginal<typeof import('../src/main/desktop-database.js')>()),
-    readDesktopDocument: (_path: string, name: string) => documents.get(name) ?? null,
-    writeDesktopDocuments: (_path: string, updates: readonly { name: string; value: object }[]) => {
-      for (const update of updates) documents.set(update.name, update.value);
-    },
+    readDesktopDocument: (_path: string, name: string) => mainMocks.documents.get(name) ?? null,
+    writeDesktopDocuments: mainMocks.writeDesktopDocuments,
   };
 });
 
@@ -121,8 +177,8 @@ vi.mock('electron', () => ({
   app: {
     whenReady: () => Promise.resolve(),
     on: mainMocks.appOn,
-    getAppPath: () => 'E:\\repo\\apps\\desktop',
-    getPath: () => 'E:\\user-data',
+    getAppPath: () => 'E:/repo/apps/desktop',
+    getPath: () => 'E:/user-data',
     quit: vi.fn(),
   },
   BrowserWindow: class {
@@ -178,18 +234,48 @@ vi.mock('../src/main/extension-runtime.js', async (importOriginal) => {
     // 保留真实运行时，只观察宿主调度事件的次数与来源。
     const runtime = await original.prepareExtensions(...args);
     vi.spyOn(runtime, 'runHooks');
+    vi.spyOn(runtime, 'close');
     mainMocks.extensionRuntimes.push(runtime);
     return runtime;
   } };
 });
+
+/** 真实客户端形状：使用宿主当前会话与消息身份，不再用旧纯字符串 IPC。 */
+function taskRequest(prompt: string, recovery = false): AgentTaskStartRequest {
+  const sessionId = mainMocks.handlers.get('desktop:get-active-session-id')!({}) as string;
+  mainMocks.clientSessionIds.add(sessionId);
+  const saved = mainMocks.handlers.get('desktop:load-client-state')!({}) as PersistedDesktopState['clientState'] | null;
+  const conversations = saved?.conversations.filter(item => mainMocks.clientSessionIds.has(item.id)) ?? [];
+  const drafts = saved?.drafts?.filter(item => mainMocks.clientSessionIds.has(item.id)) ?? [];
+  const conversation = [...conversations, ...drafts].find(item => item.id === sessionId)
+    ?? { id: sessionId, title: '', titleManuallyRenamed: false, messages: [], prompt, attachments: [] };
+  const maxId = Math.max(0, ...[...saved?.conversations ?? [], ...saved?.drafts ?? []].flatMap(item => item.messages.map(message => message.id)));
+  const userMessageId = maxId + 1;
+  const assistantMessageId = maxId + 2;
+  const attachments = mainMocks.clientAttachments.get(sessionId) ?? conversation.attachments;
+  const userAttachments = recovery ? [] : attachments;
+  const started: ClientConversation = { ...conversation, prompt, attachments,
+    messages: [...conversation.messages,
+      { id: userMessageId, role: 'user', text: prompt, attachments: userAttachments.map(item => item.name), attachmentRoles: userAttachments.map(item => item.role) },
+      { id: assistantMessageId, role: 'assistant', status: 'processing', streamedText: '', activity: [], activityExpanded: true }] };
+  return { sessionId, prompt, userMessageId, assistantMessageId,
+    clientState: { ...saved, activeSessionId: sessionId,
+      conversations: [...conversations.filter(item => item.id !== sessionId), started],
+      drafts: [...drafts.filter(item => item.id !== sessionId),
+        ...[...mainMocks.clientSessionIds].filter(id => id !== sessionId && ![...conversations, ...drafts].some(item => item.id === id))
+          .map(id => ({ id, title: '', titleManuallyRenamed: false, messages: [], prompt: '', attachments: [] }))] } };
+}
 
 describe('desktop main session lifecycle', () => {
   const previousDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
   const previousWhisperModelPath = process.env.WHISPER_MODEL_PATH;
 
   beforeAll(async () => {
+    // 生命周期夹具不启动系统进程，但宿主仍需明确的 Windows 解释器环境。
+    vi.stubEnv('SystemRoot', process.env.SystemRoot ?? 'C:/Windows');
+    vi.stubEnv('OPENAI_API_KEY', 'test-vision-key');
     delete process.env.DEEPSEEK_API_KEY;
-    process.env.WHISPER_MODEL_PATH = 'D:\\models\\whisper.bin';
+    process.env.WHISPER_MODEL_PATH = 'D:/models/whisper.bin';
     await import('../src/main/index.js');
     await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
     expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
@@ -197,6 +283,7 @@ describe('desktop main session lifecycle', () => {
   });
 
   afterAll(() => {
+    vi.unstubAllEnvs();
     if (previousDeepSeekApiKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = previousDeepSeekApiKey;
     if (previousWhisperModelPath === undefined) delete process.env.WHISPER_MODEL_PATH;
@@ -209,10 +296,11 @@ describe('desktop main session lifecycle', () => {
     const configuredKey = process.env.DEEPSEEK_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
     try {
-      await expect(runAgentTask!({}, '测试任务')).resolves.toEqual({
+      await expect(runAgentTask!({}, taskRequest('测试任务'))).resolves.toMatchObject({
         status: 'error',
         errorName: 'Error',
         errorMessage: '请先在设置中配置当前对话模型的 API 密钥。',
+        taskState: { status: 'failed' },
       });
       expect(mainMocks.createVideoAgent).not.toHaveBeenCalled();
     } finally {
@@ -256,7 +344,7 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.showOpenDialog.mockResolvedValue({
       canceled: false,
-      filePaths: ['D:\\videos\\input.mp4'],
+      filePaths: ['D:/videos/input.mp4'],
     });
     await selectVideo!({});
 
@@ -268,7 +356,7 @@ describe('desktop main session lifecycle', () => {
     mainMocks.runDesktopAgentTask.mockImplementationOnce(() => new Promise((resolve) => {
       resolveRunningTask = resolve;
     }));
-    const runningTask = runAgentTask!({}, '记住数字 731');
+    const runningTask = runAgentTask!({}, taskRequest('记住数字 731'));
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask).toHaveBeenCalledOnce());
 
     await expect(deleteSession!({}, firstSessionId)).rejects.toThrow('Agent 正在执行');
@@ -279,11 +367,15 @@ describe('desktop main session lifecycle', () => {
       'Agent 正在执行，无法保存设置。',
     );
     expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
-    const startedModel = mainMocks.createVideoAgent.mock.calls[0]![0];
+    const startedModel = mainMocks.agentOptions[0];
     await saveRuntimeSettings!({}, { conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } });
     expect(mainMocks.createVideoAgent).toHaveBeenCalledOnce();
-    expect(mainMocks.createVideoAgent.mock.calls[0]![0]).toBe(startedModel);
+    expect(mainMocks.agentOptions[0]).toBe(startedModel);
     await expect(saveRuntimeSettings!({}, { conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, theme: 'dark' })).rejects.toThrow('无法保存设置');
+    // 配置视觉密钥不等于安装插件；宿主不能再创建旧内置视觉工具。
+    expect(mainMocks.agentOptions[0]).not.toHaveProperty('visionTool');
+    expect(mainMocks.agentOptions[0]).not.toHaveProperty('visionApiKey');
+    expect(mainMocks.agentOptions[0]).not.toHaveProperty('visionBaseUrl');
 
     resolveRunningTask?.({
       responseText: '已记住。',
@@ -298,7 +390,8 @@ describe('desktop main session lifecycle', () => {
     });
 
     const firstAgent = mainMocks.agents[0]!;
-    firstAgent.session.append({ type: 'user.message', content: '记住数字 731' });
+    // 未安装 Probe 插件时没有 Probe 注入，普通任务仍然正常运行。
+    expect(mainMocks.agentOptions[0]?.mediaTools).toEqual([]);
     // 产物路径来自模型写入 Session 的工具输入，定位时按会话事实校验。
     firstAgent.session.append({
       type: 'tool.called',
@@ -322,12 +415,12 @@ describe('desktop main session lifecycle', () => {
       turnId: 'turn-session-2',
       artifacts: [],
     });
-    await runAgentTask!({}, '记住数字 952');
+    await runAgentTask!({}, taskRequest('记住数字 952'));
     const secondAgent = mainMocks.agents[1]!;
     expect(secondAgent).not.toBe(firstAgent);
     expect(secondAgent.session).not.toBe(firstAgent.session);
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
-      secondAgent,
+      expect.objectContaining({ session: secondAgent.session }),
       '记住数字 952',
       [],
       expect.objectContaining({
@@ -338,7 +431,6 @@ describe('desktop main session lifecycle', () => {
         onToolProgress: expect.any(Function),
       }),
     );
-    secondAgent.session.append({ type: 'user.message', content: '记住数字 952' });
 
     await switchSession!({}, firstSessionId);
     mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
@@ -346,12 +438,12 @@ describe('desktop main session lifecycle', () => {
       turnId: 'turn-session-1-follow-up',
       artifacts: [],
     });
-    await runAgentTask!({}, '我刚才让你记住什么数字？');
+    await runAgentTask!({}, taskRequest('我刚才让你记住什么数字？'));
     const followUpAgent = mainMocks.agents[2]!;
     expect(mainMocks.runDesktopAgentTask).toHaveBeenLastCalledWith(
-      followUpAgent,
+      expect.objectContaining({ session: followUpAgent.session }),
       '我刚才让你记住什么数字？',
-      [{ path: 'D:\\videos\\input.mp4', role: 'video' }],
+      [{ path: 'D:/videos/input.mp4', role: 'video' }],
       expect.objectContaining({
         trace: expect.any(Function),
         signal: expect.any(AbortSignal),
@@ -364,11 +456,11 @@ describe('desktop main session lifecycle', () => {
     expect(mainMocks.showItemInFolder).toHaveBeenLastCalledWith(firstOutputPath);
     expect(followUpAgent).not.toBe(firstAgent);
     expect(followUpAgent.session).toBe(firstAgent.session);
-    expect(firstAgent.session.events()).not.toContainEqual({ type: 'user.message', content: '记住数字 952' });
+    expect(firstAgent.session.events()).not.toContainEqual(expect.objectContaining({ type: 'user.message', content: expect.stringContaining('记住数字 952') }));
 
     await switchSession!({}, secondSessionId);
-    expect(secondAgent.session.events()).toContainEqual({ type: 'user.message', content: '记住数字 952' });
-    expect(secondAgent.session.events()).not.toContainEqual({ type: 'user.message', content: '记住数字 731' });
+    expect(secondAgent.session.events()).toContainEqual(expect.objectContaining({ type: 'user.message', content: expect.stringContaining('记住数字 952') }));
+    expect(secondAgent.session.events()).not.toContainEqual(expect.objectContaining({ type: 'user.message', content: expect.stringContaining('记住数字 731') }));
     expect(() => switchSession!({}, 'missing-session')).toThrow('找不到对应的会话');
     rmSync(artifactDirectory, { recursive: true, force: true });
   });
@@ -405,16 +497,16 @@ describe('desktop main session lifecycle', () => {
             items: [
               {
                 id: 'out-1',
-                sourcePaths: ['D:\\videos\\a.mp4'],
-                target: { kind: 'explicit', path: 'D:\\videos\\a-result.mp4' },
-                workingDirectory: 'D:\\videos\\.agent-output-out-1',
+                sourcePaths: ['D:/videos/a.mp4'],
+                target: { kind: 'explicit', path: 'D:/videos/a-result.mp4' },
+                workingDirectory: 'D:/videos/.agent-output-out-1',
                 requirements: [{ id: 'r1', kind: 'decodable-video' }],
               },
               {
                 id: 'out-2',
-                sourcePaths: ['D:\\videos\\b.mp4'],
-                target: { kind: 'explicit', path: 'D:\\videos\\b-result.mp4' },
-                workingDirectory: 'D:\\videos\\.agent-output-out-2',
+                sourcePaths: ['D:/videos/b.mp4'],
+                target: { kind: 'explicit', path: 'D:/videos/b-result.mp4' },
+                workingDirectory: 'D:/videos/.agent-output-out-2',
                 requirements: [{ id: 'r1', kind: 'decodable-video' }],
               },
             ],
@@ -438,22 +530,22 @@ describe('desktop main session lifecycle', () => {
           status: 'success',
           output: {
             kind: 'video.output.published',
-            output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:\\videos\\a-result.mp4' },
+            output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:/videos/a-result.mp4' },
           },
-          artifacts: ['D:\\videos\\a-result.mp4'],
+          artifacts: ['D:/videos/a-result.mp4'],
         },
       });
       return {
         responseText: '第一项已交付。',
         turnId,
-        artifacts: [{ toolCallId: 'call-publish', path: 'D:\\videos\\a-result.mp4' }],
+        artifacts: [{ toolCallId: 'call-publish', path: 'D:/videos/a-result.mp4' }],
       };
     });
 
-    await expect(runAgentTask!({}, '分别输出两个视频')).resolves.toMatchObject({
+    await expect(runAgentTask!({}, taskRequest('分别输出两个视频'))).resolves.toMatchObject({
       status: 'success',
       result: {
-        outputFiles: [{ path: 'D:\\videos\\a-result.mp4', fileName: 'a-result.mp4' }],
+        outputFiles: [{ path: 'D:/videos/a-result.mp4', fileName: 'a-result.mp4' }],
         // 总数来自声明列表：一项已交付，另一项保留未完成，不能删掉失败项后变成全部完成。
         outputs: [
           { outputItemId: 'out-1', status: 'published', fileName: 'a-result.mp4' },
@@ -473,7 +565,7 @@ describe('desktop main session lifecycle', () => {
       artifacts: [],
     });
 
-    const result = await runAgentTask!({}, '介绍一下这个客户端。');
+    const result = await runAgentTask!({}, taskRequest('介绍一下这个客户端。'));
     // 普通问答不创建输出项，视频交付结论是不适用而不是「零项全部完成」。
     expect(result).toMatchObject({ status: 'success', result: { responseText: '这是一个普通回答。' } });
     expect((result as { result: Record<string, unknown> }).result).not.toHaveProperty('outputs');
@@ -493,20 +585,20 @@ describe('desktop main session lifecycle', () => {
       await newSession!({});
       mainMocks.showOpenDialog.mockResolvedValue({
         canceled: false,
-        filePaths: ['D:\\videos\\fixed-time.mp4'],
+        filePaths: ['D:/videos/fixed-time.mp4'],
       });
       mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
         responseText: '已裁掉开头 1 秒。',
         turnId: 'turn-fixed-time',
-        artifacts: [{ toolCallId: 'call-artifact', path: 'D:\\videos\\fixed-time-edited.mp4' }],
+        artifacts: [{ toolCallId: 'call-artifact', path: 'D:/videos/fixed-time-edited.mp4' }],
       });
       await selectVideo!({});
 
-      await expect(runAgentTask!({}, '把这个视频开头裁掉 1 秒并输出新视频')).resolves.toMatchObject({
+      await expect(runAgentTask!({}, taskRequest('把这个视频开头裁掉 1 秒并输出新视频'))).resolves.toMatchObject({
         status: 'success',
         result: {
           responseText: '已裁掉开头 1 秒。',
-          outputFiles: [{ path: 'D:\\videos\\fixed-time-edited.mp4', fileName: 'fixed-time-edited.mp4' }],
+          outputFiles: [{ path: 'D:/videos/fixed-time-edited.mp4', fileName: 'fixed-time-edited.mp4' }],
         },
       });
     } finally {
@@ -548,17 +640,16 @@ describe('desktop main session lifecycle', () => {
       turnId: 'turn-delete-session',
       artifacts: [],
     });
-    await runAgentTask!({}, '只属于被删除会话');
+    await runAgentTask!({}, taskRequest('只属于被删除会话'));
     const secondExtraAgent = mainMocks.agents.at(-1)!;
-    secondExtraAgent.session.append({ type: 'user.message', content: '只属于被删除会话' });
 
     await switchSession!({}, baseSessionId);
     expect(await deleteSession!({}, firstExtraSessionId)).toBe(baseSessionId);
     expect(await deleteSession!({}, secondExtraSessionId)).toBe(baseSessionId);
-    expect(secondExtraAgent.session.events()).toContainEqual({
+    expect(secondExtraAgent.session.events()).toContainEqual(expect.objectContaining({
       type: 'user.message',
-      content: '只属于被删除会话',
-    });
+      content: expect.stringContaining('只属于被删除会话'),
+    }));
 
     expect(await getActiveSessionId!({})).toBe(baseSessionId);
   });
@@ -591,7 +682,7 @@ describe('desktop main session lifecycle', () => {
       });
 
       await selectVideo!({});
-      await runAgentTask!({}, '生成第一个视频');
+      await runAgentTask!({}, taskRequest('生成第一个视频'));
       const deletedSessionId = await getActiveSessionId!({});
       const replacementSessionId = await deleteSession!({}, deletedSessionId);
 
@@ -621,7 +712,7 @@ describe('desktop main session lifecycle', () => {
       return { responseText: '完成', turnId: 'turn-delta', artifacts: [] };
     });
 
-    await expect(runAgentTask!({}, '流式任务')).resolves.toMatchObject({
+    await expect(runAgentTask!({}, taskRequest('流式任务'))).resolves.toMatchObject({
       status: 'success',
       result: { responseText: '完成' },
     });
@@ -661,7 +752,7 @@ describe('desktop main session lifecycle', () => {
       return { responseText: '完成', turnId: 'turn-detail', artifacts: [] };
     });
 
-    await runAgentTask!({}, '读取文件');
+    await runAgentTask!({}, taskRequest('读取文件'));
 
     expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
       type: 'activity.detail',
@@ -692,7 +783,7 @@ describe('desktop main session lifecycle', () => {
     }));
 
     const priorCalls = mainMocks.runDesktopAgentTask.mock.calls.length;
-    const running = runAgentTask!({}, '长任务');
+    const running = runAgentTask!({}, taskRequest('长任务'));
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorCalls + 1));
     expect(cancelTask!({})).toBeUndefined();
     await expect(running).resolves.toMatchObject({
@@ -701,19 +792,18 @@ describe('desktop main session lifecycle', () => {
     });
     expect(() => cancelTask!({})).toThrow('当前没有正在执行的任务');
     const cancelledAgent = mainMocks.agents.at(-1)!;
-    cancelledAgent.session.append({ type: 'user.message', content: '取消前上下文' });
 
     mainMocks.runDesktopAgentTask.mockResolvedValueOnce({
       responseText: '下一条完成', turnId: 'turn-after-cancel', artifacts: [],
     });
-    await expect(runAgentTask!({}, '下一条')).resolves.toMatchObject({
+    await expect(runAgentTask!({}, taskRequest('下一条'))).resolves.toMatchObject({
       status: 'success',
       result: { responseText: '下一条完成' },
     });
     expect(mainMocks.agents.at(-1)!.session).toBe(cancelledAgent.session);
-    expect(cancelledAgent.session.events()).toContainEqual({
-      type: 'user.message', content: '取消前上下文',
-    });
+    expect(cancelledAgent.session.events()).toContainEqual(expect.objectContaining({
+      type: 'user.message', content: expect.stringContaining('长任务'),
+    }));
   });
 
   it('allows the window to close before the Renderer registers its close preparation listener', () => {
@@ -764,7 +854,7 @@ describe('desktop main session lifecycle', () => {
     mainMocks.webContentsSend.mockClear();
     mainMocks.windowDestroy.mockClear();
     const priorCalls = mainMocks.runDesktopAgentTask.mock.calls.length;
-    const running = runAgentTask!({}, '长任务');
+    const running = runAgentTask!({}, taskRequest('长任务'));
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorCalls + 1));
 
     const closeEvent = { preventDefault: vi.fn() };
@@ -809,7 +899,7 @@ describe('desktop main session lifecycle', () => {
     mainMocks.webContentsSend.mockClear();
     mainMocks.windowDestroy.mockClear();
     const priorCalls = mainMocks.runDesktopAgentTask.mock.calls.length;
-    const running = runAgentTask!({}, '长任务');
+    const running = runAgentTask!({}, taskRequest('长任务'));
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorCalls + 1));
 
     const firstClose = { preventDefault: vi.fn() };
@@ -845,7 +935,7 @@ describe('desktop main session lifecycle', () => {
     await newSession!({});
     mainMocks.showOpenDialog.mockResolvedValueOnce({
       canceled: false,
-      filePaths: ['D:\\videos\\input.mp4'],
+      filePaths: ['D:/videos/input.mp4'],
     });
     await selectVideo!({});
 
@@ -860,7 +950,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-failed',
         toolCallId: 'call-done',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\done.mp4' },
+        input: { outputPath: 'D:/videos/done.mp4' },
       });
       agent.session.append({
         type: 'tool.result',
@@ -869,18 +959,19 @@ describe('desktop main session lifecycle', () => {
         toolCallId: 'call-done',
         result: {
           status: 'success',
-          output: 'Video created: D:\\videos\\done.mp4',
-          artifacts: ['D:\\videos\\done.mp4'],
+          output: 'Video created: D:/videos/done.mp4',
+          artifacts: ['D:/videos/done.mp4'],
         },
       });
       throw new Error('第二个工具执行失败。');
     });
 
-    await expect(runAgentTask!({}, '两步任务')).resolves.toEqual({
+    await expect(runAgentTask!({}, taskRequest('两步任务'))).resolves.toMatchObject({
       status: 'error',
       errorName: 'Error',
       errorMessage: '第二个工具执行失败。',
-      outputFiles: [{ path: 'D:\\videos\\done.mp4', fileName: 'done.mp4' }],
+      outputFiles: [{ path: 'D:/videos/done.mp4', fileName: 'done.mp4' }],
+      taskState: { status: 'failed' },
     });
   });
 
@@ -899,7 +990,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-earlier-success',
         toolCallId: 'call-earlier-success',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\earlier.mp4' },
+        input: { outputPath: 'D:/videos/earlier.mp4' },
       });
       agent.session.append({
         type: 'tool.result',
@@ -908,25 +999,26 @@ describe('desktop main session lifecycle', () => {
         toolCallId: 'call-earlier-success',
         result: {
           status: 'success',
-          output: 'Video created: D:\\videos\\earlier.mp4',
-          artifacts: ['D:\\videos\\earlier.mp4'],
+          output: 'Video created: D:/videos/earlier.mp4',
+          artifacts: ['D:/videos/earlier.mp4'],
         },
       });
       return {
         responseText: '上一轮完成。',
         turnId: 'turn-earlier-success',
-        artifacts: [{ toolCallId: 'call-earlier-success', path: 'D:\\videos\\earlier.mp4' }],
+        artifacts: [{ toolCallId: 'call-earlier-success', path: 'D:/videos/earlier.mp4' }],
       };
     });
-    await runAgentTask!({}, '上一轮任务');
+    await runAgentTask!({}, taskRequest('上一轮任务'));
 
     const configuredKey = process.env.DEEPSEEK_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
     try {
-      await expect(runAgentTask!({}, '下一轮任务')).resolves.toEqual({
+      await expect(runAgentTask!({}, taskRequest('下一轮任务'))).resolves.toMatchObject({
         status: 'error',
         errorName: 'Error',
         errorMessage: '请先在设置中配置当前对话模型的 API 密钥。',
+        taskState: { status: 'failed' },
       });
     } finally {
       if (configuredKey !== undefined) process.env.DEEPSEEK_API_KEY = configuredKey;
@@ -940,7 +1032,7 @@ describe('desktop main session lifecycle', () => {
     await newSession!({});
     mainMocks.showOpenDialog.mockResolvedValueOnce({
       canceled: false,
-      filePaths: ['D:\\videos\\input.mp4'],
+      filePaths: ['D:/videos/input.mp4'],
     });
     await selectVideo!({});
 
@@ -954,7 +1046,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-cancelled',
         toolCallId: 'call-cancelled-done',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\cancelled-done.mp4' },
+        input: { outputPath: 'D:/videos/cancelled-done.mp4' },
       });
       agent.session.append({
         type: 'tool.result',
@@ -963,8 +1055,8 @@ describe('desktop main session lifecycle', () => {
         toolCallId: 'call-cancelled-done',
         result: {
           status: 'success',
-          output: 'Video created: D:\\videos\\cancelled-done.mp4',
-          artifacts: ['D:\\videos\\cancelled-done.mp4'],
+          output: 'Video created: D:/videos/cancelled-done.mp4',
+          artifacts: ['D:/videos/cancelled-done.mp4'],
         },
       });
       // 取消发生在下一个工具执行中：只有 tool.called，没有结果。
@@ -974,7 +1066,7 @@ describe('desktop main session lifecycle', () => {
         stepId: 'step-cancelled',
         toolCallId: 'call-in-flight',
         name: 'trim_video',
-        input: { outputPath: 'D:\\videos\\never-finished.mp4' },
+        input: { outputPath: 'D:/videos/never-finished.mp4' },
       });
       const abortError = new Error('The operation was aborted');
       abortError.name = 'AbortError';
@@ -982,11 +1074,12 @@ describe('desktop main session lifecycle', () => {
     });
 
     // 只有真正成功的那个文件被报告，正在执行的未成功文件不登记。
-    await expect(runAgentTask!({}, '取消任务')).resolves.toEqual({
+    await expect(runAgentTask!({}, taskRequest('取消任务'))).resolves.toMatchObject({
       status: 'error',
       errorName: 'AbortError',
       errorMessage: 'The operation was aborted',
-      outputFiles: [{ path: 'D:\\videos\\cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
+      outputFiles: [{ path: 'D:/videos/cancelled-done.mp4', fileName: 'cancelled-done.mp4' }],
+      taskState: { status: 'blocked' },
     });
   });
 
@@ -1076,7 +1169,7 @@ describe('desktop main session lifecycle', () => {
       return { responseText: '目录已就绪。', turnId: 'turn-workspace', artifacts: [] };
     });
 
-    const running = runAgentTask!({}, '把 D:/videos 设为工作目录');
+    const running = runAgentTask!({}, taskRequest('把 D:/videos 设为工作目录'));
     await vi.waitFor(() => expect(publishedApprovals().length).toBe(approvalsBefore + 1));
     const request = publishedApprovals()[approvalsBefore]!.request!;
     expect(request.kind).toBe('directory');
@@ -1105,7 +1198,7 @@ describe('desktop main session lifecycle', () => {
       return { responseText: '完成。', turnId: 'turn-approval', artifacts: [] };
     });
 
-    const running = runAgentTask!({}, '检查目录');
+    const running = runAgentTask!({}, taskRequest('检查目录'));
     await vi.waitFor(() => expect(publishedApprovals().length).toBe(approvalsBefore + 1));
     const requestId = publishedApprovals()[approvalsBefore]!.request!.requestId;
 
@@ -1128,7 +1221,7 @@ describe('desktop main session lifecycle', () => {
       const projectSessionId = await create({}, directory);
       expect(projectSessionId).not.toBe(previousId);
       mainMocks.runDesktopAgentTask.mockResolvedValueOnce({ responseText: '项目任务', turnId: 'project-turn', artifacts: [] });
-      await run({}, '查看项目文件');
+      await run({}, taskRequest('查看项目文件'));
       expect(mainMocks.agentOptions.at(-1)?.workspace?.confirmedDirectory()).toBe(directory);
       await switchSession({}, previousId);
       expect(await getActive({})).toBe(previousId);
@@ -1147,7 +1240,7 @@ describe('desktop main session lifecycle', () => {
         mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId });
         return { responseText: '完成', turnId, artifacts: [] };
       });
-      await expect(run({}, '继续任务')).resolves.toMatchObject({ status: 'success' });
+      await expect(run({}, taskRequest('继续任务'))).resolves.toMatchObject({ status: 'success' });
     }
     const first = mainMocks.extensionRuntimes[count]!;
     const second = mainMocks.extensionRuntimes[count + 1]!;
@@ -1160,9 +1253,377 @@ describe('desktop main session lifecycle', () => {
       mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId: 'hook-new-session' });
       return { responseText: '完成', turnId: 'hook-new-session', artifacts: [] };
     });
-    await expect(run({}, '新会话任务')).resolves.toMatchObject({ status: 'success' });
+    await expect(run({}, taskRequest('新会话任务'))).resolves.toMatchObject({ status: 'success' });
     expect(mainMocks.extensionRuntimes[count + 2]!.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
     await newSession({});
+  });
+
+  it('keeps memory writes unavailable for the entire verification turn after its unknown effect is resolved', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session')!;
+    const run = mainMocks.handlers.get('desktop:run-agent-task')!;
+    const recover = mainMocks.handlers.get('desktop:recover-task')!;
+    await mainMocks.handlers.get('desktop:save-runtime-settings')!({}, { memoryEnabled: true });
+    const sessionId = await newSession({});
+    let sourceTurnId = '';
+    let sourceEventIndex = -1;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent) => {
+      sourceTurnId = agent.session.events().findLast((event: { type: string }) => event.type === 'turn.started').turnId;
+      agent.session.append({ type: 'tool.called', turnId: sourceTurnId, stepId: 'write-step', toolCallId: 'write',
+        name: 'write_text_file', input: { path: 'D:/clips/unknown.txt' }, boundary: 'checkpointed' });
+      sourceEventIndex = agent.session.events().length - 1;
+      agent.session.append({ type: 'tool.result', turnId: sourceTurnId, stepId: 'write-step', toolCallId: 'write',
+        result: { status: 'error', message: 'response lost', failureKind: 'unknown-outcome' } });
+      agent.session.append({ type: 'turn.completed', turnId: sourceTurnId });
+      expect(agent.tools.get('save_memory')).toBeDefined();
+      return { responseText: '待核验。', turnId: sourceTurnId, artifacts: [] };
+    });
+    await run({}, taskRequest('写入文件'));
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent) => {
+      const turnId = agent.session.events().findLast((event: { type: string }) => event.type === 'turn.started').turnId;
+      expect(agent.tools.get('save_memory')).toBeUndefined();
+      agent.session.append({ type: 'effect.outcome.verified', turnId, sourceEventIndex, outcome: 'completed',
+        scope: 'entire-call', evidence: { source: 'user', reference: 'manual-verification', description: '已核对写入结果。' } });
+      expect(projectRecoveryFacts(agent.session.events()).unknownEffects).toEqual([]);
+      expect(agent.tools.get('save_memory')).toBeUndefined();
+      agent.session.append({ type: 'turn.completed', turnId });
+      return { responseText: '已核验。', turnId, artifacts: [] };
+    });
+    await expect(recover({}, { ...taskRequest('核验未确定的外部效果', true), sessionId, sourceTurnId, mode: 'verify' })).resolves.toMatchObject({ status: 'success' });
+    await newSession({});
+  });
+
+  it('records manual verification for an unknown external effect and rejects it a second time', async () => {
+    const newSession = mainMocks.handlers.get('desktop:new-session')!;
+    const run = mainMocks.handlers.get('desktop:run-agent-task')!;
+    const verify = mainMocks.handlers.get('desktop:verify-task-effect')!;
+    const sessionId = await newSession({});
+    let sourceEventIndex = -1;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+      const session = mainMocks.agents.at(-1)!.session;
+      const turn = session.events().findLast((event) => (
+        typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'turn.started'
+      )) as { turnId: string };
+      session.append({ type: 'step.started', turnId: turn.turnId, stepId: 'verify-step' });
+      session.append({ type: 'tool.called', turnId: turn.turnId, stepId: 'verify-step', toolCallId: 'verify-call',
+        name: 'write_text_file', input: { path: 'D:/clips/result.txt' }, boundary: 'checkpointed' });
+      sourceEventIndex = session.events().length - 1;
+      session.append({ type: 'tool.result', turnId: turn.turnId, stepId: 'verify-step', toolCallId: 'verify-call',
+        result: { status: 'error', message: '写入后连接断开。', failureKind: 'unknown-outcome' } });
+      session.append({ type: 'step.completed', turnId: turn.turnId, stepId: 'verify-step' });
+      session.append({ type: 'turn.completed', turnId: turn.turnId });
+      return { responseText: '结果待核验。', turnId: turn.turnId, artifacts: [] };
+    });
+
+    await expect(run({}, taskRequest('写入结果'))).resolves.toMatchObject({ status: 'success', result: { taskState: { status: 'blocked' } } });
+    const state = await verify({}, { sessionId, sourceEventIndex, outcome: 'completed', description: '已核对实际结果。' });
+    expect(state).toMatchObject({ rootTurnId: expect.any(String), status: 'completed' });
+    expect(mainMocks.agents.at(-1)!.session.events()).toContainEqual(expect.objectContaining({
+      type: 'effect.outcome.verified', sourceEventIndex, outcome: 'completed', scope: 'entire-call',
+    }));
+    expect(() => verify({}, { sessionId, sourceEventIndex, outcome: 'completed', description: '已核对实际结果。' })).toThrow('该外部效果已经核验或不存在');
+  });
+
+  it.each([
+    { stage: 'prepare', reason: 'user' },
+    { stage: 'prepare', reason: 'window-closed' },
+    { stage: 'session-start', reason: 'user' },
+    { stage: 'session-start', reason: 'window-closed' },
+  ] as const)('persists $reason cancellation during $stage before the Agent Loop starts', async ({ stage, reason }) => {
+    const sessionId = await mainMocks.handlers.get('desktop:new-session')!({});
+    const plugin: PluginFiles = {
+      name: 'cancel-test', directory: process.cwd(), skills: [],
+      item: { id: 'plugin:cancel-test', kind: 'plugin', name: 'cancel-test', description: '', source: 'local', enabled: true, installed: true },
+      servers: stage === 'prepare' ? [{ name: 'pending-start', command: 'does-not-exist', args: [] }] : [],
+      ...(stage === 'prepare' ? {} : { hooks: [{ event: 'SessionStart', command: 'echo cancelled', timeoutMs: 1000 }] }),
+    };
+    // 仅替换磁盘上的启用清单，实际审批门禁、扩展运行时和持久 Session 都保持真实。
+    const files = vi.spyOn(DesktopExtensions.prototype, 'files').mockResolvedValueOnce({ plugins: [plugin], skills: [], mcpServers: [] });
+    const priorLoopCalls = mainMocks.runDesktopAgentTask.mock.calls.length;
+    const priorDestroyCalls = mainMocks.windowDestroy.mock.calls.length;
+    const firstNotification = mainMocks.webContentsSend.mock.calls.length;
+    const running = mainMocks.handlers.get('desktop:run-agent-task')!({}, taskRequest('启动扩展'));
+    try {
+      await vi.waitFor(() => expect(mainMocks.webContentsSend.mock.calls.slice(firstNotification)).toContainEqual([
+        'desktop:agent-event', expect.objectContaining({ type: 'approval.requested', request: expect.objectContaining({
+          kind: 'plugin-start', serverName: stage === 'prepare' ? 'pending-start' : '事件钩子 · SessionStart',
+        }) }),
+      ]));
+      if (reason === 'user') mainMocks.handlers.get('desktop:cancel-task')!({});
+      else {
+        mainMocks.handlers.get('desktop:close-ready')!({});
+        mainMocks.windowHandlers.window.get('close')!({ preventDefault: vi.fn() });
+      }
+      await expect(running).resolves.toMatchObject({ status: 'error', errorName: 'AbortError' });
+      if (reason === 'window-closed') {
+        await vi.waitFor(() => expect(mainMocks.webContentsSend.mock.calls.slice(firstNotification)).toContainEqual(['desktop:prepare-close']));
+        mainMocks.onceHandlers.get('desktop:close-prepared')!({}, null);
+        await vi.waitFor(() => expect(mainMocks.windowDestroy.mock.calls.length).toBe(priorDestroyCalls + 1));
+      }
+      const persisted = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state') as PersistedDesktopState;
+      const events = persisted.sessions.find(session => session.id === sessionId)!.events;
+      expect(events).toContainEqual(expect.objectContaining({ type: 'turn.cancelled', reason }));
+      expect(events.some(event => event.type === 'turn.failed')).toBe(false);
+      expect(events).toContainEqual(expect.objectContaining({ type: 'host.operation.result', status: 'cancelled' }));
+      expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorLoopCalls);
+    } finally { files.mockRestore(); }
+  });
+
+  it('restores unknown legacy running terminal history once without inventing a task for manual verification', async () => {
+    const sessionId = 'legacy-terminal-session';
+    const filePath = 'E:/user-data/agent-desktop.sqlite';
+    const snapshot: PersistedDesktopState = {
+      activeSessionId: sessionId,
+      sessions: [{ id: sessionId, attachments: [], events: [], terminalHistory: {
+        terminalId: 'legacy-terminal', workingDirectory: 'D:/work', command: 'echo old', output: 'old',
+        droppedBytes: 0, status: 'running', exitCode: null,
+      } }],
+      clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '旧终端', titleManuallyRenamed: false,
+        messages: [], prompt: '', attachments: [] }] },
+    };
+    writeDesktopDocuments(filePath, [{ name: 'session-state', value: snapshot }]);
+    const readSaved = () => readDesktopDocument(filePath, 'session-state') as PersistedDesktopState;
+    const restart = async () => {
+      vi.resetModules();
+      mainMocks.handlers.clear();
+      await import('../src/main/index.js');
+      await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+    };
+    const priorAgents = mainMocks.createVideoAgent.mock.calls.length;
+    await restart();
+    const first = readSaved().sessions[0]!.events;
+    expect(first).toMatchObject([
+      { type: 'host.operation.started', operation: 'terminal-connection-lost' },
+      { type: 'host.operation.result', status: 'failed', sourceEventIndex: 0 },
+      { type: 'effect.outcome.verified', scope: 'entire-call', outcome: 'unresolved', sourceEventIndex: 0,
+        evidence: { source: 'host', reference: 'terminal:legacy-terminal' } },
+    ]);
+    expect(projectRecoveryFacts(first).unknownEffects).toHaveLength(1);
+    expect(readSaved().sessions[0]!.terminalHistory?.status).toBe('running');
+    expect((mainMocks.handlers.get('desktop:load-client-state')!({}) as PersistedDesktopState['clientState'])
+      .conversations[0]!.terminalHistory?.status).toBe('disconnected');
+    await restart();
+    expect(readSaved().sessions[0]!.events).toEqual(first);
+    expect(() => mainMocks.handlers.get('desktop:verify-task-effect')!({}, { sessionId, sourceEventIndex: 0, outcome: 'not-applied',
+      description: '已确认旧进程停止且未应用结果。' })).toThrow('没有可关联任务');
+    const verified = readSaved().sessions[0]!.events;
+    expect(verified).toEqual(first);
+    await restart();
+    expect(readSaved().sessions[0]!.events).toEqual(verified);
+    expect(mainMocks.createVideoAgent.mock.calls.length).toBe(priorAgents);
+  });
+
+  it('returns the latest real task after manually verifying an orphan terminal observation and keeps that verification on restart', async () => {
+    const sessionId = 'legacy-terminal-with-task';
+    const filePath = 'E:/user-data/agent-desktop.sqlite';
+    const turnId = 'real-terminal-task' as never;
+    const snapshot: PersistedDesktopState = {
+      activeSessionId: sessionId,
+      sessions: [{ id: sessionId, attachments: [], events: [
+        { type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '检查旧任务。' },
+        { type: 'turn.failed', turnId, errorName: 'Error', errorMessage: '旧任务未完成。' },
+      ], terminalHistory: { terminalId: 'terminal-with-task', workingDirectory: 'D:/work', command: 'echo old', output: 'old',
+        droppedBytes: 0, status: 'running', exitCode: null } }],
+      clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '旧任务', titleManuallyRenamed: false,
+        messages: [], prompt: '', attachments: [] }] },
+    };
+    writeDesktopDocuments(filePath, [{ name: 'session-state', value: snapshot }]);
+    const restart = async () => {
+      vi.resetModules();
+      mainMocks.handlers.clear();
+      await import('../src/main/index.js');
+      await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+    };
+    const readSaved = () => readDesktopDocument(filePath, 'session-state') as PersistedDesktopState;
+    await restart();
+    const first = readSaved().sessions[0]!.events;
+    const source = first[3]!;
+    expect(source).toMatchObject({ type: 'host.operation.started', operation: 'terminal-connection-lost' });
+    expect(source.turnId).not.toBe(turnId);
+    const state = mainMocks.handlers.get('desktop:verify-task-effect')!({}, { sessionId, sourceEventIndex: 3, outcome: 'not-applied',
+      description: '已确认旧进程停止且未应用结果。' });
+    expect(state).toMatchObject({ rootTurnId: turnId, latestTurnId: turnId, status: 'failed' });
+    const verified = readSaved().sessions[0]!.events;
+    expect(verified.at(-1)).toMatchObject({ type: 'effect.outcome.verified', turnId: source.turnId, sourceEventIndex: 3,
+      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'user' } });
+    expect(projectRecoveryFacts(verified).unknownEffects).toEqual([]);
+    await restart();
+    expect(readSaved().sessions[0]!.events).toEqual(verified);
+    expect(() => mainMocks.handlers.get('desktop:verify-task-effect')!({}, { sessionId, sourceEventIndex: 3, outcome: 'not-applied', description: '已核验旧进程。' }))
+      .toThrow('已经核验或不存在');
+  });
+
+  it.each([false, true])('closes extensions after a persistence failure and preserves the first error when close fails=$0', async (closeFails) => {
+    const sessionId = await mainMocks.handlers.get('desktop:new-session')!({});
+    const cause = new Error('sqlite snapshot failed');
+    const cleanupError = new Error('SDK close failed');
+    let original: unknown;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent) => {
+      const runtime = mainMocks.extensionRuntimes.at(-1)!;
+      if (closeFails) vi.mocked(runtime.close).mockRejectedValueOnce(cleanupError);
+      mainMocks.writeDesktopDocuments.mockImplementationOnce(() => { throw cause; });
+      try { agent.session.append({ type: 'step.started', turnId: 'persistence-failed-turn', stepId: 'step' }); }
+      catch (error) { original = error; throw error; }
+      throw new Error('故障注入未触发。');
+    });
+    const running = mainMocks.handlers.get('desktop:run-agent-task')!({}, taskRequest('保存检查点'));
+    await expect(running).rejects.toMatchObject({ name: 'SessionPersistenceError', cause });
+    await expect(running).rejects.toBe(original);
+    const runtime = mainMocks.extensionRuntimes.at(-1)!;
+    expect(runtime.close).toHaveBeenCalledOnce();
+    const saved = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state') as PersistedDesktopState;
+    expect(saved.sessions.find(session => session.id === sessionId)!.events
+      .some(event => event.type === 'host.operation.started' && event.operation === 'close')).toBe(false);
+    // 失败锁存只属于刚结束的宿主进程；重启后读取已提交事实，以便下一项继续验证。
+    // 此文件的 Renderer 替身没有新增会话消息，只保留本项 Session 并提供匹配的展示快照。
+    writeDesktopDocuments('E:/user-data/agent-desktop.sqlite', [{ name: 'session-state', value: {
+      activeSessionId: sessionId, sessions: [saved.sessions.find(session => session.id === sessionId)!],
+      clientState: { ...saved.clientState, activeSessionId: sessionId, conversations: saved.clientState.conversations.filter(item => item.id === sessionId), drafts: [] },
+    } }]);
+    vi.resetModules();
+    mainMocks.handlers.clear();
+    await import('../src/main/index.js');
+    await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+  });
+
+  it('does not prepare extensions, create an Agent or request a model when the atomic start cannot be saved', async () => {
+    const sessionId = await mainMocks.handlers.get('desktop:new-session')!({});
+    const run = mainMocks.handlers.get('desktop:run-agent-task')!;
+    mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent, _prompt, _attachments, options: DesktopTaskOptions) => {
+      const turnId = options.turnId!;
+      agent.session.append({ type: 'step.started', turnId, stepId: 'start-save-step' });
+      agent.session.append({ type: 'assistant.message', turnId, stepId: 'start-save-step', content: '已完成上一轮。', toolCalls: [] });
+      agent.session.append({ type: 'step.completed', turnId, stepId: 'start-save-step' });
+      agent.session.append({ type: 'turn.completed', turnId });
+      return { responseText: '已完成上一轮。', turnId, artifacts: [] };
+    });
+    await expect(run({}, taskRequest('建立已提交历史'))).resolves.toMatchObject({ status: 'success' });
+    const agent = mainMocks.createVideoAgent.mock.results.at(-1)!.value;
+    const session = agent.session as DesktopPersistentSession;
+    const beforeEvents = [...session.events()];
+    const beforeBindings = [...session.turnMessageBindings()];
+    const beforeDocument = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state');
+    const request = taskRequest('保存起点前失败');
+    const extensionRuntime = await import('../src/main/extension-runtime.js');
+    const currentExtensions = await import('../src/main/extensions.js');
+    const prepare = vi.spyOn(extensionRuntime, 'prepareExtensions');
+    const files = vi.spyOn(currentExtensions.DesktopExtensions.prototype, 'files');
+    const model = vi.spyOn(agent.model, 'complete');
+    const priorAgents = mainMocks.createVideoAgent.mock.calls.length;
+    const priorLoops = mainMocks.runDesktopAgentTask.mock.calls.length;
+    const priorWrites = mainMocks.writeDesktopDocuments.mock.calls.length;
+    const cause = new Error('atomic start SQLite save failed');
+    mainMocks.writeDesktopDocuments.mockImplementationOnce(() => { throw cause; });
+    try {
+      const originalError = await Promise.resolve(run({}, request)).catch((error: unknown) => error);
+      expect(originalError).toMatchObject({ name: 'SessionPersistenceError', cause });
+      expect(session.events()).toEqual(beforeEvents);
+      expect(session.turnMessageBindings()).toEqual(beforeBindings);
+      expect(session.turnMessageBindings().some(binding => binding.userMessageId === request.userMessageId)).toBe(false);
+      expect(readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state')).toEqual(beforeDocument);
+      expect(files).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      expect(model).not.toHaveBeenCalled();
+      expect(mainMocks.createVideoAgent.mock.calls.length).toBe(priorAgents);
+      expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorLoops);
+
+      // Main 与生产 Session 都锁存同一错误，数据库恢复可写也不会启动另一轮。
+      await expect(run({}, request)).rejects.toBe(originalError);
+      await expect(mainMocks.handlers.get('desktop:save-client-state')!({}, request.clientState)).rejects.toBe(originalError);
+      let appendError: unknown;
+      try { session.append({ type: 'turn.completed', turnId: beforeBindings[0]!.turnId }); }
+      catch (error) { appendError = error; }
+      expect(appendError).toBe(originalError);
+      expect(mainMocks.writeDesktopDocuments.mock.calls.length).toBe(priorWrites + 1);
+      expect(session.events()).toEqual(beforeEvents);
+      expect(session.turnMessageBindings()).toEqual(beforeBindings);
+    } finally {
+      prepare.mockRestore(); files.mockRestore(); model.mockRestore();
+      // 重新加载宿主清除本项进程错误，仍使用失败之前已经提交的全部事实。
+      vi.resetModules();
+      mainMocks.handlers.clear();
+      await import('../src/main/index.js');
+      await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+    }
+    expect(mainMocks.handlers.get('desktop:get-active-session-id')!({})).toBe(sessionId);
+  });
+
+  it('leaves unfinished legacy turns without bindings unchanged through two restarts', async () => {
+    const sessionId = 'legacy-unbound-turn';
+    const turnId = 'legacy-unfinished' as never;
+    const filePath = 'E:/user-data/agent-desktop.sqlite';
+    const snapshot: PersistedDesktopState = {
+      activeSessionId: sessionId,
+      sessions: [{ id: sessionId, attachments: [], events: [
+        { type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '旧任务' },
+        { type: 'tool.called', turnId, stepId: 'legacy-step' as never, toolCallId: 'legacy-call' as never,
+          name: 'legacy_write', input: { path: 'D:/legacy-result.txt' } },
+      ] }],
+      clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '旧任务', titleManuallyRenamed: false,
+        messages: [{ id: 1, role: 'user', text: '旧任务', attachments: [] },
+          { id: 2, role: 'assistant', status: 'failed', errorMessage: '旧执行结果未确认。', activity: [], activityExpanded: false }],
+        prompt: '', attachments: [] }] },
+    };
+    writeDesktopDocuments(filePath, [{ name: 'session-state', value: snapshot }]);
+    const priorAgents = mainMocks.createVideoAgent.mock.calls.length;
+    for (let restart = 0; restart < 2; restart += 1) {
+      vi.resetModules();
+      mainMocks.handlers.clear();
+      await import('../src/main/index.js');
+      await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+      const saved = readDesktopDocument(filePath, 'session-state') as PersistedDesktopState;
+      expect(saved.sessions[0]!.events).toEqual(snapshot.sessions[0]!.events);
+      expect(saved.sessions[0]!.turnMessageBindings ?? []).toEqual([]);
+      expect(saved.sessions[0]!.events.some(event => event.type === 'turn.interrupted')).toBe(false);
+      expect(saved.clientState.conversations[0]!.messages).toEqual(snapshot.clientState.conversations[0]!.messages);
+      expect(projectRecoveryFacts(saved.sessions[0]!.events).unknownEffects).toMatchObject([
+        { sourceEventIndex: 2, source: snapshot.sessions[0]!.events[2] },
+      ]);
+    }
+    expect(mainMocks.createVideoAgent.mock.calls.length).toBe(priorAgents);
+  });
+
+  it('preserves normal completed result metadata while restoring response and artifacts from bound execution facts', async () => {
+    const sessionId = 'completed-bound-result';
+    const turnId = 'completed-bound-turn' as never;
+    const filePath = 'E:/user-data/agent-desktop.sqlite';
+    const snapshot: PersistedDesktopState = {
+      activeSessionId: sessionId,
+      sessions: [{ id: sessionId, attachments: [], turnMessageBindings: [
+        { executionVersion: 1, turnId, userMessageId: 1, assistantMessageId: 2 },
+      ], events: [
+        { type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '正常回答' },
+        { type: 'step.started', turnId, stepId: 'completed-step' as never },
+        { type: 'assistant.message', turnId, stepId: 'completed-step' as never, content: '来自真实事件的最终回答。', toolCalls: [] },
+        { type: 'step.completed', turnId, stepId: 'completed-step' as never }, { type: 'turn.completed', turnId },
+      ] }],
+      clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '正常回答', titleManuallyRenamed: false,
+        messages: [{ id: 1, role: 'user', text: '正常回答', attachments: [] },
+          { id: 2, role: 'assistant', status: 'completed', activity: [], activityExpanded: false,
+            result: { responseText: '旧展示副本', traceId: 'trace-original', conversationTitleError: '标题模型请求超时',
+              outputFiles: [{ path: 'D:/stale-output.mp4', fileName: 'stale-output.mp4' }],
+              outputs: [{ outputItemId: 'stale-output', status: 'published', path: 'D:/stale-output.mp4', fileName: 'stale-output.mp4' }] } }],
+        prompt: '', attachments: [] }] },
+    };
+    writeDesktopDocuments(filePath, [{ name: 'session-state', value: snapshot }]);
+    for (let restart = 0; restart < 2; restart += 1) {
+      vi.resetModules();
+      mainMocks.handlers.clear();
+      await import('../src/main/index.js');
+      await vi.waitFor(() => expect(mainMocks.handlers.get('desktop:run-agent-task')).toBeTypeOf('function'));
+      const loaded = mainMocks.handlers.get('desktop:load-client-state')!({}) as PersistedDesktopState['clientState'];
+      const assistant = loaded.conversations[0]!.messages[1]!;
+      expect(assistant).toMatchObject({ id: 2, status: 'completed', taskState: { latestTurnId: turnId, status: 'completed' },
+        result: { responseText: '来自真实事件的最终回答。', traceId: 'trace-original', conversationTitleError: '标题模型请求超时' } });
+      expect(assistant).not.toHaveProperty('result.outputFiles');
+      expect(assistant).not.toHaveProperty('result.outputs');
+      await mainMocks.handlers.get('desktop:save-client-state')!({}, loaded);
+      const saved = readDesktopDocument(filePath, 'session-state') as PersistedDesktopState;
+      expect(saved.sessions[0]!.events).toEqual(snapshot.sessions[0]!.events);
+      expect(saved.sessions[0]!.turnMessageBindings).toEqual(snapshot.sessions[0]!.turnMessageBindings);
+      expect(saved.clientState.conversations[0]!.messages[1]).toMatchObject({
+        result: { traceId: 'trace-original', conversationTitleError: '标题模型请求超时' },
+      });
+    }
   });
 
 });

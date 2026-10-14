@@ -2,17 +2,25 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model } from '@agent-desktop/model';
-import { InMemorySession } from '@agent-desktop/session';
-import { InMemoryToolRegistry } from '@agent-desktop/tools';
+import { InMemorySession, SessionPersistenceError, TurnCancellationError, projectRecoveryFacts } from '@agent-desktop/session';
+import { InMemoryToolRegistry, ToolExecutionError, type Tool } from '@agent-desktop/tools';
 import { prepareExtensions, selectSkills } from '../src/main/extension-runtime.js';
+import { adaptWhisperTool } from '../src/main/whisper-tool.js';
+import { adaptVisionTool } from '../src/main/vision-tool.js';
 import { readPlugin, readSkill, type PluginFiles } from '../src/main/extensions.js';
+import { taskToolGate } from '../src/main/agent-task-state.js';
+import { ToolApprovalGate } from '../src/main/tool-approval.js';
+
+// 本套使用真实 MCP；只替换未消费的 Electron 下载入口，避免 Node 测试加载桌面二进制。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extension runtime test'); } } }));
 
 const temporary: string[] = [];
 async function temp() { const path = await mkdtemp(join(tmpdir(), 'extension-runtime-')); temporary.push(path); return path; }
-afterEach(async () => { await Promise.all(temporary.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(temporary.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 async function plugin(): Promise<PluginFiles> {
   const directory = await temp();
@@ -22,9 +30,24 @@ async function plugin(): Promise<PluginFiles> {
 }
 
 describe('actual extension runtime tool chain', () => {
+  it('blocks legacy bundled servers and reports dependencies whose startup was denied', async () => {
+    const bundled = await readPlugin(resolve('apps/desktop/resources/plugins/video-editing'), 'plugin:video-editing', 'builtin');
+    const fixture = await plugin();
+    const approve = vi.fn(async () => false);
+    const legacy = { ...bundled, servers: [{ name: 'ffmpeg-probe', command: 'does-not-exist', args: [] }] };
+    const denied = { ...fixture, servers: fixture.servers.map(server => ({ ...server, name: 'ffmpeg' })) };
+    const runtime = await prepareExtensions({ plugins: [legacy, denied], skills: bundled.skills }, approve);
+    try {
+      expect(approve).toHaveBeenCalledTimes(1);
+      expect(runtime.tools.map(tool => tool.name)).toEqual(['load_skill']);
+      expect(runtime.tools[0]!.executionBoundary).toBe('read-only');
+      expect(runtime.instructions).toContain('semantic-editing: ffmpeg');
+      expect(runtime.instructions).toContain('不能声称依赖已可用');
+    } finally { await runtime.close(); }
+  });
   it('discovers and loads the bundled short drama skill through a real turn', async () => {
     const bundled = await readPlugin(resolve('apps/desktop/resources/plugins/video-editing'), 'plugin:video-editing', 'builtin');
-    const runtime = await prepareExtensions({ plugins: [bundled], skills: bundled.skills }, async () => true, undefined, '$short-drama-editing 剪辑冲突对白');
+    const runtime = await prepareExtensions({ plugins: [bundled], skills: bundled.skills }, async () => false, undefined, '$short-drama-editing 剪辑冲突对白');
     const complete = vi.fn<Model['complete']>(async request => request.messages.some(message => message.role === 'tool')
       ? { text: '短剧技能已加载', toolCalls: [] }
       : { toolCalls: [{ id: 'short-drama' as never, name: 'load_skill', input: { id: 'plugin:video-editing/short-drama-editing' } }] });
@@ -143,8 +166,145 @@ describe('actual extension runtime tool chain', () => {
     expect(denied.tools).toHaveLength(0);
     await denied.close();
     const runtime = await prepareExtensions({ plugins: [files], skills: [] }, async request => request.kind === 'plugin-start');
-    try { expect(await runtime.tools[0]!.execute({}, { toolCallId: 'deny' as never, reportProgress: () => {} })).toMatchObject({ status: 'error', message: '用户拒绝了插件工具调用。' }); }
+    try { expect(await runtime.tools[0]!.execute({}, { toolCallId: 'deny' as never, reportProgress: () => {} })).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' }); }
     finally { await runtime.close(); }
+  });
+
+  it('records MCP denial without unknown effects or repeated approval in the same turn', async () => {
+    const files = await plugin();
+    const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async request => request.kind === 'plugin-start');
+    const runtime = await prepareExtensions({ plugins: [files], skills: [] }, approve);
+    const session = new InMemorySession();
+    const tools = new InMemoryToolRegistry();
+    const tool = runtime.tools.find(tool => tool.name.endsWith('_wait'))!;
+    tools.register(tool);
+    let requests = 0;
+    const model: Model = { complete: async () => ++requests === 1
+      ? { toolCalls: [
+          { id: 'first' as never, name: tool.name, input: {} },
+          { id: 'repeat' as never, name: tool.name, input: {} },
+        ] }
+      : { text: '调用已拒绝。', toolCalls: [] } };
+    try {
+      await runTurn({ session, tools, model, systemPrompt: { build: () => '审批插件调用。' } }, '等待', {
+        beforeToolCall: input => taskToolGate(session.events(), input),
+      });
+      expect(approve.mock.calls.map(([request]) => request.kind)).toEqual(['plugin-start', 'plugin-tool']);
+      expect(session.events().filter(event => event.type === 'tool.result').map(event => event.result)).toMatchObject([
+        { status: 'error', failureKind: 'denied' }, { status: 'error', failureKind: 'permanent' },
+      ]);
+      expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'repeat'))
+        .toMatchObject({ boundary: 'not-executed' });
+      expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
+      expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
+      await expect(readFile(join(files.directory, 'waiting'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await runtime.close(); }
+  });
+
+  it('propagates checkpoint persistence failure before sending an approved MCP request', async () => {
+    const files = await plugin();
+    const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
+    const runtime = await prepareExtensions({ plugins: [files], skills: [] }, approve);
+    // spy 保留真实 SDK 实现，只有本地保存边界注入失败。
+    const callTool = vi.spyOn(Client.prototype, 'callTool');
+    const error = new SessionPersistenceError(new Error('sqlite unavailable'));
+    const checkpoint = vi.fn(() => { throw error; });
+    try {
+      const tool = runtime.tools.find(tool => tool.name.endsWith('_wait'))!;
+      expect(tool.executionBoundary).toBe('checkpointed');
+      await expect(tool.execute({}, { toolCallId: 'save-failed' as never, reportProgress: () => {}, checkpoint })).rejects.toBe(error);
+      expect(approve.mock.calls.map(([request]) => request.kind)).toEqual(['plugin-start', 'plugin-tool']);
+      expect(checkpoint).toHaveBeenCalledExactlyOnceWith({ kind: 'mcp', pluginId: files.item.id, serverName: 'local', toolName: 'wait' });
+      expect(callTool).not.toHaveBeenCalled();
+      await expect(readFile(join(files.directory, 'waiting'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await runtime.close(); }
+  });
+
+  it('keeps a disconnected MCP request unknown and blocks later external calls', async () => {
+    const files = await plugin();
+    const runtime = await prepareExtensions({ plugins: [files], skills: [] }, async () => true);
+    const tools = new InMemoryToolRegistry();
+    runtime.tools.forEach(tool => tools.register(tool));
+    const session = new InMemorySession();
+    const wait = runtime.tools.find(tool => tool.name.endsWith('_wait'))!;
+    const echo = runtime.tools.find(tool => tool.name.endsWith('_echo'))!;
+    let requests = 0;
+    const model: Model = { complete: async () => ++requests === 1
+      ? { toolCalls: [
+          { id: 'lost' as never, name: wait.name, input: {} },
+          { id: 'later' as never, name: echo.name, input: { text: 'unsafe repeat' } },
+        ] }
+      : { text: '需要核验外部效果。', toolCalls: [] } };
+    const pending = runTurn({ session, tools, model, systemPrompt: { build: () => '真实插件请求。' } }, '等待', {
+      beforeToolCall: input => taskToolGate(session.events(), input),
+    });
+    try {
+      await vi.waitFor(async () => expect(await readFile(join(files.directory, 'waiting'), 'utf8')).toBe('waiting'));
+      await runtime.close();
+      await pending;
+      expect(session.events().filter(event => event.type === 'tool.result').map(event => event.result)).toMatchObject([
+        { status: 'error', failureKind: 'unknown-outcome' }, { status: 'error', failureKind: 'permanent' },
+      ]);
+      const unknown = projectRecoveryFacts(session.events()).unknownEffects;
+      expect(unknown).toHaveLength(1);
+      expect(unknown[0]!.source).toMatchObject({ type: 'tool.called', toolCallId: 'lost', boundary: 'checkpointed' });
+      expect(unknown[0]!.preparedEventIndexes).toHaveLength(1);
+      expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'later'))
+        .toMatchObject({ boundary: 'not-executed' });
+    } finally { await runtime.close(); }
+  });
+
+  it('classifies model parameter errors before approval and server errors as unknown outcomes', async () => {
+    const files = await plugin();
+    const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
+    const runtime = await prepareExtensions({ plugins: [files], skills: [] }, approve);
+    const checkpoint = vi.fn();
+    const context = { toolCallId: 'error' as never, reportProgress: () => {}, checkpoint };
+    try {
+      const tool = runtime.tools[0]!;
+      await expect(tool.execute([], context)).resolves.toMatchObject({ status: 'error', failureKind: 'permanent' });
+      expect(approve).toHaveBeenCalledOnce();
+      expect(checkpoint).not.toHaveBeenCalled();
+      // 服务端 isError 响应是外部边界数据，不能被当成“未执行”的证明。
+      const failed = { isError: true, content: [{ type: 'text' as const, text: 'partial write failed' }] };
+      const callTool = vi.spyOn(Client.prototype, 'callTool').mockResolvedValueOnce(failed);
+      await expect(tool.execute({}, context)).resolves.toMatchObject({ status: 'error', failureKind: 'unknown-outcome', output: failed });
+      const original = new Error('connection lost');
+      callTool.mockRejectedValueOnce(original);
+      await expect(tool.execute({}, context)).rejects.toMatchObject({ constructor: ToolExecutionError, failureKind: 'unknown-outcome', cause: original, message: original.message });
+      const persistence = new SessionPersistenceError(new Error('result checkpoint failed'));
+      callTool.mockRejectedValueOnce(persistence);
+      await expect(tool.execute({}, context)).rejects.toBe(persistence);
+      const classified = new ToolExecutionError('request denied by server', 'denied');
+      callTool.mockRejectedValueOnce(classified);
+      await expect(tool.execute({}, context)).rejects.toBe(classified);
+    } finally { await runtime.close(); }
+  });
+
+  it.each(['whisper', 'vision'])('does not downgrade %s startup persistence failure into unavailable service instructions', async name => {
+    const files = await plugin();
+    const builtin = { ...files, item: { ...files.item, id: `plugin:${name}`, name, source: 'builtin' as const },
+      servers: files.servers.map(server => ({ ...server, name })) };
+    const error = new SessionPersistenceError(new Error('startup checkpoint failed'));
+    const connect = vi.spyOn(Client.prototype, 'connect');
+    await expect(prepareExtensions({ plugins: [builtin], skills: [] }, async () => { throw error; }, undefined, undefined,
+      { visionConfiguration: { visionApiKey: 'fixture', visionBaseUrl: 'https://vision.example/v1' } })).rejects.toBe(error);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('keeps tools wrapped by process hooks opaque even when the inner tool is read-only', async () => {
+    const files = await plugin();
+    const runtime = await prepareExtensions({ plugins: [{ ...files, servers: [], hooks: [{ event: 'PreToolUse', command: 'echo hook', timeoutMs: 1000 }] }], skills: [] }, async () => false);
+    try {
+      const wrapped = runtime.wrapTool({ name: 'read', description: 'read', inputSchema: { type: 'object' }, executionBoundary: 'read-only', execute: async () => ({ status: 'success', output: {} }) });
+      expect(wrapped.executionBoundary ?? 'opaque').toBe('opaque');
+      // 媒体适配器前后任一层有钩子时，最终门禁看到的都必须是外层不透明边界。
+      const raw: Tool = { name: 'media', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute: async () => ({ status: 'success', output: {} }) };
+      for (const adapt of [adaptWhisperTool, adaptVisionTool]) {
+        expect(runtime.wrapTool(adapt(raw, undefined)).executionBoundary ?? 'opaque').toBe('opaque');
+        expect(adapt(runtime.wrapTool(raw), undefined).executionBoundary).toBe('opaque');
+      }
+    } finally { await runtime.close(); }
   });
 
   it('cancels an outstanding real MCP request and exits the process', async () => {
@@ -158,10 +318,30 @@ describe('actual extension runtime tool chain', () => {
       const pid = JSON.parse((echo.output as { content: { text: string }[] }).content[0]!.text).pid as number;
       const pending = runtime.tools.find(tool => tool.name.endsWith('_wait'))!.execute({}, context);
       await vi.waitFor(async () => expect(await readFile(join(files.directory, 'waiting'), 'utf8')).toBe('waiting'));
-      controller.abort();
-      await expect(pending).rejects.toThrow();
+      const cancelled = new TurnCancellationError('user');
+      controller.abort(cancelled);
+      await expect(pending).rejects.toBe(cancelled);
       await runtime.close();
       expect(() => process.kill(pid, 0)).toThrow();
+    } finally { await runtime.close(); }
+  });
+
+  it('preserves the original cancellation reason while awaiting MCP approval', async () => {
+    const files = await plugin();
+    const controller = new AbortController();
+    const publish = vi.fn();
+    const gate = new ToolApprovalGate(publish);
+    const runtime = await prepareExtensions({ plugins: [files], skills: [] },
+      async (request, signal) => request.kind === 'plugin-start' ? true : gate.request(request, signal), controller.signal);
+    const checkpoint = vi.fn();
+    try {
+      const pending = runtime.tools[0]!.execute({}, { signal: controller.signal, toolCallId: 'approval-cancel' as never,
+        reportProgress: () => {}, checkpoint });
+      await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+      const cancelled = new TurnCancellationError('user');
+      controller.abort(cancelled);
+      await expect(pending).rejects.toBe(cancelled);
+      expect(checkpoint).not.toHaveBeenCalled();
     } finally { await runtime.close(); }
   });
 });

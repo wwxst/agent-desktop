@@ -8,11 +8,15 @@
 Change                          必须真实验收的理由
 关闭、保存、重启恢复              单元测试替换了 fs 与 IPC，证明不了真实往返
 产物登记与文件定位                revealFile 走真实会话校验与磁盘存在性检查
-旧快照兼容                       只有真实解析器 + 真实启动才能证明「能启动且恢复正确」
+当前契约快照恢复                 真实解析器与真实启动验证新版本自身的保存和恢复
 主进程 ↔ 渲染进程握手             preload 桥接与 IPC 形状在真实进程边界才暴露
 ```
 
 只用「进程能启动」不算验收：必须断言可观察结果（卡片数量、卡片文案、真实错误文本、磁盘上的字段）。
+
+数据契约和验收范围遵循根 `AGENTS.md` 的项目开发总原则；历史快照兼容、旧配置迁移和跨版本回滚不是默认门禁。契约变更时同步更新夹具及断言，继续使用隔离目录验证当前版本自身的持久化和恢复。
+
+新增验收脚本、临时验证脚本或反证用例同样遵循根最小实现规范，只在任务明确要求时增加；否则复用已有测试和真实入口。下面的脚本编写要求只适用于任务已经明确要求编写脚本的情况。
 
 ## 启动真实产物
 
@@ -73,6 +77,8 @@ await page.waitForFunction(
 
 ### 持久化层接受的事件类型（写夹具前必读）
 
+下表是常用事件子集，完整结构以 `session-persistence.ts` 的 `readSessionEvent` 为准。
+
 ```text
 Event type              约束
 turn.started            只带 turnId
@@ -88,7 +94,7 @@ tool.result             result 为 { status: 'success', output } 或 { status: '
 两个高频踩坑：
 
 - `tool.result` 的 success **必须带 `output`**；error 分支字段是 **`message` 不是 `error`**。
-- **`turn.failed` 不在持久化层接受范围内**（它只存在于内存态 agent-loop 契约，形状为 `{ type, turnId, durationMs, errorName, errorMessage }`）。失败在持久化事实里只体现为**缺少 `turn.completed`**。
+- 当前持久化事实接受 `turn.failed`（`errorName`、`errorMessage`）、`turn.cancelled`（`reason`）和 `turn.interrupted`（`reason`）；失败不能只用缺少 `turn.completed` 推断。恢复、计划和上下文事实的结构以 `session-persistence.ts` 的 `readSessionEvent` 为权威，夹具必须按当前契约构造。
 
 ## 反证：证明验收真的能捕获缺陷
 

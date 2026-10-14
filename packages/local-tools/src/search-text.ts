@@ -125,6 +125,7 @@ const spawnRipgrep: RipgrepRunner = (args, signal, onMatch) => new Promise((reso
  * 让 `.` 或 `1` 意外变成正则会给出难以解释的结果。
  */
 export class SearchTextTool implements Tool {
+  readonly executionBoundary = 'read-only' as const;
   readonly name = 'search_text';
   readonly description = '在当前会话工作目录范围内按字面文本搜索文件内容，返回匹配文件、行号和行内容；'
     + '遵循 ripgrep 的默认规则（遵守 .gitignore、跳过隐藏文件与二进制文件）';

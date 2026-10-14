@@ -11,7 +11,7 @@ afterEach(cleanup);
 const deepseekModel = DEFAULT_MODEL_PROVIDERS.find(provider => provider.id === 'deepseek')!.models[0]!;
 const openaiModel = DEFAULT_MODEL_PROVIDERS.find(provider => provider.id === 'openai')!.models[0]!;
 // 供应商目录本身由配置测试覆盖；编辑测试只保留每家一个真实目录项。
-const initial: RuntimeSettings = { modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, models: [provider.models[0]!] })), conversationModel: { providerId: 'deepseek', modelId: deepseekModel.id }, fallbackVisionModel: { providerId: 'openai', modelId: openaiModel.id }, fallbackVisionEnabled: false, whisper: { modelPath: '', cliPath: '' }, memoryEnabled: true, memoryFromToolChatsEnabled: true };
+const initial: RuntimeSettings = { modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, models: [provider.models[0]!] })), conversationModel: { providerId: 'deepseek', modelId: deepseekModel.id }, fallbackVisionModel: { providerId: 'openai', modelId: openaiModel.id }, fallbackVisionEnabled: false, memoryEnabled: true, memoryFromToolChatsEnabled: true };
 function setup(save = vi.fn<AgentClientApi['saveRuntimeSettings']>(async () => initial), list = vi.fn<AgentClientApi['listProviderModels']>(async () => []), settings = initial, options = { openEditor: true, isProcessing: false }) {
   // 本组件只消费这三个宿主方法，其余方法由 App 的完整契约测试覆盖。
   const api = { saveRuntimeSettings: save, listProviderModels: list, openModelConfig: async () => {} };
