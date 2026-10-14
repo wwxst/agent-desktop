@@ -269,7 +269,7 @@ Session、Turn、Step、Tool Result、异常传播和 Agent 与 Agent Loop 的�
 
 ```text
 Review signal             审查信号       未覆盖代码、难测试代码或暂时无静态调用只能触发审查，不能单独作为删除依据
-Deletion evidence         删除证据       删除前必须确认真实调用链、运行时注册、配置引用、公共 API 和当前业务消费者均无用途
+Deletion evidence         删除证据       确认真实调用链、注册、配置和消费者的变更影响；过时契约可直接替换，同步更新调用方
 Review scope              审查范围       Simplification Review 只覆盖本次修改模块、直接调用链和本次验证暴露的问题
 Reuse first               优先复用       新 Gate、测试脚本和 CI 优先复用现有脚本、TypeScript、Vitest 和 Node 能力
 Real verification         真实验证       只整理已有稳定入口；缺少本机依赖或凭据时明确 FAIL/SKIP，不把跳过伪装成 PASS
@@ -316,6 +316,7 @@ Real E2E                         已有入口     复用 `pnpm deepseek-agent`�
 * 是否为了测试制造不存在的契约？
 * 是否覆盖本次变更的关键路径和失败路径？
 * 是否存在只验证实现细节、没有验证实际行为的测试？
+* 是否已按最新确认的数据契约更新测试，并删除仅为历史兼容保留的过时断言？
 
 #### Documentation（文档）
 
@@ -410,7 +411,7 @@ Main status:
 
 本地插件和技能新增三个真实消费者依赖，精确固定版本：`apps/desktop` 使用 `@modelcontextprotocol/sdk` 1.31.0 处理工具协议、连接及进程关闭，`yaml` 2.9.1 解析技能元数据；`packages/client` 使用 `lucide-react` 1.49.0 提供管理图标。依赖均不进入 Core，没有新 package 或通用插件框架。
 
-内置资源位于 `apps/desktop/resources/{plugins,skills}`，由 `app.getAppPath()/resources` 读取。当前构建后的本地桌面入口随应用目录提供资源；生成安装包时必须一起打包，不能只复制 `dist`。`pnpm client:web:test` 先构建桌面产物，再运行浏览器与 Electron 验收。验证包括 SDK 子进程、SQLite 安装迁移、界面和 Electron 重启；本地模型协议夹具不能声明真实 DeepSeek 服务验收。
+内置资源位于 `apps/desktop/resources/{plugins,skills}`，由 `app.getAppPath()/resources` 读取。当前构建后的本地桌面入口随应用目录提供资源；生成安装包时必须一起打包，不能只复制 `dist`。`pnpm client:web:test` 先构建桌面产物，再运行浏览器与 Electron 验收。验证包括 SDK 子进程、当前数据契约下的 SQLite 持久化往返、界面和 Electron 重启；本地模型协议夹具不能声明真实 DeepSeek 服务验收。
 
 根开发依赖保持最小：
 
@@ -433,7 +434,7 @@ Electron Updater         应用更新工具     从正式发布源下载、校�
 
 桌面包固定 `electron-updater@6.8.9`，唯一职责是检查、下载、校验和安装应用更新；开发依赖固定 `electron-builder@26.15.3`，唯一职责是生成 Windows 安装包。两者只属于桌面宿主，不进入 Agent Core（智能体核心）。`electron-winstaller` 是打包工具的传递依赖，本项目使用 NSIS（Windows 安装器），因此明确禁止它的安装脚本。
 
-运行 `corepack pnpm desktop:package:win` 先构建正式桌面产物，再生成 `apps/desktop/dist/installer/Agent-Desktop-Setup-<版本>-x64.exe`、对应 `.blockmap` 与 `latest.yml`。配置由 `apps/desktop/electron-builder.yml` 唯一维护，安装位置为当前用户，卸载保留用户数据。包名及会话存储目录保持已有身份。
+运行 `corepack pnpm desktop:package:win` 先构建正式桌面产物，再生成 `apps/desktop/dist/installer/Agent-Desktop-Setup-<版本>-x64.exe`、对应 `.blockmap` 与 `latest.yml`。配置由 `apps/desktop/electron-builder.yml` 唯一维护，安装位置为当前用户，卸载保留用户数据。包名及会话存储目录以最新确认的产品身份和数据契约为准。
 
 安装包使用已安装的 Electron（桌面运行时）44.0.0；`node-pty@1.1.0` 提供 Windows x64 的 Node-API（原生模块稳定接口）预编译二进制，已在真实打包运行时验证，因此不要求本机重新编译。应用文件直接落在 `resources/app`，保持 `spawn`（子进程启动）所需的真实磁盘路径；资源、插件、技能、ripgrep 和终端依赖随包提供，不在 Agent 工具中加入 Electron 路径判断。
 
@@ -443,7 +444,9 @@ Electron Updater         应用更新工具     从正式发布源下载、校�
 
 ## 0.x Policy（0.x 策略）
 
-项目仍处于 `0.x`。发现 package 边界、命名或 TypeScript 配置错误时，优先直接修正；不要为了尚未发布的内部 API 创建兼容层。
+项目开发和审查以根 [`AGENTS.md` 的项目开发总原则](../AGENTS.md#项目开发总原则) 为权威标准。允许按最新确认需求、架构和数据契约进行破坏性重构；历史程序、接口及数据兼容不作为验收或合并门禁。
+
+接口与数据契约变更后，按新版本验证功能、事务、执行安全、持久化往返、关闭及重启恢复，并同步修改直接受影响的文档和测试。旧版本升级、旧数据读取和跨版本回滚不构成默认验证要求；验收使用隔离测试数据，不能从允许删除兼容代码推导出删除真实用户数据的授权。
 
 ## Engineering Invariants（工程不变量）
 
