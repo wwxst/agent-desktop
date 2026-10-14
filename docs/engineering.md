@@ -378,7 +378,7 @@ Review                       PASS
 Real Verification            PASS（仅涉及真实外部链路时要求）
 ```
 
-第五阶段集成候选包含真实云 Vision（视觉分析）和 Responses（响应协议）能力，两项真实验证仍为 `SKIP`，继续阻塞 `main` 合并。本轮规范整合不取消该要求；缺少获授权测试凭据时保留阻塞，不以本机协议夹具或双平台 CI 通过代替云验证。历史兼容要求取消不等于取消当前架构的真实功能验收。
+集成候选的真实云 Vision（视觉分析）和 Responses（响应协议）仍是 `main` 合并门禁。2026-10-14 已对运行时代码 `b4dd427c169c9a68a6a41eaa87f02819c39804f5` 使用 DeepSeek 官方 `deepseek-flash` 完成两项补充验收，结论与覆盖限制见[真实云验收报告](acceptance/deepseek-flash-cloud-20261014.md)。该证据关闭本候选此前的两项云验证缺项，历史报告中的 `SKIP` 保留；后续涉及外部链路的变更仍需适用的真实验证，不能以本机协议夹具或双平台 CI 代替。进入最终合并审查还须核对候选准确提交的工程门禁与审查结果，并取得正式合并授权。
 
 合并方式为 `merge feature branch → main`。只有 milestone（里程碑）完成后才创建 tag（标签）。
 
