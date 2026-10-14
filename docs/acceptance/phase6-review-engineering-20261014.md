@@ -1,6 +1,6 @@
 # 第六阶段第三轮：工程与交付独立审查
 
-日期：2026-10-14。审查对象为 `codex/phase6-main-integration` 的集成工作树，来源为主线 `9c1a002015925070ba8274b4c20a986acf06fcea` 与第五阶段候选 `5bc555062e51ee61d303d0c7092d6e75ea1396d7`。本报告补记了已有浏览器套件及安装版媒体专项结果；合并尚未提交，准确最终提交与远端持续集成结果待补记，不能将工作树日志写成最终提交全部通过。
+日期：2026-10-14。审查对象为 `codex/phase6-main-integration`，来源为主线 `9c1a002015925070ba8274b4c20a986acf06fcea` 与第五阶段候选 `5bc555062e51ee61d303d0c7092d6e75ea1396d7`。集成已提交为 `26f09683521adba34a77cb1561ce0740a0d3f560`，两个父提交与上述来源一致，双方均为候选祖先。本报告补记了准确代码提交的本地工程门禁、已有浏览器及安装版专项、首轮远端失败和最小修正；修正后准确最终提交的双平台持续集成结果待补记。
 
 审查者此前处理过 Web（网页客户端）及 README、架构文档冲突，本轮独立核对工程配置、现有测试改动、打包内容、文档与实际实现的一致性，没有修改生产业务代码或新增测试。
 
@@ -40,12 +40,16 @@ pnpm client:web:build       网页客户端构建            通过。
 pnpm desktop:package:win    Windows 安装包构建        通过，生成安装器和分块摘要。
 Isolated NSIS install       隔离安装                  退出码 0，未覆盖原安装，注册表及快捷方式已恢复。
 Browser and installed UI   浏览器及安装版界面验收    首轮失败项分别复测通过，详细覆盖与跳过见下文。
-Windows and Ubuntu CI      双平台持续集成            候选尚未提交推送，准确提交结果待补记。
+Windows and Ubuntu CI      双平台持续集成            首轮 Ubuntu 通过、Windows 三项等待超时；最小修正后准确提交结果待补记。
 Real Cloud Vision          真实云视觉                SKIP，不能用本机协议夹具替代。
 Real Cloud Responses       真实云响应协议            SKIP，不能用历史验收或自动化检查替代。
 ```
 
 本地原始证据位于 `logs/phase6-integration/`，已读取 `check.log`、`architecture.log`、`desktop-build.log`、`web-build.log`、`package-win-final.log`、`install-isolated-final.log`、`install-isolated-repaired.log`、浏览器及专项复测日志和隔离安装结果。本审查没有重复运行全量门禁；命令的运行环境及最终版本覆盖范围由总报告记录。
+
+在准确合并提交 `26f09683521adba34a77cb1561ce0740a0d3f560` 上重新执行冻结锁安装、全量工程检查、独立架构检查及 Desktop/Web 构建均通过，`final-engineering.json` 明确绑定该提交，`final-check.log` 仍为 `86` 个测试文件、`1014` 项通过。`final-resource-hashes.json` 核对所有受测入口与当前构建一致，新旧安装仅 Whisper 的标准错误诊断入口发生变化，其他实际媒体入口保持相同产物；渲染资源的生产对应关系由总报告记录。
+
+准确合并提交的 [首轮远端持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38507495465) 已结束：Ubuntu 通过，Windows 失败。已读取 `ci-merge.json` 和 `ci-merge-windows.log`，Windows 其余 `1011` 项通过，三个真实 PowerShell（Windows 命令解释器）用例仅记录默认 `5000ms` 测试等待超时，没有业务断言失败。最小修正仅将该既有真实进程测试分组的等待设为 `30_000ms` 并补中文说明，没有更改生产命令时限、取消逻辑、审批或原有断言，没有新增测试用例。现有命令聚焦 `14` 项及测试类型检查通过，日志为 `ci-fix-command-test.log`、`ci-fix-test-types.log`；仍须以修正提交的准确双平台远端结果关闭此工程失败项。
 
 浏览器首轮共 `74` 项通过、`18` 项跳过、`2` 项失败，日志为 `browser-installed.log`。媒体探测插件回退场景五秒内未等到完成文本，但原始请求证据已有真实探测成功及下一模型请求；将现有最终回复等待调整为适合真实进程验收的时间后，聚焦复测该场景通过，保留原完成文本、结果及回退断言。Whisper 场景初次重复安装视频剪辑插件被现有保护拒绝，已核对 Vision 与 Whisper 共用外部指定的验收目录，属于场景状态污染；后续改用隔离目录复测，没有删除生产重复安装保护。
 
@@ -58,6 +62,10 @@ Real Cloud Responses       真实云响应协议            SKIP，不能用历�
 最后重建的安装器为 `apps/desktop/dist/installer/Agent-Desktop-Setup-0.0.2-x64.exe`，大小 `127582028` 字节，SHA-256 为 `baf2b88b469dd9d2324f8404c8142414111e3693e9ab95fe1ff003f817a5038b`。隔离安装目录为 `logs/phase6-integration/最终 安装验收/`，`install-isolated-repaired.log` 的实际摘要与文件再次核对一致；原安装的 `8120` 个文件保持未变，新安装记录 `8144` 个文件，注册表及快捷方式均恢复。已独立核对主进程、预加载桥、三插件清单和入口、视频剪辑技能清单、Windows x64 ripgrep 与终端原生模块均存在。此前 `322234…` 摘要对应前一轮安装器；媒体专项的实际入口与证据范围按上述日志记录，打包及安装成功本身不替代运行验收。
 
 ## 最终交付边界
+
+第二次准确提交 `54cc2c545a6030dadf64f033e92ab54faa282faf` 的持续集成仍未通过：Ubuntu 通过，Windows 的 PowerShell、FFmpeg 取消与 SQLite 用例在重叠时段分别超过 30 秒、20 秒、五秒。单组等待放宽不足以关闭问题。最终方案撤销该测试等待修改，保留原时限及全部断言，只在 Windows 工程门禁设置 `VITEST_MAX_WORKERS=1` 顺序执行现有完整套件；准确提交持续集成结果必须重新核对。
+
+追加独立只读审查确认：Vitest `4.1.11` 原生读取 `VITEST_MAX_WORKERS`，Ubuntu 的空值不覆盖默认并行度。相关进程取消生产代码及有效断言与已通过的第五阶段相同，没有发现新增生产缺陷；两次日志不能证明具体 CPU 或磁盘瓶颈。本地顺序调度 `pnpm check` 已通过全部 `86` 文件、`1014` 项测试及 `19` 工作区检查，耗时 `74.34` 秒，证据为 `check-serial.log`，不能以此代替最终远端结果。
 
 最终候选准确提交、主线祖先关系、远端同一提交的 Windows/Ubuntu 持续集成，以及浏览器、安装版和真实媒体结果由后续补记和第六阶段总报告提供。即使这些工程项通过，真实云 Vision 与 Responses 的必需验证未完成时，总体 main 合并结论仍为 `BLOCKED`。
 

@@ -135,6 +135,10 @@ Whisper 独立目录的下一轮复验在长音频读取 `transcript.json` 时�
 
 首次远端 [Windows/Ubuntu 候选持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38507495465) 为 Ubuntu 通过、Windows 失败。Windows 的 `run-command.test.ts` 中三个真实 PowerShell 用例触及 Vitest 默认五秒时限，其余 1011 项通过，未显示业务断言失败；不能把该运行记为通过。最小修正仅把这一组真实进程验收等待设为 30 秒，生产命令超时、取消和所有结果断言不变，没有新增用例、跳过测试或全局放宽时限。现有 14 项聚焦回归及测试类型检查通过，新准确提交的双平台持续集成待补记。
 
+`54cc2c545a6030dadf64f033e92ab54faa282faf` 的[第二次持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38508002579) 仍为 Ubuntu 通过、Windows 失败：首个 PowerShell 用例超过 30 秒、FFmpeg 取消用例超过 20 秒、SQLite 用例超过五秒，三组执行时间重叠。放宽单组等待没有解决问题，不能计为修复。已撤销该 30 秒调整，恢复原有断言和时限；改为只在 Windows 持续集成的工程门禁设置 `VITEST_MAX_WORKERS=1`，完整顺序执行全部测试。Ubuntu 保留默认并行度，生产代码不变；最终调度修正的双平台结果待验证。
+
+本地同样设置 `VITEST_MAX_WORKERS=1` 后，`pnpm check` 在 74.34 秒内通过 86 个文件、1014 项测试及 19 个工作区架构检查，原始日志为 `check-serial.log`。独立审查确认 Vitest 原生读取该变量，全部用例、原时限及取消结果断言保留。日志仅证明并行运行时观测到时延，尚不能确认具体资源瓶颈；是否关闭远端失败须以调度修正后的准确提交持续集成为准。
+
 ## 三轮审查及最终门禁
 
 - [第一轮集成完整性](phase6-review-integration-20261014.md)：核对主线界面及模型组件、第五阶段核心、唯一视觉注入和当前跨进程契约，没有未关闭 P0/P1。

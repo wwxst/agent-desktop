@@ -56,6 +56,9 @@ jobs:
           $mediaBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Run engineering gate
+        env:
+          # Windows 并行运行时观测到多组超时；保留原时限并顺序运行全部测试。
+          VITEST_MAX_WORKERS: ${{ runner.os == 'Windows' && '1' || '' }}
         run: pnpm check
 
       - name: Build Desktop
