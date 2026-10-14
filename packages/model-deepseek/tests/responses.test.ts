@@ -51,6 +51,42 @@ it('uses configured Chat model and output limit without DeepSeek-only fields for
   expect(body).toMatchObject({ model: 'chat-model', max_tokens: 512 });
   expect(body).not.toHaveProperty('thinking');
 });
+it.each(['chat-completions', 'responses'] as const)('uses separate summary and normal output caps without mutating the configured default: %s', async protocol => {
+  const received: Record<string, unknown>[] = [];
+  const baseUrl = await host((body, res, url) => {
+    expect(url).toBe(protocol === 'responses' ? '/v1/responses' : '/v1/chat/completions');
+    received.push(body);
+    res.setHeader('Content-Type', 'text/event-stream');
+    if (protocol === 'responses') event(res, { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '完成' }] }] } });
+    else event(res, { choices: [{ delta: { content: '完成' }, finish_reason: 'stop' }] });
+    res.end(protocol === 'responses' ? '' : 'data: [DONE]\n\n');
+  });
+  const model = new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol, maxOutputTokens: 4096 });
+  await model.complete({ ...request, tools: [], maxOutputTokens: 192 });
+  await model.complete({ ...request, maxOutputTokens: 768 });
+  await model.complete(request);
+  const field = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
+  expect(received.map(body => body[field])).toEqual([192, 768, 4096]);
+  expect(received[0]?.tools).toEqual([]);
+  expect(received[1]?.tools).toHaveLength(1);
+  for (const body of received) expect(body).not.toHaveProperty(protocol === 'responses' ? 'max_tokens' : 'max_output_tokens');
+});
+it.each(['chat-completions', 'responses'] as const)('uses request-only output caps and preserves absent limits: %s', async protocol => {
+  const received: Record<string, unknown>[] = [];
+  const baseUrl = await host((body, res) => {
+    received.push(body);
+    res.setHeader('Content-Type', 'text/event-stream');
+    if (protocol === 'responses') event(res, { type: 'response.completed', response: { status: 'completed', output: [] } });
+    else event(res, { choices: [{ delta: {}, finish_reason: 'stop' }] });
+    res.end(protocol === 'responses' ? '' : 'data: [DONE]\n\n');
+  });
+  const model = new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol });
+  await model.complete({ ...request, maxOutputTokens: 128 });
+  await model.complete(request);
+  const field = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
+  expect(received[0]?.[field]).toBe(128);
+  expect(received[1]).not.toHaveProperty(field);
+});
 it.each(['truncated', 'incomplete', 'failed'])('rejects an unfinished Responses stream: %s', async status => {
   const baseUrl = await host((_body, res) => {
     res.setHeader('Content-Type', 'text/event-stream');

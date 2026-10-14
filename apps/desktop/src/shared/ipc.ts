@@ -4,6 +4,7 @@ import type {
   AgentTaskOutputFile,
   AgentTaskOutputItemResult,
   AgentTaskResult,
+  AgentTaskStartRequest,
   Attachment,
   AttachmentRole,
 } from '@agent-desktop/client';
@@ -43,6 +44,8 @@ export const DESKTOP_CHANNELS = {
   switchSession: 'desktop:switch-session',
   deleteSession: 'desktop:delete-session',
   runAgentTask: 'desktop:run-agent-task',
+  recoverTask: 'desktop:recover-task',
+  verifyTaskEffect: 'desktop:verify-task-effect',
   cancelTask: 'desktop:cancel-task',
   decideApproval: 'desktop:decide-approval',
   answerQuestion: 'desktop:answer-question',
@@ -56,8 +59,8 @@ export const DESKTOP_CHANNELS = {
 } as const;
 
 /**
- * Electron 不会把 Main 抛出 Error 的自定义字段传给 Preload，因此任务终态使用可结构化克隆的结果。
- * Preload 再把 error 分支还原成 Renderer 既有的 Promise rejection 契约。
+ * Electron 的 IPC 和 contextBridge 都会丢失 Error 的自定义字段，因此任务终态穿过两层时保持普通对象。
+ * Renderer 收到对象后才还原错误名称与产物，继续使用共享客户端既有的 Promise rejection 契约。
  */
 export type AgentTaskIpcResult =
   | { readonly status: 'success'; readonly result: AgentTaskResult }
@@ -68,6 +71,7 @@ export type AgentTaskIpcResult =
     /** 取消或失败前已经真实交付的文件与逐项结果仍然可见。 */
     readonly outputFiles?: readonly AgentTaskOutputFile[];
     readonly outputs?: readonly AgentTaskOutputItemResult[];
+    readonly taskState?: import('@agent-desktop/client').AgentTaskState;
   };
 
 export type {
@@ -78,4 +82,7 @@ export type {
   Attachment,
   AttachmentRole,
 };
-export type DesktopApi = AgentClientApi;
+export type DesktopApi = Omit<AgentClientApi, 'runAgentTask' | 'recoverTask'> & {
+  runAgentTask(request: AgentTaskStartRequest): Promise<AgentTaskIpcResult>;
+  recoverTask?(request: AgentTaskStartRequest, sourceTurnId: string, mode?: 'continue' | 'verify'): Promise<AgentTaskIpcResult>;
+};

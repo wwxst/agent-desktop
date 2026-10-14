@@ -19,6 +19,7 @@ export function AppUpdateButton({ api, isProcessing }: { readonly api: AppUpdate
   }, [api]);
 
   if (state.status === 'idle' || state.status === 'checking') return error ? <p className="app-update-error" role="alert">{error}</p> : null;
+  if (state.status === 'unavailable') return <p className="app-update-error unavailable" role="status">暂未提供在线更新</p>;
   const waiting = state.status === 'downloading' || state.status === 'installing';
   const label = state.status === 'error' ? '重试更新'
     : state.status === 'downloading' ? `正在下载更新 ${Math.round(state.percent)}%`

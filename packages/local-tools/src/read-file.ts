@@ -61,6 +61,7 @@ function looksBinary(source: Buffer): boolean {
  * 二进制文件直接拒绝，不用乱码冒充文本。
  */
 export class ReadFileTool implements Tool {
+  readonly executionBoundary = 'read-only' as const;
   readonly name = 'read_file';
   readonly description = '按行读取当前会话工作目录内的文本文件，可从指定行继续读取；二进制文件不受支持';
   readonly inputSchema = {

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -16,7 +16,7 @@ test('keeps composer model selection synchronized, focused and contained across 
       ...Array.from({ length: 12 }, (_, index) => ({ id: `extra-${index}`, displayName: `目录模型 ${index}`, capabilities: textCapabilities })),
     ] }),
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, fallbackVisionModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionEnabled: false,
-    whisper: { modelPath: '', cliPath: '' }, memoryEnabled: true, memoryFromToolChatsEnabled: true,
+    memoryEnabled: true, memoryFromToolChatsEnabled: true,
   };
   await page.evaluate(settings => { localStorage.setItem('agent-desktop:web-runtime-settings', JSON.stringify(settings)); }, fixture);
   // 网页宿主通过真实脱敏配置边界加载夹具；无需额外暴露 Desktop API。
@@ -166,7 +166,7 @@ test('keeps composer model selection synchronized, focused and contained across 
   await expect(trigger).toBeVisible();
 });
 
-test('migrates Desktop visual candidate disabled and preserves active request model across switching and restart', async ({}, info) => {
+test('preserves a disabled Desktop visual candidate and active request model across switching and restart', async ({}, info) => {
   test.skip(info.project.name !== 'chromium-desktop', '真实 Electron 宿主验收执行一次。');
   test.setTimeout(60000);
   const root = resolve('../..');
@@ -185,11 +185,7 @@ test('migrates Desktop visual candidate disabled and preserves active request mo
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server port');
-  const models = [{ id: 'first-model', displayName: '第一模型', images: false }, { id: 'second-model', displayName: '第二模型', images: true }];
-  await writeFile(resolve(profile, 'runtime-settings.json'), JSON.stringify({ modelProviders: [
-    { id: 'deepseek', displayName: 'DeepSeek', builtin: true, baseUrl: `http://127.0.0.1:${address.port}`, protocol: 'chat-completions', models },
-    { id: 'openai', displayName: 'OpenAI', baseUrl: 'https://api.openai.com/v1', protocol: 'responses', models: [{ id: 'gpt-5.6-luna', displayName: 'Luna', images: true }] },
-  ], conversationModel: { providerId: 'deepseek', modelId: 'first-model' }, visionModel: { providerId: 'deepseek', modelId: 'second-model' } }));
+  const models: RuntimeModelDefinition[] = [{ id: 'first-model', displayName: '第一模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }, { id: 'second-model', displayName: '第二模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }];
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.DESKTOP_RENDERER_URL; delete env.ELECTRON_RUN_AS_NODE;
@@ -198,6 +194,13 @@ test('migrates Desktop visual candidate disabled and preserves active request mo
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   try {
     app = await launch(); let page = await app.firstWindow();
+    // 经当前 IPC 和 SQLite 写入配置；不再依赖旧版本 JSON 配置迁移。
+    await page.evaluate(async ({ baseUrl, models }) => window.agentDesktop.saveRuntimeSettings({
+      modelProvider: { id: 'deepseek', displayName: 'DeepSeek', baseUrl, protocol: 'chat-completions', models },
+      conversationModel: { providerId: 'deepseek', modelId: 'first-model' },
+      fallbackVisionModel: { providerId: 'deepseek', modelId: 'second-model' }, fallbackVisionEnabled: false,
+    }), { baseUrl: `http://127.0.0.1:${address.port}`, models });
+    await page.reload();
     const saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
     expect(saved).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'deepseek', modelId: 'second-model' } });
     expect(saved.modelProviders.every(provider => !('builtin' in provider))).toBe(true);

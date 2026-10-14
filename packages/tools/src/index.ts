@@ -1,4 +1,7 @@
-import type { ModelToolDefinition, ToolCallId, ToolResult } from '@agent-desktop/model';
+import type { ModelToolDefinition, ToolCallId, ToolFailureKind, ToolResult } from '@agent-desktop/model';
+import type { ExecutionBoundary } from '@agent-desktop/session';
+
+export { UpdatePlanTool } from './plan.js';
 
 // 复用 Model 定义，避免 Tools package 再声明一份可能漂移的模型可见契约。
 export type { ModelToolDefinition };
@@ -30,6 +33,19 @@ export interface ToolExecutionContext {
   readonly toolCallId: ToolCallId;
   /** 同步入队：工具不等待界面消费，也不把 IPC Promise 带进工具契约。 */
   readonly reportProgress: (event: ToolProgressEvent) => void;
+  /**
+   * 在真实副作用前同步保存准备事实；保存失败直接抛出，工具不能继续写入。
+   * Loop 的生产上下文始终提供它；直接调用工具的入口可以不启用持久检查点。
+   */
+  readonly checkpoint?: (data: unknown) => void;
+}
+
+/** 工具边界可抛出有分类的真实失败；保留 cause，不把原始异常换成默认文本。 */
+export class ToolExecutionError extends Error {
+  override readonly name = 'ToolExecutionError';
+  constructor(message: string, readonly failureKind: ToolFailureKind, options?: ErrorOptions) {
+    super(message, options);
+  }
 }
 
 /**
@@ -37,6 +53,8 @@ export interface ToolExecutionContext {
  * Tool 只能返回执行结果，不能反向控制 Agent Loop 的生命周期。
  */
 export interface Tool extends ModelToolDefinition {
+  /** 可证明执行边界的工具才声明 checkpointed；其他工具按 opaque 处理。 */
+  readonly executionBoundary?: Exclude<ExecutionBoundary, 'not-executed'>;
   execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult>;
 }
 

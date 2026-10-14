@@ -5,16 +5,18 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } fr
 import type { ExecutionTraceEvent } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
-import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
+import { SessionPersistenceError, TurnCancellationError, projectRecoveryAncestry, projectRecoveryFacts, projectTurnState, type SessionEvent, type TurnId } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
 import { generateConversationTitle } from './conversation-title.js';
 import {
   findLatestTurnId,
   findTurnArtifacts,
+  buildAgentPrompt,
   projectTurnOutputs,
   runDesktopAgentTask,
   type TurnArtifact,
 } from './agent-task.js';
+import { prepareTurnStart } from '@agent-desktop/agent-loop';
 import {
   assertRevealableFile,
   findCommandText,
@@ -23,6 +25,9 @@ import {
   projectAgentActivityDetail,
 } from './agent-activity.js';
 import { CommandOutputProjection, createCommandPort } from './command-host.js';
+import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './ffmpeg-tool.js';
+import { WHISPER_TOOLS } from './whisper-tool.js';
+import { verifyWhisperRuntime } from './whisper-runtime.js';
 import { ToolApprovalGate } from './tool-approval.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';
@@ -34,15 +39,18 @@ import {
 } from '../shared/ipc.js';
 import {
   loadDesktopState,
+  DesktopPersistentSession,
   parseClientState,
   parseDesktopState,
   saveDesktopState,
   type PersistedDesktopState,
+  type TurnMessageBinding,
 } from './session-persistence.js';
 import type {
   AgentTaskOutputFile,
   AgentTaskOutputItemResult,
   AttachmentRole,
+  ClientAssistantMessage,
   ClientStateSnapshot,
 } from '@agent-desktop/client';
 import type { OutputItemResult } from '@agent-desktop/video-agent';
@@ -61,11 +69,14 @@ import { migrateLegacyDesktopFiles } from './legacy-storage-migration.js';
 import { DesktopExtensions } from './extensions.js';
 import { prepareExtensions } from './extension-runtime.js';
 import { ExtensionConnections } from './extension-connections.js';
-import { InMemoryToolRegistry } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, UpdatePlanTool } from '@agent-desktop/tools';
+import { projectAgentTaskState, qualifyTaskToolEvidence, taskToolGate } from './agent-task-state.js';
 import { DesktopUpdater } from './app-updater.js';
+import { VerifyToolOutcomeTool } from './verify-tool.js';
 
 let mainWindow: BrowserWindow | null = null;
 let isTaskRunning = false;
+let persistenceFailure: SessionPersistenceError | undefined;
 let isExtensionChanging = false;
 let desktopUpdater: DesktopUpdater | undefined;
 let updatePrepared = false;
@@ -97,7 +108,7 @@ interface DesktopSessionState {
   terminal?: SessionTerminal;
   terminalHistory?: import('@agent-desktop/client').TerminalSnapshot;
   readonly subagentHistory: SubagentRecord[];
-  readonly session: InMemorySession;
+  readonly session: DesktopPersistentSession;
   /** 当前会话的输入附件；角色决定提示词把它当主视频还是音轨。 */
   readonly attachments: SelectedAttachment[];
   /**
@@ -120,9 +131,23 @@ let activeSessionId = '';
 function createDesktopSession(
   id: string = randomUUID(),
   initialEvents?: readonly SessionEvent[],
+  initialBindings: readonly TurnMessageBinding[] = [],
 ): string {
+  const sessionId = id;
   const session = {
-    session: new InMemorySession(initialEvents),
+    session: new DesktopPersistentSession(
+      persistenceFilePath(), sessionId, initialEvents ?? [],
+      (replacementId, events, bindings, startedClientState) => {
+        const snapshot = startedClientState ?? clientState ?? {
+          activeSessionId,
+          conversations: [...sessions.keys()].map(id => ({ id, title: '', titleManuallyRenamed: false, messages: [], prompt: '', attachments: [] })),
+          drafts: [],
+        } satisfies ClientStateSnapshot;
+        return currentPersistedState(snapshot, { id: replacementId, events, bindings });
+      },
+      (error) => { if (persistenceFailure === undefined) persistenceFailure = error; },
+      initialBindings,
+    ),
     pendingSessionStart: initialEvents === undefined ? 'startup' : 'resume',
     attachments: [],
     subagentHistory: [],
@@ -136,11 +161,88 @@ function persistenceFilePath(): string {
   return join(app.getPath('userData'), DESKTOP_DATABASE_FILE_NAME);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 找到重启前终端的 open/input 调用；每个调用都必须单独保留未解决事实。 */
+function terminalRestartSourceIndexes(events: readonly SessionEvent[], terminalId: string): readonly number[] {
+  const preparedSources: number[] = [];
+  for (const [index, event] of events.entries()) {
+    if (event.type !== 'tool.effect.prepared' || !isRecord(event.data)
+      || event.data.kind !== 'terminal' || event.data.terminalId !== terminalId
+      || (event.data.operation !== 'open' && event.data.operation !== 'input')) continue;
+    const source = events[event.sourceEventIndex];
+    if (source?.type === 'tool.called' && (source.name === 'open_terminal' || source.name === 'write_terminal')) {
+      preparedSources.push(event.sourceEventIndex);
+    }
+  }
+  if (preparedSources.length > 0) return [...new Set(preparedSources)];
+
+  // 旧历史没有检查点时，只按工具结果中宿主生成的 terminalId 做机械匹配。
+  const legacySources: number[] = [];
+  for (const [index, event] of events.entries()) {
+    if (event.type !== 'tool.called' || (event.name !== 'open_terminal' && event.name !== 'write_terminal')) continue;
+    const result = events.find((candidate) => candidate.type === 'tool.result'
+      && candidate.turnId === event.turnId && candidate.stepId === event.stepId && candidate.toolCallId === event.toolCallId);
+    if (result?.type !== 'tool.result' || result.result.status !== 'success' || !isRecord(result.result.output)
+      || result.result.output.terminalId !== terminalId) continue;
+    legacySources.push(index);
+  }
+  return legacySources;
+}
+
+function hasEntireTerminalVerification(events: readonly SessionEvent[], sourceEventIndex: number): boolean {
+  return events.some((event) => event.type === 'effect.outcome.verified'
+    && event.sourceEventIndex === sourceEventIndex && event.scope === 'entire-call');
+}
+
+function terminalRestartFacts(session: DesktopSessionState): readonly SessionEvent[] {
+  const history = session.terminalHistory;
+  if (history?.status !== 'running') return [];
+  const events = session.session.events();
+  const allSourceIndexes = terminalRestartSourceIndexes(events, history.terminalId);
+  const sourceIndexes = allSourceIndexes.filter((sourceEventIndex) => !hasEntireTerminalVerification(events, sourceEventIndex));
+  if (allSourceIndexes.length > 0) {
+    return sourceIndexes.map((sourceEventIndex) => {
+      const source = events[sourceEventIndex];
+      if (source?.type !== 'tool.called') throw new Error('终端恢复来源不是工具调用。');
+      return {
+        type: 'effect.outcome.verified' as const,
+        turnId: source.turnId,
+        sourceEventIndex,
+        scope: 'entire-call' as const,
+        outcome: 'unresolved' as const,
+        evidence: { source: 'host' as const, reference: `terminal:${history.terminalId}`, description: '应用重启后失去终端连接，命令效果和进程状态未确认。' },
+      };
+    });
+  }
+
+  // 旧快照没有可关联的调用来源时，使用已有 terminalId 建立一次明确的宿主观察。
+  // 不能按命令文字猜测原调用，也不能把观察绑定到另一个工具调用。
+  const existingObservation = events.some((event) => {
+    if (event.type !== 'effect.outcome.verified' || event.scope !== 'entire-call'
+      || event.evidence.source !== 'host' || event.evidence.reference !== `terminal:${history.terminalId}`) return false;
+    const source = events[event.sourceEventIndex];
+    return source?.type === 'host.operation.started' && source.operation === 'terminal-connection-lost';
+  });
+  if (existingObservation) return [];
+  // 独立观察身份只用于三个宿主事实配对，不伪造旧任务、用户消息或工具归属。
+  const turnId = randomUUID() as TurnId;
+  const sourceEventIndex = events.length;
+  return [
+    { type: 'host.operation.started', turnId, operation: 'terminal-connection-lost', description: '应用重启后失去终端连接，命令效果和进程状态未确认。' },
+    { type: 'host.operation.result', turnId, sourceEventIndex, status: 'failed', errorName: 'TerminalConnectionLost', errorMessage: '旧终端没有可关联的工具调用来源。' },
+    { type: 'effect.outcome.verified', turnId, sourceEventIndex, scope: 'entire-call', outcome: 'unresolved',
+      evidence: { source: 'host', reference: `terminal:${history.terminalId}`, description: '应用重启后失去终端连接，命令效果和进程状态未确认。' } },
+  ];
+}
+
 let desktopExtensions: DesktopExtensions | undefined;
 let pluginConnections: ExtensionConnections | undefined;
 function connectionStore(): ExtensionConnections { return pluginConnections ??= new ExtensionConnections(persistenceFilePath(), safeStorage, url => shell.openExternal(url)); }
 function extensionStore(): DesktopExtensions {
-  return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore());
+  return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore(), () => mainWindow?.webContents.send(DESKTOP_CHANNELS.extensionsChanged));
 }
 
 async function watchCurrentSkills(): Promise<void> {
@@ -154,19 +256,89 @@ function extensionId(value: unknown): string {
   return value;
 }
 
-function currentPersistedState(snapshot: ClientStateSnapshot): PersistedDesktopState {
+function currentPersistedState(snapshot: ClientStateSnapshot, replacement?: { readonly id: string; readonly events: readonly SessionEvent[]; readonly bindings: readonly TurnMessageBinding[] }): PersistedDesktopState {
   return {
     activeSessionId,
     sessions: [...sessions].map(([id, session]) => ({
       id,
       attachments: session.attachments,
       ...(session.workingDirectory === undefined ? {} : { workingDirectory: session.workingDirectory }),
-      events: session.session.events(),
+      events: replacement?.id === id ? replacement.events : session.session.events(),
+      turnMessageBindings: replacement?.id === id ? replacement.bindings : session.session.turnMessageBindings(),
       ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory }),
       ...(session.subagentHistory.length === 0 ? {} : { subagentHistory: session.subagentHistory }),
     })),
     clientState: snapshot,
   };
+}
+
+/** Renderer 可能在收到最终 IPC 前崩溃；用已有 Session 终态补回缺失的 Assistant 结果，不重新执行任务。 */
+function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientStateSnapshot {
+  const reconcile = (conversation: ClientStateSnapshot['conversations'][number]) => {
+    const session = sessions.get(conversation.id);
+    if (session === undefined) return conversation;
+    const events = session.session.events();
+    const bindings = session.session.turnMessageBindings();
+    // 旧历史没有明确关联时保持原展示，不按相同文字或消息顺序猜测 Turn。
+    if (bindings.length === 0) return conversation;
+    const messages = [...conversation.messages];
+    let changed = false;
+    for (const binding of bindings) {
+      const assistantIndex = messages.findIndex(message => message.id === binding.assistantMessageId && message.role === 'assistant');
+      if (assistantIndex < 0) throw new Error('已提交任务的助手消息身份缺失。');
+      const user = { turnId: binding.turnId };
+      const state = projectTurnState(events, binding.turnId);
+      if (state !== 'completed' && state !== 'failed' && state !== 'cancelled' && state !== 'interrupted') continue;
+      const original = messages[assistantIndex];
+      if (original?.role !== 'assistant') throw new Error('任务消息身份不是助手。');
+      const taskState = projectAgentTaskState(events, user.turnId);
+      const filesFound = toOutputFiles(findTurnArtifacts(events, user.turnId));
+      const files = filesFound.length === 0 ? undefined : filesFound;
+      const outputFacts = projectTurnOutputs(events, user.turnId).map(toClientOutputResult);
+      const outputs = outputFacts.length === 0 ? undefined : outputFacts;
+      const final = [...events].reverse().find((event): event is Extract<SessionEvent, { type: 'assistant.message' }> =>
+        event.type === 'assistant.message' && event.turnId === user.turnId && event.toolCalls.length === 0 && event.content !== undefined);
+      let recovered: ClientAssistantMessage;
+      if (state === 'completed' && final !== undefined) {
+        // 正常结果的诊断与命名信息没有对应 Session 事件；只补执行事实，不抹掉这些已保存元数据。
+        const resultMetadata = original.status === 'completed'
+          ? { traceId: original.result.traceId,
+            ...(original.result.conversationTitle === undefined ? {} : { conversationTitle: original.result.conversationTitle }),
+            ...(original.result.conversationTitleError === undefined ? {} : { conversationTitleError: original.result.conversationTitleError }) }
+          : { traceId: `recovered:${user.turnId}` };
+        recovered = { id: binding.assistantMessageId, role: 'assistant', status: 'completed', activity: original.activity, activityExpanded: original.activityExpanded,
+          taskState, result: { ...resultMetadata, responseText: final.content!, taskState,
+            ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) } };
+      } else if (state === 'cancelled') {
+        recovered = { id: binding.assistantMessageId, role: 'assistant', status: 'cancelled', activity: original.activity, activityExpanded: original.activityExpanded, taskState,
+          ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) };
+      } else {
+        const failure = [...events].reverse().find(event => event.turnId === user.turnId && event.type === 'turn.failed');
+        recovered = { id: binding.assistantMessageId, role: 'assistant', status: 'failed', activity: original.activity, activityExpanded: original.activityExpanded, taskState,
+          errorMessage: failure?.type === 'turn.failed' ? failure.errorMessage : '应用退出时任务被中断。',
+          ...(files === undefined ? {} : { outputFiles: files }), ...(outputs === undefined ? {} : { outputs }) };
+      }
+      messages[assistantIndex] = recovered;
+      changed = true;
+    }
+    return changed ? { ...conversation, messages } : conversation;
+  };
+  return {
+    ...snapshot,
+    conversations: snapshot.conversations.map(reconcile),
+    ...(snapshot.drafts === undefined ? {} : { drafts: snapshot.drafts.map(reconcile) }),
+  };
+}
+
+/** 启动时只将已原子绑定且没有终态的新版轮次标为异常中断。 */
+function interruptRecoveredTurns(session: DesktopSessionState): void {
+  const events = session.session.events();
+  // 只处理中明确原子保存过的新版本任务；旧未结束历史没有进程退出证据。
+  const startedTurns = session.session.turnMessageBindings().map(binding => binding.turnId);
+  const interrupted = startedTurns
+    .filter(turnId => projectTurnState(events, turnId) === 'started')
+    .map(turnId => ({ type: 'turn.interrupted' as const, turnId, reason: 'process-exit' as const }));
+  if (interrupted.length > 0) session.session.appendMany(interrupted);
 }
 
 async function restoreDesktopState(): Promise<void> {
@@ -179,7 +351,7 @@ async function restoreDesktopState(): Promise<void> {
 
   clientState = persisted.clientState;
   for (const savedSession of persisted.sessions) {
-    createDesktopSession(savedSession.id, savedSession.events);
+    createDesktopSession(savedSession.id, savedSession.events, savedSession.turnMessageBindings);
     const session = sessions.get(savedSession.id)!;
     session.attachments.push(...savedSession.attachments);
     session.subagentHistory.push(...savedSession.subagentHistory ?? []);
@@ -189,6 +361,14 @@ async function restoreDesktopState(): Promise<void> {
     }
   }
   activeSessionId = persisted.activeSessionId;
+  // 先固定异常退出事实，再重建客户端消息和恢复入口；启动不会重放任何终端或工具调用。
+  for (const session of sessions.values()) interruptRecoveredTurns(session);
+
+  // 终端原始 running 状态留在持久化事实中；disconnected 只用于没有活句柄的展示。
+  for (const session of sessions.values()) {
+    const facts = terminalRestartFacts(session);
+    if (facts.length > 0) session.session.appendMany(facts);
+  }
 
   // 会话侧附件与工作目录是权威事实（旧快照在这里被换算成带 role 的形状）。
   // 快照里的界面副本可能来自更旧的格式（只有名称、没有真实路径），
@@ -202,7 +382,7 @@ async function restoreDesktopState(): Promise<void> {
       return {
         ...rest,
         attachments: toClientAttachments(session.attachments),
-        ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory }),
+        ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory.status === 'running' ? { ...session.terminalHistory, status: 'disconnected' as const } : session.terminalHistory }),
         ...(session.workingDirectory === undefined
           ? {}
           : { workingDirectory: session.workingDirectory }),
@@ -213,10 +393,26 @@ async function restoreDesktopState(): Promise<void> {
     conversations: clientState.conversations.map(restoreConversation),
     ...(clientState.drafts === undefined ? {} : { drafts: clientState.drafts.map(restoreConversation) }),
   };
+  clientState = reconcileRecoveredClientState(clientState);
+  // 将异常中断、终端断开事实及重建后的客户端状态一起固定到最终快照。
+  for (const session of sessions.values()) {
+    if (session.session instanceof DesktopPersistentSession) session.session.persist();
+  }
 }
 
 function activeSession(): DesktopSessionState {
   return sessions.get(activeSessionId)!;
+}
+
+function persistSessionResourceState(sessionId: string): void {
+  const session = sessions.get(sessionId)?.session;
+  if (!(session instanceof DesktopPersistentSession)) return;
+  try { session.persist(); }
+  catch (error) {
+    const failure = error instanceof SessionPersistenceError ? error : new SessionPersistenceError(error);
+    persistenceFailure ??= failure;
+    if (activeTask?.sessionId === sessionId) activeTask.controller.abort(failure);
+  }
 }
 
 /** 当前真实支持的主输入格式；与文件对话框过滤器保持同一份来源。 */
@@ -247,6 +443,38 @@ function toClientAttachments(attachments: readonly SelectedAttachment[]) {
 function sendAgentEvent(event: AgentRuntimeEvent): void {
   if (mainWindow?.isDestroyed() === false) {
     mainWindow.webContents.send(DESKTOP_CHANNELS.agentEvent, event);
+  }
+}
+
+/** 计划及任务状态只从会话事实生成，模型声明和渲染层副本不决定完成。 */
+function sendTaskState(sessionId: string): void {
+  const events = sessions.get(sessionId)!.session.events();
+  const turnId = findLatestTurnId(events);
+  if (turnId === undefined) return;
+  const state = projectAgentTaskState(events, turnId);
+  if (state !== undefined) sendAgentEvent({ type: 'task.state', sessionId, taskState: state });
+}
+
+/** 宿主阶段也进入同一 Session 事实链，失败时保留 started 及真实错误。 */
+async function runHostOperation<T>(
+  session: DesktopSessionState,
+  turnId: TurnId,
+  operation: string,
+  description: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const sourceEventIndex = session.session.events().length;
+  session.session.append({ type: 'host.operation.started', turnId, operation, description });
+  try {
+    const result = await action();
+    session.session.append({ type: 'host.operation.result', turnId, sourceEventIndex, status: 'completed' });
+    return result;
+  } catch (error) {
+    if (error instanceof SessionPersistenceError) throw error;
+    if (!(error instanceof Error)) throw error;
+    session.session.append({ type: 'host.operation.result', turnId, sourceEventIndex,
+      status: error.name === 'AbortError' ? 'cancelled' : 'failed', errorName: error.name, errorMessage: error.message });
+    throw error;
   }
 }
 
@@ -398,12 +626,20 @@ function registerIpcHandlers(): void {
     if (value.action === 'cancel-connect') { connectionStore().cancel(extensionId(value.id), extensionId(value.server)); return store.list(activeSession().workingDirectory); }
     return changeExtensions(async () => {
       switch (value.action) {
-        case 'save-mcp-server': store.saveMcpServer(value.server); break;
+        case 'install-whisper-model': await store.whisperModels.install(); break;
+        case 'delete-whisper-model': await store.whisperModels.delete(); break;
+        case 'import-whisper-model': {
+          const selected = await dialog.showOpenDialog({ title: '选择 Whisper Small 模型', properties: ['openFile'], filters: [{ name: 'Whisper 模型', extensions: ['bin'] }] });
+          if (selected.canceled || selected.filePaths[0] === undefined) return null;
+          await store.whisperModels.install(selected.filePaths[0]);
+          break;
+        }
+        case 'save-mcp-server': await store.saveMcpServer(value.server); break;
         case 'set-mcp-enabled': {
           if (typeof value.enabled !== 'boolean') throw new Error('MCP 启用状态无效。');
-          store.setMcpEnabled(extensionId(value.id), value.enabled); break;
+          await store.setMcpEnabled(extensionId(value.id), value.enabled); break;
         }
-        case 'remove-mcp-server': store.removeMcpServer(extensionId(value.id)); break;
+        case 'remove-mcp-server': await store.removeMcpServer(extensionId(value.id)); break;
         case 'add-marketplace': await store.addMarketplace(extensionId(value.source)); break;
         case 'remove-marketplace': await store.removeMarketplace(extensionId(value.id)); break;
         case 'update': await store.update(extensionId(value.id)); break;
@@ -523,10 +759,18 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(DESKTOP_CHANNELS.saveClientState, async (_event, state: unknown) => {
     if (isTaskRunning) throw new Error('Agent 正在执行，无法保存未完成的会话状态。');
-    const snapshot = parseClientState(state);
+    if (persistenceFailure !== undefined) throw persistenceFailure;
+    const parsed = parseClientState(state, undefined, sessionId => sessions.get(sessionId)?.session.events() ?? [],
+      sessionId => sessions.get(sessionId)?.session.turnMessageBindings() ?? []);
+    const snapshot = reconcileRecoveredClientState(parsed);
     const persisted = parseDesktopState(currentPersistedState(snapshot));
     // 复用磁盘读取的同一结构校验，保证 Renderer 会话与 Main 运行态一一对应。
-    await saveDesktopState(persistenceFilePath(), persisted);
+    try { await saveDesktopState(persistenceFilePath(), persisted); }
+    catch (cause) {
+      const error = cause instanceof SessionPersistenceError ? cause : new SessionPersistenceError(cause);
+      persistenceFailure ??= error;
+      throw error;
+    }
     clientState = snapshot;
   });
 
@@ -614,25 +858,79 @@ function registerIpcHandlers(): void {
     return activeSessionId;
   });
 
-  ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, async (_event, prompt: unknown): Promise<AgentTaskIpcResult> => {
+  const runAgentTaskHandler = async (_event: unknown, request: unknown, recoveryValue?: unknown): Promise<AgentTaskIpcResult> => {
+    if (persistenceFailure !== undefined) throw persistenceFailure;
     if (desktopUpdater?.state.status === 'installing') throw new Error('正在安装更新，无法开始任务。');
-    if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+    if (!isRecord(request) || request.sessionId !== activeSessionId || typeof request.prompt !== 'string' || request.prompt.trim().length === 0) {
       throw new Error('请输入剪辑需求。');
     }
+    const prompt = request.prompt.trim();
+    if (!Number.isSafeInteger(request.userMessageId) || !Number.isSafeInteger(request.assistantMessageId)
+      || (request.userMessageId as number) < 0 || (request.assistantMessageId as number) < 0
+      || request.userMessageId === request.assistantMessageId) throw new Error('任务消息身份无效。');
     if (activeTask !== undefined) throw new Error('已有任务正在执行。');
     if (isExtensionChanging) throw new Error('扩展操作正在进行，请完成后再开始任务。');
 
+    let recovery: { readonly sourceTurnId: TurnId; readonly mode: 'continue' | 'verify' } | undefined;
+    if (recoveryValue !== undefined) {
+      if (typeof recoveryValue !== 'object' || recoveryValue === null) throw new Error('恢复请求无效。');
+      const value = recoveryValue as Record<string, unknown>;
+      if (value.sessionId !== activeSessionId || typeof value.sourceTurnId !== 'string'
+        || (value.mode !== 'continue' && value.mode !== 'verify')) throw new Error('恢复请求不属于当前会话。');
+      const events = activeSession().session.events();
+      const sourceTurnId = value.sourceTurnId as TurnId;
+      const ancestry = projectRecoveryAncestry(events, sourceTurnId);
+      const sourceState = projectTurnState(events, sourceTurnId);
+      const sourceTaskState = sourceState === undefined ? undefined : projectAgentTaskState(events, sourceTurnId);
+      if (sourceState === undefined || (sourceState === 'completed' && sourceTaskState?.status === 'completed') || ancestry.latestTurnId !== sourceTurnId
+        || events.some(event => event.type === 'turn.recovery.started' && event.sourceTurnId === sourceTurnId)) {
+        throw new Error('该任务不能再次恢复。');
+      }
+      recovery = { sourceTurnId, mode: value.mode };
+    }
+
     const sessionId = activeSessionId;
+    const session = activeSession();
+    const start = prepareTurnStart(buildAgentPrompt(prompt, session.attachments), recovery);
+    const binding: TurnMessageBinding = { executionVersion: 1, turnId: start.turnId,
+      userMessageId: request.userMessageId as number, assistantMessageId: request.assistantMessageId as number };
+    // IPC 是真实边界：同时解析新事件、消息绑定和展示快照；旧事件只取宿主权威数据。
+    const startedState = parseDesktopState(currentPersistedState(request.clientState as ClientStateSnapshot,
+      { id: sessionId, events: [...session.session.events(), ...start.events], bindings: [...session.session.turnMessageBindings(), binding] }));
+    const startedConversation = startedState.clientState.conversations.find(item => item.id === sessionId)!;
+    const oldConversation = [...clientState?.conversations ?? [], ...clientState?.drafts ?? []].find(item => item.id === sessionId);
+    const previousMessages = oldConversation?.messages ?? [];
+    const user = startedConversation.messages.at(-2);
+    const assistant = startedConversation.messages.at(-1);
+    const expectedAttachments = recovery === undefined ? toClientAttachments(session.attachments) : [];
+    if (startedState.clientState.activeSessionId !== sessionId || startedConversation.messages.length !== previousMessages.length + 2
+      || startedConversation.messages.slice(0, -2).some((message, index) => message.id !== previousMessages[index]?.id || message.role !== previousMessages[index]?.role)
+      || user?.role !== 'user' || user.id !== binding.userMessageId || user.text !== prompt
+      || assistant?.role !== 'assistant' || assistant.id !== binding.assistantMessageId || assistant.status !== 'processing'
+      || user.attachments.length !== expectedAttachments.length
+      || user.attachments.some((name, index) => name !== expectedAttachments[index]?.name
+        || user.attachmentRoles?.[index] !== undefined && user.attachmentRoles[index] !== expectedAttachments[index]?.role)
+      || startedConversation.attachments.length !== session.attachments.length
+      || startedConversation.attachments.some((attachment, index) => attachment.path !== session.attachments[index]?.path || attachment.role !== session.attachments[index]?.role)) {
+      throw new Error('任务起点与当前会话、消息或附件不一致。');
+    }
     const controller = new AbortController();
     let markFinished: () => void = () => {};
     const finished = new Promise<void>((resolve) => { markFinished = resolve; });
     activeTask = { sessionId, controller, finished, terminalTouched: false };
     isTaskRunning = true;
     // 在 try 之外持有会话：失败与取消路径也要按它的事件统计已成功的产物。
-    const session = activeSession();
     const firstTaskEventIndex = session.session.events().length;
+    // 起点批次先落 SQLite，再准备扩展、钩子或外部模型；失败时不会留下可执行但未保存的任务。
+    let preparedStart: ReturnType<typeof prepareTurnStart> | undefined;
     let closeExtensions: (() => Promise<void>) | undefined;
+    let closeExtensionsSafely: () => Promise<void> = async () => {};
     try {
+      // 前轮终态也来自 Session，不能在新起点的整份快照中退回旧 processing 占位。
+      const startedClientState = reconcileRecoveredClientState(startedState.clientState);
+      session.session.commitStart(start, startedClientState, binding);
+      clientState = startedClientState;
+      preparedStart = start;
       const settings = await loadRuntimeConfiguration(
         persistenceFilePath(),
         safeStorage,
@@ -640,28 +938,80 @@ function registerIpcHandlers(): void {
       if (settings.deepSeekApiKey === undefined) {
         throw new Error('请先在设置中配置当前对话模型的 API 密钥。');
       }
+      let terminalRunningPersisted = false;
+      const safeRecovery = projectRecoveryFacts(session.session.events()).unknownEffects.length > 0;
+      // 先准备插件再组装 Agent；公开 Probe 与语义验收必须持有同一个已授权适配器。
+      // 未知外部效果只允许核验，不连接插件或触发其钩子。
+      const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(session.workingDirectory);
+      const whisper = extensionFiles.plugins.find(plugin => plugin.item.id === 'plugin:whisper' && plugin.item.source === 'builtin' && plugin.item.enabled);
+      let whisperModelPath: string | undefined;
+      let whisperExecutable: string | undefined;
+      let whisperUnavailable: string | undefined;
+      if (whisper !== undefined) {
+        try { whisperModelPath = await extensionStore().whisperModels.path(); }
+        catch (error) { if (error instanceof SessionPersistenceError || !(error instanceof Error)) throw error; whisperUnavailable = `Whisper 模型不可用：${error.message}。请重新安装模型。`; }
+        if (whisperModelPath === undefined) whisperUnavailable = 'Whisper 模型未安装或完整性校验失败，请在 Whisper 插件详情中安装模型。';
+        else if (whisperUnavailable === undefined) {
+          try { whisperExecutable = await verifyWhisperRuntime(whisper.directory); }
+          catch (error) { if (error instanceof SessionPersistenceError || !(error instanceof Error)) throw error; whisperUnavailable = `Whisper 运行资源不可用：${error.message}。请重新安装插件。`; }
+        }
+      }
+      // 缺少模型或运行资源只移除这个服务，不能阻止普通任务或其它插件。
+      const availableExtensions = { ...extensionFiles, plugins: extensionFiles.plugins.filter(plugin => plugin !== whisper || whisperUnavailable === undefined) };
+      const mediaAccess = { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
+        events: () => session.session.events() };
+      const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
+        () => prepareExtensions(availableExtensions, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
+          { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
+            probeAccess: mediaAccess, whisperAccess: mediaAccess, visionAccess: mediaAccess,
+            visionConfiguration: {
+              ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
+              ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
+              ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
+              ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
+              ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
+            },
+            ...(whisperModelPath === undefined || whisperExecutable === undefined ? {} : { whisperEnvironment: { WHISPER_MODEL_PATH: whisperModelPath, WHISPER_CLI_PATH: whisperExecutable } }) }));
+      closeExtensions = extensions.close;
+      closeExtensionsSafely = async (): Promise<void> => {
+        const close = closeExtensions;
+        closeExtensions = undefined;
+        if (close === undefined || preparedStart === undefined) return;
+        // 保存已经致命失败时只能释放连接；新的宿主事实也无法落盘，仍传播第一次保存错误。
+        if (persistenceFailure !== undefined) {
+          try { await close(); } finally { throw persistenceFailure; }
+        }
+        try {
+          await runHostOperation(session, preparedStart.turnId, 'close', '关闭本轮扩展和工具服务。', close);
+        } catch (error) {
+          // 清理失败不能覆盖已提交的 Turn 结果；宿主失败事实会让最终任务投影进入待处理状态。
+          if (error instanceof SessionPersistenceError) throw error;
+        }
+      };
+      const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name) || WHISPER_TOOLS.has(tool.name)).map(extensions.wrapTool);
+      const visionTool = extensions.tools.find(tool => tool.name === 'analyze_images');
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
         deepSeekApiKey: settings.deepSeekApiKey,
+        mediaTools,
         ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
         ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
         ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
         ...(settings.modelMaxOutputTokens === undefined ? {} : { modelMaxOutputTokens: settings.modelMaxOutputTokens }),
         ...(settings.useDeepSeekThinking === undefined ? {} : { useDeepSeekThinking: settings.useDeepSeekThinking }),
-        ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
-        ...(settings.visionBaseUrl === undefined ? {} : { visionBaseUrl: settings.visionBaseUrl }),
-        ...(settings.visionModel === undefined ? {} : { visionModel: settings.visionModel }),
-        ...(settings.visionProtocol === undefined ? {} : { visionProtocol: settings.visionProtocol }),
-        ...(settings.visionMaxOutputTokens === undefined ? {} : { visionMaxOutputTokens: settings.visionMaxOutputTokens }),
         ...(settings.visionUnavailableReason === undefined ? {} : { visionUnavailableReason: settings.visionUnavailableReason }),
-        ...(settings.whisperModelPath === undefined ? {} : { whisperModelPath: settings.whisperModelPath }),
-        ...(settings.whisperCliPath === undefined ? {} : { whisperCliPath: settings.whisperCliPath }),
+        ...(visionTool === undefined ? {} : { visionTool: extensions.wrapTool(visionTool) }),
         session: session.session,
         workspace: workspacePortFor(sessionId),
         // 命令能力由宿主提供解释器绝对路径和受限子进程环境；工具自己不做这些选择。
         command: createCommandPort(),
         terminal: terminalPortFor(session, workspacePortFor(sessionId), (terminal) => {
           sendAgentEvent({ type: 'terminal.updated', sessionId, terminal });
+          // 只在宿主终态转换时保存终端事实，逐块输出仍按现有有界内存通知。
+          if (terminal.status !== 'running' || !terminalRunningPersisted) {
+            persistSessionResourceState(sessionId);
+            if (terminal.status === 'running') terminalRunningPersisted = true;
+          }
         }, () => { if (activeTask?.controller === controller) activeTask.terminalTouched = true; }),
         askUser: (question, context) => {
           const called = session.session.events().findLast((event) => event.type === 'tool.called' && event.toolCallId === context.toolCallId);
@@ -686,37 +1036,51 @@ function registerIpcHandlers(): void {
               sendAgentEvent({ type: 'activity.detail', activityId: context.toolCallId, detail: { kind: 'subagents', tasks: [...currentChildren.values()] } });
             }, (record) => {
               session.subagentHistory.push(record);
+              // 子任务完成记录与父 Session 同一快照落盘；保存失败会终止当前轮次，不能只留在内存。
+              persistSessionResourceState(sessionId);
               currentChildren.set(record.result.taskId, record.result);
             });
           };
         })(),
       });
-      const extensionFiles = await extensionStore().files(session.workingDirectory);
-      const extensions = await prepareExtensions(extensionFiles, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
-        { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!) });
-      closeExtensions = extensions.close;
-      for (const tool of extensions.tools) agent.tools.register(tool);
-      if (settings.memoryEnabled) {
+      // 媒体工具已注入且已包装钩子，只追加其他扩展工具。
+      for (const tool of extensions.tools) if (!WHISPER_TOOLS.has(tool.name) && !FFMPEG_TOOLS.has(tool.name) && tool !== visionTool) agent.tools.register(tool);
+      const authorizedTools = new InMemoryToolRegistry();
+      for (const tool of agent.tools.list()) authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
+      agent = { ...agent, tools: authorizedTools };
+      if (safeRecovery) {
+        const safeTools = new InMemoryToolRegistry();
+        for (const tool of agent.tools.list()) {
+          if (['list_directory', 'read_file', 'search_text', 'read_terminal', 'update_plan', 'verify_tool_outcome'].includes(tool.name)) safeTools.register(tool);
+        }
+        agent = { ...agent, tools: safeTools };
+      }
+      if (!safeRecovery && settings.memoryEnabled) {
         const hasToolCall = () => session.session.events().slice(firstTaskEventIndex).some(event => event.type === 'tool.called' && event.name !== 'save_memory');
         agent.tools.register(new SaveMemoryTool(persistenceFilePath(), () => hasToolCall() ? 'tool' : 'conversation', settings.memoryFromToolChatsEnabled ?? true));
       }
       if (extensionFiles.plugins.some(plugin => plugin.item.enabled && (plugin.hooks?.length ?? 0) > 0)) {
         const extensionTools = new InMemoryToolRegistry();
-        for (const tool of agent.tools.list()) extensionTools.register(extensions.wrapTool(tool));
+        for (const tool of agent.tools.list()) extensionTools.register(WHISPER_TOOLS.has(tool.name) || FFMPEG_TOOLS.has(tool.name) || tool.name === 'analyze_images' ? tool : extensions.wrapTool(tool));
         agent = { ...agent, tools: extensionTools };
       }
-      if (session.pendingSessionStart !== undefined) {
+      // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
+      agent.tools.register(new UpdatePlanTool(session.session, qualifyTaskToolEvidence));
+      agent.tools.register(new VerifyToolOutcomeTool(session.session, workspacePortFor(sessionId)));
+      if (recovery === undefined && session.pendingSessionStart !== undefined) {
         const source = session.pendingSessionStart;
         // 在执行前消费；失败或取消后的继续任务不会重放已触发的启动命令。
         delete session.pendingSessionStart;
-        await extensions.runHooks('SessionStart', { session_id: activeSessionId, source });
+        await runHostOperation(session, preparedStart.turnId, 'session-start', '运行会话启动钩子。',
+          () => extensions.runHooks('SessionStart', { session_id: activeSessionId, source }));
       }
-      await extensions.runHooks('UserPromptSubmit', { prompt: prompt.trim(), session_id: activeSessionId });
-      if (extensions.instructions !== '') {
+      if (recovery === undefined) await runHostOperation(session, preparedStart.turnId, 'prompt-submit', '运行用户提示提交钩子。',
+        () => extensions.runHooks('UserPromptSubmit', { prompt: prompt.trim(), session_id: activeSessionId }));
+      if (extensions.instructions !== '' || whisperUnavailable !== undefined) {
         const base = agent.systemPrompt.build();
-        agent = { ...agent, systemPrompt: { build: () => base + extensions.instructions } };
+        agent = { ...agent, systemPrompt: { build: () => base + extensions.instructions + (whisperUnavailable === undefined ? '' : `\n${whisperUnavailable}`) } };
       }
-      if (settings.memoryEnabled) {
+      if (recovery === undefined && settings.memoryEnabled) {
         const memories = loadMemories(persistenceFilePath());
         let instructions = '';
         try { instructions = await readFile(join(app.getPath('home'), 'AGENTS.md'), 'utf8'); }
@@ -741,13 +1105,22 @@ function registerIpcHandlers(): void {
           trace: async (traceEvent) => {
             await trace.write(traceEvent);
             sendActivity(traceEvent, session.session.events());
+            sendTaskState(sessionId);
           },
           signal: controller.signal,
+          turnId: preparedStart.turnId,
+          qualifyToolEvidence: qualifyTaskToolEvidence,
+          beforeToolCall: input => taskToolGate(session.session.events(), input),
+          ...(recovery === undefined ? {} : { maxSteps: 24, maxToolCalls: 48 }),
+          // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
+          ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
+            : { contextBudget: { contextWindow: settings.modelContextWindow, maxOutputTokens: settings.modelMaxOutputTokens } }),
           // 把 Model 文本增量实时推给 Renderer；它不进入 Session，也不影响最终结果。
           onModelText: (stepId, text, purpose) => sendAgentEvent(purpose === 'delta'
             ? { type: 'text.delta', stepId, delta: text }
             : { type: 'model.text', stepId, text, purpose }),
           onToolResult: (toolCallId, toolName, toolResult) => {
+            sendTaskState(sessionId);
             // 先结清实时输出再发布最终详情：最终详情是权威结果，不能被迟到的进度覆盖。
             commandOutput.flush();
             const detail = projectAgentActivityDetail(toolName, toolResult);
@@ -761,9 +1134,12 @@ function registerIpcHandlers(): void {
           },
         },
       );
-      await extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText });
+      if (recovery === undefined) await runHostOperation(session, result.turnId, 'stop', '运行本轮停止钩子。',
+        () => extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText }));
+      await closeExtensionsSafely();
       // 产物身份是真实路径；文件名只是给界面看的标签，因此同名不同目录可以并存。
       const outputFiles = toOutputFiles(result.artifacts);
+      const taskState = projectAgentTaskState(session.session.events(), result.turnId);
       // 逐项结果与失败路径共用同一条读取投影，保证两种终态口径一致。
       const outputs = turnOutputResults(session.session.events(), firstTaskEventIndex);
       let conversationTitle: string | undefined;
@@ -781,6 +1157,7 @@ function registerIpcHandlers(): void {
         result: {
           responseText: result.responseText,
           traceId: trace.id,
+          ...(taskState === undefined ? {} : { taskState }),
           ...(conversationTitle === undefined ? {} : { conversationTitle }),
           ...(conversationTitleError === undefined ? {} : { conversationTitleError }),
           ...(outputFiles.length === 0 ? {} : { outputFiles }),
@@ -788,34 +1165,99 @@ function registerIpcHandlers(): void {
         },
       };
     } catch (error) {
-      // Electron 不传递 Error 自定义字段：失败终态改用普通对象跨 IPC，再由 Preload 还原 Error。
+      // 失败终态用普通对象穿过 IPC 与 contextBridge，再由 Renderer 还原错误名称和产物。
       if (!(error instanceof Error)) throw error;
+      // 扩展准备或宿主启动在进入 Loop 前失败时，起点仍需留下真实失败终态。
+      if (error instanceof SessionPersistenceError) throw error;
+      if (preparedStart !== undefined && projectTurnState(session.session.events(), preparedStart.turnId) === 'started') {
+        try {
+          // 前置宿主阶段收到取消时仍保留取消来源；只有真实业务错误才进入 failed。
+          if (error.name === 'AbortError') {
+            session.session.append({ type: 'turn.cancelled', turnId: preparedStart.turnId,
+              reason: controller.signal.reason instanceof TurnCancellationError ? controller.signal.reason.reason
+                : error instanceof TurnCancellationError ? error.reason : 'external' });
+          } else {
+            session.session.append({ type: 'turn.failed', turnId: preparedStart.turnId, errorName: error.name, errorMessage: error.message });
+          }
+        } catch (persistenceError) {
+          if (persistenceError instanceof SessionPersistenceError) throw persistenceError;
+          throw error;
+        }
+      }
       // 失败或取消不代表本轮此前没有产出：已交付文件和逐项结果都是真实事实。
       const outputs = turnOutputResults(session.session.events(), firstTaskEventIndex);
       const outputFiles = succeededOutputFiles(session.session.events(), firstTaskEventIndex);
+      const taskState = preparedStart === undefined ? undefined : projectAgentTaskState(session.session.events(), preparedStart.turnId);
       return {
         status: 'error',
         errorName: error.name,
         errorMessage: error.message,
         ...(outputFiles === undefined ? {} : { outputFiles }),
         ...(outputs === undefined ? {} : { outputs }),
+        ...(taskState === undefined ? {} : { taskState }),
       };
     } finally {
       try {
-        try { await closeExtensions?.(); }
-        finally { if (controller.signal.aborted && activeTask?.terminalTouched) await session.terminal?.close(); }
+        try {
+          await closeExtensionsSafely();
+        } finally {
+          if (controller.signal.aborted && activeTask?.terminalTouched) {
+            try {
+              if (preparedStart !== undefined && session.terminal !== undefined) {
+                if (persistenceFailure !== undefined) await session.terminal.close();
+                else await runHostOperation(session, preparedStart.turnId, 'terminal-close', '关闭取消任务留下的终端进程。', () => session.terminal!.close());
+              }
+            } catch (error) {
+              if (error instanceof SessionPersistenceError) throw error;
+            }
+          }
+        }
       } finally {
         commandOutput.flush();
+        sendTaskState(sessionId);
         isTaskRunning = false;
         if (activeTask?.controller === controller) activeTask = undefined;
         markFinished();
       }
     }
+  };
+  ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, runAgentTaskHandler);
+  ipcMain.handle(DESKTOP_CHANNELS.recoverTask, async (event, request: unknown) => {
+    if (typeof request !== 'object' || request === null) throw new Error('恢复请求无效。');
+    const value = request as Record<string, unknown>;
+    if (typeof value.sessionId !== 'string' || typeof value.sourceTurnId !== 'string'
+      || (value.mode !== undefined && value.mode !== 'continue' && value.mode !== 'verify')) throw new Error('恢复请求字段无效。');
+    return runAgentTaskHandler(event, value, { ...value, mode: value.mode ?? 'continue' });
+  });
+  ipcMain.handle(DESKTOP_CHANNELS.verifyTaskEffect, (_event, request: unknown) => {
+    if (isTaskRunning) throw new Error('任务执行期间不能修改核验事实。');
+    if (typeof request !== 'object' || request === null) throw new Error('核验请求无效。');
+    const value = request as Record<string, unknown>;
+    if (value.sessionId !== activeSessionId || typeof value.sourceEventIndex !== 'number'
+      || !Number.isSafeInteger(value.sourceEventIndex) || value.sourceEventIndex < 0
+      || (value.outcome !== 'completed' && value.outcome !== 'not-applied')
+      || typeof value.description !== 'string' || value.description.trim() === '' || value.description.length > 512) {
+      throw new Error('核验请求字段无效。');
+    }
+    const session = activeSession();
+    const fact = projectRecoveryFacts(session.session.events()).unknownEffects.find(item => item.sourceEventIndex === value.sourceEventIndex);
+    if (fact === undefined) throw new Error('该外部效果已经核验或不存在。');
+    const taskTurnId = session.session.events().some(event => event.type === 'turn.started' && event.turnId === fact.source.turnId)
+      ? fact.source.turnId : findLatestTurnId(session.session.events());
+    if (taskTurnId === undefined) throw new Error('当前会话没有可关联任务，请先发起只读核验任务。');
+    const description = value.description.trim();
+    session.session.append({ type: 'effect.outcome.verified', turnId: fact.source.turnId,
+      sourceEventIndex: value.sourceEventIndex, scope: 'entire-call', outcome: value.outcome,
+      evidence: { source: 'user', reference: `user:${activeSessionId}:${value.sourceEventIndex}`, description } });
+    // 旧终端观察保留独立宿主来源；响应只更新会话里真实存在的最近任务。
+    const state = projectAgentTaskState(session.session.events(), taskTurnId);
+    sendTaskState(activeSessionId);
+    return state;
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.cancelTask, () => {
     if (activeTask === undefined) throw new Error('当前没有正在执行的任务。');
-    activeTask.controller.abort();
+    activeTask.controller.abort(new TurnCancellationError('user'));
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.decideApproval, (_event, requestId: unknown, approved: unknown) => {
@@ -866,7 +1308,7 @@ async function prepareWindowClose(window: BrowserWindow): Promise<string | null>
   pluginConnections?.cancelAll();
   const running = activeTask;
   if (running !== undefined) {
-    running.controller.abort('window-closed');
+    running.controller.abort(new TurnCancellationError('window-closed'));
     await running.finished;
   }
 
@@ -962,7 +1404,7 @@ void app.whenReady().then(async () => {
   if (app.isPackaged && process.platform === 'win32') {
     desktopUpdater = new DesktopUpdater(state => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_CHANNELS.updateState, state);
-    });
+    }, join(app.getPath('logs'), 'app-updater.log'));
   }
   registerIpcHandlers();
   createWindow();

@@ -1,12 +1,10 @@
 import type {
   AgentTaskIpcResult,
-  AgentTaskOutputFile,
-  AgentTaskOutputItemResult,
   AgentRuntimeEvent,
   DesktopApi,
 } from '../shared/ipc.js';
 import { DESKTOP_CHANNELS } from '../shared/ipc.js';
-import type { AppUpdateState } from '@agent-desktop/client';
+import type { AgentTaskStartRequest, AppUpdateState } from '@agent-desktop/client';
 
 type IpcListener = (event: unknown, payload: unknown) => void;
 
@@ -19,20 +17,13 @@ export interface IpcRendererPort {
 
 async function invokeAgentTask(
   ipc: IpcRendererPort,
-  prompt: string,
+  request: AgentTaskStartRequest,
+  recovery?: { readonly sourceTurnId: string; readonly mode: 'continue' | 'verify' },
 ): ReturnType<DesktopApi['runAgentTask']> {
   try {
-    const ipcResult = await ipc.invoke(DESKTOP_CHANNELS.runAgentTask, prompt) as AgentTaskIpcResult;
-    if (ipcResult.status === 'success') return ipcResult.result;
-
-    const taskError = new Error(ipcResult.errorMessage) as Error & {
-      outputFiles?: readonly AgentTaskOutputFile[];
-      outputs?: readonly AgentTaskOutputItemResult[];
-    };
-    taskError.name = ipcResult.errorName;
-    if (ipcResult.outputFiles !== undefined) taskError.outputFiles = ipcResult.outputFiles;
-    if (ipcResult.outputs !== undefined) taskError.outputs = ipcResult.outputs;
-    throw taskError;
+    return await (recovery === undefined
+      ? ipc.invoke(DESKTOP_CHANNELS.runAgentTask, request)
+      : ipc.invoke(DESKTOP_CHANNELS.recoverTask, { ...request, ...recovery })) as AgentTaskIpcResult;
   } catch (error) {
     throw unwrapRemoteError(error);
   }
@@ -48,59 +39,9 @@ function unwrapRemoteError(error: unknown): unknown {
   const remoteError = /^Error invoking remote method '.+?': (Error|AbortError): ([\s\S]+)$/.exec(error.message);
   if (remoteError === null) return error;
   const [, errorName, message] = remoteError;
-  const normalized = new Error(message) as Error & {
-    outputFiles?: readonly AgentTaskOutputFile[];
-    outputs?: readonly AgentTaskOutputItemResult[];
-  };
+  const normalized = new Error(message);
   if (errorName === 'AbortError') normalized.name = 'AbortError';
-  // Electron 自身拒绝任务时仍可能带上此前已成功的产物与逐项结果，必须继续透传。
-  const outputFiles = readErrorOutputFiles(error);
-  if (outputFiles !== undefined) normalized.outputFiles = outputFiles;
-  const outputs = readErrorOutputResults(error);
-  if (outputs !== undefined) normalized.outputs = outputs;
   return normalized;
-}
-
-/** 从宿主抛出的错误里读取逐项交付结果；形状不符时不附加字段。 */
-function readErrorOutputResults(error: Error): readonly AgentTaskOutputItemResult[] | undefined {
-  const value = (error as { outputs?: unknown }).outputs;
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const results: AgentTaskOutputItemResult[] = [];
-  for (const item of value) {
-    if (typeof item !== 'object' || item === null) return undefined;
-    const record = item as Record<string, unknown>;
-    if (typeof record.outputItemId !== 'string' || typeof record.status !== 'string') return undefined;
-    if (record.status === 'published') {
-      if (typeof record.path !== 'string' || typeof record.fileName !== 'string') return undefined;
-      results.push({
-        outputItemId: record.outputItemId,
-        status: 'published',
-        path: record.path,
-        fileName: record.fileName,
-      });
-      continue;
-    }
-    if (record.status !== 'failed' && record.status !== 'blocked' && record.status !== 'incomplete') {
-      return undefined;
-    }
-    if (typeof record.reason !== 'string') return undefined;
-    results.push({ outputItemId: record.outputItemId, status: record.status, reason: record.reason });
-  }
-  return results;
-}
-
-/** 从宿主抛出的错误里读取已成功产物；形状不符时不附加字段。 */
-function readErrorOutputFiles(error: Error): readonly AgentTaskOutputFile[] | undefined {
-  const value = (error as { outputFiles?: unknown }).outputFiles;
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const files: AgentTaskOutputFile[] = [];
-  for (const item of value) {
-    if (typeof item !== 'object' || item === null) return undefined;
-    const { path, fileName } = item as { path?: unknown; fileName?: unknown };
-    if (typeof path !== 'string' || typeof fileName !== 'string') return undefined;
-    files.push({ path, fileName });
-  }
-  return files;
 }
 
 /** 把当前桌面闭环需要的宿主操作暴露给 Renderer。 */
@@ -194,7 +135,14 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       DESKTOP_CHANNELS.deleteSession,
       sessionId,
     ) as ReturnType<DesktopApi['deleteSession']>,
-    runAgentTask: (prompt) => invokeAgentTask(ipc, prompt),
+    runAgentTask: (request) => invokeAgentTask(ipc, request),
+    recoverTask: (request, sourceTurnId, mode = 'continue') => invokeAgentTask(ipc, request, { sourceTurnId, mode }),
+    verifyTaskEffect: async (sessionId, sourceEventIndex, outcome, description) => {
+      const result = await ipc.invoke(DESKTOP_CHANNELS.verifyTaskEffect, {
+        sessionId, sourceEventIndex, outcome, description,
+      });
+      return result as import('@agent-desktop/client').AgentTaskState;
+    },
     cancelTask: async () => { await ipc.invoke(DESKTOP_CHANNELS.cancelTask); },
     decideApproval: async (requestId, approved) => {
       await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);

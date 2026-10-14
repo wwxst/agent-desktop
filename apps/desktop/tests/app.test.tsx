@@ -7,6 +7,7 @@ import { App } from '../src/renderer/App.js';
 import type {
   AgentRuntimeEvent,
   AgentTaskResult,
+  AgentTaskIpcResult,
   DesktopApi,
 } from '../src/shared/ipc.js';
 
@@ -40,7 +41,6 @@ const persistenceMethods = {
     modelProviders: DEFAULT_MODEL_PROVIDERS,
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
     fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: false,
-    whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
   }),
@@ -48,7 +48,6 @@ const persistenceMethods = {
     modelProviders: DEFAULT_MODEL_PROVIDERS,
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
     fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: false,
-    whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
   }),
@@ -65,6 +64,8 @@ const persistenceMethods = {
   revealFile: async () => undefined,
 };
 
+const successfulTask = (result: AgentTaskResult): AgentTaskIpcResult => ({ status: 'success', result });
+
 describe('App', () => {
   it('shows a useful video-task empty state before the first task', () => {
     window.agentDesktop = {
@@ -74,7 +75,7 @@ describe('App', () => {
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
-      runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-empty' }),
+      runAgentTask: async () => successfulTask({ responseText: 'done', traceId: 'trace-empty' }),
       onAgentEvent: () => () => undefined,
     } satisfies DesktopApi;
 
@@ -109,7 +110,7 @@ describe('App', () => {
       removeAttachment: async () => undefined,
       newSession,
       switchSession: async () => undefined,
-      runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-initializing' }),
+      runAgentTask: async () => successfulTask({ responseText: 'done', traceId: 'trace-initializing' }),
       onAgentEvent: () => () => undefined,
     } satisfies DesktopApi;
 
@@ -138,7 +139,7 @@ describe('App', () => {
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
-      runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-remove' }),
+      runAgentTask: async () => successfulTask({ responseText: 'done', traceId: 'trace-remove' }),
       onAgentEvent: () => () => undefined,
     } satisfies DesktopApi;
 
@@ -169,7 +170,7 @@ describe('App', () => {
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
-      runAgentTask: async () => ({ responseText: 'done', traceId: 'trace-add' }),
+      runAgentTask: async () => successfulTask({ responseText: 'done', traceId: 'trace-add' }),
       onAgentEvent: () => () => undefined,
     } satisfies DesktopApi;
 
@@ -186,7 +187,7 @@ describe('App', () => {
   });
 
   it('selects multiple videos, sends the task, and displays the final result', async () => {
-    const runAgentTask = vi.fn(async () => ({
+    const runAgentTask = vi.fn(async () => successfulTask({
       responseText: '剪辑已经完成。',
       outputFiles: [{ path: 'D:/videos/sintel-trailer-edited.mp4', fileName: 'sintel-trailer-edited.mp4' }],
       traceId: 'trace-1',
@@ -219,7 +220,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }));
     expect(screen.getByRole('status', { name: '进行中' })).toBeTruthy();
 
-    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('删除无关内容，只保留核心部分'));
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ prompt: '删除无关内容，只保留核心部分' })));
     expect(await screen.findByText('剪辑已经完成。')).toBeTruthy();
     expect(screen.queryByRole('status', { name: '进行中' })).toBeNull();
     expect(screen.queryByRole('region', { name: '开始视频任务' })).toBeNull();
@@ -249,7 +250,7 @@ describe('App', () => {
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask: () => new Promise((resolve) => {
-        resolveTask = resolve;
+        resolveTask = result => resolve(successfulTask(result));
       }),
       onAgentEvent: (listener) => {
         receiveEvent = listener;
@@ -293,7 +294,7 @@ describe('App', () => {
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask: () => new Promise((resolve) => {
-        resolveTask = resolve;
+        resolveTask = result => resolve(successfulTask(result));
       }),
       onAgentEvent: (listener) => {
         receiveEvent = listener;
@@ -336,7 +337,7 @@ describe('App', () => {
       removeAttachment: async () => undefined,
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
-      runAgentTask: () => new Promise((resolve) => { resolveTask = resolve; }),
+      runAgentTask: () => new Promise((resolve) => { resolveTask = result => resolve(successfulTask(result)); }),
       onAgentEvent: (listener) => {
         receiveEvent = listener;
         return () => undefined;
@@ -375,7 +376,7 @@ describe('App', () => {
   });
 
   it('sends a text-only task without requiring a video attachment', async () => {
-    const runAgentTask = vi.fn(async () => ({
+    const runAgentTask = vi.fn(async () => successfulTask({
       responseText: '这是一个文本回复。',
       traceId: 'trace-text-only',
     }));
@@ -399,15 +400,15 @@ describe('App', () => {
     expect(sendButton).toHaveProperty('disabled', false);
     fireEvent.click(sendButton);
 
-    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith('介绍一下这个客户端的能力。'));
+    await waitFor(() => expect(runAgentTask).toHaveBeenCalledWith(expect.objectContaining({ prompt: '介绍一下这个客户端的能力。' })));
     expect(await screen.findByText('这是一个文本回复。')).toBeTruthy();
     expect(screen.queryByLabelText(/视频附件：/)).toBeNull();
   });
 
   it('keeps two complete text turns in the visible conversation', async () => {
     const runAgentTask = vi.fn()
-      .mockResolvedValueOnce({ responseText: '已经记住。', traceId: 'trace-turn-1' })
-      .mockResolvedValueOnce({ responseText: '你刚才让我记住的数字是 731。', traceId: 'trace-turn-2' });
+      .mockResolvedValueOnce(successfulTask({ responseText: '已经记住。', traceId: 'trace-turn-1' }))
+      .mockResolvedValueOnce(successfulTask({ responseText: '你刚才让我记住的数字是 731。', traceId: 'trace-turn-2' }));
     window.agentDesktop = {
       ...persistenceMethods,
       selectAttachmentFiles: async () => null,
@@ -438,8 +439,8 @@ describe('App', () => {
   it('keeps activity with the Agent reply from its own turn', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
-    const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
-      resolveTask = resolve;
+    const runAgentTask = vi.fn(() => new Promise<AgentTaskIpcResult>((resolve) => {
+      resolveTask = result => resolve(successfulTask(result));
     }));
     window.agentDesktop = {
       ...persistenceMethods,
@@ -485,16 +486,16 @@ describe('App', () => {
 
   it('keeps each Artifact in history and opens the matching output', async () => {
     const runAgentTask = vi.fn()
-      .mockResolvedValueOnce({
+      .mockResolvedValueOnce(successfulTask({
         responseText: '第一轮完成。',
         outputFiles: [{ path: 'D:/videos/step1.mp4', fileName: 'step1.mp4' }],
         traceId: 'trace-artifact-1',
-      })
-      .mockResolvedValueOnce({
+      }))
+      .mockResolvedValueOnce(successfulTask({
         responseText: '第二轮完成。',
         outputFiles: [{ path: 'D:/videos/step2.mp4', fileName: 'step2.mp4' }],
         traceId: 'trace-artifact-2',
-      });
+      }));
     const revealFile = vi.fn(async () => undefined);
     window.agentDesktop = {
       ...persistenceMethods,
@@ -530,8 +531,8 @@ describe('App', () => {
 
   it('does not start another task while the current turn is running', async () => {
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
-    const runAgentTask = vi.fn(() => new Promise<AgentTaskResult>((resolve) => {
-      resolveTask = resolve;
+    const runAgentTask = vi.fn(() => new Promise<AgentTaskIpcResult>((resolve) => {
+      resolveTask = result => resolve(successfulTask(result));
     }));
     window.agentDesktop = {
       ...persistenceMethods,
@@ -562,10 +563,10 @@ describe('App', () => {
     let resolveFirstTask: ((result: AgentTaskResult) => void) | undefined;
     const newSession = vi.fn(async () => 'session-b');
     const runAgentTask = vi.fn()
-      .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => {
-        resolveFirstTask = resolve;
+      .mockImplementationOnce(() => new Promise<AgentTaskIpcResult>((resolve) => {
+        resolveFirstTask = result => resolve(successfulTask(result));
       }))
-      .mockResolvedValueOnce({ responseText: '第二轮完成。', traceId: 'trace-new-2' });
+      .mockResolvedValueOnce(successfulTask({ responseText: '第二轮完成。', traceId: 'trace-new-2' }));
     window.agentDesktop = {
       ...persistenceMethods,
       getActiveSessionId: async () => 'session-a',
@@ -636,11 +637,11 @@ describe('App', () => {
         { path: 'D:\\videos\\video-b.mp4', name: 'video-b.mp4', role: 'video' },
       ]);
     const runAgentTask = vi.fn()
-      .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => {
-        resolveSessionA = resolve;
+      .mockImplementationOnce(() => new Promise<AgentTaskIpcResult>((resolve) => {
+        resolveSessionA = result => resolve(successfulTask(result));
       }))
-      .mockImplementationOnce(() => new Promise<AgentTaskResult>((resolve) => {
-        resolveSessionB = resolve;
+      .mockImplementationOnce(() => new Promise<AgentTaskIpcResult>((resolve) => {
+        resolveSessionB = result => resolve(successfulTask(result));
       }));
     window.agentDesktop = {
       ...persistenceMethods,
@@ -697,7 +698,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '用户 A' }));
     await waitFor(() => expect(switchSession).toHaveBeenLastCalledWith('session-a'));
-    expect(screen.getByText('assistant A')).toBeTruthy();
+    expect(await screen.findByText('assistant A')).toBeTruthy();
     expect(screen.queryByText('assistant B')).toBeNull();
     expect(screen.getAllByLabelText('视频附件：video-a.mp4')).toHaveLength(2);
     expect(screen.queryByLabelText('视频附件：video-b.mp4')).toBeNull();
@@ -736,7 +737,7 @@ describe('App', () => {
       newSession,
       switchSession,
       runAgentTask: () => new Promise((resolve) => {
-        resolveTask = resolve;
+        resolveTask = result => resolve(successfulTask(result));
       }),
       onAgentEvent: () => () => undefined,
     } satisfies DesktopApi;
@@ -772,9 +773,7 @@ describe('App', () => {
       getActiveSessionId: async () => 'session-a',
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
-      runAgentTask: async () => {
-        throw new Error('处理失败。');
-      },
+      runAgentTask: async () => ({ status: 'error', errorName: 'Error', errorMessage: '处理失败。' }),
       onAgentEvent: () => () => undefined,
     } satisfies DesktopApi;
 
@@ -790,6 +789,67 @@ describe('App', () => {
     expect((screen.getByLabelText('剪辑需求') as HTMLTextAreaElement).value).toBe(prompt);
   });
 
+  it.each([
+    { errorName: 'AbortError', heading: '已停止', status: 'cancelled' },
+    { errorName: 'Error', heading: '任务失败', status: 'failed' },
+  ] as const)('restores $errorName and delivered artifacts after the contextBridge plain result', async ({ errorName, heading, status }) => {
+    const outputFiles = [{ path: 'D:/videos/done.mp4', fileName: 'done.mp4' }];
+    const outputs = [{ outputItemId: 'done', status: 'published' as const, ...outputFiles[0]! }];
+    // 未确认外部效果的任务投影仍可 blocked，不能用它代替真正的取消错误身份。
+    const taskState = { rootTurnId: 'turn-a', latestTurnId: 'turn-a', status: 'blocked' as const,
+      unknownEffects: [{ sourceEventIndex: 7, source: 'tool' as const, label: 'transcribe_audio', description: '外部效果尚未确认。' }] };
+    const saveClientState = vi.fn(async () => undefined);
+    const revealFile = vi.fn(async () => undefined);
+    window.agentDesktop = {
+      ...persistenceMethods,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
+      getActiveSessionId: async () => 'session-a',
+      newSession: async () => 'session-b',
+      switchSession: async () => undefined,
+      runAgentTask: async () => ({ status: 'error', errorName, errorMessage: '任务已取消。', outputFiles, outputs, taskState }),
+      onAgentEvent: () => () => undefined,
+      saveClientState, revealFile,
+    } satisfies DesktopApi;
+    render(<App />);
+    fireEvent.change(screen.getByLabelText('剪辑需求'), { target: { value: '先完成文件，再执行后续任务' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(await screen.findByText(heading)).toBeTruthy();
+    expect(screen.getAllByText('done.mp4')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: '先核验未确定效果' })).toBeTruthy();
+    await waitFor(() => expect(saveClientState).toHaveBeenLastCalledWith(expect.objectContaining({ conversations: [expect.objectContaining({
+      messages: expect.arrayContaining([expect.objectContaining({ role: 'assistant', status, outputFiles, outputs, taskState })]),
+    })] })));
+    fireEvent.click(screen.getByRole('button', { name: '打开文件' }));
+    expect(revealFile).toHaveBeenCalledWith('D:/videos/done.mp4');
+  });
+
+  it('restores cancellation from the recovery plain result inside the Renderer', async () => {
+    const originalTask = { rootTurnId: 'turn-original', latestTurnId: 'turn-original', status: 'failed' as const };
+    const recoverTask = vi.fn(async () => ({ status: 'error' as const, errorName: 'AbortError', errorMessage: '任务已取消。',
+      taskState: { ...originalTask, latestTurnId: 'turn-recovery', status: 'cancelled' as const } }));
+    window.agentDesktop = {
+      ...persistenceMethods,
+      selectAttachmentFiles: async () => null,
+      removeAttachment: async () => undefined,
+      getActiveSessionId: async () => 'session-a',
+      newSession: async () => 'session-b',
+      switchSession: async () => undefined,
+      runAgentTask: async () => successfulTask({ responseText: 'done', traceId: 'unused' }),
+      recoverTask,
+      loadClientState: async () => ({ activeSessionId: 'session-a', drafts: [], conversations: [{ id: 'session-a', title: '旧任务',
+        titleManuallyRenamed: false, prompt: '', attachments: [], messages: [
+          { id: 1, role: 'user', text: '旧任务', attachments: [] },
+          { id: 2, role: 'assistant', status: 'failed', errorMessage: '旧任务失败。', activity: [], activityExpanded: false, taskState: originalTask },
+        ] }] }),
+      onAgentEvent: () => () => undefined,
+    } satisfies DesktopApi;
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '继续未完成任务' }));
+    expect(await screen.findByText('已停止')).toBeTruthy();
+    expect(recoverTask).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-a', prompt: '继续未完成任务' }), 'turn-original', 'continue');
+  });
+
   it('shows live assistant text pushed over the desktop agent event channel', async () => {
     let receiveEvent: ((event: AgentRuntimeEvent) => void) | undefined;
     let resolveTask: ((result: AgentTaskResult) => void) | undefined;
@@ -801,7 +861,7 @@ describe('App', () => {
       newSession: async () => 'session-b',
       switchSession: async () => undefined,
       runAgentTask: () => new Promise((resolve) => {
-        resolveTask = resolve;
+        resolveTask = result => resolve(successfulTask(result));
       }),
       onAgentEvent: (listener) => {
         receiveEvent = listener;

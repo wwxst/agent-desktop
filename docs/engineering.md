@@ -4,7 +4,7 @@
 
 ## Complexity, Evidence, and Decision（复杂度、证据与决策）
 
-这是项目的最高工程原则：不是追求最少代码，也不是追求最专业架构，而是要求每一份复杂度都有当前理由，每一个关键行为都有验证证据，每一个重要决策都有唯一出处。
+在满足当前明确需求、功能正确和必要安全边界的前提下，优先选择更少代码、更少层级和更直接的实现；每一份复杂度都须有当前理由，每一个关键行为须有验证证据，每一个重要决策须有唯一出处。
 
 ```text
 Complexity  复杂度  只有在当前需求、边界或验证要求明确支撑时才引入
@@ -17,6 +17,8 @@ Decision    决策    重要取舍必须记录唯一来源，避免同一规则�
 Node.js 24.19.0 LTS 是正式运行时基线。Node.js 26 允许开发测试；Node.js 27 及以上版本暂不声明兼容。
 
 Desktop 的 SQLite（本地嵌入式数据库）使用 Node.js 自带的 `node:sqlite`；当前 Electron 44 的主进程运行时已验证提供该模块，不引入第三方数据库依赖或额外原生模块重建步骤。数据库只由 Desktop Main（桌面主进程）访问，渲染层与 Agent Core（智能体核心）不持有数据库连接。
+
+Desktop 的 `build`、`start`、`dev` 与 Windows 打包均先执行 `build:ffmpeg`、`build:whisper`、`build:vision`，将现有 MCP SDK、十四项媒体工具、独立语音工具及视觉工具分别打入插件 CJS 资源，并清理迁移前生成的旧 Probe 资源。插件运行使用 Electron 自带运行时，不要求最终用户安装 Node；FFmpeg/Whisper 的 Windows x64 安装下载并验证锁定运行资源，路径只来自安装目录。Whisper 模型由插件详情单独下载或导入；Vision 使用所选网络供应商，不下载程序或模型。生成资源不提交 Git，构建后的 `resources/**/*` 纳入现有安装包；不新增 package 或通用资产管理依赖。其它平台可继续使用通用 Agent、CLI 和 Vision 插件，正式 FFmpeg/Whisper 资源安装明确报告不支持。边界定义见 [FFmpeg 插件](architecture.md#desktop-ffmpeg-插件)、[Whisper 插件](architecture.md#desktop-whisper-插件) 和 [Vision 插件](architecture.md#desktop-vision-插件)。
 
 ## Package Manager（包管理器）
 
@@ -152,7 +154,7 @@ examples 可以依赖 Core package，Core package 不能反向依赖 examples。
 应用 package 可以依赖所需的 Core、应用层和运行诊断 package，应用依赖不得反向进入 Core。
 ```
 
-当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model`、`session` 和 `tools`（只引用工具执行上下文与进度事件类型），`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`；`local-tools` 依赖 `model`、`tools` 和 `@vscode/ripgrep`；`video-agent` 组装 `agent`、具体 Provider、具体视频 Tool、`local-tools` 和 `session`；Desktop 因主进程打包 external 直接依赖 `@vscode/ripgrep`。三个 example 与 `apps/desktop` 只依赖实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
+当前依赖以各 package 的 `package.json` 和源码 imports 为准：`tools` 依赖 `model`，`session` 依赖 `model`，`agent` 依赖 `model`、`session`、`system-prompt` 和 `tools`，`agent-loop` 依赖 `agent`、`model`、`session` 和 `tools`（只引用工具执行上下文与进度事件类型），`execution-trace` 依赖 `agent-loop`，`model-deepseek` 依赖 `model`，`video-ffmpeg`、`vision-openai` 和 `speech-whisper-cpp` 依赖 `model`、`tools`；`local-tools` 依赖 `model`、`tools` 和 `@vscode/ripgrep`；`video-agent` 组装 `agent`、具体 Provider、通用注入工具、`local-tools` 和 `session`，不依赖具体媒体实现；Desktop 因主进程打包 external 直接依赖 `@vscode/ripgrep`，各专业插件显式复用对应工具 package。三个 example 与 `apps/desktop` 只依赖实际使用的 package；`ffmpeg-agent` 与 Desktop 直接消费 `execution-trace` 的本地 JSONL 写入能力和 `agent-loop` 的 Trace callback（追踪回调）类型。
 
 package 依赖必须反映当前真实源码引用，不能因为以后可能需要而提前创建。
 
@@ -232,7 +234,7 @@ Non-goals        不做什么    本阶段明确排除的能力
 
 ### Step 2 Implementation（实现）
 
-只实现当前需求，保持最小改动，不污染 Agent Core（智能体核心），不重复已有能力，不增加无生产消费者 API（应用程序编程接口）。
+遵循根 [`AGENTS.md` 的最小实现规范](../AGENTS.md#minimal-implementation-standard最小实现规范)，只实现当前需求，保持最小改动，不污染 Agent Core（智能体核心），不重复已有能力，不增加无生产消费者 API（应用程序编程接口）。必要的错误处理和真实边界判断继续保留。
 
 ### Step 3 Automated Validation（自动化验证）
 
@@ -267,7 +269,7 @@ Session、Turn、Step、Tool Result、异常传播和 Agent 与 Agent Loop 的�
 
 ```text
 Review signal             审查信号       未覆盖代码、难测试代码或暂时无静态调用只能触发审查，不能单独作为删除依据
-Deletion evidence         删除证据       删除前必须确认真实调用链、运行时注册、配置引用、公共 API 和当前业务消费者均无用途
+Deletion evidence         删除证据       确认真实调用链、注册、配置和消费者的变更影响；过时契约可直接替换，同步更新调用方
 Review scope              审查范围       Simplification Review 只覆盖本次修改模块、直接调用链和本次验证暴露的问题
 Reuse first               优先复用       新 Gate、测试脚本和 CI 优先复用现有脚本、TypeScript、Vitest 和 Node 能力
 Real verification         真实验证       只整理已有稳定入口；缺少本机依赖或凭据时明确 FAIL/SKIP，不把跳过伪装成 PASS
@@ -301,7 +303,7 @@ Real E2E                         已有入口     复用 `pnpm deepseek-agent`�
 
 #### Code（代码）
 
-* 是否存在防御式编程？
+* 是否存在无当前需求或真实边界支撑的防御式编程？必要的错误处理和边界判断是否保留？
 * 是否存在默认值掩盖错误？
 * 是否存在无生产消费者代码？
 * 是否存在不必要的复杂度、重复逻辑或无效封装？
@@ -311,9 +313,11 @@ Real E2E                         已有入口     复用 `pnpm deepseek-agent`�
 #### Tests（测试）
 
 * 测试是否描述真实行为？
+* 新增测试是否由任务明确要求，验证是否优先复用已有测试和门禁？
 * 是否为了测试制造不存在的契约？
 * 是否覆盖本次变更的关键路径和失败路径？
 * 是否存在只验证实现细节、没有验证实际行为的测试？
+* 是否已按最新确认的数据契约更新测试，并删除仅为历史兼容保留的过时断言？
 
 #### Documentation（文档）
 
@@ -354,10 +358,12 @@ Result           结果        是否通过以及可核对的证据
 ```text
 pnpm deepseek-agent   DeepSeek 真实模型链路       需要 DEEPSEEK_API_KEY，交互式输入任务
 pnpm ffmpeg-agent     完整视频 Agent 链路         入口启动需 DEEPSEEK_API_KEY、WHISPER_MODEL_PATH；执行对应 Tool 需 ffmpeg、ffprobe、whisper-cli，视觉调用时另需 OPENAI_API_KEY
-pnpm desktop           Desktop 真实桌面链路         启动不要求预先配置 Key；Settings 保存后每个 Turn 读取本机设置、环境变量和 Provider 默认值，执行视频 Tool 仍需对应本机二进制或模型
+pnpm desktop           Desktop 真实桌面链路         启动不要求预先配置 Key；设置保存后下一轮读取；专业媒体工具及语音模型从插件安装，视觉使用所选服务
 ```
 
-当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 启动时缺少其必需环境变量会以非零状态退出；Desktop 允许无 Key 启动，缺少 DeepSeek Key 只在发送任务时明确失败。外部二进制、模型或 Vision Key 在 Tool 执行边界暴露失败。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。
+当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 仍由环境变量显式提供本机 Whisper 资源及视觉配置；Desktop 首次安装 Whisper 插件和模型后由宿主管理路径，不读取用户 Whisper 路径环境变量。Desktop 允许无 Key 启动，缺少当前对话模型密钥只在发送任务时明确失败；Vision 只在插件已启用且当前视觉配置完整时注册。外部二进制、模型、HTTP 或图片响应失败在 Tool 执行边界暴露。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。Vision 的本机 HTTP 协议夹具只证明实际 MCP/请求映射，不代表云模型观察质量或真实云服务通过。
+
+`pnpm ffmpeg-agent` 调用示例包的 `start`，用项目已有版本的 esbuild 构建 `examples/ffmpeg-agent/dist/index.cjs` 后由本机 Node 执行。原生 TypeScript 转换不会把源代码中的 `.js` 引用解析为 `.ts` 子模块，直接执行源入口会在导入阶段失败。构建保留 `@vscode/ripgrep` 为外部运行时依赖，避免破坏其平台二进制的模块定位；示例包显式声明同版本的 esbuild 与 ripgrep，不引入新库或框架。此修正不改变 CLI 模型、工具或交付逻辑。
 
 无法执行真实验证时，必须明确说明原因、未验证范围和风险，不得将 Real Verification 标记为通过。
 
@@ -371,6 +377,8 @@ pnpm check                   PASS
 Review                       PASS
 Real Verification            PASS（仅涉及真实外部链路时要求）
 ```
+
+集成候选的真实云 Vision（视觉分析）和 Responses（响应协议）仍是 `main` 合并门禁。2026-10-14 已对运行时代码 `b4dd427c169c9a68a6a41eaa87f02819c39804f5` 使用 DeepSeek 官方 `deepseek-flash` 完成两项补充验收，结论与覆盖限制见[真实云验收报告](acceptance/deepseek-flash-cloud-20261014.md)。该证据关闭本候选此前的两项云验证缺项，历史报告中的 `SKIP` 保留；后续涉及外部链路的变更仍需适用的真实验证，不能以本机协议夹具或双平台 CI 代替。进入最终合并审查还须核对候选准确提交的工程门禁与审查结果，并取得正式合并授权。
 
 合并方式为 `merge feature branch → main`。只有 milestone（里程碑）完成后才创建 tag（标签）。
 
@@ -406,7 +414,7 @@ Main status:
 
 本地插件和技能新增三个真实消费者依赖，精确固定版本：`apps/desktop` 使用 `@modelcontextprotocol/sdk` 1.31.0 处理工具协议、连接及进程关闭，`yaml` 2.9.1 解析技能元数据；`packages/client` 使用 `lucide-react` 1.49.0 提供管理图标。依赖均不进入 Core，没有新 package 或通用插件框架。
 
-内置资源位于 `apps/desktop/resources/{plugins,skills}`，由 `app.getAppPath()/resources` 读取。当前构建后的本地桌面入口随应用目录提供资源；生成安装包时必须一起打包，不能只复制 `dist`。`pnpm client:web:test` 先构建桌面产物，再运行浏览器与 Electron 验收。验证包括 SDK 子进程、SQLite 安装迁移、界面和 Electron 重启；本地模型协议夹具不能声明真实 DeepSeek 服务验收。
+内置资源位于 `apps/desktop/resources/{plugins,skills}`，由 `app.getAppPath()/resources` 读取。当前构建后的本地桌面入口随应用目录提供资源；生成安装包时必须一起打包，不能只复制 `dist`。`pnpm client:web:test` 先构建桌面产物，再运行浏览器与 Electron 验收。验证包括 SDK 子进程、当前数据契约下的 SQLite 持久化往返、界面和 Electron 重启；本地模型协议夹具不能声明真实 DeepSeek 服务验收。
 
 根开发依赖保持最小：
 
@@ -429,7 +437,7 @@ Electron Updater         应用更新工具     从正式发布源下载、校�
 
 桌面包固定 `electron-updater@6.8.9`，唯一职责是检查、下载、校验和安装应用更新；开发依赖固定 `electron-builder@26.15.3`，唯一职责是生成 Windows 安装包。两者只属于桌面宿主，不进入 Agent Core（智能体核心）。`electron-winstaller` 是打包工具的传递依赖，本项目使用 NSIS（Windows 安装器），因此明确禁止它的安装脚本。
 
-运行 `corepack pnpm desktop:package:win` 先构建正式桌面产物，再生成 `apps/desktop/dist/installer/Agent-Desktop-Setup-<版本>-x64.exe`、对应 `.blockmap` 与 `latest.yml`。配置由 `apps/desktop/electron-builder.yml` 唯一维护，安装位置为当前用户，卸载保留用户数据。包名及会话存储目录保持已有身份。
+运行 `corepack pnpm desktop:package:win` 先构建正式桌面产物，再生成 `apps/desktop/dist/installer/Agent-Desktop-Setup-<版本>-x64.exe`、对应 `.blockmap` 与 `latest.yml`。配置由 `apps/desktop/electron-builder.yml` 唯一维护，安装位置为当前用户，卸载保留用户数据。包名及会话存储目录以最新确认的产品身份和数据契约为准。
 
 安装包使用已安装的 Electron（桌面运行时）44.0.0；`node-pty@1.1.0` 提供 Windows x64 的 Node-API（原生模块稳定接口）预编译二进制，已在真实打包运行时验证，因此不要求本机重新编译。应用文件直接落在 `resources/app`，保持 `spawn`（子进程启动）所需的真实磁盘路径；资源、插件、技能、ripgrep 和终端依赖随包提供，不在 Agent 工具中加入 Electron 路径判断。
 
@@ -439,7 +447,9 @@ Electron Updater         应用更新工具     从正式发布源下载、校�
 
 ## 0.x Policy（0.x 策略）
 
-项目仍处于 `0.x`。发现 package 边界、命名或 TypeScript 配置错误时，优先直接修正；不要为了尚未发布的内部 API 创建兼容层。
+项目开发和审查以根 [`AGENTS.md` 的项目开发总原则](../AGENTS.md#项目开发总原则) 为权威标准。允许按最新确认需求、架构和数据契约进行破坏性重构；历史程序、接口及数据兼容不作为验收或合并门禁。
+
+接口与数据契约变更后，按新版本验证功能、事务、执行安全、持久化往返、关闭及重启恢复，并同步修改直接受影响的文档和测试。旧版本升级、旧数据读取和跨版本回滚不构成默认验证要求；验收使用隔离测试数据，不能从允许删除兼容代码推导出删除真实用户数据的授权。
 
 ## Engineering Invariants（工程不变量）
 

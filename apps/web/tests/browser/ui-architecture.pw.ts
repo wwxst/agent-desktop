@@ -20,7 +20,7 @@ test('keeps the desktop layout across empty, processing, cancelled, success and 
         return {
           ...createHost(),
           onAgentEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-          async runAgentTask(prompt) {
+          async runAgentTask({ prompt }) {
             emit({id: 'model-1', kind: 'analysis', status: 'running'});
             emit({id: 'model-1', kind: 'analysis', status: 'completed', durationMs: 640, plannedToolCallCount: 1});
             emit({id: 'tool-1', kind: 'tool', status: 'running', toolName: 'probe_media', files: [input]});

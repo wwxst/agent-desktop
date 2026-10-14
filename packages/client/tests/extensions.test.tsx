@@ -24,6 +24,29 @@ function setup() {
 }
 
 describe('extension catalog notifications and separate skill reading', () => {
+  it('shows real model progress with shared feedback and keeps cancellation silent', async () => {
+    const host = setup();
+    const whisper = { id: 'plugin:whisper', kind: 'plugin' as const, name: 'Whisper', description: '本地转录', source: 'builtin' as const, installed: true, enabled: true };
+    const model = { name: 'Whisper Small', size: 487601967, diskBytes: 0, downloadedBytes: 0, status: 'missing' as const };
+    let finish!: (value: ExtensionSnapshot | null) => void;
+    host.api.manage = vi.fn(() => new Promise<ExtensionSnapshot | null>(resolve => { finish = resolve; }));
+    render(<ExtensionsPage api={host.api} view="plugins" requestedId="plugin:whisper" isProcessing={false} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [whisper], skills: [], whisperModel: model }));
+    fireEvent.click(await screen.findByRole('button', { name: '安装模型' }));
+    act(() => host.update({ plugins: [whisper], skills: [], whisperModel: { ...model, status: 'downloading', downloadedBytes: 243800983, diskBytes: 243800983 } }));
+    expect((await screen.findByRole('progressbar', { name: 'Whisper 模型下载进度' })).getAttribute('value')).toBe('243800983');
+    expect(screen.getByRole('status').textContent).toContain('正在下载模型');
+    await act(async () => finish({ plugins: [whisper], skills: [], whisperModel: { ...model, status: 'ready', diskBytes: model.size, downloadedBytes: model.size } }));
+    expect(screen.getByRole('status').textContent).toContain('Whisper Small 模型已安装');
+    fireEvent.click(screen.getByRole('button', { name: '删除 Whisper 模型' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除模型' }));
+    await act(async () => finish({ plugins: [whisper], skills: [], whisperModel: model }));
+    fireEvent.click(screen.getByRole('button', { name: '选择本地 Whisper 模型' }));
+    await act(async () => finish(null));
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(host.api.manage).toHaveBeenCalledWith({ action: 'import-whisper-model' });
+  });
   const plugin = { id: 'plugin:video', kind: 'plugin' as const, name: '视频', displayName: '语义视频剪辑', description: '剪辑', source: 'builtin' as const, installed: false, enabled: false };
   const skill = { id: 'plugin:video/edit', kind: 'skill' as const, name: 'edit', description: '剪辑', source: 'plugin' as const, pluginId: plugin.id, installed: true, enabled: true };
 
@@ -143,6 +166,24 @@ describe('extension catalog notifications and separate skill reading', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('updates an installed builtin plugin from its detail and disables the action during tasks', async () => {
+    const host = setup();
+    const plugin = { id: 'plugin:ffmpeg', kind: 'plugin' as const, name: 'FFmpeg', description: '本地媒体工具', source: 'builtin' as const, installed: true, enabled: true, version: '1.0.0', availableVersion: '1.1.0' };
+    const { availableVersion: _availableVersion, ...updated } = plugin;
+    host.api.manage = vi.fn(async () => ({ plugins: [{ ...updated, version: '1.1.0' }], skills: [] }));
+    const view = render(<ExtensionsPage api={host.api} view="plugins" requestedId={plugin.id} isProcessing={true} />);
+    await screen.findByText('暂无已安装的扩展');
+    act(() => host.update({ plugins: [plugin], skills: [] }));
+    const update = await screen.findByRole('button', { name: '更新至 1.1.0' });
+    expect(update).toHaveProperty('disabled', true);
+    fireEvent.click(update);
+    expect(host.api.manage).not.toHaveBeenCalled();
+    view.rerender(<ExtensionsPage api={host.api} view="plugins" requestedId={plugin.id} isProcessing={false} />);
+    fireEvent.click(screen.getByRole('button', { name: '更新至 1.1.0' }));
+    await waitFor(() => expect(host.api.manage).toHaveBeenCalledWith({ action: 'update', id: plugin.id }));
+    await screen.findByRole('button', { name: '检查更新' });
+    expect(screen.getByRole('region', { name: '信息' }).textContent).toContain('1.1.0');
+  });
   it('adds and edits a standalone MCP server through the reference menu without disclosing secrets', async () => {
     const host = setup();
     const server = { id: 'mcp:local', name: 'local-tools', transport: 'stdio' as const, command: 'node', args: ['script.mjs'], url: '', enabled: true, environmentNames: ['TOKEN'], headerNames: [], connected: false };

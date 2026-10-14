@@ -5,8 +5,8 @@ import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { candidateDigest } from './candidate-digest.js';
 import type { ToolCallId, ToolResult } from '@agent-desktop/model';
-import type { SessionEvent } from '@agent-desktop/session';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { SessionPersistenceError, type SessionEvent } from '@agent-desktop/session';
+import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
 import {
   DECLARE_VIDEO_OUTPUTS_TOOL,
   PUBLISH_VIDEO_OUTPUT_TOOL,
@@ -14,6 +14,7 @@ import {
   latestValidationForCandidate,
   latestValidationForItem,
   readVideoDeliveryFacts,
+  videoToolCallKey,
   type Candidate,
   type CandidateValidation,
   type OutputItem,
@@ -37,7 +38,7 @@ import {
 export type SessionReader = () => readonly SessionEvent[];
 
 /** 当前会写出候选文件的视频工具；只有它们的成功结果可以建立候选。 */
-const VIDEO_WRITE_TOOL_NAMES = new Set([
+export const VIDEO_WRITE_TOOL_NAMES = new Set([
   'trim_video',
   'concat_videos',
   'add_audio',
@@ -55,7 +56,9 @@ function errorResult(error: unknown): ToolResult {
   // 只把标准 Error 转为 Tool 失败；取消和非 Error 抛出值属于控制流或程序错误，继续向上暴露。
   if (!(error instanceof Error)) throw error;
   if (error.name === 'AbortError') throw error;
-  return { status: 'error', message: error.message };
+  if (error instanceof SessionPersistenceError) throw error;
+  return { status: 'error', message: error.message,
+    ...(error instanceof ToolExecutionError ? { failureKind: error.failureKind } : {}) };
 }
 
 /** 最近开始的轮次；声明「每轮最多一次」的判定依赖它。 */
@@ -68,7 +71,7 @@ function latestTurnId(events: readonly SessionEvent[]): string | undefined {
 }
 
 /** 判断一个路径是否严格落在某个目录内部；相等不算内部。 */
-async function resolveThroughExistingParent(filePath: string): Promise<string> {
+export async function resolveThroughExistingParent(filePath: string): Promise<string> {
   let currentPath = resolve(filePath);
   const missingParts: string[] = [];
 
@@ -165,6 +168,8 @@ function parseRequirements(value: unknown): Parsed<readonly OutputRequirement[]>
  */
 export class DeclareVideoOutputsTool implements Tool {
   readonly name = DECLARE_VIDEO_OUTPUTS_TOOL;
+  // 目录创建是声明阶段唯一的宿主副作用；在 mkdir 前持久化检查点，保存失败时不创建目录。
+  readonly executionBoundary = 'checkpointed' as const;
   readonly description = '声明本轮要交付的视频输出项集合（来源、目标与必要要求）；写出候选前必须先声明';
   readonly inputSchema = {
     type: 'object',
@@ -211,7 +216,7 @@ export class DeclareVideoOutputsTool implements Tool {
 
   constructor(private readonly readEvents: SessionReader) {}
 
-  async execute(input: unknown): Promise<ToolResult> {
+  async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input) || !Array.isArray(input.items) || input.items.length === 0) {
       return { status: 'error', message: 'declare_video_outputs 需要非空的 items 数组' };
     }
@@ -273,6 +278,7 @@ export class DeclareVideoOutputsTool implements Tool {
     }
 
     // 所有模型输入都通过解析后，才创建任何工作目录；声明失败不会留下部分目录。
+    context.checkpoint?.({ kind: 'video-output-directory', paths: items.map((item) => item.workingDirectory) });
     for (const item of items) await mkdir(item.workingDirectory, { recursive: true });
 
     return { status: 'success', output: { kind: 'video.outputs.declared', items } };
@@ -283,7 +289,7 @@ export class DeclareVideoOutputsTool implements Tool {
 function collectToolNames(events: readonly SessionEvent[]): Map<string, string> {
   const toolNames = new Map<string, string>();
   for (const event of events) {
-    if (event.type === 'tool.called') toolNames.set(event.toolCallId, event.name);
+    if (event.type === 'tool.called') toolNames.set(videoToolCallKey(event), event.name);
   }
   return toolNames;
 }
@@ -306,12 +312,12 @@ function collectSuccessfulProducers(
 
   events.forEach((event, index) => {
     if (event.type === 'tool.called') {
-      calls.set(event.toolCallId, { input: event.input, calledIndex: index });
+      calls.set(videoToolCallKey(event), { input: event.input, calledIndex: index });
       return;
     }
     if (event.type !== 'tool.result' || event.result.status !== 'success') return;
-    const name = toolNames.get(event.toolCallId);
-    const call = calls.get(event.toolCallId);
+    const name = toolNames.get(videoToolCallKey(event));
+    const call = calls.get(videoToolCallKey(event));
     if (name === undefined || call === undefined || !VIDEO_WRITE_TOOL_NAMES.has(name)) return;
     if (!isRecord(event.result.output) || typeof event.result.output.outputPath !== 'string') return;
     producers.push({
@@ -346,14 +352,15 @@ function producerInputPaths(producer: SuccessfulProducer): readonly string[] | u
 function sourcePathsForProducer(
   producer: SuccessfulProducer,
   producers: readonly SuccessfulProducer[],
-  visiting: ReadonlySet<ToolCallId> = new Set(),
+  visiting: ReadonlySet<number> = new Set(),
 ): readonly string[] | undefined {
-  if (visiting.has(producer.toolCallId)) return undefined;
+  // 事件索引唯一标识一次生产；跨步骤复用模型调用 ID 不是来源链循环。
+  if (visiting.has(producer.calledIndex)) return undefined;
   const inputPaths = producerInputPaths(producer);
   if (inputPaths === undefined) return undefined;
 
   const nextVisiting = new Set(visiting);
-  nextVisiting.add(producer.toolCallId);
+  nextVisiting.add(producer.calledIndex);
   const sourcePaths = new Set<string>();
   for (const inputPath of inputPaths) {
     const inputAbsolutePath = resolve(inputPath);
@@ -402,10 +409,17 @@ function findProducerToolCall(
   const producers = collectSuccessfulProducers(events, toolNames);
   let found: SuccessfulProducer | undefined;
   for (const producer of producers) {
-    if (producer.outputPath !== candidatePath || !producerMatchesSources(producer, item, producers)) continue;
+    if (producer.outputPath !== candidatePath) continue;
     if (found === undefined || producer.resultIndex > found.resultIndex) found = producer;
   }
-  return found;
+  // 同路径已被最新成功调用覆盖时，不能回退较旧的来源匹配记录授予权限或通过验收。
+  return found !== undefined && producerMatchesSources(found, item, producers) ? found : undefined;
+}
+
+/** 宿主授权候选读取时复用交付的生产归属；单独声明目录不能授予文件权限。 */
+export function producedVideoItem(events: readonly SessionEvent[], candidatePath: string): OutputItem | undefined {
+  const names = collectToolNames(events);
+  return readVideoDeliveryFacts(events).items.find(item => findProducerToolCall(events, names, item, resolve(candidatePath)) !== undefined);
 }
 
 /**
@@ -420,15 +434,17 @@ function findCheckEvidence(
   toolName: string,
   candidatePath: string,
   producerResultIndex: number,
+  canonicalPath?: string,
 ): { readonly toolCallId: ToolCallId; readonly output: Record<string, unknown> } | undefined {
   let found: { readonly toolCallId: ToolCallId; readonly output: Record<string, unknown> } | undefined;
   for (let index = producerResultIndex + 1; index < events.length; index += 1) {
     const event = events[index];
     if (event === undefined) continue;
     if (event.type !== 'tool.result' || event.result.status !== 'success') continue;
-    if (toolNames.get(event.toolCallId) !== toolName) continue;
+    if (toolNames.get(videoToolCallKey(event)) !== toolName) continue;
     if (!isRecord(event.result.output) || typeof event.result.output.inputPath !== 'string') continue;
-    if (resolve(event.result.output.inputPath) !== candidatePath) continue;
+    const checkedPath = resolve(event.result.output.inputPath);
+    if (checkedPath !== candidatePath && checkedPath !== canonicalPath) continue;
     found = { toolCallId: event.toolCallId as ToolCallId, output: event.result.output };
   }
   return found;
@@ -451,10 +467,11 @@ function checkRequirement(
   producerResultIndex: number,
   digest: string,
   outputItemId: string,
+  canonicalPath: string,
 ): RequirementCheck {
   switch (requirement.kind) {
     case 'decodable-video': {
-      const found = findCheckEvidence(events, toolNames, 'decode_video', candidatePath, producerResultIndex);
+      const found = findCheckEvidence(events, toolNames, 'decode_video', candidatePath, producerResultIndex, canonicalPath);
       if (found === undefined) {
         return blocked(requirement.id, 'insufficient-evidence', '缺少本候选的全文件解码检查证据。');
       }
@@ -469,7 +486,8 @@ function checkRequirement(
       };
     }
     case 'duration-range': {
-      const found = findCheckEvidence(events, toolNames, 'probe_media', candidatePath, producerResultIndex);
+      // 插件返回宿主 realpath；保留候选引用路径也能消费 CLI 的原始路径结果。
+      const found = findCheckEvidence(events, toolNames, 'probe_media', candidatePath, producerResultIndex, canonicalPath);
       if (found === undefined) {
         return blocked(requirement.id, 'insufficient-evidence', '缺少本候选的时长探测证据。');
       }
@@ -498,6 +516,7 @@ function checkRequirement(
         'detect_black_segments',
         candidatePath,
         producerResultIndex,
+        canonicalPath,
       );
       if (found === undefined) {
         return blocked(requirement.id, 'insufficient-evidence', '缺少本候选的黑段检测证据。');
@@ -516,7 +535,6 @@ function checkRequirement(
       const found = findCheckEvidence(events, toolNames, 'check_video_semantics', candidatePath, producerResultIndex);
       if (found === undefined) return blocked(requirement.id, 'insufficient-evidence', `内容要求「${requirement.description}」缺少本候选的语义检查。`);
       if (found.output.outputItemId !== outputItemId) return blocked(requirement.id, 'insufficient-evidence', '语义证据不属于当前输出项。');
-      if (found.output.candidateSha256 !== digest) return blocked(requirement.id, 'insufficient-evidence', '语义证据对应的候选内容已经改变。');
       const checks = found.output.checks;
       const check: unknown = Array.isArray(checks) ? checks.find((entry: unknown) => isRecord(entry) && entry.requirementId === requirement.id) : undefined;
       if (!isRecord(check) || !['passed', 'failed', 'blocked'].includes(String(check.outcome))
@@ -524,6 +542,11 @@ function checkRequirement(
         || (check.outcome === 'passed' && found.output.coverage !== 'all-frames-and-transcript')) {
         return blocked(requirement.id, 'insufficient-evidence', '语义证据没有覆盖完整候选与本项要求。');
       }
+      // Probe 缺失或被拒绝时尚未读取候选摘要；保留明确的阻塞原因，不能误报候选被修改。
+      if (found.output.candidateSha256 === undefined && check.outcome === 'blocked' && found.output.coverage === 'incomplete') {
+        return blocked(requirement.id, 'insufficient-evidence', check.detail);
+      }
+      if (found.output.candidateSha256 !== digest) return blocked(requirement.id, 'insufficient-evidence', '语义证据对应的候选内容已经改变。');
       return { requirementId: requirement.id, evidenceToolCallIds: [found.toolCallId], detail: check.detail,
         ...(check.outcome === 'blocked' ? { outcome: 'blocked', reason: 'insufficient-evidence' } : { outcome: check.outcome as 'passed' | 'failed' }) };
     }
@@ -538,6 +561,8 @@ function checkRequirement(
  */
 export class ValidateVideoCandidateTool implements Tool {
   readonly name = VALIDATE_VIDEO_CANDIDATE_TOOL;
+  // 验收只读取候选和已有证据；补齐检查事实后必须允许对同一候选重新验收。
+  readonly executionBoundary = 'read-only' as const;
   readonly description = '验收某个输出项的候选文件：按候选路径核对真实写出结果与检查证据，缺少证据的要求记为受阻';
   readonly inputSchema = {
     type: 'object',
@@ -588,8 +613,8 @@ export class ValidateVideoCandidateTool implements Tool {
       };
     }
 
-    // 同一路径复用候选身份；修复必须写出新路径并形成新候选。
-    const existing = facts.candidates.find((candidate) => (
+    // 只复用最近生产之后的验收身份；同路径与调用 ID 再次出现仍是新的生产事实。
+    const existing = readVideoDeliveryFacts(events.slice(producer.resultIndex + 1)).candidates.find((candidate) => (
       candidate.outputItemId === item.id
       && candidate.path === candidatePath
       && candidate.producerToolCallId === producer.toolCallId
@@ -602,8 +627,9 @@ export class ValidateVideoCandidateTool implements Tool {
     };
 
     const digest = await candidateDigest(candidatePath);
+    const canonicalPath = await realpath(candidatePath);
     const checks = item.requirements.map((requirement) => (
-      checkRequirement(requirement, candidatePath, events, toolNames, producer.resultIndex, digest, item.id)
+      checkRequirement(requirement, candidatePath, events, toolNames, producer.resultIndex, digest, item.id, canonicalPath)
     ));
 
     const validation: CandidateValidation = {
@@ -630,9 +656,19 @@ async function copyExclusively(
   sourcePath: string,
   targetPath: string,
   signal: AbortSignal | undefined,
+  checkpoint: ToolExecutionContext['checkpoint'],
 ): Promise<void> {
+  // 保存检查点失败时不创建目标；已存在目标保持原始 EEXIST，供调用方安全换名或拒绝。
+  checkpoint?.({ kind: 'video-publish', targetPath });
   // open 在 try 之外：创建失败说明目标不属于本次调用，不能去删除已有文件。
-  const handle = await open(targetPath, 'wx');
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(targetPath, 'wx');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw error;
+    if (error instanceof Error) throw new ToolExecutionError(error.message, 'permanent', { cause: error });
+    throw error;
+  }
   try {
     const sink = handle.createWriteStream({ autoClose: true });
     if (signal === undefined) await pipeline(createReadStream(sourcePath), sink);
@@ -644,8 +680,11 @@ async function copyExclusively(
       await unlink(targetPath);
     } catch (cleanupError) {
       if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw new Error(`发布未完成，且无法清理未完成的目标文件：${targetPath}`, { cause: cleanupError });
+        throw new ToolExecutionError(`发布未完成，且无法清理未完成的目标文件：${targetPath}`, 'unknown-outcome', { cause: cleanupError });
       }
+    }
+    if (error instanceof Error && error.name !== 'AbortError') {
+      throw new ToolExecutionError(error.message, 'permanent', { cause: error });
     }
     throw error;
   }
@@ -658,6 +697,8 @@ async function copyExclusively(
  */
 export class PublishVideoOutputTool implements Tool {
   readonly name = PUBLISH_VIDEO_OUTPUT_TOOL;
+  // 发布前的目标复制是可核验的外部副作用，实际复制前保存检查点。
+  readonly executionBoundary = 'checkpointed' as const;
   readonly description = '把通过全项验收的候选发布为最终交付文件；未全部通过或缺少证据时拒绝发布';
   readonly inputSchema = {
     type: 'object',
@@ -668,7 +709,7 @@ export class PublishVideoOutputTool implements Tool {
 
   constructor(private readonly readEvents: SessionReader) {}
 
-  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+  async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
     if (!isRecord(input) || typeof input.validationId !== 'string') {
       return { status: 'error', message: 'publish_video_output 需要 validationId 字符串' };
     }
@@ -715,7 +756,7 @@ export class PublishVideoOutputTool implements Tool {
         return { status: 'error', message: `候选路径不是文件：${candidate.path}` };
       }
 
-      if (validation.candidateSha256 === undefined || await candidateDigest(candidate.path, signal) !== validation.candidateSha256) {
+      if (validation.candidateSha256 === undefined || await candidateDigest(candidate.path, context.signal) !== validation.candidateSha256) {
         return { status: 'error', message: '候选内容与验收时不一致，必须重新验收后发布。' };
       }
 
@@ -723,11 +764,12 @@ export class PublishVideoOutputTool implements Tool {
       if (item.target.kind === 'explicit') {
         publishedPath = item.target.path;
         try {
-          await copyExclusively(candidate.path, publishedPath, signal);
+          await copyExclusively(candidate.path, publishedPath, context.signal, context.checkpoint);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
             return {
               status: 'error',
+              failureKind: 'permanent',
               message: `目标文件已存在，不会覆盖也不会改名：${publishedPath}`,
             };
           }
@@ -738,7 +780,7 @@ export class PublishVideoOutputTool implements Tool {
         for (let sequence = 1; ; sequence += 1) {
           const targetPath = automaticTargetPath(item.target.preferredPath, sequence);
           try {
-            await copyExclusively(candidate.path, targetPath, signal);
+            await copyExclusively(candidate.path, targetPath, context.signal, context.checkpoint);
             publishedPath = targetPath;
             break;
           } catch (error) {
@@ -782,6 +824,8 @@ export class ScopedVideoOutputTool implements Tool {
   get name(): string { return this.inner.name; }
   get description(): string { return this.inner.description; }
   get inputSchema(): unknown { return this.inner.inputSchema; }
+  // 路径校验不增加副作用；保留实际媒体工具或插件钩子的执行边界。
+  get executionBoundary() { return this.inner.executionBoundary ?? 'opaque'; }
 
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
     // 输入不是当前契约形状时交给内层工具返回它自己的字段错误，不在这里重复校验。
@@ -791,6 +835,7 @@ export class ScopedVideoOutputTool implements Tool {
     if (!isAbsolute(outputPath)) {
       return {
         status: 'error',
+        failureKind: 'permanent',
         message: `候选文件必须使用绝对路径：${outputPath}`,
       };
     }
@@ -800,6 +845,7 @@ export class ScopedVideoOutputTool implements Tool {
     if (facts.items.length === 0) {
       return {
         status: 'error',
+        failureKind: 'permanent',
         message: '本轮还没有声明视频输出项，不能写出候选文件；请先调用 declare_video_outputs。',
       };
     }
@@ -810,6 +856,7 @@ export class ScopedVideoOutputTool implements Tool {
     if (!allowed) {
       return {
         status: 'error',
+        failureKind: 'permanent',
         message: `候选文件必须写在本输出项的工作目录内，不能直接写到最终目标或其他位置：${resolvedPath}`,
       };
     }

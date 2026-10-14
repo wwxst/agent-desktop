@@ -45,7 +45,7 @@ test('persists real Desktop extension installation and enabled state across rest
     await expect(page.getByRole('tab', { name: '公开', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('button', { name: '安装 语义视频剪辑' })).toBeVisible();
     const initial = await page.evaluate(() => window.agentDesktop.extensions.list());
-    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing']);
+    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision']);
     expect(initial.marketplaces).toEqual([]);
     await page.screenshot({ path: resolve(evidence, 'desktop-default-plugins.png') });
     await page.getByRole('button', { name: '安装 语义视频剪辑' }).click();
@@ -57,6 +57,9 @@ test('persists real Desktop extension installation and enabled state across rest
     await page.screenshot({ path: testInfo.outputPath('desktop-plugin-installed-feedback-narrow.png') });
     await page.getByRole('button', { name: '关闭提示' }).click();
     await expect(page.getByRole('status')).toHaveCount(0);
+    await expect(page.getByRole('alert')).toContainText('独立 FFmpeg 插件');
+    await page.getByRole('button', { name: '关闭提示' }).click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
     await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0]!.setSize(1120, 760); });
     await page.getByRole('tab', { name: '个人', exact: true }).click();
     await expect(page.getByRole('main', { name: '插件管理' }).getByRole('button', { name: '查看 语义视频剪辑' })).toHaveCount(0);
@@ -190,6 +193,8 @@ test('persists real Desktop extension installation and enabled state across rest
     await page.getByRole('switch', { name: '启用 local-file-review' }).click();
     await expect(page.getByRole('switch', { name: '启用 local-file-review' })).toBeChecked();
     await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'test-fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'DeepSeek', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), `http://127.0.0.1:${address.port}`);
+    // 本用例只验收 fixture 服务；Probe 的启动、调用和语义交付由真实媒体用例覆盖。
+    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:video-editing', false));
     await page.getByRole('button', { name: '对话', exact: true }).click();
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('$local-file-review 检查项目，调用插件 echo 返回 extension-e2e');
     await page.getByRole('button', { name: '发送', exact: true }).click();

@@ -8,11 +8,11 @@
     "@agent-desktop/model": "workspace:*",
     "@agent-desktop/model-deepseek": "workspace:*",
     "@agent-desktop/session": "workspace:*",
-    "@agent-desktop/speech-whisper-cpp": "workspace:*",
     "@agent-desktop/system-prompt": "workspace:*",
-    "@agent-desktop/tools": "workspace:*",
-    "@agent-desktop/video-ffmpeg": "workspace:*",
-    "@agent-desktop/vision-openai": "workspace:*"
+    "@agent-desktop/tools": "workspace:*"
+  },
+  "devDependencies": {
+    "@agent-desktop/video-ffmpeg": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

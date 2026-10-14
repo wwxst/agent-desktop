@@ -6,11 +6,12 @@ import { spawn, type IPty } from 'node-pty';
 import { BoundedTextBuffer, resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
 import type { TerminalSnapshot } from '@agent-desktop/client';
 import type { TerminalPort } from '@agent-desktop/video-agent';
+import { ToolExecutionError } from '@agent-desktop/tools';
 import { createCommandPort } from './command-host.js';
 
 /** 一个会话的真实终端资源；快照只是历史，不能用于创建或重连进程。 */
 export class SessionTerminal {
-  readonly terminalId = randomUUID();
+  readonly terminalId: string;
   private readonly process: IPty;
   private readonly output = new BoundedTextBuffer(0, 64 * 1024);
   private status: 'running' | 'exited' = 'running';
@@ -18,7 +19,8 @@ export class SessionTerminal {
   private readonly finished: Promise<void>;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private closing: Promise<void> | undefined;
-  constructor(readonly workingDirectory: string, readonly command: string, private readonly publish: (snapshot: TerminalSnapshot) => void) {
+  constructor(readonly workingDirectory: string, readonly command: string, private readonly publish: (snapshot: TerminalSnapshot) => void, terminalId = randomUUID()) {
+    this.terminalId = terminalId;
     const port = createCommandPort();
     // 编码参数保留完整启动命令；NoExit 让同会话后续轮次仍能向 shell 输入。
     this.process = spawn(port.interpreterPath, ['-NoLogo', '-NoProfile', '-NoExit', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
@@ -77,12 +79,20 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       const approved = await workspace.requestApproval({ kind: 'terminal-start', command, workingDirectory: scoped.path,
         interpreter: createCommandPort().interpreterPath }, context.signal);
       context.signal?.throwIfAborted();
-      if (!approved) throw new Error('用户拒绝启动终端，没有创建进程。');
+      if (!approved) throw new ToolExecutionError('用户拒绝启动终端，没有创建进程。', 'denied');
       touched();
-      owner.terminal = new SessionTerminal(scoped.path, command, (snapshot) => { owner.terminalHistory = snapshot; publish(snapshot); });
+      const terminalId = randomUUID();
+      context.checkpoint?.({ kind: 'terminal', terminalId, operation: 'open', command, workingDirectory: scoped.path });
+      owner.terminal = new SessionTerminal(scoped.path, command, (snapshot) => { owner.terminalHistory = snapshot; publish(snapshot); }, terminalId);
       return owner.terminal.snapshot();
     },
     read: async (id, waitMs, context) => {
+      // 重启后没有活的 SessionTerminal；只返回保存过的有界历史，绝不重连或重放旧进程。
+      if (owner.terminal === undefined) {
+        const history = owner.terminalHistory;
+        if (history?.terminalId !== id) throw new Error('终端不属于当前会话，或连接已结束。');
+        return history.status === 'running' ? { ...history, status: 'disconnected' as const } : history;
+      }
       const terminal = current(id); touched();
       if (waitMs > 0) await delay(waitMs, undefined, { signal: context.signal });
       return terminal.snapshot();
@@ -92,9 +102,10 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       const approved = await workspace.requestApproval({ kind: 'terminal-input', command: input,
         workingDirectory: terminal.workingDirectory, interpreter: createCommandPort().interpreterPath }, context.signal);
       context.signal?.throwIfAborted();
-      if (!approved) throw new Error('用户拒绝终端输入，没有发送。');
+      if (!approved) throw new ToolExecutionError('用户拒绝终端输入，没有发送。', 'denied');
+      context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'input' });
       touched(); terminal.write(input); return terminal.snapshot();
     },
-    close: async (id) => { const terminal = current(id); touched(); await terminal.close(); return terminal.snapshot(); },
+    close: async (id, context) => { const terminal = current(id); context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'close' }); touched(); await terminal.close(); return terminal.snapshot(); },
   };
 }

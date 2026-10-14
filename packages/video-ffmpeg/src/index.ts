@@ -66,11 +66,11 @@ export const executeFileCommand: CommandExecutor = (command, args, signal) => (
 
 /** probe_media 返回给模型的稳定结构，不把完整 ffprobe JSON 暴露给 Session。 */
 /** 逐帧语义检查使用全片帧时间轴，超过预算受阻而不降为采样。 */
-export async function extractFullVideoFrames(inputPath: string, outputDir: string, signal?: AbortSignal): Promise<
+export async function extractFullVideoFrames(inputPath: string, outputDir: string, signal?: AbortSignal, executeCommand: CommandExecutor = executeFileCommand): Promise<
   { readonly complete: false; readonly reason: string } |
   { readonly complete: true; readonly frames: readonly { readonly path: string; readonly timestamp: number }[] }
 > {
-  const { stdout } = await executeFileCommand('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_frames',
+  const { stdout } = await executeCommand('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_frames',
     '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', inputPath], signal);
   const payload: unknown = JSON.parse(stdout);
   if (!isRecord(payload) || !Array.isArray(payload.frames)) throw new Error('ffprobe 未返回帧时间轴。');
@@ -83,11 +83,27 @@ export async function extractFullVideoFrames(inputPath: string, outputDir: strin
     return value;
   });
   await mkdir(outputDir, { recursive: true });
-  await executeFileCommand('ffmpeg', ['-n', '-hide_banner', '-loglevel', 'error', '-i', inputPath,
+  await executeCommand('ffmpeg', ['-n', '-hide_banner', '-loglevel', 'error', '-i', inputPath,
     '-map', '0:v:0', '-fps_mode', 'passthrough', '-q:v', '2', join(outputDir, 'frame-%06d.jpg')], signal);
   const files = (await readdir(outputDir)).filter((file) => /^frame-\d{6}\.jpg$/.test(file)).sort();
   if (files.length !== timestamps.length) throw new Error('实际抽帧数量与全片时间轴不一致，不能确认完整覆盖。');
   return { complete: true, frames: files.map((file, index) => ({ path: join(outputDir, file), timestamp: timestamps[index]! })) };
+}
+
+/** 把既有全帧算法暴露为工具，使语义验收也经过入口注入的权限、审批和取消。 */
+export class ExtractFullVideoFramesTool implements Tool {
+  readonly name = 'extract_full_video_frames';
+  readonly description = '提取候选全部解码帧与原始时间戳；超过 600 帧明确受阻，不降为采样。';
+  readonly inputSchema = { type: 'object', properties: { inputPath: { type: 'string' }, outputDir: { type: 'string' } },
+    required: ['inputPath', 'outputDir'], additionalProperties: false };
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+    if (!isRecord(input) || typeof input.inputPath !== 'string' || typeof input.outputDir !== 'string') {
+      return { status: 'error', message: 'extract_full_video_frames requires inputPath and outputDir to be strings' };
+    }
+    try { return { status: 'success', output: await extractFullVideoFrames(input.inputPath, input.outputDir, signal, this.executeCommand) }; }
+    catch (error) { return errorResult(error); }
+  }
 }
 
 interface MediaInfo {

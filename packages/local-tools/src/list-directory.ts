@@ -58,6 +58,7 @@ async function entryTypeOf(directory: string, dirent: Dirent): Promise<Directory
  * 这样每一步读取范围都是可见的。扩展名过滤只作用于文件，目录始终保留，否则模型无法继续往下找。
  */
 export class ListDirectoryTool implements Tool {
+  readonly executionBoundary = 'read-only' as const;
   readonly name = 'list_directory';
   readonly description = '列出当前会话工作目录或其子目录中的文件和子目录，可按扩展名过滤';
   readonly inputSchema = {

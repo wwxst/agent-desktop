@@ -11,11 +11,15 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { DesktopExtensions, readPlugin } from '../src/main/extensions.js';
 import { ExtensionConnections } from '../src/main/extension-connections.js';
 import { prepareExtensions, skillCatalog, selectSkills } from '../src/main/extension-runtime.js';
-import { readDesktopDocument } from '../src/main/desktop-database.js';
+import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
+
+// 本套只测本地平台及回环 MCP；宿主运行时下载不应触发真实 Electron 或外网。
+vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extension platform test'); } } }));
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
-async function temp() { const root = await mkdtemp(join(tmpdir(), 'extension-platform-')); directories.push(root); return root; }
+async function temp() { const root = await mkdtemp(join(tmpdir(), 'extension-platform-')); directories.push(root);
+  await writeFile(join(root, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: 'test-key' } })); return root; }
 async function market(root: string, name = 'test-market') {
   await mkdir(join(root, '.agents/plugins'), { recursive: true });
   await cp(resolve('apps/desktop/resources/plugins/video-editing'), join(root, 'plugins/video-editing'), { recursive: true });
@@ -29,29 +33,55 @@ async function listen(server: ReturnType<typeof createServer>) {
 const secureStorage = { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value.split('').reverse().join('')), decryptString: (value: Buffer) => value.toString().split('').reverse().join('') };
 
 describe('Desktop plugin platform boundaries', () => {
+  it('keeps a historical remote URL from replacing the managed built-in Whisper runtime', async () => {
+    const root = await temp(); const database = join(root, 'db.sqlite'); const extensionRoot = join(root, 'extensions');
+    await cp(resolve('apps/desktop/resources/plugins/whisper'), join(extensionRoot, 'plugins/whisper'), { recursive: true });
+    writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:whisper', kind: 'plugin', name: 'whisper', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
+    const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
+    await connections.configure('plugin:whisper', 'whisper', { url: 'https://example.invalid/mcp', WHISPER_MODEL_PATH: 'C:\\outside\\model.bin' });
+    const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
+    const plugin = (await store.files()).plugins[0]!;
+    expect(plugin.servers[0]).not.toHaveProperty('url');
+    expect(plugin.servers[0]?.env?.WHISPER_MODEL_PATH).toBe('${WHISPER_MODEL_PATH}');
+    expect(plugin.item.connections?.[0]?.variables).toEqual([]);
+  });
+  it('keeps Vision model credentials in runtime settings and ignores historical plugin connection overrides', async () => {
+    const root = await temp(); const database = join(root, 'db.sqlite'); const extensionRoot = join(root, 'extensions');
+    await cp(resolve('apps/desktop/resources/plugins/vision'), join(extensionRoot, 'plugins/vision'), { recursive: true });
+    writeDesktopDocuments(database, [{ name: 'extensions', value: { installed: [{ id: 'plugin:vision', kind: 'plugin', name: 'vision', source: 'builtin', version: '1.0.0' }], disabled: [] } }]);
+    const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
+    await connections.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp', VISION_API_KEY: 'wrong-secret' });
+    const store = new DesktopExtensions(database, extensionRoot, resolve('apps/desktop/resources'), connections);
+    const plugin = (await store.files()).plugins[0]!;
+    expect(plugin.servers[0]).not.toHaveProperty('url');
+    expect(plugin.servers[0]?.env).toEqual({});
+    expect(plugin.item.connections?.[0]?.variables).toEqual([]);
+    await expect(store.configure('plugin:vision', 'vision', { url: 'https://example.invalid/mcp' })).rejects.toThrow('运行时设置');
+  });
+
   it('persists standalone MCP servers with encrypted secrets, edits without disclosure and removes them', async () => {
     const root = await temp(); const database = join(root, 'db.sqlite');
     const connections = new ExtensionConnections(database, secureStorage, async () => undefined);
     const store = new DesktopExtensions(database, join(root, 'extensions'), resolve('apps/desktop/resources'), connections);
     const config = { name: 'local-tools', transport: 'stdio' as const, command: 'node', args: ['server.mjs'], url: '', environment: { TOKEN: 'standalone-secret-value' }, headers: {} };
-    store.saveMcpServer(config);
+    await store.saveMcpServer(config);
     const snapshot = await store.list(); const saved = snapshot.mcpServers![0]!;
     expect(saved).toMatchObject({ name: 'local-tools', enabled: true, environmentNames: ['TOKEN'] });
     expect(snapshot.plugins.every(plugin => plugin.id !== saved.id)).toBe(true);
     expect(JSON.stringify(snapshot)).not.toContain('standalone-secret-value');
     expect((await readFile(database)).includes(Buffer.from('standalone-secret-value'))).toBe(false);
     const restored = new DesktopExtensions(database, join(root, 'extensions'), resolve('apps/desktop/resources'), connections);
-    restored.saveMcpServer({ ...config, id: saved.id, command: 'npx', environment: { TOKEN: '' } });
+    await restored.saveMcpServer({ ...config, id: saved.id, command: 'npx', environment: { TOKEN: '' } });
     expect((await restored.files(root)).mcpServers[0]).toMatchObject({ directory: root, server: { command: 'npx', env: { TOKEN: 'standalone-secret-value' } } });
-    expect(() => restored.saveMcpServer(config)).toThrow('已经存在');
-    expect(() => restored.saveMcpServer({ ...config, transport: 'http', url: 'file:///tmp/mcp' })).toThrow('HTTP');
-    restored.setMcpEnabled(saved.id, false);
+    await expect(restored.saveMcpServer(config)).rejects.toThrow('已经存在');
+    await expect(restored.saveMcpServer({ ...config, transport: 'http', url: 'file:///tmp/mcp' })).rejects.toThrow('HTTP');
+    await restored.setMcpEnabled(saved.id, false);
     expect((await restored.files()).mcpServers[0]?.enabled).toBe(false);
-    restored.saveMcpServer({ ...config, id: saved.id, transport: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer header-secret-value' } });
+    await restored.saveMcpServer({ ...config, id: saved.id, transport: 'http', url: 'https://example.com/mcp', headers: { Authorization: 'Bearer header-secret-value' } });
     expect((await restored.list()).mcpServers![0]).toMatchObject({ enabled: false, transport: 'http', headerNames: ['Authorization'], environmentNames: [] });
     expect(JSON.stringify(await restored.list())).not.toContain('header-secret-value');
     expect((await restored.files()).mcpServers[0]?.server.headers).toEqual({ Authorization: 'Bearer header-secret-value' });
-    restored.removeMcpServer(saved.id);
+    await restored.removeMcpServer(saved.id);
     expect((await restored.list()).mcpServers).toEqual([]);
     expect((await restored.files()).mcpServers).toEqual([]);
   });
@@ -69,7 +99,7 @@ describe('Desktop plugin platform boundaries', () => {
     expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '2.0.0', enabled: false });
     const version = store.versions(id)[0]!;
     await store.rollback(id, version.id);
-    expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: '1.1.0', enabled: false });
+    expect((await store.list()).plugins.find(plugin => plugin.id === id)).toMatchObject({ version: previous.version, enabled: false });
     await store.removeMarketplace('test-market');
     expect((await store.files()).plugins[0]?.item.installed).toBe(true);
     await store.uninstall(id);
@@ -150,7 +180,7 @@ describe('Desktop plugin platform boundaries', () => {
     const root = await temp(); const source = join(root, 'market'); const resources = join(root, 'resources');
     await cp(resolve('apps/desktop/resources'), resources, { recursive: true }); await market(source, 'openai-curated');
     const store = new DesktopExtensions(join(root, 'db.sqlite'), join(root, 'extensions'), resources);
-    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing']);
+    expect((await store.list()).plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision']);
     await store.addMarketplace(source);
     expect((await store.list()).plugins.some(item => item.id === 'plugin:video-editing@openai-curated' && !item.installed)).toBe(true);
     await store.install('plugin:video-editing@openai-curated');
@@ -245,7 +275,7 @@ describe('Desktop plugin platform boundaries', () => {
       const restored = new ExtensionConnections(database, secureStorage, async () => undefined);
       expect(await restored.provider('plugin:test', 'service', `${base}/mcp`).tokens()).toMatchObject({ access_token: 'persistent-secret-token' });
       expect(JSON.stringify(readDesktopDocument(database, `extension-secret:plugin:test/service/${base}/mcp`))).not.toContain('persistent-secret-token');
-      restored.disconnect('plugin:test', 'service', `${base}/mcp`); expect(restored.connected('plugin:test', 'service', `${base}/mcp`)).toBe(false);
+      await restored.disconnect('plugin:test', 'service', `${base}/mcp`); expect(restored.connected('plugin:test', 'service', `${base}/mcp`)).toBe(false);
       let callbackUrl = '';
       const waiting = new ExtensionConnections(database, secureStorage, async authorization => {
         callbackUrl = new URL(authorization).searchParams.get('redirect_uri')!;

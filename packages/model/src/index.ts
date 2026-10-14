@@ -1,6 +1,9 @@
 // 品牌类型让 Tool Call 标识不能与任意字符串或其他 ID 混用。
 export type ToolCallId = string & { readonly __brand: 'ToolCallId' };
 
+/** 工具在真实执行边界给出的失败分类；缺少分类不表示可重试，也不证明副作用没有发生。 */
+export type ToolFailureKind = 'transient' | 'permanent' | 'denied' | 'cancelled' | 'unknown-outcome';
+
 // Tool Result 是模型上下文和 Session 共同使用的供应商无关结果，不归 Tools 或 Session 单独重复定义。
 export type ToolResult =
   | {
@@ -16,6 +19,8 @@ export type ToolResult =
   | {
     readonly status: 'error';
     readonly message: string;
+    /** 由实际工具提供分类；Loop 和宿主不能通过错误文案猜测拒绝、取消或执行效果。 */
+    readonly failureKind?: ToolFailureKind;
     /**
      * 失败调用仍然真实产生的结构化结果。
      * 当前只有命令的失败分支使用它：非零退出和超时都保留退出码与有界输出，
@@ -53,6 +58,8 @@ export interface ModelRequest {
   readonly systemPrompt: string;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ModelToolDefinition[];
+  /** 本次请求的输出上限；上下文预算和摘要请求共用此额度，具体协议字段由 Provider 转换。 */
+  readonly maxOutputTokens?: number;
   /** 当前 Turn 的唯一取消信号；Provider 将其传给真实请求。 */
   readonly signal?: AbortSignal;
   /**

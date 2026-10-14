@@ -45,8 +45,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function errorResult(message: string): ToolResult {
-  return { status: 'error', message };
+function errorResult(message: string, failureKind: 'permanent' | 'denied' = 'permanent'): ToolResult {
+  return { status: 'error', message, failureKind };
 }
 
 function abortError(): Error {
@@ -181,6 +181,7 @@ interface RunCommandRequest {
   readonly timeoutMs: number;
   readonly reportProgress: (event: ToolProgressEvent) => void;
   readonly signal?: AbortSignal;
+  readonly checkpoint?: (data: unknown) => void;
 }
 
 /**
@@ -194,6 +195,7 @@ function encodePowerShellCommand(command: string): string {
 
 /** 启动命令并等待它结束；输出、退出码、超时和取消都在这里收尾。 */
 async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
+  request.checkpoint?.({ kind: 'command', command: request.command, workingDirectory: request.workingDirectory });
   const child = spawn(
     request.interpreterPath,
     // 命令作为独立参数交给进程 API，不拼进第二层 `cmd /c`；
@@ -278,6 +280,7 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
   if (startupFailure !== undefined) {
     return {
       status: 'error',
+      failureKind: 'permanent',
       message: `命令无法启动（${startupFailure.message}）：${request.command}`,
       output: outcome,
     };
@@ -285,6 +288,7 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
   if (timedOut) {
     return {
       status: 'error',
+      failureKind: 'unknown-outcome',
       message: `命令超过 ${request.timeoutMs} 毫秒已被终止：${request.command}`,
       output: outcome,
     };
@@ -292,6 +296,7 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
   if (exitCode !== 0) {
     return {
       status: 'error',
+      failureKind: 'unknown-outcome',
       message: `命令以退出码 ${exitCode ?? '未知'} 结束：${request.command}`,
       output: outcome,
     };
@@ -309,6 +314,7 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
  * 无法限制脚本访问其他目录、网络或调用其他程序；首期不是操作系统沙箱。
  */
 export class RunCommandTool implements Tool {
+  readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'run_command';
   readonly description = '在当前会话已确认的工作目录中运行一条本机命令（Windows 非交互 PowerShell），每次调用都需要用户批准；读取文件、列目录、搜索文本和精确编辑已有文件继续使用各自的专用 Tool，不要改写成命令。命令以当前用户权限运行，工作目录只是执行起点而不是沙箱。';
   readonly inputSchema = {
@@ -370,7 +376,7 @@ export class RunCommandTool implements Tool {
     // 等待期间用户可能已经取消：批准不能重新启动一个已经失效的操作。
     if (isAborted(context.signal)) throw abortError();
     // 拒绝不启动任何进程，也不产生任何输出。
-    if (!approved) return errorResult(`用户拒绝执行该命令，未启动任何进程：${command}`);
+    if (!approved) return errorResult(`用户拒绝执行该命令，未启动任何进程：${command}`, 'denied');
 
     return runCommand({
       interpreterPath: this.host.interpreterPath,
@@ -381,6 +387,7 @@ export class RunCommandTool implements Tool {
       reportProgress: context.reportProgress,
       // exactOptionalPropertyTypes 下，没有取消信号时必须省略字段而不是写入 undefined。
       ...(context.signal === undefined ? {} : { signal: context.signal }),
+      ...(context.checkpoint === undefined ? {} : { checkpoint: context.checkpoint }),
     });
   }
 }

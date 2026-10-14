@@ -9,8 +9,7 @@ export function loadWebRuntimeSettings(): RuntimeSettings | null {
   const raw = localStorage.getItem(KEY);
   if (raw === null) return null;
   const value: unknown = JSON.parse(raw);
-  if (!record(value) || !Array.isArray(value.modelProviders) || !record(value.whisper)
-    || typeof value.whisper.modelPath !== 'string' || typeof value.whisper.cliPath !== 'string'
+  if (!record(value) || !Array.isArray(value.modelProviders)
     || typeof value.memoryEnabled !== 'boolean' || typeof value.memoryFromToolChatsEnabled !== 'boolean' || typeof value.fallbackVisionEnabled !== 'boolean') throw new Error('网页模型配置无效。');
   if (value.theme !== undefined && !['system', 'light', 'dark'].includes(String(value.theme))) throw new Error('网页外观配置无效。');
   for (const provider of value.modelProviders) {
@@ -25,12 +24,7 @@ export function loadWebRuntimeSettings(): RuntimeSettings | null {
   }
   const isReference = (reference: unknown) => record(reference) && typeof reference.providerId === 'string' && typeof reference.modelId === 'string';
   if (!isReference(value.conversationModel) || (value.fallbackVisionModel !== null && !isReference(value.fallbackVisionModel))) throw new Error('网页模型选择无效。');
-  // 旧配置的供应商身份标记不再进入共享状态，目录和密钥状态保持原值。
-  const providers = value.modelProviders.map((provider: Record<string, unknown>) => {
-    const { builtin: _legacyBuiltin, ...ordinary } = provider;
-    return ordinary;
-  });
-  const settings = { ...value, modelProviders: providers } as unknown as RuntimeSettings;
+  const settings = value as unknown as RuntimeSettings;
   resolveCatalogModel(settings.modelProviders, settings.conversationModel);
   if (settings.fallbackVisionModel !== null) resolveCatalogModel(settings.modelProviders, settings.fallbackVisionModel);
   return settings;

@@ -1,4 +1,5 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
+import { InMemorySession, SessionPersistenceError, type Session } from '@agent-desktop/session';
 import type {
   AgentActivityDetail,
   AgentActivityDirectoryEntry,
@@ -16,10 +17,13 @@ import type {
   AttachmentRole,
   TerminalSnapshot,
 } from '@agent-desktop/client';
-import type { SessionEvent } from '@agent-desktop/session';
+import { isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTurnState, type SessionEvent, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
+import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
+import { projectAgentTaskState } from './agent-task-state.js';
 import type { SubagentRecord } from './subagent.js';
 
 export interface PersistedDesktopSession {
+  readonly turnMessageBindings?: readonly TurnMessageBinding[];
   readonly terminalHistory?: TerminalSnapshot;
   readonly subagentHistory?: readonly SubagentRecord[];
   readonly id: string;
@@ -27,6 +31,14 @@ export interface PersistedDesktopSession {
   /** 会话工作目录；旧快照没有这个字段时按「尚未确认目录」读取。 */
   readonly workingDirectory?: string;
   readonly events: readonly SessionEvent[];
+}
+
+/** 仅宿主保存界面身份，不把消息 ID 或执行版本泄漏到通用 Session 事件。 */
+export interface TurnMessageBinding {
+  readonly executionVersion: 1;
+  readonly turnId: TurnId;
+  readonly userMessageId: number;
+  readonly assistantMessageId: number;
 }
 
 /** 持久化的输入附件：路径是身份，角色决定提示词用途。 */
@@ -45,6 +57,75 @@ export interface PersistedDesktopState {
   readonly activeSessionId: string;
   readonly sessions: readonly PersistedDesktopSession[];
   readonly clientState: ClientStateSnapshot;
+}
+
+/**
+ * Desktop 主进程使用的持久 Session。
+ * 候选快照先提交 SQLite，成功后才更新内存事件；保存失败固定保留第一次错误，
+ * 防止后续取消或默认状态覆盖真正的持久化故障。
+ */
+export class DesktopPersistentSession implements Session {
+  private readonly memory: InMemorySession;
+  private persistenceFailure: SessionPersistenceError | undefined;
+  private readonly bindings: TurnMessageBinding[];
+
+  constructor(
+    private readonly filePath: string,
+    private readonly sessionId: string,
+    initialEvents: readonly SessionEvent[],
+    private readonly stateForEvents: (sessionId: string, events: readonly SessionEvent[], bindings: readonly TurnMessageBinding[], clientState?: ClientStateSnapshot) => PersistedDesktopState,
+    private readonly onPersistenceFailure: (error: SessionPersistenceError) => void,
+    initialBindings: readonly TurnMessageBinding[] = [],
+  ) { this.memory = new InMemorySession(initialEvents); this.bindings = [...initialBindings]; }
+
+  append(event: SessionEvent): void { this.appendMany([event]); }
+
+  appendMany(events: readonly SessionEvent[]): void {
+    if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
+    const candidateEvents = [...this.memory.events(), ...events];
+    try {
+      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, candidateEvents, this.bindings) }]);
+    } catch (cause) {
+      const error = new SessionPersistenceError(cause);
+      this.persistenceFailure = error;
+      this.onPersistenceFailure(error);
+      throw error;
+    }
+    this.memory.appendMany(events);
+  }
+
+  events(): readonly SessionEvent[] { return this.memory.events(); }
+
+  turnMessageBindings(): readonly TurnMessageBinding[] { return this.bindings; }
+
+  /** 事件、从草稿迁移后的展示和身份关联同次提交；事务失败不推进任何内存事实。 */
+  commitStart(start: { readonly events: readonly SessionEvent[] }, clientState: ClientStateSnapshot, binding: TurnMessageBinding): void {
+    if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
+    const events = [...this.memory.events(), ...start.events];
+    const bindings = [...this.bindings, binding];
+    try {
+      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, events, bindings, clientState) }]);
+    } catch (cause) {
+      const error = new SessionPersistenceError(cause);
+      this.persistenceFailure = error;
+      this.onPersistenceFailure(error);
+      throw error;
+    }
+    this.memory.appendMany(start.events);
+    this.bindings.push(binding);
+  }
+
+  /** 宿主资源状态（终端退出等）变化时复用同一全快照提交入口。 */
+  persist(): void {
+    if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
+    try { writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, this.memory.events(), this.bindings) }]); }
+    catch (cause) {
+      const error = new SessionPersistenceError(cause);
+      this.persistenceFailure = error;
+      this.onPersistenceFailure(error);
+      throw error;
+    }
+  }
 }
 
 type SessionToolCall = Extract<SessionEvent, { type: 'assistant.message' }>['toolCalls'][number];
@@ -72,6 +153,37 @@ function readStringArray(value: unknown, field: string): readonly string[] {
   return value.map((item, index) => readString(item, `${field}[${index}]`));
 }
 
+/** 新事件的枚举来自磁盘 JSON，不能将未知状态转换为默认成功。 */
+function readChoice<T extends string>(value: unknown, choices: readonly T[], field: string): T {
+  if (typeof value !== 'string' || !choices.includes(value as T)) invalid(field);
+  return value as T;
+}
+
+function readEventIndexes(value: unknown, field: string): readonly number[] {
+  if (!Array.isArray(value)) invalid(field);
+  return value.map((item, index) => readNonNegativeInteger(item, `${field}[${index}]`));
+}
+
+function readPlanSteps(value: unknown, field: string): readonly TaskPlanStep[] {
+  if (!Array.isArray(value)) invalid(field);
+  const steps = value.map((item, index): TaskPlanStep => {
+    const stepField = `${field}[${index}]`;
+    if (!isRecord(item)) invalid(stepField);
+    const id = readString(item.id, `${stepField}.id`);
+    const description = readString(item.description, `${stepField}.description`);
+    if (!id.trim() || !description.trim()) invalid(stepField);
+    return {
+      id,
+      description,
+      requestedStatus: readChoice(item.requestedStatus, ['pending', 'in_progress', 'completed', 'failed', 'blocked'], `${stepField}.requestedStatus`),
+      completionKind: readChoice(item.completionKind, ['tool', 'response'], `${stepField}.completionKind`),
+      evidenceEventIndexes: readEventIndexes(item.evidenceEventIndexes, `${stepField}.evidenceEventIndexes`),
+    };
+  });
+  if (new Set(steps.map(step => step.id)).size !== steps.length) invalid(`${field}.id`);
+  return steps;
+}
+
 /** 成功结果里的产物路径；字段缺失表示这次调用没有创建交付文件。 */
 function readArtifacts(value: unknown, field: string): { readonly artifacts?: readonly string[] } {
   if (value === undefined) return {};
@@ -96,6 +208,59 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
     case 'turn.started':
     case 'turn.completed':
       return { type, turnId } as SessionEvent;
+    case 'turn.failed':
+      return { type, turnId, errorName: readString(value.errorName, `${field}.errorName`),
+        errorMessage: readString(value.errorMessage, `${field}.errorMessage`) } as SessionEvent;
+    case 'turn.cancelled':
+      return { type, turnId,
+        reason: readChoice(value.reason, ['user', 'window-closed', 'external'], `${field}.reason`) } as SessionEvent;
+    case 'turn.interrupted':
+      return { type, turnId,
+        reason: readChoice(value.reason, ['process-exit', 'legacy-unknown'], `${field}.reason`) } as SessionEvent;
+    case 'turn.recovery.started':
+      return { type, turnId, sourceTurnId: readString(value.sourceTurnId, `${field}.sourceTurnId`),
+        mode: readChoice(value.mode, ['continue', 'verify'], `${field}.mode`) } as SessionEvent;
+    case 'context.compacted': {
+      const sourceDigest = readString(value.sourceDigest, `${field}.sourceDigest`);
+      if (!/^[a-f0-9]{64}$/.test(sourceDigest)) invalid(`${field}.sourceDigest`);
+      const summary = readString(value.summary, `${field}.summary`);
+      if (!summary.trim()) invalid(`${field}.summary`);
+      if (value.estimatorVersion !== 1) invalid(`${field}.estimatorVersion`);
+      return { type, turnId, sourceDigest, summary, estimatorVersion: 1,
+        coveredStepEndEventIndexes: readEventIndexes(value.coveredStepEndEventIndexes, `${field}.coveredStepEndEventIndexes`),
+        ...(value.previousSummaryEventIndex === undefined ? {} : {
+          previousSummaryEventIndex: readNonNegativeInteger(value.previousSummaryEventIndex, `${field}.previousSummaryEventIndex`) }),
+        estimatedBefore: readNonNegativeInteger(value.estimatedBefore, `${field}.estimatedBefore`),
+        estimatedAfter: readNonNegativeInteger(value.estimatedAfter, `${field}.estimatedAfter`) } as SessionEvent;
+    }
+    case 'plan.updated':
+      return { type, turnId, revision: readNonNegativeInteger(value.revision, `${field}.revision`),
+        explanation: readString(value.explanation, `${field}.explanation`),
+        steps: readPlanSteps(value.steps, `${field}.steps`) } as SessionEvent;
+    case 'tool.effect.prepared':
+      if (!Object.hasOwn(value, 'data')) invalid(`${field}.data`);
+      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
+        data: value.data } as SessionEvent;
+    case 'host.operation.started':
+      return { type, turnId, operation: readString(value.operation, `${field}.operation`),
+        description: readString(value.description, `${field}.description`) } as SessionEvent;
+    case 'host.operation.result':
+      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
+        status: readChoice(value.status, ['completed', 'failed', 'cancelled'], `${field}.status`),
+        ...(value.errorName === undefined ? {} : { errorName: readString(value.errorName, `${field}.errorName`) }),
+        ...(value.errorMessage === undefined ? {} : { errorMessage: readString(value.errorMessage, `${field}.errorMessage`) }) } as SessionEvent;
+    case 'effect.outcome.verified': {
+      if (!isRecord(value.evidence)) invalid(`${field}.evidence`);
+      const source = readChoice(value.evidence.source, ['tool', 'user', 'host'], `${field}.evidence.source`);
+      const scope = readChoice(value.scope, ['file-effect', 'entire-call'], `${field}.scope`);
+      const outcome = readChoice(value.outcome, ['completed', 'not-applied', 'unresolved'], `${field}.outcome`);
+      // 宿主观察只报告未确认的整次调用；磁盘不能伪造宿主已证明效果完成。
+      if (source === 'host' && (scope !== 'entire-call' || outcome !== 'unresolved')) invalid(`${field}.evidence.source`);
+      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
+        scope, outcome, evidence: { source,
+          reference: readString(value.evidence.reference, `${field}.evidence.reference`),
+          description: readString(value.evidence.description, `${field}.evidence.description`) } } as SessionEvent;
+    }
     case 'user.message':
       return {
         type,
@@ -133,6 +298,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
         toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
         name: readString(value.name, `${field}.name`),
         input: value.input,
+        ...(value.boundary === undefined ? {} : { boundary: readChoice(value.boundary,
+          ['not-executed', 'read-only', 'checkpointed', 'opaque'], `${field}.boundary`) }),
       } as SessionEvent;
     case 'tool.interaction.closed': {
       if (value.reason !== 'cancelled' && value.reason !== 'window-closed') invalid(`${field}.reason`);
@@ -155,6 +322,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
               status,
               message: readString(value.result.message, `${field}.result.message`),
               ...(Object.hasOwn(value.result, 'output') ? { output: value.result.output } : {}),
+              ...(value.result.failureKind === undefined ? {} : { failureKind: readChoice(value.result.failureKind,
+                ['transient', 'permanent', 'denied', 'cancelled', 'unknown-outcome'], `${field}.result.failureKind`) }),
             }
           : invalid(`${field}.result.status`);
       return {
@@ -168,6 +337,80 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
     default:
       return invalid(`${field}.type`);
   }
+}
+
+/** 索引只引用此前真实事件；未来/自身索引不能作为核验或压缩依据。 */
+function priorEvent(events: readonly SessionEvent[], index: number, sourceIndex: number,
+  types: readonly SessionEvent['type'][], field: string): SessionEvent {
+  const source = events[sourceIndex];
+  if (sourceIndex >= index || source === undefined || !types.includes(source.type)) invalid(field);
+  return source;
+}
+
+/**
+ * 磁盘是实际外部边界：新事件引用在解析时一次确认，旧残留事件仍原样保留。
+ * 这里只检查来源身份/范围；工具业务资格和执行状态继续由 Session 的纯投影负责。
+ */
+function readSessionEvents(value: unknown, field: string): readonly SessionEvent[] {
+  if (!Array.isArray(value)) invalid(field);
+  const events = value.map((event, index) => readSessionEvent(event, `${field}[${index}]`));
+  for (const [index, event] of events.entries()) {
+    const eventField = `${field}[${index}]`;
+    switch (event.type) {
+      case 'turn.recovery.started': {
+        // 关系只能指向此前已存在的轮次，天然排除自循环及未来恢复源。
+        const priorEvents = events.slice(0, index);
+        const sourceStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.sourceTurnId);
+        const turnStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.turnId);
+        if (sourceStartIndex < 0 || turnStartIndex < 0 || sourceStartIndex >= turnStartIndex
+          || priorEvents.some(source => source.type === 'turn.recovery.started' && source.turnId === event.turnId)) {
+          invalid(`${eventField}.sourceTurnId`);
+        }
+        break;
+      }
+      case 'tool.effect.prepared': {
+        const source = priorEvent(events, index, event.sourceEventIndex, ['tool.called'], `${eventField}.sourceEventIndex`);
+        if (source.turnId !== event.turnId
+          || (source.type === 'tool.called' && (source.boundary === 'not-executed' || source.boundary === 'read-only'))) {
+          invalid(`${eventField}.sourceEventIndex`);
+        }
+        break;
+      }
+      case 'host.operation.result': {
+        const source = priorEvent(events, index, event.sourceEventIndex, ['host.operation.started'], `${eventField}.sourceEventIndex`);
+        if (source.turnId !== event.turnId) invalid(`${eventField}.sourceEventIndex`);
+        break;
+      }
+      case 'effect.outcome.verified': {
+        const source = priorEvent(events, index, event.sourceEventIndex,
+          ['tool.called', 'host.operation.started'], `${eventField}.sourceEventIndex`);
+        // 核验可跨本会话轮次，但文件部分不能指向宿主阶段或从未执行的调用。
+        if ((event.scope === 'file-effect' && source.type !== 'tool.called')
+          || (source.type === 'tool.called' && source.boundary === 'not-executed')) invalid(`${eventField}.sourceEventIndex`);
+        break;
+      }
+      case 'context.compacted': {
+        // 来源、累计覆盖和摘要 JSON 与模型投影复用同一校验，不再维护第二套摘要算法。
+        validateContextCompactedEvent(events.slice(0, index + 1), index);
+        break;
+      }
+      case 'plan.updated': {
+        // 后面的恢复关系尚未校验，不能反过来影响当前计划的来源归属。
+        const priorEvents = events.slice(0, index);
+        const root = projectRecoveryAncestry(priorEvents, event.turnId).rootTurnId;
+        for (const [stepIndex, step] of event.steps.entries()) {
+          for (const [offset, sourceIndex] of step.evidenceEventIndexes.entries()) {
+            const sourceField = `${eventField}.steps[${stepIndex}].evidenceEventIndexes[${offset}]`;
+            const source = events[sourceIndex];
+            if (sourceIndex >= index || source === undefined || !isTaskPlanEvidenceEvent(source)) invalid(sourceField);
+            if (projectRecoveryAncestry(priorEvents, source.turnId).rootTurnId !== root) invalid(sourceField);
+          }
+        }
+        break;
+      }
+    }
+  }
+  return events;
 }
 
 function readToolActivity(value: unknown, field: string): AgentActivityItem {
@@ -480,6 +723,8 @@ function readClientMessage(
   value: unknown,
   field: string,
   legacyOutputFilePaths: Readonly<Record<string, string>>,
+  events: readonly SessionEvent[],
+  bindings: readonly TurnMessageBinding[],
 ): ClientConversationMessage {
   if (!isRecord(value)) invalid(field);
   const id = readNonNegativeInteger(value.id, `${field}.id`);
@@ -505,15 +750,37 @@ function readClientMessage(
     };
   }
   if (role !== 'assistant') invalid(`${field}.role`);
+  // UI 快照只携带关联提示；显示状态与完成证据必须从 Main 的原始事实重建。
+  let taskState;
+  const binding = bindings.find(item => item.assistantMessageId === id);
+  if (binding !== undefined) {
+    taskState = projectAgentTaskState(events, binding.turnId);
+  } else if (value.taskState !== undefined) {
+    if (!isRecord(value.taskState) || typeof value.taskState.latestTurnId !== 'string') invalid(`${field}.taskState`);
+    const turnId = value.taskState.latestTurnId as TurnId;
+    if (projectTurnState(events, turnId) === undefined) invalid(`${field}.taskState.latestTurnId`);
+    taskState = projectAgentTaskState(events, turnId);
+  }
+  if (binding === undefined && value.task !== undefined) {
+    if (!isRecord(value.task)) invalid(`${field}.task`);
+    const turnId = readString(value.task.turnId, `${field}.task.turnId`) as TurnId;
+    if (projectTurnState(events, turnId) === undefined) invalid(`${field}.task.turnId`);
+    taskState = projectAgentTaskState(events, turnId);
+  }
   const base = {
     id,
     role,
+    ...(taskState === undefined ? {} : { taskState }),
     activity: readActivity(value.activity, `${field}.activity`, value.tools, `${field}.tools`),
     activityExpanded: value.activityExpanded === undefined
       ? readBoolean(value.toolsExpanded, `${field}.toolsExpanded`)
       : readBoolean(value.activityExpanded, `${field}.activityExpanded`),
   } as const;
   const status = readString(value.status, `${field}.status`);
+  if (status === 'processing' && binding !== undefined) {
+    // 起点快照保留正在执行的身份；流式增量从不落盘，重启再由宿主终态投影。
+    return { ...base, status, streamedText: '' };
+  }
   if (status === 'completed') {
     return {
       ...base,
@@ -579,6 +846,8 @@ function readClientConversation(
   value: unknown,
   field: string,
   legacyOutputFilePaths: Readonly<Record<string, string>>,
+  events: readonly SessionEvent[],
+  bindings: readonly TurnMessageBinding[] = [],
 ): ClientConversation {
   if (!isRecord(value)) invalid(field);
   if (!Array.isArray(value.messages)) invalid(`${field}.messages`);
@@ -600,7 +869,7 @@ function readClientConversation(
         ? value.titleManuallyRenamed
         : invalid(`${field}.titleManuallyRenamed`),
     messages: value.messages.map((item, index) => (
-      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths)
+      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths, events, bindings)
     )),
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
@@ -638,6 +907,8 @@ function readSidebar(value: unknown): ClientSidebarState {
 export function parseClientState(
   value: unknown,
   legacyOutputFilePathsFor: (sessionId: string) => Readonly<Record<string, string>> = () => ({}),
+  eventsFor: (sessionId: string) => readonly SessionEvent[] = () => [],
+  bindingsFor: (sessionId: string) => readonly TurnMessageBinding[] = () => [],
 ): ClientStateSnapshot {
   if (!isRecord(value)) invalid('clientState');
   if (!Array.isArray(value.conversations)) {
@@ -648,11 +919,13 @@ export function parseClientState(
       item,
       `clientState.conversations[${index}]`,
       isRecord(item) && typeof item.id === 'string' ? legacyOutputFilePathsFor(item.id) : {},
+      isRecord(item) && typeof item.id === 'string' ? eventsFor(item.id) : [],
+      isRecord(item) && typeof item.id === 'string' ? bindingsFor(item.id) : [],
     )
   ));
   if (value.drafts !== undefined && !Array.isArray(value.drafts)) invalid('clientState.drafts');
   const drafts = value.drafts === undefined ? [] : (value.drafts as unknown[]).map((item, index) => (
-    readClientConversation(item, `clientState.drafts[${index}]`, {})
+    readClientConversation(item, `clientState.drafts[${index}]`, {}, [])
   ));
   if (drafts.some(draft => draft.messages.length > 0 || draft.archived || draft.pinned || draft.titleManuallyRenamed)) invalid('clientState.drafts');
   const allConversations = [...conversations, ...drafts];
@@ -707,13 +980,32 @@ function parseDesktopSession(
   if (workingDirectory !== undefined && typeof workingDirectory !== 'string') {
     invalid(`${field}.workingDirectory`);
   }
+  const events = readSessionEvents(value.events, `${field}.events`);
+  let turnMessageBindings: readonly TurnMessageBinding[] | undefined;
+  if (value.turnMessageBindings !== undefined) {
+    if (!Array.isArray(value.turnMessageBindings)) invalid(`${field}.turnMessageBindings`);
+    turnMessageBindings = value.turnMessageBindings.map((item, index) => {
+      const bindingField = `${field}.turnMessageBindings[${index}]`;
+      if (!isRecord(item) || item.executionVersion !== 1) invalid(bindingField);
+      const turnId = readString(item.turnId, `${bindingField}.turnId`) as TurnId;
+      if (!events.some(event => event.type === 'turn.started' && event.turnId === turnId)
+        || !events.some(event => event.type === 'user.message' && event.turnId === turnId)) invalid(`${bindingField}.turnId`);
+      return { executionVersion: 1 as const, turnId,
+        userMessageId: readNonNegativeInteger(item.userMessageId, `${bindingField}.userMessageId`),
+        assistantMessageId: readNonNegativeInteger(item.assistantMessageId, `${bindingField}.assistantMessageId`) };
+    });
+    const messageIds = turnMessageBindings.flatMap(item => [item.userMessageId, item.assistantMessageId]);
+    if (new Set(turnMessageBindings.map(item => item.turnId)).size !== turnMessageBindings.length
+      || new Set(messageIds).size !== messageIds.length) invalid(`${field}.turnMessageBindings`);
+  }
   return {
     session: {
       id: readString(value.id, `${field}.id`),
       attachments: readAttachments(value, field),
-      ...(value.terminalHistory === undefined ? {} : { terminalHistory: { ...readTerminalHistory(value.terminalHistory, field), status: 'disconnected' as const } }),
+      ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
-      events: value.events.map((item, index) => readSessionEvent(item, `${field}.events[${index}]`)),
+      events,
+      ...(turnMessageBindings === undefined ? {} : { turnMessageBindings }),
       ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),
     },
     // 旧快照带按文件名索引的产物表；新快照没有，用空表表示「没有可还原的旧关联」。
@@ -730,7 +1022,7 @@ function readSubagentHistory(value: unknown, field: string): readonly SubagentRe
     const result = record.result;
     if (!['completed', 'failed', 'cancelled', 'budget-exhausted'].includes(String(result.status))) invalid(field);
     return { parentToolCallId: readString(record.parentToolCallId, field),
-      events: record.events.map((event, index) => readSessionEvent(event, `${field}.events[${index}]`)),
+      events: readSessionEvents(record.events, `${field}.events`),
       result: { taskId: readString(result.taskId, field), title: readString(result.title, field),
         status: result.status as SubagentRecord['result']['status'], summary: readString(result.summary, field),
         evidence: readStringArray(result.evidence, field) } };
@@ -763,6 +1055,8 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
   const clientState = parseClientState(
     value.clientState,
     (sessionId) => legacyOutputFilePathsBySession.get(sessionId) ?? {},
+    (sessionId) => sessions.find(session => session.id === sessionId)?.events ?? [],
+    (sessionId) => sessions.find(session => session.id === sessionId)?.turnMessageBindings ?? [],
   );
   const clientSessionIds = [...clientState.conversations, ...clientState.drafts ?? []].map((conversation) => conversation.id);
   if (!sessionIds.includes(activeSessionId)
@@ -770,6 +1064,20 @@ export function parseDesktopState(value: unknown): PersistedDesktopState {
     || clientSessionIds.length !== sessionIds.length
     || clientSessionIds.some((id) => !sessionIds.includes(id))) {
     invalid('activeSessionId');
+  }
+
+  // 持久化文件中的绑定只接受同一正式会话里的确切消息身份；草稿没有已提交任务。
+  for (const session of sessions) {
+    const conversation = clientState.conversations.find(item => item.id === session.id);
+    for (const binding of session.turnMessageBindings ?? []) {
+      const messages = conversation?.messages ?? [];
+      const userIndex = messages.findIndex(item => item.id === binding.userMessageId && item.role === 'user');
+      const assistant = messages[userIndex + 1];
+      if (userIndex < 0 || assistant?.id !== binding.assistantMessageId || assistant.role !== 'assistant'
+        || messages.filter(item => item.id === binding.userMessageId || item.id === binding.assistantMessageId).length !== 2) {
+        invalid(`sessions.${session.id}.turnMessageBindings`);
+      }
+    }
   }
 
   return { activeSessionId, sessions, clientState };

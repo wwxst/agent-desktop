@@ -265,14 +265,23 @@ export function projectAgentActivity(
       return {
         id: event.toolCallId,
         kind: 'tool',
-        status: event.type === 'tool.started'
-          ? 'running'
+        status: event.type === 'tool.started' ? 'running'
           : event.type === 'tool.completed' ? 'completed' : 'failed',
         toolName: event.toolName,
         // exactOptionalPropertyTypes 下，没有文件或没有耗时时必须省略字段而不是写入 undefined。
         ...(files.length === 0 ? {} : { files }),
         ...(event.type === 'tool.started' ? {} : { durationMs: event.durationMs }),
       };
+    }
+    case 'turn.cancelled': {
+      // 轮次取消没有 Tool Result；用已有 Session 事实结束当前活动，保持核心追踪契约不变。
+      const pending = events.findLast(entry => entry.type === 'tool.called' && entry.turnId === event.turnId);
+      if (pending?.type !== 'tool.called' || events.some(entry => entry.type === 'tool.result'
+        && entry.turnId === pending.turnId && entry.stepId === pending.stepId
+        && entry.toolCallId === pending.toolCallId)) return undefined;
+      const files = readActivityFiles(pending.input);
+      return { id: pending.toolCallId, kind: 'tool', status: 'cancelled', toolName: pending.name,
+        ...(files.length === 0 ? {} : { files }) };
     }
     default:
       return undefined;
