@@ -86,8 +86,8 @@ pnpm desktop:build                     PASS  主进程、预加载、渲染层�
 pnpm client:web:build                  PASS  Web 客户端生产构建。
 pnpm desktop:package:win               PASS  Windows x64 NSIS 安装器。
 git diff --check                       PASS  工作树和暂存差异。
-pnpm client:web:test                   PASS  首轮 74 通过、18 跳过；两项失败均保留断言聚焦复验通过。
-Windows / Ubuntu CI                    待补  必须核对最终准确候选提交。
+pnpm client:web:test                   FAIL  首轮 74 通过、18 跳过、2 失败；失败项后续专项复验 PASS。
+Windows / Ubuntu CI                    PASS  调度修正提交 80927ae 双平台通过；最终文档提交单独核对。
 ```
 
 首轮全量检查揭示旧模型能力及 Whisper 路径夹具与当前契约不符，已同步现有夹具。默认设置断言补上当前 `fallbackVisionEnabled: false`。Vision 缺密钥场景改为保存未启用的备用候选，保留工具不可见和零上传断言；没有弱化生产配置校验。构建环境缺少 Electron 已下载运行程序，复用既有工作树相同 `44.0.0` 的忽略依赖资源后打包通过，源码和锁文件未因此改动。
@@ -133,20 +133,24 @@ Whisper 独立目录的下一轮复验在长音频读取 `transcript.json` 时�
 
 对准确代码提交已经重新执行冻结锁安装、`pnpm check`（86 文件、1014 项）、独立架构检查（19 工作区）、Desktop/Web 构建及已提交差异检查，全部通过，证据为 `final-engineering.json` 和 `final-*.log`。提交后构建的受测资源摘要再次与最后安装包核对一致，安装运行和真实媒体证据对应同一生产源码。
 
-首次远端 [Windows/Ubuntu 候选持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38507495465) 为 Ubuntu 通过、Windows 失败。Windows 的 `run-command.test.ts` 中三个真实 PowerShell 用例触及 Vitest 默认五秒时限，其余 1011 项通过，未显示业务断言失败；不能把该运行记为通过。最小修正仅把这一组真实进程验收等待设为 30 秒，生产命令超时、取消和所有结果断言不变，没有新增用例、跳过测试或全局放宽时限。现有 14 项聚焦回归及测试类型检查通过，新准确提交的双平台持续集成待补记。
+首次远端 [Windows/Ubuntu 候选持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38507495465) 为 Ubuntu 通过、Windows 失败。Windows 的 `run-command.test.ts` 中三个真实 PowerShell 用例触及 Vitest 默认五秒时限，其余 1011 项通过，未显示业务断言失败；不能把该运行记为通过。后续 `54cc2c545a6030dadf64f033e92ab54faa282faf` 仅把这一组真实进程验收等待设为 30 秒，生产命令超时、取消和所有结果断言不变，没有新增用例、跳过测试或全局放宽时限。现有 14 项聚焦回归及测试类型检查通过，但该修改未解决远端失败，最终已撤销。
 
-`54cc2c545a6030dadf64f033e92ab54faa282faf` 的[第二次持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38508002579) 仍为 Ubuntu 通过、Windows 失败：首个 PowerShell 用例超过 30 秒、FFmpeg 取消用例超过 20 秒、SQLite 用例超过五秒，三组执行时间重叠。放宽单组等待没有解决问题，不能计为修复。已撤销该 30 秒调整，恢复原有断言和时限；改为只在 Windows 持续集成的工程门禁设置 `VITEST_MAX_WORKERS=1`，完整顺序执行全部测试。Ubuntu 保留默认并行度，生产代码不变；最终调度修正的双平台结果待验证。
+`54cc2c545a6030dadf64f033e92ab54faa282faf` 的[第二次持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38508002579) 仍为 Ubuntu 通过、Windows 失败：首个 PowerShell 用例超过 30 秒、FFmpeg 取消用例超过 20 秒、SQLite 用例超过五秒，三组执行时间重叠。放宽单组等待没有解决问题，不能计为修复。已撤销该 30 秒调整，恢复原有断言和时限；改为只在 Windows 持续集成的工程门禁设置 `VITEST_MAX_WORKERS=1`，完整顺序执行全部测试。Ubuntu 保留默认并行度，生产代码不变。
 
 本地同样设置 `VITEST_MAX_WORKERS=1` 后，`pnpm check` 在 74.34 秒内通过 86 个文件、1014 项测试及 19 个工作区架构检查，原始日志为 `check-serial.log`。独立审查确认 Vitest 原生读取该变量，全部用例、原时限及取消结果断言保留。日志仅证明并行运行时观测到时延，尚不能确认具体资源瓶颈；是否关闭远端失败须以调度修正后的准确提交持续集成为准。
+
+调度修正提交为 `80927ae622fc2b6e326665b18fee6afc371c359c`，标题为 `ci: serialize Windows engineering tests with original timeouts`。该准确提交的 [Windows/Ubuntu 持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38524477877) 均已完成并通过，包括冻结锁安装、完整 `pnpm check`、Desktop 构建和已提交差异检查，证据为 `ci-serial.json`，关闭本轮远端工程失败项。相对已安装验收的 `26f0968`，实际业务源码、锁文件及测试文件完全相同，仅持续集成调度和报告发生变化。
+
+最后报告补记仅修改本报告及第三轮报告：澄清首次浏览器命令失败、记录两次失败的持续集成和实际通过的调度修正，移除无明确文件来源的 `failedTests` 描述。本文所在文档提交保留正常追加历史并推送同一候选；提交后再对准确 `HEAD` 执行本地工程检查、核对双平台持续集成及生产产物摘要。最终提交、检查结果、持续集成链接和主线状态记录在 `logs/phase6-integration/final-delivery.json` 及最终交付答复中，不把代码提交的持续集成冒充另一提交的结果。
 
 ## 三轮审查及最终门禁
 
 - [第一轮集成完整性](phase6-review-integration-20261014.md)：核对主线界面及模型组件、第五阶段核心、唯一视觉注入和当前跨进程契约，没有未关闭 P0/P1。
 - [第二轮功能与安全](phase6-review-security-20261014.md)：核对当前事务、保存失败、恢复、未知效果、审批、加密、授权及交付，发现并修正缺密钥旧夹具，没有未关闭 P0/P1。
-- [第三轮工程与交付](phase6-review-engineering-20261014.md)：核对工程规范、现有测试、打包资源及安装保护；发现终态事件、视觉配置说明、失败对象跨桥三处文档漂移并修正。本地安装运行最终复验通过；准确提交持续集成待补记。
+- [第三轮工程与交付](phase6-review-engineering-20261014.md)：核对工程规范、现有测试、打包资源及安装保护；发现终态事件、视觉配置说明、失败对象跨桥三处文档漂移并修正。本地安装运行最终复验及调度修正提交的双平台持续集成通过，没有未关闭 P0/P1。交付复核同时修正浏览器命令结果表和 Whisper 结果文件描述。
 
 不要求兼容旧 API、Session、SQLite、配置、插件协议或跨版本数据回滚。当前事务完整、工具授权、凭据加密、取消与异常传播、未知效果核验、当前版本保存及恢复、媒体候选验收和现有持续集成仍为必需要求。没有未解决的开发规范冲突，也没有擅自取消外部模型门禁。
 
 真实云 Vision 和真实 Responses 都仍为 `SKIP`：缺少明确授权的测试凭据，未消耗生产额度；本机 HTTP 协议、真实 MCP 子进程和真实媒体进程的通过不能替代云供应商能力验证。
 
-完成工程及持续集成后可以推送本独立候选。最终整体判断仍为 `BLOCKED`，须取得授权凭据并通过两项真实云验收，再核对最新 main 是否前进，才可作最后合并决定。本轮不合并 main。后续若决定合并，应保留合并历史；发现当前版本回归时通过新撤销提交回退代码，不承诺旧程序读取当前数据库，也不删除用户数据。
+工程工作已完成，独立候选已正常推送；最终文档提交也须核对准确提交的持续集成。最终整体判断仍为 `BLOCKED`，须取得授权凭据并通过两项真实云验收，再核对最新 main 是否前进，才可作最后合并决定。本轮不合并 main。后续若决定合并，应保留合并历史；发现当前版本回归时通过新撤销提交回退代码，不承诺旧程序读取当前数据库，也不删除用户数据。
