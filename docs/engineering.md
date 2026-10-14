@@ -378,6 +378,8 @@ Review                       PASS
 Real Verification            PASS（仅涉及真实外部链路时要求）
 ```
 
+第五阶段集成候选包含真实云 Vision（视觉分析）和 Responses（响应协议）能力，两项真实验证仍为 `SKIP`，继续阻塞 `main` 合并。本轮规范整合不取消该要求；缺少获授权测试凭据时保留阻塞，不以本机协议夹具或双平台 CI 通过代替云验证。历史兼容要求取消不等于取消当前架构的真实功能验收。
+
 合并方式为 `merge feature branch → main`。只有 milestone（里程碑）完成后才创建 tag（标签）。
 
 ### Commit Report（提交汇报）

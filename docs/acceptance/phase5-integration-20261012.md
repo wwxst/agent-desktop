@@ -2,6 +2,8 @@
 
 候选为 `codex/phase5-integration`，工作树为 `C:/Users/ww/.codex/worktrees/phase5-integration/agent-desktop`。结论：**候选工程实施完成，外部验证仍阻塞 main 合并。** 真实云 Vision 和 Responses 缺少获授权测试凭据，均为 `SKIP`，不能宣称全部集成门禁通过。
 
+2026-10-14 规范收口说明：本文记录 2026-10-12 已执行的历史验收事实，十五项交付及第七节后续方案不重新定义当前要求。最新开发与验收标准以根 [`AGENTS.md`](../../AGENTS.md) 和 [工程规范](../engineering.md) 为准；旧 SQLite 升级、旧配置读取、匹配旧程序的数据回滚不再作为默认门禁。原 C3 证据保留，真实云 Vision 与 Responses 的 `SKIP` 阻塞继续有效；后续合并还须审查已经前进的 `main` 增量。
+
 本轮没有修改、合并或推送 `main`，没有创建合并请求、发布或标签。原分支、工作树、快照和用户未跟踪内容保留。
 
 ```text

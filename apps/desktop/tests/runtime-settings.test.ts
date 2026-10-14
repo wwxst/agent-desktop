@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
+import { readDesktopDocument } from '../src/main/desktop-database.js';
 import {
   parseRuntimeSettingsUpdate,
   listProviderModels,
@@ -158,18 +158,6 @@ describe('desktop runtime settings', () => {
     const { database } = await paths();
     await expect(saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'secret' }) }, { ...storage, isEncryptionAvailable: () => false })).rejects.toThrow('无法保存');
     expect(readDesktopDocument(database, 'runtime-settings')).toBeNull();
-  });
-  it('migrates prior SQLite settings and encrypted credentials without losing their values', async () => {
-    const { database } = await paths();
-    writeDesktopDocuments(database, [
-      { name: 'runtime-settings', value: { deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test', visionBaseUrl: 'https://vision.test/v1', whisperModelPath: 'legacy.bin' } },
-      { name: 'runtime-secrets', value: { deepSeekApiKey: storage.encryptString('legacy-secret').toString('base64') } },
-    ]);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ deepSeekApiKey: 'legacy-secret', deepSeekModel: 'legacy-model', deepSeekBaseUrl: 'https://legacy.test' });
-    await saveRuntimeSettings(database, { theme: 'light' }, storage);
-    expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('deepSeekModel');
-    expect(readDesktopDocument(database, 'runtime-settings')).not.toHaveProperty('whisperModelPath');
-    expect(readDesktopDocument(database, 'runtime-secrets')).toHaveProperty('providerApiKeys.deepseek');
   });
   it.each([
     { modelProvider: provider({ models: [] }) },

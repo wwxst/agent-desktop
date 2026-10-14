@@ -107,7 +107,7 @@ export function parseRuntimeSettingsUpdate(value: unknown): RuntimeSettingsUpdat
   }
   return update;
 }
-/** 旧版固定两家配置只在持久化边界转换，新界面和运行时统一消费供应商目录。 */
+/** 持久化配置只解析当前供应商目录契约。 */
 export function parseStoredSettings(value: unknown): PersistedRuntimeSettings {
   if (!record(value)) throw new Error('运行时设置结构无效。');
   const common = parseRuntimeSettingsUpdate(value);
@@ -120,10 +120,6 @@ export function parseStoredSettings(value: unknown): PersistedRuntimeSettings {
         models: parsed.models, builtin: DEFAULT_MODEL_PROVIDERS.some(defaultProvider => defaultProvider.id === parsed.id) };
     });
     if (new Set(providers.map(item => item.id)).size !== providers.length) throw new Error('保存的供应商 ID 重复。');
-  } else if (['deepSeekBaseUrl', 'deepSeekModel', 'visionBaseUrl'].some(key => value[key] !== undefined)) {
-    providers = DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...provider }) => ({ ...provider,
-      baseUrl: optionalString(value[provider.id === 'deepseek' ? 'deepSeekBaseUrl' : 'visionBaseUrl'], '旧版 API 地址') || provider.baseUrl,
-      models: provider.id === 'deepseek' && value.deepSeekModel ? [{ id: text(value.deepSeekModel, '旧版模型名称'), displayName: text(value.deepSeekModel, '旧版模型名称'), images: false }] : provider.models }));
   }
   return { ...(common.theme === undefined || common.theme === null ? {} : { theme: common.theme }),
     ...(providers === undefined ? {} : { modelProviders: providers }),
@@ -138,10 +134,6 @@ export function parseStoredSecrets(value: unknown): PersistedRuntimeSecrets {
   if (value.providerApiKeys !== undefined) {
     if (!record(value.providerApiKeys)) throw new Error('供应商密钥结构无效。');
     for (const [id, encrypted] of Object.entries(value.providerApiKeys)) keys[id] = text(encrypted, '加密密钥');
-  }
-  for (const [field, id] of [['deepSeekApiKey', 'deepseek'], ['visionApiKey', 'openai']] as const) {
-    const encrypted = optionalString(value[field], field);
-    if (encrypted !== undefined) keys[id] = encrypted;
   }
   return Object.keys(keys).length ? { providerApiKeys: keys } : {};
 }

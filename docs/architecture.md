@@ -2,6 +2,8 @@
 
 本文档定义 Agent Runtime MVP（智能体运行时最小可行版本）及当前视频智能体应用层的核心边界。它描述职责、事实流和依赖方向，不预先设计当前范围之外的系统。
 
+开发、审查和验收以根 [`AGENTS.md`](../AGENTS.md) 的项目开发总原则与最小实现规范为准。本文保留的历史兼容路径只描述尚存实现，不构成继续维持旧程序、接口或数据兼容的要求；删除仍须符合本轮范围和实际消费者证据。
+
 ## 通用任务执行事实
 
 ```text
@@ -277,7 +279,7 @@ Desktop 使用 SQLite（本地嵌入式数据库）保存现有状态，驱动�
 
 外观模式 `theme` 与当前运行时设置一起保存在 `runtime-settings` 记录；未设置时跟随系统。客户端启动时加载并设置根节点主题，点选后自动保存并即时应用；`loadRuntimeConfiguration` 不返回该字段，主题不进入智能体或模型上下文。模型供应商使用完整草稿显式保存；本地工具设置导航到插件管理，不维护 Whisper 手动路径。完整设置页的分类、尺寸、字段布局和视觉验收以 `docs/desktop-ui.md` 为准。
 
-模型设置的唯一目录类型和内置默认项位于 `@agent-desktop/client`；`runtime-settings` 保存供应商地址、协议、模型目录和对话/视觉选择，`runtime-secrets` 按供应商 ID 保存由 Electron `safeStorage`（系统安全存储）加密的密钥。目录与密钥一次 SQLite 事务提交；客户端只接收配置状态与来源。旧固定供应商字段在读取边界转换为新目录，保留原地址、模型与密钥；旧 Whisper 路径不再作为 Desktop 执行来源。
+模型设置的唯一目录类型和内置默认项位于 `@agent-desktop/client`；`runtime-settings` 保存供应商地址、协议、模型目录和对话/视觉选择，`runtime-secrets` 按供应商 ID 保存由 Electron `safeStorage`（系统安全存储）加密的密钥。目录与密钥一次 SQLite 事务提交；客户端只接收配置状态与来源。持久化只解析当前 `modelProviders` 与 `providerApiKeys` 契约，不再转换旧固定供应商的地址、模型和独立密钥字段；旧 Whisper 路径不再作为 Desktop 执行来源。
 
 模型密钥、插件配置和 OAuth 令牌共用 `safe-storage.ts` 的加密保存边界。Windows 首次启动时 Electron 内置浏览器将主密钥延迟约十秒写入现有 `userData/Local State`；宿主先监听规范化后的真实目录，避免 Windows 短路径别名触发原生监视器断言，再读取 `os_crypt.encrypted_key`，确认非空主密钥已持久化后才提交凭据到 SQLite。已有有效主密钥立即继续；文件事件只唤醒重读，不作为保存成功证据。等待最多二十秒，到期或文件损坏、其他读取错误均明确失败，保留原数据库记录。模型密钥等待完成后，宿主再读取最新记录并同步合并提交，保留等待期间已保存的外观和记忆设置。宿主仍使用 Electron 原加密接口，不生成明文凭据文件、复制主密钥或用固定延时冒充持久化。
 
@@ -293,7 +295,7 @@ Responses                响应协议          将通用消息转换为输入与
 
 模型发现经宿主实际请求 `/models`，只消费供应商返回的 ID 与可选名称，不推断图片能力或 token 上限。该请求只验证目录连接和认证；视觉选择必须在当前目录中声明 `images: true`，实际供应商是否接受该模型的图片和协议仍由 `analyze_images` 的真实请求确认，错误明确保留。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源；浏览器开发宿主用内存目录夹具，目录网络获取和打开本地快照明确要求桌面应用。
 
-启动恢复前，`legacy-storage-migration.ts` 读取同一目录内尚未导入的 `session-state.json`、`runtime-settings.json` 与 `runtime-secrets.json`，先按现有规则解析，再由一个事务导入。旧文件保留且不再写入；已有数据库记录始终优先。任何旧文件解析失败都不提交部分迁移，数据库损坏也不会用空状态覆盖。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）仍使用现有写入链路。
+启动恢复前，`legacy-storage-migration.ts` 读取同一目录内尚未导入的 `session-state.json`、`runtime-settings.json` 与 `runtime-secrets.json`，先按当前解析规则读取，再由一个事务导入。旧文件保留且不再写入；已有数据库记录始终优先。任何旧文件解析失败都不提交部分迁移，数据库损坏也不会用空状态覆盖。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）仍使用现有写入链路。
 
 `@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Runtime Settings UI（运行时设置界面）、Agent Activity、Artifact Card 和样式实现。`cancelTask`（取消任务）与 `revealFile`（定位文件）由同一接口提供；`apps/desktop` 通过 preload API 提供真实 Electron 宿主，`apps/web` 提供可取消的内存模拟 Turn，不执行本地视频 Agent，也不使用浏览器存储。
 
