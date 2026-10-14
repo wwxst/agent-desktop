@@ -216,7 +216,8 @@ describe('RunCommandTool input and approval boundaries', () => {
   });
 });
 
-describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShell process', () => {
+// Windows CI 的真实 PowerShell 用例曾超过默认五秒；仅放宽验收等待，不改变命令自身超时。
+describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShell process', { timeout: 30_000 }, () => {
   it('runs the approved command once and reports its real output and exit code', async () => {
     const { port, requested } = portFor({ directory: root });
     const events: ToolProgressEvent[] = [];

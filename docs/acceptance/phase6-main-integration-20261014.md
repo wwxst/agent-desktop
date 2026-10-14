@@ -19,6 +19,8 @@ BLOCKED    合并受阻        必需外部验证没有完成，候选可以交�
 
 候选从准确 `origin/main` 创建，再以 `git merge --no-ff --no-commit 5bc5550` 合入第五阶段，保留两边有效历史。最终候选准确提交与远端相同提交的持续集成结果由本报告后续交付记录和 `git log --format=fuller codex/phase6-main-integration` 核对；不把未提交工作树的日志冒充另一提交的证据。
 
+实施期间重新拉取后主线保持上述准确提交；双方均为最终候选祖先。基线持续集成分别为 [main 的已有失败](https://github.com/wwxst/agent-desktop/actions/runs/38492995054) 与 [第五阶段 Windows/Ubuntu 通过](https://github.com/wwxst/agent-desktop/actions/runs/38500529871)，不以基线结果代替本候选的验证。
+
 原 main 未跟踪的 `.workbuddy-ai/`、`docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`、`html.zip`、`html/` 均保留。其他开发工作树和分支未清理；没有重写已推送历史、强制推送、修改 main、发布版本或删除用户数据。
 
 ## 主线新增成果与处理
@@ -122,6 +124,16 @@ Whisper 独立目录的下一轮复验在长音频读取 `transcript.json` 时�
 - 真实渲染：默认/窄窗口、暗色设置与模型菜单、长附件和活动、恢复后的任务计划、Whisper 模型详情已检查，未观察到本轮新回归。
 
 原始日志位于 `logs/phase6-integration/`；媒体与执行证据由现有专项写入 `logs/ffmpeg-plugin/installed-1791947822193/`、`logs/vision-plugin/installed-1791947521274/`、`logs/whisper-plugin/` 和 `logs/general-agent-core-20261012/`。真实渲染截图位于 `apps/web/test-results/` 及专项日志目录。最终准确提交之后重跑工程门禁并核对同提交持续集成，既有运行证据仅覆盖对应相同生产产物。
+
+## 交付提交记录
+
+本轮代码集成为 [26f09683521adba34a77cb1561ce0740a0d3f560](https://github.com/wwxst/agent-desktop/commit/26f09683521adba34a77cb1561ce0740a0d3f560)，提交标题为 `merge: integrate latest main with phase5 core and media plugins`。两个父提交依次为 `9c1a002015925070ba8274b4c20a986acf06fcea` 和 `5bc555062e51ee61d303d0c7092d6e75ea1396d7`。相对 main 的 201 个文件、14244 行新增及 1012 行删除主要是完整引入第五阶段已有历史，并非本轮另写一套核心或插件；完整文件差异可以从上述提交及 `git diff --name-status 9c1a002 26f0968` 核对。
+
+本轮特有修改为上述 24 处冲突解决、主入口的模型路由接入、当前配置/测试夹具同步、三处说明漂移、Probe 既有异步完成等待和 Whisper 真实失败诊断；没有新增测试场景。验收报告四份记录本轮范围、证据及审查。
+
+对准确代码提交已经重新执行冻结锁安装、`pnpm check`（86 文件、1014 项）、独立架构检查（19 工作区）、Desktop/Web 构建及已提交差异检查，全部通过，证据为 `final-engineering.json` 和 `final-*.log`。提交后构建的受测资源摘要再次与最后安装包核对一致，安装运行和真实媒体证据对应同一生产源码。
+
+首次远端 [Windows/Ubuntu 候选持续集成](https://github.com/wwxst/agent-desktop/actions/runs/38507495465) 为 Ubuntu 通过、Windows 失败。Windows 的 `run-command.test.ts` 中三个真实 PowerShell 用例触及 Vitest 默认五秒时限，其余 1011 项通过，未显示业务断言失败；不能把该运行记为通过。最小修正仅把这一组真实进程验收等待设为 30 秒，生产命令超时、取消和所有结果断言不变，没有新增用例、跳过测试或全局放宽时限。现有 14 项聚焦回归及测试类型检查通过，新准确提交的双平台持续集成待补记。
 
 ## 三轮审查及最终门禁
 
