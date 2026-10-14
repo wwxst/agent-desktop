@@ -30,6 +30,8 @@ Architecture Gate 当前检查：各 workspace package 的 `src/` 和 `tests/` �
 
 当前自动化测试分布在 `packages/*/tests`、`examples/*/tests` 和 `apps/*/tests`；具体数量以执行命令输出为准。
 
+新增测试遵循根 `AGENTS.md` 的最小实现规范：除任务明确要求外，不主动增加测试。验证优先运行已有测试和门禁；契约变更时同步修改或删除直接受影响的过时断言，不据此扩大测试范围。
+
 测试应优先组合真实内部组件：`runTurn`、`Agent`、`InMemorySession`、`InMemoryToolRegistry` 和真实 Tool 类保持不替换；只在真实外部边界替换：
 
 ```text
@@ -82,8 +84,8 @@ CLI 的 `OPENAI_BASE_URL` 可选；`ffmpeg-agent` 启动时检查 `DEEPSEEK_API_
 ```text
 Change                         Minimum evidence
 Core/type/dependency           pnpm check + focused Review
-Runtime behavior               pnpm check + relevant runTurn/Session/Tool tests
-External adapter               pnpm check + boundary tests + applicable real entry
+Runtime behavior               pnpm check + 已有相关 runTurn/Session/Tool 测试
+External adapter               pnpm check + 已有边界测试 + 适用的真实入口
 Docs or Skill only             git diff --check + skill validator/reading review
 No current risk                Record “不实施”，不新增 Gate 或测试平台
 ```
