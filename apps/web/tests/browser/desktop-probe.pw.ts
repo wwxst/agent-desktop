@@ -253,6 +253,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
 test('installed application preserves plugin and session data after installer overwrite', async ({}, testInfo) => {
   const executablePath = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
   const profile = process.env.DESKTOP_UPGRADE_PROFILE;
+  if (profile === '') throw new Error('DESKTOP_UPGRADE_PROFILE 不能为空；请指定隔离配置目录或移除该变量。');
   test.skip(testInfo.project.name !== 'chromium-desktop' || process.platform !== 'win32' || executablePath === undefined || profile === undefined, '需要本机安装器覆盖后的隔离配置目录。');
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL; delete env.FFMPEG_PATH; delete env.FFPROBE_PATH;
@@ -273,6 +274,7 @@ test('installed FFmpeg detail exposes real builtin update and rollback controls'
   test.setTimeout(60_000);
   const executablePath = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
   const profile = process.env.DESKTOP_UPGRADE_PROFILE;
+  if (profile === '') throw new Error('DESKTOP_UPGRADE_PROFILE 不能为空；请指定隔离配置目录或移除该变量。');
   test.skip(testInfo.project.name !== 'chromium-desktop' || process.platform !== 'win32' || executablePath === undefined || profile === undefined, '需要真实隔离安装目录与已安装插件配置。');
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.ELECTRON_RUN_AS_NODE; delete env.DESKTOP_RENDERER_URL;

@@ -25,6 +25,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
   const executable = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
   const evidence = resolve(root, 'logs/vision-plugin', `${executable ? 'installed' : 'electron'}-${Date.now()}`);
   const profile = process.env.DESKTOP_ACCEPTANCE_PROFILE ?? resolve(evidence, '用户 数据');
+  if (profile === '') throw new Error('DESKTOP_ACCEPTANCE_PROFILE 不能为空；请移除该变量以使用隔离验收目录。');
   const workspace = resolve(evidence, '已授权 图片');
   await mkdir(workspace, { recursive: true });
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j3ioAAAAASUVORK5CYII=', 'base64');

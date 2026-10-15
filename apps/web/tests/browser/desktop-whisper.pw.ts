@@ -16,6 +16,7 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
   const executable = process.env.DESKTOP_ACCEPTANCE_EXECUTABLE;
   const evidence = resolve(root, 'logs/whisper-plugin', `${executable ? 'installed' : 'electron'}-${Date.now()}`);
   const profile = process.env.DESKTOP_ACCEPTANCE_PROFILE ?? resolve(evidence, '用户 数据');
+  if (profile === '') throw new Error('DESKTOP_ACCEPTANCE_PROFILE 不能为空；请移除该变量以使用隔离验收目录。');
   await mkdir(evidence, { recursive: true });
   const chinese = resolve(evidence, '中文 普通话.wav');
   const english = resolve(evidence, 'English speech.wav');
