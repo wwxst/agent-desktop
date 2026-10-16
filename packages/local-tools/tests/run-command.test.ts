@@ -221,8 +221,10 @@ describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShe
     const { port, requested } = portFor({ directory: root });
     const events: ToolProgressEvent[] = [];
 
+    // 这里验证命令执行和输出，不依赖 Write-Output 额外触发的 PowerShell 模块首次发现与准备。
+    // 直接写真实进程的标准输出，保留原超时和全部结果断言。
     const result = await toolFor(port).execute(
-      { command: "Write-Output 'command-ran'" },
+      { command: "[Console]::WriteLine('command-ran')" },
       contextWithProgress(events),
     );
 
@@ -241,7 +243,7 @@ describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShe
     const { port } = portFor({ directory: root });
 
     const result = await toolFor(port).execute(
-      { command: "Write-Output 'before-failure'; [Console]::Error.WriteLine('boom'); exit 3" },
+      { command: "[Console]::WriteLine('before-failure'); [Console]::Error.WriteLine('boom'); exit 3" },
       contextWithProgress([]),
     );
 
@@ -258,7 +260,7 @@ describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShe
     const events: ToolProgressEvent[] = [];
 
     await toolFor(port).execute(
-      { command: "Write-Output '标准输出中文'; [Console]::Error.WriteLine('错误输出中文')" },
+      { command: "[Console]::WriteLine('标准输出中文'); [Console]::Error.WriteLine('错误输出中文')" },
       contextWithProgress(events),
     );
 

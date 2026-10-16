@@ -3,8 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { _electron, expect, test } from '@playwright/test';
+import { _electron, expect, test, type ElectronApplication } from '@playwright/test';
 import type { ApprovalRequest } from '@agent-desktop/client';
 import type { PersistedDesktopState } from '../../../desktop/src/main/session-persistence.js';
 
@@ -13,14 +12,19 @@ interface ModelInput {
   readonly tools: readonly { readonly function: { readonly name: string } }[];
 }
 
-// 从真实数据库读取宿主写入的原始文档，不用 Renderer 的内存状态代替落盘事实。
-function readState(databasePath: string): PersistedDesktopState {
-  const database = new DatabaseSync(databasePath, { readOnly: true });
-  try {
-    const row = database.prepare('SELECT value FROM desktop_documents WHERE name = ?').get('session-state');
-    if (row === undefined) throw new Error('真实恢复验收缺少 session-state 记录。');
-    return JSON.parse(row.value as string) as PersistedDesktopState;
-  } finally { database.close(); }
+// 仍读原始落盘文档；应用运行时在主进程同步查询，避免验收读锁与其提交竞争。
+async function readState(databasePath: string, app?: ElectronApplication): Promise<PersistedDesktopState> {
+  const query = (_electron: unknown, filePath: string): PersistedDesktopState => {
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite')!;
+    const database = new DatabaseSync(filePath, { readOnly: true });
+    try {
+      const row = database.prepare('SELECT value FROM desktop_documents WHERE name = ?').get('session-state');
+      if (row === undefined) throw new Error('真实恢复验收缺少 session-state 记录。');
+      return JSON.parse(row.value as string) as PersistedDesktopState;
+    } finally { database.close(); }
+  };
+  // 强杀后没有主进程写者，直接从验收进程读取同一数据库。
+  return app === undefined ? query(undefined, databasePath) : app.evaluate(query, databasePath);
 }
 
 test('keeps the first draft turn and its binding across a forced exit and two restarts without replaying tools', async ({}, info) => {
@@ -80,7 +84,7 @@ test('keeps the first draft turn and its binding across a forced exit and two re
   let completed = false;
   const snapshots: { phase: string; file: string }[] = [];
   const saveSnapshot = async (phase: string) => {
-    const state = readState(databasePath);
+    const state = await readState(databasePath, app);
     const file = resolve(evidence, `${phase}.json`);
     await writeFile(file, JSON.stringify(state, null, 2));
     snapshots.push({ phase, file });
@@ -106,7 +110,7 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     await page.getByLabel('剪辑需求').fill(prompt);
     const sessionId = await page.evaluate(() => window.agentDesktop.getActiveSessionId());
     // 初始草稿保存有防抖；数据库记录尚未创建时也等待真实写入完成。
-    await expect(() => expect(readState(databasePath).clientState.drafts?.find(item => item.id === sessionId)?.prompt).toBe(prompt)).toPass({ timeout: 5_000 });
+    await expect(async () => expect((await readState(databasePath, app)).clientState.drafts?.find(item => item.id === sessionId)?.prompt).toBe(prompt)).toPass({ timeout: 5_000 });
     const draft = await saveSnapshot('01-before-first-send');
     expect(draft.clientState.conversations).toEqual([]);
     expect(draft.clientState.drafts).toHaveLength(2);
@@ -174,12 +178,12 @@ test('keeps the first draft turn and its binding across a forced exit and two re
       if (restart === 1) { await app.close(); app = undefined; }
     }
 
-    const beforeContinue = readState(databasePath).sessions.find(item => item.id === sessionId)!;
+    const beforeContinue = (await readState(databasePath, app)).sessions.find(item => item.id === sessionId)!;
     await page.getByRole('button', { name: '继续未完成任务', exact: true }).click();
     await expect(page.getByText('恢复后的任务已完成', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '继续未完成任务', exact: true })).toHaveCount(0);
-    await expect.poll(() => {
-      const last = readState(databasePath).clientState.conversations.find(item => item.id === sessionId)?.messages.at(-1);
+    await expect.poll(async () => {
+      const last = (await readState(databasePath, app)).clientState.conversations.find(item => item.id === sessionId)?.messages.at(-1);
       return last?.role === 'assistant' ? last.status : undefined;
     }).toBe('completed');
     expect(taskRequests).toHaveLength(3);
@@ -231,26 +235,25 @@ test('runs real file approvals, plans and command outcome verification before re
   await mkdir(profile, { recursive: true }); await mkdir(workspace, { recursive: true });
   let sessionId: string;
   const requests: ModelInput[] = [];
-  const session = () => readState(databasePath).sessions.find(item => item.id === sessionId)!;
-  const savedTaskStatus = () => {
-    const last = readState(databasePath).clientState.conversations.find(item => item.id === sessionId)?.messages.at(-1);
+  const session = async () => (await readState(databasePath, app)).sessions.find(item => item.id === sessionId)!;
+  const savedTaskStatus = async () => {
+    const last = (await readState(databasePath, app)).clientState.conversations.find(item => item.id === sessionId)?.messages.at(-1);
     return last?.role === 'assistant' ? last.taskState?.status : undefined;
   };
-  const resultIndex = (callId: string) => {
-    const index = session().events.findIndex(event => event.type === 'tool.result' && event.toolCallId === callId);
-    if (index < 0) throw new Error(`普通工具验收缺少真实结果：${callId}`);
-    return index;
-  };
-  const fileSteps = (completed: boolean) => [
-    { id: 'create', description: '创建普通文本', requestedStatus: completed ? 'completed' : 'pending', completionKind: 'tool', evidenceEventIndexes: completed ? [resultIndex('core-create')] : [] },
-    { id: 'edit', description: '按真实摘要修改文本', requestedStatus: completed ? 'completed' : 'pending', completionKind: 'tool', evidenceEventIndexes: completed ? [resultIndex('core-edit')] : [] },
-  ];
   // 模型只声明步骤；完成引用直接取宿主已经保存的事实，不注入事件或伪造工具成功。
-  const plan = (phase: 'initial' | 'files' | 'unknown' | 'verified' | 'released') => {
+  const plan = async (phase: 'initial' | 'files' | 'unknown' | 'verified' | 'released') => {
+    const { events } = await session();
+    const resultIndex = (callId: string) => {
+      const index = events.findIndex(event => event.type === 'tool.result' && event.toolCallId === callId);
+      if (index < 0) throw new Error(`普通工具验收缺少真实结果：${callId}`);
+      return index;
+    };
+    const completed = phase !== 'initial';
     const verifiedIndex = phase === 'verified' || phase === 'released'
-      ? session().events.findIndex(event => event.type === 'effect.outcome.verified' && event.evidence.source === 'user') : undefined;
+      ? events.findIndex(event => event.type === 'effect.outcome.verified' && event.evidence.source === 'user') : undefined;
     return { explanation: '以实际文件、命令和人工核验事实推进', steps: [
-      ...fileSteps(phase !== 'initial'),
+      { id: 'create', description: '创建普通文本', requestedStatus: completed ? 'completed' : 'pending', completionKind: 'tool', evidenceEventIndexes: completed ? [resultIndex('core-create')] : [] },
+      { id: 'edit', description: '按真实摘要修改文本', requestedStatus: completed ? 'completed' : 'pending', completionKind: 'tool', evidenceEventIndexes: completed ? [resultIndex('core-edit')] : [] },
       { id: 'command', description: '确认非零命令的实际写入', requestedStatus: phase === 'initial' || phase === 'files' ? 'pending' : phase === 'unknown' ? 'blocked' : 'completed', completionKind: 'tool',
         evidenceEventIndexes: phase === 'unknown' ? [resultIndex('core-command')] : verifiedIndex === undefined ? [] : [verifiedIndex] },
       ...(phase === 'verified' || phase === 'released' ? [{ id: 'released', description: '核验后完成剩余写入', requestedStatus: phase === 'released' ? 'completed' : 'pending',
@@ -268,21 +271,21 @@ test('runs real file approvals, plans and command outcome verification before re
       if (input.tools.length > 0) {
         const step = results.length;
         if (recovery) {
-          action = step === 0 ? { name: 'update_plan', input: plan('verified'), id: 'core-plan-verified' }
+          action = step === 0 ? { name: 'update_plan', input: await plan('verified'), id: 'core-plan-verified' }
             : step === 1 ? { name: 'write_text_file', input: { filePath: blockedPath, content: 'written-after-manual-verification' }, id: 'core-released' }
-              : step === 2 ? { name: 'update_plan', input: plan('released'), id: 'core-plan-released' } : undefined;
+              : step === 2 ? { name: 'update_plan', input: await plan('released'), id: 'core-plan-released' } : undefined;
         } else {
           const denied = { filePath: deniedPath, content: 'must-not-exist' };
-          if (step === 0) action = { name: 'update_plan', input: plan('initial'), id: 'core-plan-initial' };
+          if (step === 0) action = { name: 'update_plan', input: await plan('initial'), id: 'core-plan-initial' };
           else if (step === 1 || step === 2) action = { name: 'write_text_file', input: denied, id: `core-denied-${step}` };
           else if (step === 3) action = { name: 'write_text_file', input: { filePath: textPath, content: 'before-edit\n' }, id: 'core-create' };
           else if (step === 4) action = { name: 'read_file', input: { filePath: textPath }, id: 'core-read' };
           else if (step === 5) action = { name: 'edit_text_file', input: { filePath: textPath,
             expectedSha256: (JSON.parse(results[4]!.content) as { sha256: string }).sha256, oldText: 'before-edit', newText: 'after-edit' }, id: 'core-edit' };
-          else if (step === 6) action = { name: 'update_plan', input: plan('files'), id: 'core-plan-files' };
+          else if (step === 6) action = { name: 'update_plan', input: await plan('files'), id: 'core-plan-files' };
           else if (step === 7) action = { name: 'run_command', input: { command, timeoutMs: 10_000 }, id: 'core-command' };
           else if (step === 8) action = { name: 'write_text_file', input: { filePath: blockedPath, content: 'written-after-manual-verification' }, id: 'core-blocked' };
-          else if (step === 9) action = { name: 'update_plan', input: plan('unknown'), id: 'core-plan-unknown' };
+          else if (step === 9) action = { name: 'update_plan', input: await plan('unknown'), id: 'core-plan-unknown' };
         }
       }
       const delta = action === undefined ? { content: input.tools.length === 0 ? '普通工具验收' : recovery ? '人工核验后的剩余任务完成' : '普通工具链完成，命令实际效果待人工核验' }
@@ -331,15 +334,15 @@ test('runs real file approvals, plans and command outcome verification before re
     await expect(page.getByText('普通工具链完成，命令实际效果待人工核验', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     await page.screenshot({ path: resolve(evidence, '00-final-text-before-snapshot.png') });
-    await writeFile(resolve(evidence, '00-final-text-before-snapshot.json'), JSON.stringify(readState(databasePath), null, 2));
+    await writeFile(resolve(evidence, '00-final-text-before-snapshot.json'), JSON.stringify(await readState(databasePath, app), null, 2));
     // 页面终态先可见；完整展示快照仍要等待现有异步保存完成再读取数据库。
     await expect.poll(savedTaskStatus).toBe('blocked');
     expect(await readFile(textPath, 'utf8')).toBe('after-edit\n');
     expect(await readFile(markerPath, 'utf8')).toBe('actual-command-effect');
     await expect(stat(deniedPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(blockedPath)).rejects.toMatchObject({ code: 'ENOENT' });
-    const beforeVerification = readState(databasePath); await writeFile(resolve(evidence, '01-before-manual-verification.json'), JSON.stringify(beforeVerification, null, 2));
-    const events = session().events;
+    const beforeVerification = await readState(databasePath, app); await writeFile(resolve(evidence, '01-before-manual-verification.json'), JSON.stringify(beforeVerification, null, 2));
+    const events = (await session()).events;
     expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-denied-1')).toMatchObject({ result: { status: 'error', failureKind: 'denied' } });
     expect(events.find(event => event.type === 'tool.called' && event.toolCallId === 'core-denied-2')).toMatchObject({ boundary: 'not-executed' });
     expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-denied-2')).toMatchObject({ result: { failureKind: 'permanent', message: '用户已拒绝本轮相同调用，不重复请求审批。' } });
@@ -359,7 +362,7 @@ test('runs real file approvals, plans and command outcome verification before re
     await page.getByLabel('run_command核验说明', { exact: true }).fill(description);
     await page.getByRole('button', { name: '确认已完成', exact: true }).click();
     await expect(page.getByLabel('run_command核验说明', { exact: true })).toHaveCount(0);
-    const verification = session().events.find(event => event.type === 'effect.outcome.verified' && event.sourceEventIndex === commandIndex);
+    const verification = (await session()).events.find(event => event.type === 'effect.outcome.verified' && event.sourceEventIndex === commandIndex);
     expect(verification).toMatchObject({ scope: 'entire-call', outcome: 'completed', evidence: { source: 'user', description } });
     await page.getByRole('button', { name: '继续未完成任务', exact: true }).click();
     await expect(approval).toContainText(blockedPath);
@@ -368,8 +371,8 @@ test('runs real file approvals, plans and command outcome verification before re
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     await expect.poll(savedTaskStatus).toBe('completed');
     expect(await readFile(blockedPath, 'utf8')).toBe('written-after-manual-verification');
-    expect(session().events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(1);
-    const finished = readState(databasePath); await writeFile(resolve(evidence, '02-after-manual-continue.json'), JSON.stringify(finished, null, 2));
+    expect((await session()).events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(1);
+    const finished = await readState(databasePath, app); await writeFile(resolve(evidence, '02-after-manual-continue.json'), JSON.stringify(finished, null, 2));
     expect(finished.clientState.conversations.find(item => item.id === sessionId)!.messages.at(-1)).toMatchObject({ taskState: { status: 'completed', plan: { revision: 5,
       steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'completed' }, { status: 'completed' }] } } });
     await page.screenshot({ path: resolve(evidence, '02-after-manual-continue.png') });
@@ -379,7 +382,7 @@ test('runs real file approvals, plans and command outcome verification before re
     const requestCount = requests.length;
     app = await launch(); page = await app.firstWindow();
     await expect(page.getByText('人工核验后的剩余任务完成', { exact: true })).toBeVisible();
-    expect(session().events).toEqual(finished.sessions.find(item => item.id === sessionId)!.events);
+    expect((await session()).events).toEqual(finished.sessions.find(item => item.id === sessionId)!.events);
     expect(requests).toHaveLength(requestCount);
     await expect(page.getByLabel('run_command核验说明', { exact: true })).toHaveCount(0);
     await page.screenshot({ path: resolve(evidence, '03-restart-with-plan.png') });
