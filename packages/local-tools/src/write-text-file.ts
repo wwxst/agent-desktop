@@ -33,19 +33,19 @@ function isAborted(signal: AbortSignal | undefined): boolean {
 }
 
 /**
- * 经用户批准后创建一个新的文本文件。
+ * 经宿主批准后创建一个新的文本文件。
  *
  * 三条边界：
- * - 范围：目标路径的**父目录**必须在会话已确认的工作目录内（目标还不存在，不能对它做 realpath）。
- * - 不覆盖：已有文件一律拒绝，`wx` 是真正的写入边界兜底（先 stat 只是为了让用户不必为一个注定失败的操作点批准）。
- * - 审批：写入前必须拿到用户对**这一次创建**的明确批准，拒绝和取消都不产生任何写入。
+ * - 范围：目标路径的**父目录**必须符合宿主文件授权（目标还不存在，不能对它做 realpath）。
+ * - 不覆盖：已有文件一律拒绝，`wx` 是真正的写入边界兜底（先 stat 避免为注定失败的操作请求审批）。
+ * - 审批：写入前必须拿到宿主对**这一次创建**的批准，拒绝和取消都不产生任何写入。
  *
  * 只有真正写入成功才报告 `artifacts`：产物事实来自成功结果，不从回复文本或磁盘扫描推断。
  */
 export class WriteTextFileTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'write_text_file';
-  readonly description = '在当前会话工作目录内创建一个新的文本文件；已有文件不会被覆盖，写入前需要用户确认';
+  readonly description = '在宿主授权范围内创建一个新的文本文件；已有文件不会被覆盖，写入前由宿主审批';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -69,7 +69,7 @@ export class WriteTextFileTool implements Tool {
       return errorResult('write_text_file requires content to be a string');
     }
 
-    const scoped = await resolveCreatablePath(this.workspace.confirmedDirectory(), filePath);
+    const scoped = await resolveCreatablePath(this.workspace.confirmedDirectory(), filePath, this.workspace.fileAccess === 'all');
     if (!scoped.ok) return errorResult(scoped.message);
 
     if (await exists(scoped.path)) {

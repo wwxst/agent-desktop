@@ -159,7 +159,7 @@ export class SearchTextTool implements Tool {
       return errorResult('search_text requires extension to be a string');
     }
 
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), directory);
+    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), directory, this.workspace.fileAccess === 'all');
     if (!scoped.ok) return errorResult(scoped.message);
 
     // 轮次已经取消时不起进程：起完立刻杀掉是白费，取消语义应当在边界上就结束。

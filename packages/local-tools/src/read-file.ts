@@ -49,7 +49,7 @@ function looksBinary(source: Buffer): boolean {
 }
 
 /**
- * 按行读取会话工作目录内的文本文件。
+ * 按行读取宿主授权范围内的文本文件。
  *
  * 返回的是**行数组**而不是整段字符串：行号是后续精确替换文件要用的定位信息，
  * 让模型自己去数行号迟早会错。行号从 1 开始，与用户在编辑器里看到的一致。
@@ -63,7 +63,7 @@ function looksBinary(source: Buffer): boolean {
 export class ReadFileTool implements Tool {
   readonly executionBoundary = 'read-only' as const;
   readonly name = 'read_file';
-  readonly description = '按行读取当前会话工作目录内的文本文件，可从指定行继续读取；二进制文件不受支持';
+  readonly description = '按行读取宿主授权范围内的文本文件，可从指定行继续读取；二进制文件不受支持';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -91,7 +91,7 @@ export class ReadFileTool implements Tool {
     const count = parseCount(lineCount, 'lineCount');
     if ('failure' in count) return count.failure;
 
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), filePath);
+    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), filePath, this.workspace.fileAccess === 'all');
     if (!scoped.ok) return errorResult(scoped.message);
 
     // 先看大小再读内容：超大文件不能先整份读进内存才发现太大。

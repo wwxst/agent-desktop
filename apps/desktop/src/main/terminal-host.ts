@@ -73,7 +73,7 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
   return {
     open: async (command, directory, context) => {
       if (owner.terminal?.snapshot().status === 'running') throw new Error('本会话已有运行中的终端，请先关闭。');
-      const scoped = await resolveScopedPath(workspace.confirmedDirectory(), directory);
+      const scoped = await resolveScopedPath(workspace.confirmedDirectory(), directory, workspace.fileAccess === 'all');
       if (!scoped.ok) throw new Error(scoped.message);
       if (!(await stat(scoped.path)).isDirectory()) throw new Error('终端执行起点不是目录。');
       const approved = await workspace.requestApproval({ kind: 'terminal-start', command, workingDirectory: scoped.path,

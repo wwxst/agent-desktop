@@ -227,7 +227,12 @@ export type ClientAssistantMessage = ClientAssistantMessageBase & (
 
 export type ClientConversationMessage = ClientUserMessage | ClientAssistantMessage;
 
+/** 当前聊天的审批方式；未选择时使用逐次请求批准。 */
+export type PermissionMode = 'ask' | 'auto-review' | 'full-access';
+
 export interface ClientConversation {
+  /** 宿主确认并保存的权限模式；省略表示 ask。 */
+  readonly permissionMode?: PermissionMode;
   /** 侧栏组织信息不参与模型上下文，也不授予目录访问权限。 */
   readonly projectId?: string;
   readonly pinned?: boolean;
@@ -391,7 +396,15 @@ export type QuestionAnswer = { readonly outcome: 'answered'; readonly answer: st
  * 命令操作携带解释器、完整命令、执行起点和生效超时。
  * 界面只展示它并提交允许或拒绝，没有修改待执行操作的入口。
  */
-export type ApprovalRequest = { readonly requestId: string } & (
+export type ApprovalRequest = {
+  readonly requestId: string;
+  /** 自动审查仍投影到同一张审批卡，不把模型审查结果当成用户决定。 */
+  readonly automaticReview?: {
+    readonly status: 'reviewing' | 'approved' | 'denied' | 'failed';
+    readonly risk?: 'low' | 'medium' | 'high' | 'critical';
+    readonly reason?: string;
+  };
+} & (
   | { readonly kind: 'plugin-start'; readonly pluginName: string; readonly serverName: string; readonly command: string; readonly workingDirectory: string }
   | { readonly kind: 'plugin-tool'; readonly pluginName: string; readonly serverName: string; readonly toolName: string; readonly arguments: string }
   | { readonly kind: 'terminal-start'; readonly interpreter: string; readonly command: string; readonly workingDirectory: string }
@@ -620,6 +633,8 @@ export interface AgentClientApi {
    * 宿主只接受当前请求的标识：客户端不能用一次迟到的批准重新启动已经失效的操作。
    */
   decideApproval(requestId: string, approved: boolean): Promise<void>;
+  /** 为当前聊天保存权限模式；执行中的任务不能变更审批方式。 */
+  setPermissionMode(mode: PermissionMode): Promise<PermissionMode>;
   answerQuestion(requestId: string, answer: QuestionAnswer): Promise<void>;
   closeTerminal(terminalId: string): Promise<void>;
   resizeTerminal(terminalId: string, cols: number, rows: number): Promise<void>;

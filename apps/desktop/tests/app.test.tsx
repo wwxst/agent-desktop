@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
+import { DEFAULT_MODEL_PROVIDERS, type PermissionMode } from '@agent-desktop/client';
 // @vitest-environment jsdom
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -61,6 +61,7 @@ const persistenceMethods = {
   deleteSession: async () => 'session-a',
   cancelTask: async () => undefined,
   decideApproval: async () => undefined,
+  setPermissionMode: async (mode: PermissionMode) => mode,
   revealFile: async () => undefined,
 };
 

@@ -69,6 +69,7 @@ function clientState(): ClientStateSnapshot {
         prompt: 'Session A 未发送草稿',
         attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
         workingDirectory: 'D:\\videos',
+        permissionMode: 'auto-review',
         messages: [
           {
             id: 1,
@@ -159,6 +160,7 @@ function persistedState(): PersistedDesktopState {
         id: 'session-a',
         attachments: [{ path: 'D:\\videos\\input-a.mp4', role: 'video' }],
         workingDirectory: 'D:\\videos',
+        permissionMode: 'auto-review',
         events: sessionEvents('731'),
       },
       {
@@ -192,6 +194,8 @@ describe('desktop session persistence', () => {
     expect(restored?.clientState.conversations).toEqual([]);
     expect(restored?.clientState.drafts).toEqual([draft]);
     expect(restored?.sessions[0]?.workingDirectory).toBe('D:/draft-project');
+    expect(restored?.sessions[0]?.permissionMode).toBe('auto-review');
+    expect(restored?.clientState.drafts?.[0]?.permissionMode).toBe('auto-review');
   });
 
   it('round-trips sidebar projects, archived chats, pins and timestamps without changing runtime directories', async () => {

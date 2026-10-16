@@ -1,9 +1,10 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Check, ChevronDown, Folder, Plus, X } from 'lucide-react';
-import type { Attachment, RuntimeModelReference, RuntimeSettings } from '../api.js';
+import type { Attachment, PermissionMode, RuntimeModelReference, RuntimeSettings } from '../api.js';
 import type { ClientProject } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
 import { ModelSelector } from './ModelSelector.js';
+import { PermissionSelector } from './PermissionSelector.js';
 
 function finalDirectoryName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -38,6 +39,8 @@ interface ComposerProps {
   readonly isSavingSettings: boolean;
   readonly onSelectModel: (reference: RuntimeModelReference) => Promise<RuntimeSettings>;
   readonly onConfigureModels: () => void;
+  readonly permissionMode: PermissionMode;
+  readonly onSelectPermissionMode: (mode: PermissionMode) => Promise<PermissionMode>;
 }
 
 /** Composer 集中承载输入附件、自然语言输入和发送动作。 */
@@ -59,6 +62,7 @@ export function Composer({
   onSend,
   onCancel,
   settings, settingsError, isSavingSettings, onSelectModel, onConfigureModels,
+  permissionMode, onSelectPermissionMode,
 }: ComposerProps) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -72,7 +76,7 @@ export function Composer({
   const projectTrigger = useRef<HTMLButtonElement>(null);
   const activeProject = projects.find(project => project.id === activeProjectId);
   const projectLabel = activeProject?.name ?? directoryName;
-  const projectDisabled = isProcessing || isArchived;
+  const projectDisabled = isProcessing || isArchived || isSavingSettings;
 
   useLayoutEffect(() => {
     if (projectMenuOpen) projectMenu.current?.showPopover({ source: projectTrigger.current! });
@@ -156,6 +160,7 @@ export function Composer({
       />
 
       <div className="composer-toolbar">
+        <div className="composer-leading">
         <button
           className="icon-button attachment-button"
           type="button"
@@ -168,6 +173,9 @@ export function Composer({
             <path d="M8 3v10M3 8h10" />
           </svg>
         </button>
+          <PermissionSelector mode={permissionMode} busy={isSavingSettings} disabled={isProcessing || isArchived || settings === null}
+            onSelect={onSelectPermissionMode} />
+        </div>
         <div className="composer-trailing">
           {isProcessing && <span className="composer-state">处理中</span>}
           <ModelSelector settings={settings} settingsError={settingsError} busy={isSavingSettings} disabled={isArchived}

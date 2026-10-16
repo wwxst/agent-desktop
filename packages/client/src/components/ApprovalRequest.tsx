@@ -30,11 +30,15 @@ interface ApprovalRequestProps {
  * 否则「用户批准的」和「实际执行的」就不再是同一件事。
  */
 export function ApprovalRequest({ request, onDecide }: ApprovalRequestProps) {
+  const review = request.automaticReview;
+  const reviewLabels = { reviewing: '正在自动审查', approved: '自动审查已批准', denied: '自动审查已拒绝', failed: '自动审查失败' } as const;
+  const riskLabels = { low: '低风险', medium: '中等风险', high: '高风险', critical: '严重风险' } as const;
   return (
-    <section className="approval-request" aria-label="操作审批">
+    <section className="approval-request" aria-label="操作审批" data-review-status={review?.status}>
       <div className="approval-strip">
         <span className="approval-dot" aria-hidden="true" />
-        <span>等待审批</span>
+        <span role={review === undefined ? undefined : 'status'}>{review === undefined ? '等待审批' : reviewLabels[review.status]}</span>
+        {review?.risk !== undefined && <span className="approval-risk">{riskLabels[review.risk]}</span>}
       </div>
       <p className="approval-question">{APPROVAL_QUESTIONS[request.kind]}</p>
       {request.kind === 'plugin-start' || request.kind === 'plugin-tool' ? (
@@ -80,10 +84,11 @@ export function ApprovalRequest({ request, onDecide }: ApprovalRequestProps) {
           ) : null}
         </>
       )}
-      <div className="approval-actions">
+      {review?.reason && <p className="approval-review-reason">{review.reason}</p>}
+      {review === undefined && <div className="approval-actions">
         <button type="button" className="approval-deny" onClick={() => onDecide(false)}>拒绝</button>
         <button type="button" className="approval-allow" onClick={() => onDecide(true)}>允许</button>
-      </div>
+      </div>}
     </section>
   );
 }

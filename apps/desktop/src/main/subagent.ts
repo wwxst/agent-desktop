@@ -17,7 +17,8 @@ export interface SubagentActivity {
 /** 宿主组装独立只读会话，密钥不经过委派工具，也不复制父模型历史。 */
 export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecutionContext,
   directory: string | undefined, settings: RuntimeConfiguration,
-  publish: (activity: SubagentActivity) => void, save: (record: SubagentRecord) => void): Promise<SubagentResult> {
+  publish: (activity: SubagentActivity) => void, save: (record: SubagentRecord) => void,
+  fileAccess?: 'all'): Promise<SubagentResult> {
   const taskId = randomUUID();
   const session = new InMemorySession();
   const controller = new AbortController();
@@ -29,9 +30,10 @@ export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecu
   const evidence = new Set<string>();
   let result: SubagentResult;
   try {
-    if (directory === undefined) throw new Error('只读子任务需要已经确认的会话工作目录。');
+    if (directory === undefined && fileAccess !== 'all') throw new Error('只读子任务需要已经确认的会话工作目录。');
     if (settings.deepSeekApiKey === undefined) throw new Error('对话模型未配置 API 密钥。');
     const workspace: WorkspacePort = {
+      ...(fileAccess === undefined ? {} : { fileAccess }),
       confirmedDirectory: () => directory,
       requestApproval: async () => { throw new Error('只读子任务不能请求目录变更或副作用审批。'); },
       confirmDirectory: () => { throw new Error('只读子任务不能改变目录。'); },
@@ -49,7 +51,7 @@ export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecu
         ...(settings.modelProtocol === undefined ? {} : { protocol: settings.modelProtocol }),
         ...(settings.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: settings.modelMaxOutputTokens }),
         ...(settings.useDeepSeekThinking === undefined ? {} : { disableThinking: settings.useDeepSeekThinking }) }),
-      systemPrompt: { build: () => `你是只读文件检查子智能体。只执行明确委派，不修改文件，不执行命令，不继续委派。工作目录：${directory}。返回有依据的简短结论和文件位置，不能把工具失败当作完成。` },
+      systemPrompt: { build: () => `你是只读文件检查子智能体。只执行明确委派，不修改文件，不执行命令，不继续委派。${directory === undefined ? '尚未设置工作目录，读取时需要绝对路径。' : `工作目录：${directory}。`}${fileAccess === 'all' ? '宿主已授予全部本地文件的读取范围。' : '只读取已确认工作目录内的文件。'}返回有依据的简短结论和文件位置，不能把工具失败当作完成。` },
     }, task.instruction, {
       signal: controller.signal, maxSteps: 8,
       trace: (event) => {

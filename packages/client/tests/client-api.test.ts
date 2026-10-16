@@ -49,6 +49,7 @@ describe('AgentClientApi', () => {
       runAgentTask: async () => ({ responseText: 'ok', traceId: 'trace-a' }),
       cancelTask: async () => undefined,
       decideApproval: async () => undefined,
+      setPermissionMode: async mode => mode,
       onAgentEvent: () => () => undefined,
       revealFile: async () => undefined,
     };
@@ -81,6 +82,7 @@ describe('AgentClientApi', () => {
       'saveRuntimeSettings',
       'selectAttachmentFiles',
       'selectProjectDirectory',
+      'setPermissionMode',
       'switchSession',
     ]);
   });

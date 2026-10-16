@@ -76,6 +76,7 @@ const mainMocks = vi.hoisted(() => {
         session: options.session,
         tools: { list: () => [], register: () => undefined },
         model: { complete: async () => ({ text: '测试任务标题', toolCalls: [] }) },
+        systemPrompt: { build: () => '测试任务系统提示' },
       };
       agents.push(agent);
       agentOptions.push(options);
@@ -333,6 +334,7 @@ describe('desktop main session lifecycle', () => {
     const switchSession = mainMocks.handlers.get('desktop:switch-session');
     const deleteSession = mainMocks.handlers.get('desktop:delete-session');
     const saveRuntimeSettings = mainMocks.handlers.get('desktop:save-runtime-settings');
+    const setPermissionMode = mainMocks.handlers.get('desktop:set-permission-mode')!;
     expect(getActiveSessionId).toBeTypeOf('function');
     expect(selectVideo).toBeTypeOf('function');
     expect(runAgentTask).toBeTypeOf('function');
@@ -360,6 +362,7 @@ describe('desktop main session lifecycle', () => {
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask).toHaveBeenCalledOnce());
 
     await expect(deleteSession!({}, firstSessionId)).rejects.toThrow('Agent 正在执行');
+    await expect(setPermissionMode({}, 'full-access')).rejects.toThrow('Agent 正在执行，无法变更权限模式。');
 
     await expect(newSession!({})).rejects.toThrow('Agent 正在执行');
     expect(() => switchSession!({}, 'missing-session')).toThrow('Agent 正在执行');
@@ -390,6 +393,11 @@ describe('desktop main session lifecycle', () => {
     });
 
     const firstAgent = mainMocks.agents[0]!;
+    await expect(setPermissionMode({}, 'auto-review')).resolves.toBe('auto-review');
+    const savedModes = mainMocks.handlers.get('desktop:load-client-state')!({}) as PersistedDesktopState['clientState'];
+    expect(savedModes.conversations.find(item => item.id === firstSessionId)?.permissionMode).toBe('auto-review');
+    await expect(setPermissionMode({}, 'unknown')).rejects.toThrow('permissionMode');
+    await setPermissionMode({}, 'ask');
     // 未安装 Probe 插件时没有 Probe 注入，普通任务仍然正常运行。
     expect(mainMocks.agentOptions[0]?.mediaTools).toEqual([]);
     // 产物路径来自模型写入 Session 的工具输入，定位时按会话事实校验。

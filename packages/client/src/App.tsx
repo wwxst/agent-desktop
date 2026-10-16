@@ -16,6 +16,7 @@ import type {
   ClientProject,
   ClientSidebarState,
   QuestionRequest,
+  PermissionMode,
   RuntimeSettings,
   RuntimeSettingsUpdate,
 } from './api.js';
@@ -84,6 +85,7 @@ export function App({ api }: AppProps) {
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings | null>(null);
   const [settingsError, setSettingsError] = useState('');
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isSavingPermissionMode, setIsSavingPermissionMode] = useState(false);
   const pendingSettingsSave = useRef<Promise<unknown>>(Promise.resolve());
   const [settingsSection, setSettingsSection] = useState('general');
   const saveSettings = useCallback((update: RuntimeSettingsUpdate): Promise<RuntimeSettings> => {
@@ -356,8 +358,22 @@ export function App({ api }: AppProps) {
     }));
   };
 
+  const selectPermissionMode = async (mode: PermissionMode): Promise<PermissionMode> => {
+    const sessionId = activeSessionIdRef.current;
+    setIsSavingPermissionMode(true);
+    try {
+      // 先沿已有队列提交当前草稿，宿主随后把模式与同一聊天的快照一起保存。
+      await queueClientStateSave({ conversations, drafts, activeSessionId: sessionId, sidebar });
+      const savedMode = await api.setPermissionMode(mode);
+      updateConversation(sessionId, conversation => ({ ...conversation, permissionMode: savedMode }));
+      return savedMode;
+    } finally {
+      setIsSavingPermissionMode(false);
+    }
+  };
+
   const startNewSession = async (project?: ClientProject) => {
-    if (!isSessionReady || isProcessing) return;
+    if (!isSessionReady || isProcessing || isSavingPermissionMode) return;
     // 普通入口与各项目各自复用待发送草稿，保留输入、附件和原工作目录。
     // 移除项目只清除归属；重新添加原目录后也能找回尚未发送的项目草稿。
     const existing = drafts.find(draft => draft.workingDirectory === project?.directory
@@ -451,7 +467,7 @@ export function App({ api }: AppProps) {
   };
 
   const deleteSession = async (sessionId: string) => {
-    if (!isSessionReady || isProcessing) return;
+    if (!isSessionReady || isProcessing || isSavingPermissionMode) return;
     const currentConversation = conversations.find((conversation) => conversation.id === sessionId);
     if (currentConversation === undefined) return;
 
@@ -475,7 +491,7 @@ export function App({ api }: AppProps) {
   };
 
   const switchSession = async (sessionId: string) => {
-    if (isProcessing) return;
+    if (isProcessing || isSavingPermissionMode) return;
     if (sessionId === activeSessionIdRef.current) {
       setActiveView('conversation');
       return;
@@ -535,7 +551,7 @@ export function App({ api }: AppProps) {
     const taskPrompt = recovery === undefined
       ? conversation.prompt.trim()
       : recovery.mode === 'verify' ? '核验未确定的外部效果' : '继续未完成任务';
-    if (!taskPrompt || isProcessing || isSavingSettings || conversation.archived) return;
+    if (!taskPrompt || isProcessing || isSavingSettings || isSavingPermissionMode || conversation.archived) return;
     setTaskActionError('');
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
@@ -747,7 +763,9 @@ export function App({ api }: AppProps) {
       isArchived={!!activeConversation.archived}
       settings={runtimeSettings}
       settingsError={settingsError}
-      isSavingSettings={isSavingSettings}
+      isSavingSettings={isSavingSettings || isSavingPermissionMode}
+      permissionMode={activeConversation.permissionMode ?? 'ask'}
+      onSelectPermissionMode={selectPermissionMode}
       onSelectModel={reference => saveSettings({ conversationModel: reference })}
       onConfigureModels={() => { setSettingsSection('models'); setActiveView('settings'); }}
       approval={approval}
@@ -784,7 +802,7 @@ export function App({ api }: AppProps) {
         conversations={conversations}
         activeSessionId={activeSessionId}
         activeView={activeView}
-        isSessionReady={isSessionReady}
+        isSessionReady={isSessionReady && !isSavingPermissionMode}
         isProcessing={isProcessing}
         settingsButtonRef={settingsButton}
         onNewSession={startNewSession}

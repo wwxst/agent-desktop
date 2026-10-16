@@ -87,14 +87,18 @@ describe('Web Dev API', () => {
   });
   it('restores desensitized model selection in a new Web host and keeps the prior state after storage failure', async () => {
     let persisted: string | null = null;
-    const setItem = vi.fn((_key: string, value: string) => { persisted = value; });
-    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem });
+    const documents = new Map<string, string>();
+    const setItem = vi.fn((key: string, value: string) => { documents.set(key, value); if (key === 'agent-desktop:web-runtime-settings') persisted = value; });
+    vi.stubGlobal('localStorage', { getItem: (key: string) => documents.get(key) ?? null, setItem });
     const api = createWebClientApi();
     await api.saveRuntimeSettings({ modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unknown', imageUnderstanding: 'unknown' } }] },
       conversationModel: { providerId: 'custom-web', modelId: 'web-model' } });
     expect(persisted).not.toContain('web-only-secret');
+    await api.saveClientState({ activeSessionId: 'web-session-1', conversations: [], drafts: [{ id: 'web-session-1', title: '新聊天', titleManuallyRenamed: false, messages: [], prompt: '保留权限草稿', attachments: [] }] });
+    await expect(api.setPermissionMode('auto-review')).resolves.toBe('auto-review');
     const before = await api.loadRuntimeSettings();
     const restored = createWebClientApi();
+    expect((await restored.loadClientState())?.drafts?.[0]).toMatchObject({ permissionMode: 'auto-review', prompt: '保留权限草稿' });
     const loaded = await restored.loadRuntimeSettings();
     expect(loaded).toEqual(before);
     for (const item of loaded.modelProviders) expect(item).not.toHaveProperty('builtin');
@@ -109,7 +113,7 @@ describe('Web Dev API', () => {
   });
   it('deletes unused initially supplied providers without restoring them in a new Web host', async () => {
     let persisted: string | null = null;
-    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
+    vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'agent-desktop:web-runtime-settings' ? persisted : null, setItem: (_key: string, value: string) => { persisted = value; } });
     const api = createWebClientApi();
     await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'deepseek' })).rejects.toThrow('切换模型');
     expect((await api.loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek', 'openai']);
@@ -124,7 +128,7 @@ describe('Web Dev API', () => {
   });
   it('preserves a disabled visual candidate until its supplier is explicitly deleted and persists the cleared choice', async () => {
     let persisted: string | null = null;
-    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
+    vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'agent-desktop:web-runtime-settings' ? persisted : null, setItem: (_key: string, value: string) => { persisted = value; } });
     const api = createWebClientApi();
     const fallbackVisionModel = { providerId: 'custom-web', modelId: 'web-model' };
     await api.saveRuntimeSettings({ modelProvider: visualProvider(), fallbackVisionModel, fallbackVisionEnabled: true });

@@ -52,15 +52,15 @@ async function entryTypeOf(directory: string, dirent: Dirent): Promise<Directory
 }
 
 /**
- * 列出当前会话工作目录（或其子目录）中的真实条目。
+ * 列出宿主授权范围内目录中的真实条目。
  *
- * 它只读取会话已经确认的范围，不做任何越界访问，也不递归：需要往下找时由模型带着子目录名再调用一次，
+ * 它只读取宿主已经授权的范围，也不递归：需要往下找时由模型带着子目录名再调用一次，
  * 这样每一步读取范围都是可见的。扩展名过滤只作用于文件，目录始终保留，否则模型无法继续往下找。
  */
 export class ListDirectoryTool implements Tool {
   readonly executionBoundary = 'read-only' as const;
   readonly name = 'list_directory';
-  readonly description = '列出当前会话工作目录或其子目录中的文件和子目录，可按扩展名过滤';
+  readonly description = '列出宿主授权范围内的文件和子目录，省略路径时使用工作目录，可按扩展名过滤';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -91,7 +91,7 @@ export class ListDirectoryTool implements Tool {
       return errorResult('list_directory requires extension to be a string');
     }
 
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), directory);
+    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), directory, this.workspace.fileAccess === 'all');
     if (!scoped.ok) return errorResult(scoped.message);
 
     let dirents;

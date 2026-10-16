@@ -52,6 +52,7 @@ const api: AgentClientApi = {
   cancelTask: async () => undefined,
   onAgentEvent: () => () => undefined,
   decideApproval: async () => undefined,
+  setPermissionMode: async mode => mode,
   revealFile: async () => undefined,
 };
 
@@ -108,12 +109,14 @@ describe('shared App', () => {
     expect(screen.queryByLabelText('当前对话模型')).toBeNull();
     expect(save).toHaveBeenLastCalledWith({ conversationModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
   });
-  it('holds the old model and send action until save completes, and reports a rejected selection', async () => {
+  it('holds the previous selections and send action until save completes, and reports rejected selections', async () => {
     const settings = { ...await api.loadRuntimeSettings(), modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })) };
     let rejectSave!: (error: Error) => void;
     const save = vi.fn<AgentClientApi['saveRuntimeSettings']>(() => new Promise((_resolve, reject) => { rejectSave = reject; }));
     const run = vi.fn(api.runAgentTask);
-    render(<App api={{ ...api, loadRuntimeSettings: async () => settings, saveRuntimeSettings: save, runAgentTask: run }} />);
+    let rejectPermissionSave!: (error: Error) => void;
+    const setPermissionMode = vi.fn<AgentClientApi['setPermissionMode']>(() => new Promise((_resolve, reject) => { rejectPermissionSave = reject; }));
+    render(<App api={{ ...api, loadRuntimeSettings: async () => settings, saveRuntimeSettings: save, setPermissionMode, runAgentTask: run }} />);
     const input = await screen.findByLabelText('剪辑需求');
     fireEvent.change(input, { target: { value: '下一条消息' } });
     fireEvent.click(await screen.findByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' }));
@@ -126,6 +129,18 @@ describe('shared App', () => {
     await screen.findByText('配置保存失败');
     expect(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', false));
+    expect(input).toHaveProperty('value', '下一条消息');
+    fireEvent.click(screen.getByRole('button', { name: '选择操作权限：请求批准' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /帮我批准/ }));
+    await waitFor(() => expect(setPermissionMode).toHaveBeenCalledWith('auto-review'));
+    expect(screen.getByRole('button', { name: /^新会话$/ })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '选择项目目录' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: '选择操作权限：请求批准' })).toBeTruthy();
+    act(() => rejectPermissionSave(new Error('权限模式保存失败')));
+    await screen.findByText('权限模式保存失败');
+    expect(screen.getByRole('button', { name: '选择操作权限：请求批准' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^新会话$/ })).toHaveProperty('disabled', false));
     expect(input).toHaveProperty('value', '下一条消息');
   });
   it('supports menu keyboard focus and keeps Stop available while saving the next model', async () => {

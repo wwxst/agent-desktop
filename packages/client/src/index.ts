@@ -28,6 +28,7 @@ export type {
   AgentTaskStartRequest,
   AgentTaskState,
   ApprovalRequest,
+  PermissionMode,
   ClientAssistantMessage,
   ClientConversation,
   ClientConversationMessage,

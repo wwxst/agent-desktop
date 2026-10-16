@@ -48,6 +48,7 @@ export const DESKTOP_CHANNELS = {
   verifyTaskEffect: 'desktop:verify-task-effect',
   cancelTask: 'desktop:cancel-task',
   decideApproval: 'desktop:decide-approval',
+  setPermissionMode: 'desktop:set-permission-mode',
   answerQuestion: 'desktop:answer-question',
   closeTerminal: 'desktop:close-terminal',
   resizeTerminal: 'desktop:resize-terminal',
