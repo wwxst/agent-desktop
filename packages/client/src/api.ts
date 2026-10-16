@@ -230,6 +230,13 @@ export type ClientConversationMessage = ClientUserMessage | ClientAssistantMessa
 /** 当前聊天的审批方式；未选择时使用逐次请求批准。 */
 export type PermissionMode = 'ask' | 'auto-review' | 'full-access';
 
+/** 最近一次主模型请求的实际用量；模型身份防止切换后套用另一模型的计数。 */
+export interface ConversationContextUsage {
+  readonly model: RuntimeModelReference;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
 export interface ClientConversation {
   /** 宿主确认并保存的权限模式；省略表示 ask。 */
   readonly permissionMode?: PermissionMode;
@@ -239,6 +246,7 @@ export interface ClientConversation {
   readonly archived?: boolean;
   readonly updatedAt?: number;
   readonly terminalHistory?: TerminalSnapshot;
+  readonly contextUsage?: ConversationContextUsage;
   readonly id: string;
   readonly title: string;
   /** 手动重命名后锁定自动标题；旧快照缺失时由 Host 解析为 false。 */
@@ -452,6 +460,7 @@ export type AgentRuntimeEvent =
   | { readonly type: 'question.requested'; readonly request: QuestionRequest }
   | { readonly type: 'question.closed'; readonly requestId: string }
   | { readonly type: 'model.text'; readonly stepId: string; readonly text: string; readonly purpose: 'commentary' | 'final' }
+  | { readonly type: 'model.usage'; readonly sessionId: string; readonly usage: ConversationContextUsage | null }
   | { readonly type: 'terminal.updated'; readonly sessionId: string; readonly terminal: TerminalSnapshot };
 
 /** 插件与技能的展示事实；实际文件、启停和工具注册由宿主维护。 */

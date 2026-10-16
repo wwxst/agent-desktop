@@ -31,6 +31,7 @@ export type {
   PermissionMode,
   ClientAssistantMessage,
   ClientConversation,
+  ConversationContextUsage,
   ClientConversationMessage,
   ClientStateSnapshot,
   ClientProject,

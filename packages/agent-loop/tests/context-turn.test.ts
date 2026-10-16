@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ModelRequest, ToolCallId } from '@agent-desktop/model';
+import type { ModelRequest, ModelUsage, ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, SessionPersistenceError, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
 import { ContextBudgetError, runTurn } from '../src/index.js';
@@ -30,15 +30,17 @@ describe('context consumed by the real execution loop', () => {
       execute: async () => ({ status: 'success', output: 'read' }) });
     const model = { complete: vi.fn(async (request: ModelRequest) => {
       requests.push(request);
-      if (request.tools.length > 0) return { text: 'final response', toolCalls: [] };
+      if (request.tools.length > 0) return { text: 'final response', toolCalls: [], usage: { inputTokens: 1024, outputTokens: 32 } };
       const source = JSON.parse(request.messages[0]!.content!) as {
         previousSummaryText: string | null; newStepSources: { sourceEventIndex: number }[];
       };
       const prior = source.previousSummaryText === null ? [] : (JSON.parse(source.previousSummaryText) as { sourceEventIndexes: number[] }).sourceEventIndexes;
-      return { text: JSON.stringify({ summary: '历史只读检查事实。', sourceEventIndexes: [...prior, ...source.newStepSources.map(item => item.sourceEventIndex)] }), toolCalls: [] };
+      return { text: JSON.stringify({ summary: '历史只读检查事实。', sourceEventIndexes: [...prior, ...source.newStepSources.map(item => item.sourceEventIndex)] }), toolCalls: [], usage: { inputTokens: 900, outputTokens: 80 } };
     }) };
+    const usage: (ModelUsage | undefined)[] = [];
     await runTurn({ model, session, tools, systemPrompt: { build: () => '实际动态插件与用户指令。' } }, '继续',
-      { contextBudget: { contextWindow: 7000, maxOutputTokens: 800 } });
+      { contextBudget: { contextWindow: 7000, maxOutputTokens: 800 }, onModelUsage: value => usage.push(value) });
+    expect(usage).toEqual([{ inputTokens: 1024, outputTokens: 32 }]);
     expect(requests.length).toBeGreaterThan(1);
     expect(requests.length).toBeLessThanOrEqual(3);
     expect(requests.every(request => request.maxOutputTokens === 800)).toBe(true);

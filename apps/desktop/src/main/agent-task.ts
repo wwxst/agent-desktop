@@ -110,7 +110,7 @@ export function findTurnArtifacts(
 
 /**
  * 一轮任务需要的运行端口。
- * 它们全部属于宿主：诊断追踪、取消信号和三条展示通道都不进入 Agent Core。
+ * 它们全部属于宿主：诊断追踪、取消信号和展示通道都不进入 Agent Core。
  */
 export interface DesktopTaskOptions {
   readonly trace: ExecutionTrace;
@@ -119,6 +119,7 @@ export interface DesktopTaskOptions {
   readonly onToolResult?: ToolResultListener;
   readonly onToolProgress?: ToolProgressListener;
   readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
+  readonly onModelUsage?: NonNullable<Parameters<typeof runTurn>[2]>['onModelUsage'];
   readonly contextBudget?: NonNullable<Parameters<typeof runTurn>[2]>['contextBudget'];
   readonly qualifyToolEvidence?: NonNullable<Parameters<typeof runTurn>[2]>['qualifyToolEvidence'];
   readonly beforeToolCall?: NonNullable<Parameters<typeof runTurn>[2]>['beforeToolCall'];
@@ -159,6 +160,7 @@ export async function runDesktopAgentTask(
     ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
     ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
     ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
+    ...(options.onModelUsage === undefined ? {} : { onModelUsage: options.onModelUsage }),
     // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     // 文本增量只用于实时展示，不改变 Session 事实和返回值。
@@ -176,6 +178,7 @@ export async function runDesktopAgentTask(
         ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
         ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
         ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
+        ...(options.onModelUsage === undefined ? {} : { onModelUsage: options.onModelUsage }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
         ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),

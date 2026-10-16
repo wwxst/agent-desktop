@@ -1,10 +1,11 @@
 import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Check, ChevronDown, Folder, Plus, X } from 'lucide-react';
-import type { Attachment, PermissionMode, RuntimeModelReference, RuntimeSettings } from '../api.js';
+import type { Attachment, ConversationContextUsage, PermissionMode, RuntimeModelReference, RuntimeSettings } from '../api.js';
 import type { ClientProject } from '../api.js';
 import { AttachmentChip } from './AttachmentChip.js';
 import { ModelSelector } from './ModelSelector.js';
 import { PermissionSelector } from './PermissionSelector.js';
+import { ContextUsage } from './ContextUsage.js';
 
 function finalDirectoryName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -35,6 +36,7 @@ interface ComposerProps {
   readonly onSend: () => void;
   readonly onCancel: () => void;
   readonly settings: RuntimeSettings | null;
+  readonly contextUsage?: ConversationContextUsage;
   readonly settingsError: string;
   readonly isSavingSettings: boolean;
   readonly onSelectModel: (reference: RuntimeModelReference) => Promise<RuntimeSettings>;
@@ -61,7 +63,7 @@ export function Composer({
   onRemoveAttachment,
   onSend,
   onCancel,
-  settings, settingsError, isSavingSettings, onSelectModel, onConfigureModels,
+  settings, contextUsage, settingsError, isSavingSettings, onSelectModel, onConfigureModels,
   permissionMode, onSelectPermissionMode,
 }: ComposerProps) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -178,8 +180,11 @@ export function Composer({
         </div>
         <div className="composer-trailing">
           {isProcessing && <span className="composer-state">处理中</span>}
-          <ModelSelector settings={settings} settingsError={settingsError} busy={isSavingSettings} disabled={isArchived}
-            onSelect={onSelectModel} onConfigure={onConfigureModels} />
+          <div className="composer-model-group">
+            <ContextUsage settings={settings} {...contextUsage === undefined ? {} : { usage: contextUsage }} />
+            <ModelSelector settings={settings} settingsError={settingsError} busy={isSavingSettings} disabled={isArchived}
+              onSelect={onSelectModel} onConfigure={onConfigureModels} />
+          </div>
           <button
             className="icon-button send-button"
             type="submit"

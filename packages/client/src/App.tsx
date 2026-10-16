@@ -229,6 +229,14 @@ export function App({ api }: AppProps) {
 
   useEffect(() => api.onAgentEvent((event: AgentRuntimeEvent) => {
     const sessionId = activeSessionIdRef.current;
+    if (event.type === 'model.usage') {
+      updateConversation(event.sessionId, conversation => {
+        // 未返回用量的响应清除上次读数，不能把旧请求冒充最新上下文。
+        const { contextUsage: _previousUsage, ...rest } = conversation;
+        return event.usage === null ? rest : { ...rest, contextUsage: event.usage };
+      });
+      return;
+    }
     if (event.type === 'terminal.updated') {
       updateConversation(event.sessionId, (conversation) => ({ ...conversation, terminalHistory: event.terminal }));
       return;
@@ -762,6 +770,7 @@ export function App({ api }: AppProps) {
       isProcessing={isProcessing}
       isArchived={!!activeConversation.archived}
       settings={runtimeSettings}
+      {...(activeConversation.contextUsage === undefined ? {} : { contextUsage: activeConversation.contextUsage })}
       settingsError={settingsError}
       isSavingSettings={isSavingSettings || isSavingPermissionMode}
       permissionMode={activeConversation.permissionMode ?? 'ask'}

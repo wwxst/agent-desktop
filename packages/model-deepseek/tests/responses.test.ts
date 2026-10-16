@@ -27,7 +27,7 @@ it('streams text and round trips function calls through real Responses HTTP', as
     else {
       event(res, { type: 'response.output_text.delta', delta: '检查' });
       event(res, { type: 'response.output_text.delta', delta: '完成' });
-      event(res, { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '检查完成' }] }] } });
+      event(res, { type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '检查完成' }] }], usage: { input_tokens: 73, output_tokens: 12 } } });
     }
     res.end();
   });
@@ -35,7 +35,7 @@ it('streams text and round trips function calls through real Responses HTTP', as
   const first = await model.complete(request);
   expect(first.toolCalls).toEqual([{ id: 'call-1', name: 'read_file', input: { path: 'notes.txt' } }]);
   const chunks: string[] = [];
-  expect(await model.complete({ ...request, messages: [...request.messages, { role: 'assistant', toolCalls: first.toolCalls }, { role: 'tool', toolCallId: 'call-1' as ToolCallId, content: '文件内容' }], onTextDelta: delta => chunks.push(delta) })).toEqual({ text: '检查完成', toolCalls: [] });
+  expect(await model.complete({ ...request, messages: [...request.messages, { role: 'assistant', toolCalls: first.toolCalls }, { role: 'tool', toolCallId: 'call-1' as ToolCallId, content: '文件内容' }], onTextDelta: delta => chunks.push(delta) })).toEqual({ text: '检查完成', toolCalls: [], usage: { inputTokens: 73, outputTokens: 12 } });
   expect(chunks).toEqual(['检查', '完成']);
   expect(received[1]).toMatchObject({ model: 'configured-model', max_output_tokens: 1024, store: false, instructions: '检查文件', input: [{ role: 'user', content: '检查 notes.txt' }, { type: 'function_call', call_id: 'call-1', name: 'read_file', arguments: '{"path":"notes.txt"}' }, { type: 'function_call_output', call_id: 'call-1', output: '文件内容' }] });
 });
