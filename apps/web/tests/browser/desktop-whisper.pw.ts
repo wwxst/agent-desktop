@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -22,7 +22,10 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
   const english = resolve(evidence, 'English speech.wav');
   const mixed = resolve(evidence, '中英 mixed.wav');
   const longAudio = resolve(evidence, '长音频 70 秒.wav');
-  const ffmpeg = resolve(root, 'logs/ffmpeg-plugin/vendor-runtime/ffmpeg-8.1.2-essentials_build/bin/ffmpeg.exe');
+  const mediaLock = JSON.parse(await readFile(resolve(root, 'apps/desktop/resources/plugins/ffmpeg/runtime.lock.json'), 'utf8')) as { sha256: string; archiveRoot: string };
+  const fixtureRuntime = resolve(evidence, 'fixture-media'); await mkdir(fixtureRuntime);
+  execFileSync(resolve(process.env.SystemRoot!, 'System32/tar.exe'), ['-xf', resolve(root, 'apps/desktop/bundled-media/archives', `${mediaLock.sha256}.zip`), '-C', fixtureRuntime], { windowsHide: true });
+  const ffmpeg = resolve(fixtureRuntime, mediaLock.archiveRoot, 'bin/ffmpeg.exe');
   const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
   const synthesize = (path: string, voice: string, text: string) => execFileSync('powershell.exe', ['-NoProfile', '-Command',
     `Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.SelectVoice(${literal(voice)}); $f = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono); $s.SetOutputToWaveFile(${literal(path)}, $f); $s.Speak(${literal(text)}); $s.Dispose()`], { windowsHide: true });
@@ -39,8 +42,6 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
   const records: { scenario: string; tools: string[]; invokedTools: string[]; results: string[] }[] = [];
   const modelScenarios: { scenario: string; status: 'PASS' | 'SKIP'; reason?: string }[] = [];
   const modelPath = resolve(profile, 'extensions/models/whisper/ggml-small.bin');
-  const stagedModel = resolve(evidence, 'preseeded-locked-model.bin');
-  const hasPreseededModel = existsSync(modelPath);
   let selectedPath = chinese;
   const server = createServer(async (request, response) => {
     try {
@@ -100,7 +101,7 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
   env.PATH = `${process.env.SystemRoot}/System32;${process.env.SystemRoot}`;
   const launch = async () => {
     const launched = await _electron.launch({ executablePath: executable ?? createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string,
-      args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+      args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`, '--proxy-server=http://127.0.0.1:9'], cwd: resolve(root, 'apps/desktop'), env });
     await launched.evaluate(({ dialog }, evidence) => {
       dialog.showErrorBox = (title, message) => { require('node:fs').appendFileSync(require('node:path').join(evidence, 'native-errors.txt'), `${title}\n${message}\n`); };
     }, evidence);
@@ -155,15 +156,22 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     return record;
   };
   try {
-    // 预置模型也先暂移出隔离配置，真实验证安装后的缺模型边界，再通过重启确认注册恢复。
-    if (hasPreseededModel) await rename(modelPath, stagedModel);
     app = await launch(); page = await app.firstWindow(); await page.waitForLoadState(); await connectApprovals();
+    const initial = await page.evaluate(() => window.agentDesktop.extensions.list());
+    expect(initial.plugins.every(plugin => plugin.installed && plugin.enabled)).toBe(true);
+    expect(initial.whisperModel).toMatchObject({ status: 'ready', diskBytes: 487601967 });
+    modelScenarios.push({ scenario: 'default-bundled-model', status: 'PASS' });
     await page.screenshot({ path: resolve(evidence, 'initial.png') });
     await writeFile(resolve(evidence, 'initial.txt'), await page.locator('body').innerText());
     await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] }, conversationModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionEnabled: true }), `http://127.0.0.1:${address.port}`);
+    const ordinaryDefaults = await run('model-ready');
+    expect(ordinaryDefaults.tools).toEqual(expect.arrayContaining(['probe_media', 'transcribe_audio', 'analyze_images']));
+    expect(await page.evaluate(() => (window as unknown as { approvals: ApprovalRequest[] }).approvals.filter(request => request.kind === 'plugin-start' || request.kind === 'plugin-tool'))).toEqual([]);
     const existingWhisper = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:whisper');
     const existingFfmpeg = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:ffmpeg');
     const existingVision = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:vision');
+    // 默认模型已经就绪；明确删除后继续覆盖原有缺模型和恢复边界。
+    await page.evaluate(() => window.agentDesktop.extensions.manage({ action: 'delete-whisper-model' }));
     if (existingFfmpeg?.enabled === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:ffmpeg', false));
     if (existingWhisper?.enabled === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:whisper', false));
     if (existingVision?.enabled === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:vision', false));
@@ -176,25 +184,16 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
       await expect(page.locator('.extension-toast')).toContainText('Whisper 插件已安装', { timeout: 300_000 });
     }
     expect((await page.evaluate(() => window.agentDesktop.extensions.list())).whisperModel?.status).toBe('missing');
+    if (existingWhisper?.installed === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:whisper', true));
     expect((await run('missing')).tools).not.toContain('transcribe_audio');
     modelScenarios.push({ scenario: 'missing-model', status: 'PASS' });
-    if (existingWhisper?.installed === true) await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:whisper', true));
-    if (hasPreseededModel) {
-      await app.close(); await rename(stagedModel, modelPath);
-      app = await launch(); page = await app.firstWindow(); await page.waitForLoadState(); await connectApprovals();
-      expect((await page.evaluate(() => window.agentDesktop.extensions.list())).whisperModel?.status).toBe('ready');
-      expect((await run('model-ready')).tools).toContain('transcribe_audio');
-      modelScenarios.push({ scenario: 'restored-model-registration', status: 'PASS' });
-    }
     await page.getByRole('button', { name: '插件和技能', exact: true }).click();
     await page.getByRole('button', { name: '查看 Whisper', exact: true }).click();
-    if ((await page.evaluate(() => window.agentDesktop.extensions.list())).whisperModel?.status !== 'ready') {
-      await page.getByRole('button', { name: '安装模型', exact: true }).click();
-      await expect(page.getByRole('progressbar', { name: 'Whisper 模型下载进度' })).toBeVisible({ timeout: 30_000 });
-      await page.screenshot({ path: resolve(evidence, 'model-download.png') });
-      await expect(page.locator('.extension-toast')).toContainText('Whisper Small 模型已安装', { timeout: 1_500_000 });
-      modelScenarios.push({ scenario: 'model-download', status: 'PASS' });
-    } else modelScenarios.push({ scenario: 'model-download', status: 'SKIP', reason: '隔离配置恢复了已核验的锁定模型资产，未执行网络下载。' });
+    await page.getByRole('button', { name: '安装模型', exact: true }).click();
+    await expect(page.getByRole('progressbar', { name: 'Whisper 模型安装进度' })).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: resolve(evidence, 'model-restore.png') });
+    await expect(page.locator('.extension-toast')).toContainText('Whisper Small 模型已安装', { timeout: 1_500_000 });
+    modelScenarios.push({ scenario: 'bundled-model-restore', status: 'PASS' });
     expect((await page.evaluate(() => window.agentDesktop.extensions.list())).whisperModel?.diskBytes).toBe(487601967);
     await page.screenshot({ path: resolve(evidence, 'model-ready.png') });
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(800, 600));
@@ -220,7 +219,7 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     const combined = await run('combined', video);
     expect(combined.results).toHaveLength(3); expect(JSON.parse(combined.results[2]!)).toMatchObject({ text: expect.stringMatching(/camera/i) });
     expect((await stat(extracted)).size).toBeGreaterThan(0);
-    await page.evaluate(() => window.agentDesktop.extensions.install('plugin:video-editing'));
+    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:video-editing', true));
     const withSkills = await run('skills', english);
     expect(withSkills.tools.filter(name => name === 'transcribe_audio')).toHaveLength(1);
     expect(withSkills.tools.filter(name => name === 'extract_audio')).toHaveLength(1);
@@ -319,7 +318,6 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     await writeFile(resolve(evidence, 'summary.json'), JSON.stringify({ records, modelScenarios, approvals: await page.evaluate(() => (window as unknown as { approvals: ApprovalRequest[] }).approvals), profile, installedExecutable: executable ?? null, speechSource: 'Windows System.Speech Huihui/Zira synthetic reference', modelBytes: 487601967 }, null, 2));
   } finally {
     try { await app?.close(); } finally {
-      if (existsSync(stagedModel)) await rename(stagedModel, modelPath);
       await new Promise<void>(done => server.close(() => done()));
     }
   }

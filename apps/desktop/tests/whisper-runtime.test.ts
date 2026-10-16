@@ -60,7 +60,9 @@ describe('controlled Whisper runtime installation', () => {
   it('installs all verified CPU libraries and reuses only the verified archive', async () => {
     const { staging, cache } = await fixture();
     await installWhisperRuntime(staging, cache);
+    boundary.execute.mockClear();
     expect(await verifyWhisperRuntime(staging)).toBe(await realpath(join(staging, 'runtime', 'whisper-cli.exe')));
+    expect(boundary.execute).not.toHaveBeenCalled();
     expect(await readFile(join(staging, 'runtime', 'whisper.dll'), 'utf8')).toBe('whisper.dll');
     await rm(join(staging, 'runtime'), { recursive: true });
     await installWhisperRuntime(staging, cache); expect(boundary.fetch).toHaveBeenCalledOnce();
@@ -76,7 +78,7 @@ describe('controlled Whisper runtime installation', () => {
     await expect(verifyWhisperRuntime(staging)).rejects.toThrow('完整性');
     await writeFile(join(staging, 'runtime', 'whisper.dll'), 'whisper.dll');
     boundary.execute.mockRejectedValue(new Error('required system DLL unavailable'));
-    await expect(verifyWhisperRuntime(staging)).rejects.toThrow('system DLL');
+    await expect(installWhisperRuntime(staging, cache)).rejects.toThrow('system DLL');
   });
   it('rejects unverified origins before downloading', async () => {
     const { staging, cache, lock } = await fixture();

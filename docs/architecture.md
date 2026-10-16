@@ -55,7 +55,9 @@ Desktop 是当前消费者：`extensions.ts` 解析 Codex 风格清单、建立 
 ```text
 Desktop → enabled skill metadata → system prompt
 Model → load_skill → SKILL.md → Tool Result → Session → next Model
-Desktop → start approval → MCP Client → listTools → Tool Registry
+Desktop → bundled tool metadata → Tool Registry
+Desktop → external MCP start approval → MCP Client → listTools → Tool Registry
+Model → bundled plugin tool → first start approval → MCP Client
 Model → plugin tool → call approval → callTool → Tool Result → Session
 Turn finally / cancellation → shared close promise → MCP process exit
 ```
@@ -72,6 +74,8 @@ Turn finally / cancellation → shared close promise → MCP process exit
 
 安装先复制到 `userData/extensions/.staging`，解析清单并重新扫描通过后再原子移动到 `userData/extensions/{plugins,skills}`；失败只清理暂存目录，保留原有安装。SQLite 的 `extensions` 文档保存类型、名称、来源、版本、安装标识与停用标识，不存旧电脑绝对安装位置。`${PLUGIN_ROOT}` / `${CODEX_PLUGIN_ROOT}` 每轮解析到当前安装目录，`node` 使用 Electron 自带运行时，其它程序需插件自带或系统可用。插件自身硬编码路径仍需作者修正。
 
+首次启动且 `extensions` 文档尚不存在时，Windows x64 默认安装并启用语义视频剪辑、FFmpeg、Whisper 和 Vision，其它平台仅语义视频剪辑和 Vision。程序归档及默认 Small 语音模型从同级 `bundled-media` 离线读取并校验，不因缺失而联网补齐；全部插件暂存、模型准备和目录发布完成后才一次保存安装状态。失败清理本次发布目录并显示真实错误，修复资源后可刷新重试；不登记半套初始化。已有安装文档（包括全部卸空的记录）不触发默认安装，后续启动与刷新保留用户禁用、卸载和模型删除选择。第三方插件及独立技能不自动安装。
+
 `listSkills` 单独返回技能元数据，`readSkill` 单独读取正文；元数据以文件时间和大小缓存，`forceReload` 与文件通知清缓存，正文保持按需读取。模型目录最多 64 项、8000 字符，显式指定技能优先排序。扫描流读到第二个 `---` 分隔符后关闭，不构建正文字符串。`agents/openai.yaml` 提供图标、显示名称、简述、建议指令、结构化工具依赖和自动调用策略；禁止自动调用的技能只有被 `$名称` 显式指定时才进入模型目录。有 URL 或用户配置地址的 MCP 依赖走真实工具连接与审批，缺少服务的依赖明确写入指令，不自动假设已授权。
 
 安装、启停、卸载与同步通过 `desktop:extensions-changed` 通知界面重新读取。宿主同时监视安装目录和当前项目技能目录；技能目录不存在时监视最近存在的父目录，界面重读时重新绑定。外部文件变化合并后发出失效通知，窗口关闭释放监视句柄。`reconcile` 同步内置资源、修复缺失目录并刷新已添加市场。市场插件更新由用户显式执行，保留旧安装及版本历史供回滚；失败不覆盖当前安装，停用标识保持。发布失败时恢复旧目录，恢复失败明确保留备份位置。
@@ -80,13 +84,13 @@ MCP 运行时支持 stdio、Streamable HTTP（可流式 HTTP 传输）和 SSE（
 
 独立 MCP 服务器由设置页通过现有扩展管理接口新增、编辑、启停与删除，支持本地命令、HTTP 和 SSE。名称必须唯一；默认启用，编辑保留当前启停状态。独立配置整体保存在 `extension-secret:standalone-mcp/configuration` 加密文档中，一次提交包含公开参数和秘密；列表只返回命令、参数、地址与变量名称，不回显环境变量或请求头的值。编辑提交空值保留同名已保存秘密，移除键则删除该变量。`extensions.ts` 向每轮宿主投影独立服务器，`extension-runtime.ts` 复用现有 SDK、启动与调用审批、账户授权、取消和关闭路径，不写入插件安装列表，也不改变 Core 或 Loop。启动目录使用当前已授权会话目录，没有目录时使用当前本机数据目录；服务不会在保存时启动。远程账户授权由独立服务器配置对话框显式发起，等待时可取消。
 
-`.app.json` 的真实应用 ID 可配置账户网关的 MCP 地址，之后走相同授权与工具调用路径；这不是 OpenAI 私有 Apps 账户服务接入。命令钩子接入 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop，逐项展示确切命令并审批。取消及超时结束整个进程树，输出错误保留失败语义。
+`.app.json` 的真实应用 ID 可配置账户网关的 MCP 地址，之后走相同授权与工具调用路径；这不是 OpenAI 私有 Apps 账户服务接入。命令钩子接入 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop，逐项展示确切命令并审批。宿主仅为当前已启用插件实际声明的生命周期钩子登记执行操作，没有命令的事件不写空操作。取消及超时结束整个进程树，输出错误保留失败语义。
 
 这些是本项目 Electron 宿主接口，并非 Codex JSON-RPC（应用服务器通信协议）的完整线协议。账号安装同步、云技能来源、插件分享发布按用户明确要求对接自有后端，目前尚未接入；不以 OpenAI 私有服务作为交付前提。SessionStart 在宿主创建或恢复会话后首次执行任务时消费一次，分别携带 startup 或 resume 来源；普通后续轮次及会话切换不重放启动命令。公开源码核对和本次三轮验证见 `docs/acceptance/codex-extensions-three-reviews-20261004.md`。
 
 用户已将实际服务端接入留待后续实施；对接交接见 [插件与技能自有后端对接文档](plugin-backend-integration.md)，其中待实现契约不表示当前已有接口或部署。
 
-每轮服务启动与各次调用分别进入宿主审批策略，按当前聊天权限模式请求人工批准、独立模型审查或自动批准。SDK 和钩子只继承基础系统环境；只有受控 Vision 服务获得所选视觉供应商配置，其它服务不接收模型设置密钥。一般工具名以插件、服务及工具标识组成，特殊字符或超过 64 字符时附加摘要避免身份冲突；下述受控 FFmpeg、Whisper 和 Vision 服务映射既有公开工具名称。取消与收尾等待同一个关闭操作，进程不写入恢复数据。复制或卸载期间宿主拒绝新任务，防止使用正在修改的目录。
+受控 FFmpeg、Whisper 和 Vision 的工具元数据直接来自其工具实现，每轮只注册当前可用能力；首次实际调用才审批并连接对应服务，普通问答不启动媒体进程。同一服务在一轮内复用连接结果，启动拒绝或握手失败不自动重连；握手失败作为该次工具失败返回，不影响其它能力。外部插件及独立 MCP 仍经启动审批连接并发现工具。服务启动与各次调用分别进入宿主审批策略，按当前聊天权限模式请求人工批准、独立模型审查或自动批准。SDK 和钩子只继承基础系统环境；只有受控 Vision 服务获得所选视觉供应商配置，其它服务不接收模型设置密钥。一般工具名以插件、服务及工具标识组成，特殊字符或超过 64 字符时附加摘要避免身份冲突；下述受控 FFmpeg、Whisper 和 Vision 服务映射既有公开工具名称。取消与收尾等待同一个关闭操作，进程不写入恢复数据。复制或卸载期间宿主拒绝新任务，防止使用正在修改的目录。
 
 ### Desktop FFmpeg 插件
 
@@ -94,7 +98,7 @@ MCP 运行时支持 stdio、Streamable HTTP（可流式 HTTP 传输）和 SSE（
 Media Adapter        媒体适配器        宿主将已授权本地路径及 MCP 结果转换为原工具契约。
 Shared Injection     共享注入          公开工具与候选语义验收消费同一个通用 Tool 实例。
 Producer Evidence    生产证据          成功视频写出及来源归属支持读取本会话真实候选。
-Binary Distribution  二进制分发        插件安装时下载锁定资源，验证摘要、版本及构建选项。
+Binary Distribution  二进制分发        构建准备锁定资源，客户端离线安装并验证摘要、版本及构建选项。
 ```
 
 Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映射十四项专业工具：`probe_media`、`decode_video`、`detect_black_segments`、`extract_video_frames`、`extract_video_range_frames`、`extract_audio`、`extract_full_video_frames`、`trim_video`、`concat_videos`、`add_audio`、`add_subtitles`、`resize_video`、`crop_video`、`set_speed`。冲突直接失败；第三方同名工具仍使用限定名称。宿主经 `mediaTools` 注入实际启用能力，应用层没有 FFmpeg 实现导入或自动回退；写出工具继续经过原有候选目录包装器。CLI 在自身入口显式注入本机实现。Core 和 Loop 不接触 MCP 协议。
@@ -103,30 +107,30 @@ Desktop 每轮先准备扩展，再调用 `createVideoAgent`。受控服务映�
 
 适配器把实际归一化路径送入原 MCP 调用审批，严格转换成功结果的 `inputPath`、`duration`、`width`、`height`、`videoCodec`、`audioCodec` 六字段；错误内容保留原消息，畸形结果、路径不匹配和缺失字段返回工具失败，取消继续抛出 `AbortError`。公开调用沿 Agent Loop 保存 `tool.called` 和 `tool.result`；语义验收先使用同一适配器，再抽帧、观察和判断，因此内部调用仍有审批与钩子，但不伪造独立 Session 事件。最终语义证据由 `check_video_semantics` 保存，成功判定仍绑定候选内容摘要并由原交付验收消费。
 
-独立 `plugin:ffmpeg` 的 `ffmpeg` 服务由 `apps/desktop/src/plugins/ffmpeg.ts` 构建为自包含 CJS 资源，使用 Electron 自带 Node 运行时及原有工具，不复制媒体算法。`plugin:video-editing` 仅包含技能，由侧车元数据声明 `ffmpeg` 依赖；拒绝启动的连接不满足依赖。旧版内含的 `ffmpeg-probe` 不再启动，插件页提示升级及安装独立能力；会话、文件和设置保留。只有受控独立插件可映射既有公开工具名称，同名第三方服务仍使用限定名。服务限制本地文件协议及普通媒体容器，拒绝网络协议与播放列表间接资源。stdin 结束会关闭 SDK、取消在途请求并终止子进程。
+独立 `plugin:ffmpeg` 的 `ffmpeg` 服务由 `apps/desktop/src/plugins/ffmpeg.ts` 构建为自包含 CJS 资源，使用 Electron 自带 Node 运行时及原有工具，不复制媒体算法。`plugin:video-editing` 仅包含技能，由侧车元数据声明 `ffmpeg` 依赖；已注册的受控服务满足元数据依赖，实际调用仍可因启动拒绝或连接失败受阻。旧版内含的 `ffmpeg-probe` 不再启动；已安装视频剪辑插件但独立 FFmpeg 插件未安装或未启用时，插件页提示安装并启用 FFmpeg，不将缺少依赖表述为需要升级。只有受控独立插件可映射既有公开工具名称，同名第三方服务仍使用限定名。服务限制本地文件协议及普通媒体容器，拒绝网络协议与播放列表间接资源。stdin 结束会关闭 SDK、取消在途请求并终止子进程。
 
-抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制；完整覆盖不能以空帧列表表示。写出路径必须属于已声明输出项，宿主复核来源与最终目标授权；插件不能返回正式产物元数据。插件未安装、停用、卸载或启动被拒绝时，下一轮没有十四项专业工具，依赖能力的验收明确受阻。通用任务继续运行；通用终端仍遵守自己的审批策略，不属于专业工具卸载边界。记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
+抽帧及音频提取也经过同一真实路径授权：输出仅在已确认目录或来源已授权的输出项工作目录中。语义验收通过注入的全帧和音频工具调用插件，临时目录位于该输出项工作目录并在结束时清理。全帧算法及 600 帧预算仍由 `video-ffmpeg` 实现，不在宿主复制；完整覆盖不能以空帧列表表示。写出路径必须属于已声明输出项，宿主复核来源与最终目标授权；插件不能返回正式产物元数据。插件未安装、停用或卸载时，下一轮没有十四项专业工具；启动被拒绝时实际调用返回拒绝，依赖能力的验收明确受阻。通用任务继续运行；通用终端仍遵守自己的审批策略，不属于专业工具卸载边界。记录见 [第二阶段验收](acceptance/ffmpeg-plugin-20261011.md)。
 
-该边界是宿主调用策略，不是操作系统沙箱；已批准的通用 MCP 服务或本机可执行程序仍以当前用户身份运行。FFmpeg 正式资源目前支持 Windows x64：安装在已有暂存目录下载 `runtime.lock.json` 锁定的 Gyan 8.1.2 ZIP，校验归档及两个程序 SHA-256、版本和必要构建选项，再原子发布。下载使用 Electron 网络栈及 Windows 系统代理；失败保留旧安装。插件自身目录提供可执行文件，Electron 自带 Node 启动自包含服务，不搜索系统 PATH。插件专属归档缓存每次复核摘要，旧完整版本沿用既有缓存与回滚。保留供应商 GPLv3 许可证、README 和构建说明；没有再托管二进制或宣称代码签名。来源和再分发要求见插件 `NOTICE.md`。验收见 [FFmpeg 插件验收](acceptance/ffmpeg-plugin-20261011.md)，原 Probe 阶段记录保留供追溯。
+该边界是宿主调用策略，不是操作系统沙箱；已批准的通用 MCP 服务或本机可执行程序仍以当前用户身份运行。FFmpeg 正式资源目前支持 Windows x64：构建时准备 `runtime.lock.json` 锁定的 Gyan 8.1.2 ZIP，客户端在已有暂存目录离线解包，校验归档及两个程序 SHA-256、版本和必要构建选项，再原子发布。构建下载使用 Electron 网络栈及 Windows 系统代理，手动安装优先使用随包归档，归档缺失时仍可下载锁定版本；失败保留旧安装。插件自身目录提供可执行文件，Electron 自带 Node 启动自包含服务，不搜索系统 PATH。插件专属归档缓存每次复核摘要，旧完整版本沿用既有缓存与回滚。保留供应商 GPLv3 许可证、README 和构建说明；当前完整候选包仅用于本地验收，未公开发布或宣称代码签名；公开发行所需完整对应源码、第三方依赖及构建材料仍未补齐，来源和要求见插件 `NOTICE.md`。验收见 [FFmpeg 插件验收](acceptance/ffmpeg-plugin-20261011.md)，原 Probe 阶段记录保留供追溯。
 
 ### Desktop Whisper 插件
 
 ```text
 Whisper Plugin       语音识别插件      独立 plugin:whisper，只提供 transcribe_audio。
 Managed Runtime      受控运行资源      安装时验证官方 Windows x64 CPU 程序和全部所需 DLL。
-Managed Model        受控语音模型      用户单独下载或导入已核实的 Small 多语言模型。
+Managed Model        受控语音模型      完整包默认提供 Small 多语言模型，可离线恢复或本地导入。
 Media Authorization  媒体访问授权      宿主解析真实音频路径，再执行 MCP 调用审批。
 ```
 
 `apps/desktop/src/plugins/whisper.ts` 复用 `speech-whisper-cpp` 的进程执行和官方 JSON 解析，以自包含 CJS 资源运行于 Electron 自带 Node。输入仍为 `audioPath` 本地 WAV；成功返回完整 `text` 与秒级 `segments`，失败保留消息，取消传播 `AbortError`。标准 PCM 音频的实际采样长度限制上游补齐静音所造成的尾段结束时间，起始时间超出素材仍失败。服务每十秒上报实际已运行秒数，宿主复用 SDK 的进度重置等待超时，不以默认 60 秒限制任务总时长，也不伪造完成百分比。其他音频和视频先由 FFmpeg 转换，不在 Whisper 内打包 FFmpeg。第三方同名工具继续使用限定名。
 
-Desktop 在每轮准备扩展前校验模型与运行程序，只向受控 Whisper 服务传递其绝对路径；用户连接配置和模型输入均不能替换路径或改成远程服务。`createVideoAgent`、`CheckVideoSemanticsTool` 只消费 `mediaTools` 中的通用 `Tool`，不导入或创建 Whisper；CLI 在自身入口显式注入原本机实现。插件缺失、禁用、卸载、模型损坏或连接失败时移除 `transcribe_audio`，普通任务和其他插件继续；带音轨的语义验收明确 `blocked`，没有音轨仍按原规则处理。通用终端不属于专业工具卸载边界。
+Desktop 在每轮准备扩展前校验模型与运行程序，只向受控 Whisper 服务传递其绝对路径；用户连接配置和模型输入均不能替换路径或改成远程服务。`createVideoAgent`、`CheckVideoSemanticsTool` 只消费 `mediaTools` 中的通用 `Tool`，不导入或创建 Whisper；CLI 在自身入口显式注入原本机实现。插件缺失、禁用、卸载或模型损坏时不注册 `transcribe_audio`，按需连接失败由实际调用返回错误，普通任务和其他插件继续；带音轨的语义验收明确 `blocked`，没有音轨仍按原规则处理。通用终端不属于专业工具卸载边界。
 
 Whisper 复用 FFmpeg 的宿主真实路径授权：已确认目录、精确选定附件及来源已授权的视频输出项内中间 WAV 可读；目录穿越、目录链接、未选定的邻居文件和网络路径不能扩大权限。内部语义调用经过同一适配器、审批和钩子，转录作为 `check_video_semantics` 的成功证据保存，不伪造独立 Session 事件。候选摘要、完整解码、语义检查和发布门禁保持原规则。
 
-程序安装复用扩展暂存、原子发布、更新和回滚，归档及 CPU 程序/DLL 按锁文件摘要验证，并以 `--help` 实际检查可加载性。默认模型位于用户数据的 `extensions/models/whisper`，官方 revision、体积和摘要独立锁定；安装前检查磁盘空间，流式下载显示真实字节进度，校验后才发布。失败残片删除，允许从头重试；已有合法文件复用。本地导入也必须匹配同一锁定模型。卸载插件保留模型，用户可主动删除；模型操作、插件更新和新任务复用宿主原有互斥边界，运行中的识别不更换资源。资源访问与用户媒体授权分开，不把模型目录授予普通媒体工具。
+程序安装复用扩展暂存、原子发布、更新和回滚，归档及 CPU 程序/DLL 按锁文件摘要验证，并以 `--help` 实际检查可加载性。默认模型位于用户数据的 `extensions/models/whisper`，官方 revision、体积和摘要独立锁定；安装前检查磁盘空间，完整包默认从随包模型复制，删除后可离线恢复或本地导入；未提供随包模型的宿主仍支持锁定来源下载，流式下载显示真实字节进度，校验后才发布。失败残片删除，允许从头重试；已有合法文件复用。本地导入也必须匹配同一锁定模型。卸载插件保留模型，用户可主动删除；模型操作、插件更新和新任务复用宿主原有互斥边界，运行中的识别不更换资源。资源访问与用户媒体授权分开，不把模型目录授予普通媒体工具。
 
-仅声明 Windows x64 CPU，运行资源与模型不嵌入主安装包；来源及 MIT 许可证随插件保留。官方 Windows 构建不能可靠加载中文绝对模型路径，执行时以模型目录作为工作目录并传相对模型名；音频和结果路径仍为绝对路径。超过 Windows 传统长度限制的已授权音频复制到本次工具临时目录再调用，成功、失败和取消都清理该副本。全零 PCM16 静音直接失败，避免识别幻觉；不宣称解决所有背景噪声。真实安装、协同、性能和审查证据见 [Whisper 阶段验收](acceptance/whisper-plugin-baseline-20261012.md)。
+仅声明 Windows x64 CPU，运行资源、默认 Small 模型及 MIT 许可证均由完整安装包提供。官方 Windows 构建不能可靠加载中文绝对模型路径，执行时以模型目录作为工作目录并传相对模型名；音频和结果路径仍为绝对路径。超过 Windows 传统长度限制的已授权音频复制到本次工具临时目录再调用，成功、失败和取消都清理该副本。全零 PCM16 静音直接失败，避免识别幻觉；不宣称解决所有背景噪声。历史安装、协同和性能证据见 [Whisper 阶段验收](acceptance/whisper-plugin-baseline-20261012.md)。
 
 ### Desktop Vision 插件
 
@@ -145,7 +149,7 @@ Desktop 每轮从 `loadRuntimeConfiguration` 获取视觉路由解析出的供�
 
 上传前检查实际 JPG/PNG 编码头部和尺寸，不把改扩展名的其它文件当作图片，也不声称替代完整解码。单张不超过 10 MiB，整批原始图片不超过 20 MiB，序列化请求不超过 30 MiB；单边不超过 8192 像素且总量不超过 4000 万像素。API 地址只接受无内嵌凭证、查询参数或片段的 HTTP(S)，不跟随重定向；单次网络请求有 50 秒预算，超时明确失败，不自动重试或重放图片上传。
 
-`createVideoAgent` 和 `CheckVideoSemanticsTool` 只消费显式注入的通用 `Tool`，不导入或创建 `AnalyzeImagesTool`。同一个 `analyze_images` 实例供公开调用及内部逐帧验收消费，内部调用仍经过审批和钩子，完整观察存入 `check_video_semantics` 证据而不伪造独立 Session 事件。CLI 在自身入口显式注入本机视觉实现。插件缺失、停用、卸载、启动拒绝、连接失败或视觉路由不可用时没有视觉工具；普通任务及其它插件继续，依赖视觉的语义验收返回 `blocked`。第三方同名服务继续使用限定名称。当前自动化与真实外部验证范围见 [Vision 阶段验收](acceptance/vision-plugin-20261012.md)。
+`createVideoAgent` 和 `CheckVideoSemanticsTool` 只消费显式注入的通用 `Tool`，不导入或创建 `AnalyzeImagesTool`。同一个 `analyze_images` 实例供公开调用及内部逐帧验收消费，内部调用仍经过审批和钩子，完整观察存入 `check_video_semantics` 证据而不伪造独立 Session 事件。CLI 在自身入口显式注入本机视觉实现。插件缺失、停用、卸载或视觉路由不可用时不注册视觉工具；启动拒绝或连接失败由首次实际调用返回失败；普通任务及其它插件继续，依赖视觉的语义验收返回 `blocked`。第三方同名服务继续使用限定名称。当前自动化与真实外部验证范围见 [Vision 阶段验收](acceptance/vision-plugin-20261012.md)。
 
 ## Core Relationship（核心关系）
 

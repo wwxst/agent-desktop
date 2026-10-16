@@ -149,9 +149,12 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
   const app = await _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
   try {
     const page = await app.firstWindow();
+    const localMedia = process.platform === 'win32' && process.arch === 'x64';
+    const pluginTab = `插件 ${localMedia ? 5 : 3}`;
+    const mcpTab = `MCP ${localMedia ? 4 : 2}`;
     const settings = async () => { await page.getByRole('button', { name: '设置', exact: true }).click(); await page.getByRole('button', { name: '插件与技能', exact: true }).click(); };
     await settings();
-    await expect(page.getByRole('tab', { name: '插件 0' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: `插件 ${localMedia ? 4 : 2}` })).toBeVisible();
     await page.getByRole('button', { name: '添加插件', exact: true }).click();
     await page.getByRole('menuitem', { name: '添加插件市场' }).click();
     const dialog = page.getByRole('dialog', { name: '添加插件市场' });
@@ -163,20 +166,20 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
     await page.getByRole('button', { name: '安装 代码审查', exact: true }).click();
     await expect(page.getByRole('button', { name: '代码审查操作', exact: true })).toBeVisible();
     await settings();
-    await expect(page.getByRole('tab', { name: '插件 1' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: pluginTab })).toBeVisible();
     await page.getByRole('switch', { name: '启用 代码审查' }).click();
     await expect(page.getByRole('switch', { name: '启用 代码审查' })).not.toBeChecked();
     expect((await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(item => item.name === '代码审查')?.enabled).toBe(false);
     await page.getByRole('switch', { name: '启用 代码审查' }).click();
     await expect(page.getByRole('switch', { name: '启用 代码审查' })).toBeChecked();
-    for (const tab of ['插件 1', 'MCP 1', '市场 1']) {
+    for (const tab of [pluginTab, mcpTab, '市场 1']) {
       await page.getByRole('tab', { name: tab }).click();
       await page.screenshot({ path: resolve(evidence, `desktop-${tab.split(' ')[0]}.png`) });
     }
     await page.getByRole('button', { name: '升级', exact: true }).click();
     await expect(page.getByRole('button', { name: '升级', exact: true })).toBeEnabled();
     await expect(page.locator('.plugin-settings').getByRole('alert')).toHaveCount(0);
-    await page.getByRole('tab', { name: 'MCP 1' }).click();
+    await page.getByRole('tab', { name: mcpTab }).click();
     await page.getByRole('textbox', { name: '搜索 MCP 服务器' }).fill('node_repl');
     await page.getByRole('button', { name: /代码审查.*node_repl/ }).click();
     await page.getByRole('button', { name: '配置', exact: true }).click();
@@ -187,7 +190,7 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
     await page.getByRole('button', { name: '返回插件', exact: true }).click();
     for (const width of [800, 400]) {
       await page.setViewportSize({ width, height: 740 });
-      for (const tab of ['插件 1', 'MCP 1', '市场 1']) {
+      for (const tab of [pluginTab, mcpTab, '市场 1']) {
         await page.getByRole('tab', { name: tab }).click();
         expect(await page.locator('.settings-page').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
         await page.screenshot({ path: resolve(evidence, `${tab.split(' ')[0]}-${width}.png`) });
@@ -198,7 +201,7 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
     await page.screenshot({ path: resolve(evidence, 'markets-dark.png') });
     await page.getByRole('button', { name: '移除 本地插件市场' }).click();
     await expect(page.getByRole('tab', { name: '市场 0' })).toBeVisible();
-    await page.getByRole('tab', { name: '插件 1' }).click();
+    await page.getByRole('tab', { name: pluginTab }).click();
     await expect(page.getByRole('switch', { name: '启用 代码审查' })).toBeChecked();
   } finally { await app.close(); }
 });
@@ -334,7 +337,9 @@ test('persists providers and encrypted credentials and executes both protocols t
 test('adds standalone MCP through settings and runs its real tool after restart', async ({}, info) => {
   test.skip(info.project.name !== 'chromium-desktop', '独立 MCP 的真实任务与重启只验收一次。');
   test.setTimeout(90000);
-  const root = resolve('../..'); const evidence = resolve(root, 'logs/standalone-mcp-ui-20261004');
+  const root = resolve('../..');
+  const mcpTab = `MCP ${process.platform === 'win32' && process.arch === 'x64' ? 4 : 2}`;
+  const evidence = resolve(root, 'logs/standalone-mcp-ui-20261004');
   const profile = resolve(evidence, `profile-${Date.now()}`);
   await mkdir(profile, { recursive: true });
   const requireDesktop = createRequire(resolve(root, 'apps/desktop/package.json'));
@@ -379,11 +384,11 @@ test('adds standalone MCP through settings and runs its real tool after restart'
     await editor.getByLabel('环境变量 1 值').fill('standalone-desktop-secret');
     await editor.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 25_000 });
-    await expect(page.getByRole('tab', { name: 'MCP 1' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('tab', { name: mcpTab })).toHaveAttribute('aria-selected', 'true');
     await page.getByRole('switch', { name: '启用 MCP local-tools' }).click();
     await expect(page.getByRole('switch', { name: '启用 MCP local-tools' })).not.toBeChecked();
     await app.close(); app = await launch(); page = await app.firstWindow();
-    await settings(); await page.getByRole('tab', { name: 'MCP 1' }).click();
+    await settings(); await page.getByRole('tab', { name: mcpTab }).click();
     await expect(page.getByRole('switch', { name: '启用 MCP local-tools' })).not.toBeChecked();
     await page.getByRole('button', { name: '配置 local-tools' }).click();
     editor = page.getByRole('dialog', { name: '配置 MCP 服务器' });
@@ -422,10 +427,10 @@ test('adds standalone MCP through settings and runs its real tool after restart'
     await expect.poll(() => { try { process.kill(serverPid, 0); return true; } catch { return false; } }).toBe(false);
     expect(JSON.stringify(await page.evaluate(() => window.agentDesktop.extensions.list()))).not.toContain('standalone-desktop-secret');
     expect((await readFile(resolve(profile, 'agent-desktop.sqlite'))).includes(Buffer.from('standalone-desktop-secret'))).toBe(false);
-    await settings(); await page.getByRole('tab', { name: 'MCP 1' }).click();
+    await settings(); await page.getByRole('tab', { name: mcpTab }).click();
     await page.getByRole('button', { name: '配置 local-tools' }).click();
     await page.getByRole('button', { name: '删除服务器' }).click();
-    await expect(page.getByRole('tab', { name: 'MCP 0' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: `MCP ${process.platform === 'win32' && process.arch === 'x64' ? 3 : 1}` })).toBeVisible();
   } finally {
     await app?.close();
     await new Promise<void>(resolve => { modelServer.closeAllConnections(); modelServer.close(() => resolve()); });

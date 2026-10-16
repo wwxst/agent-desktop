@@ -35,7 +35,7 @@ describe('extension catalog notifications and separate skill reading', () => {
     act(() => host.update({ plugins: [whisper], skills: [], whisperModel: model }));
     fireEvent.click(await screen.findByRole('button', { name: '安装模型' }));
     act(() => host.update({ plugins: [whisper], skills: [], whisperModel: { ...model, status: 'downloading', downloadedBytes: 243800983, diskBytes: 243800983 } }));
-    expect((await screen.findByRole('progressbar', { name: 'Whisper 模型下载进度' })).getAttribute('value')).toBe('243800983');
+    expect((await screen.findByRole('progressbar', { name: 'Whisper 模型安装进度' })).getAttribute('value')).toBe('243800983');
     expect(screen.getByRole('status').textContent).toContain('正在下载模型');
     await act(async () => finish({ plugins: [whisper], skills: [], whisperModel: { ...model, status: 'ready', diskBytes: model.size, downloadedBytes: model.size } }));
     expect(screen.getByRole('status').textContent).toContain('Whisper Small 模型已安装');

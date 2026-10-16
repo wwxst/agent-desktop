@@ -1239,31 +1239,40 @@ describe('desktop main session lifecycle', () => {
   it('dispatches session startup once across turns and again for a new session', async () => {
     const newSession = mainMocks.handlers.get('desktop:new-session')!;
     const run = mainMocks.handlers.get('desktop:run-agent-task')!;
-    await newSession({});
-    const count = mainMocks.extensionRuntimes.length;
-    for (let index = 0; index < 2; index += 1) {
+    // 必须提供真实声明的命令，不能把空 runHooks 调用当成启动钩子执行。
+    const plugin: PluginFiles = { name: 'lifecycle', directory: process.cwd(), skills: [], servers: [],
+      item: { id: 'plugin:lifecycle', kind: 'plugin', name: 'lifecycle', description: '', source: 'local', enabled: true, installed: true },
+      hooks: ['SessionStart', 'UserPromptSubmit'].map(event => ({ event, command: 'echo lifecycle', timeoutMs: 1000 })) };
+    const files = vi.spyOn(DesktopExtensions.prototype, 'files').mockResolvedValue({ plugins: [plugin], skills: [], mcpServers: [] });
+    try {
+      await newSession({});
+      await mainMocks.handlers.get('desktop:set-permission-mode')!({}, 'full-access');
+      const count = mainMocks.extensionRuntimes.length;
+      for (let index = 0; index < 2; index += 1) {
+        mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
+          const turnId = `hook-turn-${index}`;
+          mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId });
+          mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId });
+          return { responseText: '完成', turnId, artifacts: [] };
+        });
+        await expect(run({}, taskRequest('继续任务'))).resolves.toMatchObject({ status: 'success' });
+      }
+      const first = mainMocks.extensionRuntimes[count]!;
+      const second = mainMocks.extensionRuntimes[count + 1]!;
+      expect(first.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
+      expect(second.runHooks).not.toHaveBeenCalledWith('SessionStart', expect.anything());
+      expect(second.runHooks).toHaveBeenCalledWith('UserPromptSubmit', expect.objectContaining({ prompt: '继续任务' }));
+      await newSession({});
+      await mainMocks.handlers.get('desktop:set-permission-mode')!({}, 'full-access');
       mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
-        const turnId = `hook-turn-${index}`;
-        mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId });
-        mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId });
-        return { responseText: '完成', turnId, artifacts: [] };
+        mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId: 'hook-new-session' });
+        mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId: 'hook-new-session' });
+        return { responseText: '完成', turnId: 'hook-new-session', artifacts: [] };
       });
-      await expect(run({}, taskRequest('继续任务'))).resolves.toMatchObject({ status: 'success' });
-    }
-    const first = mainMocks.extensionRuntimes[count]!;
-    const second = mainMocks.extensionRuntimes[count + 1]!;
-    expect(first.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
-    expect(second.runHooks).not.toHaveBeenCalledWith('SessionStart', expect.anything());
-    expect(second.runHooks).toHaveBeenCalledWith('UserPromptSubmit', expect.objectContaining({ prompt: '继续任务' }));
-    await newSession({});
-    mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
-      mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId: 'hook-new-session' });
-      mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId: 'hook-new-session' });
-      return { responseText: '完成', turnId: 'hook-new-session', artifacts: [] };
-    });
-    await expect(run({}, taskRequest('新会话任务'))).resolves.toMatchObject({ status: 'success' });
-    expect(mainMocks.extensionRuntimes[count + 2]!.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
-    await newSession({});
+      await expect(run({}, taskRequest('新会话任务'))).resolves.toMatchObject({ status: 'success' });
+      expect(mainMocks.extensionRuntimes[count + 2]!.runHooks).toHaveBeenCalledWith('SessionStart', expect.objectContaining({ source: 'startup' }));
+      await newSession({});
+    } finally { files.mockRestore(); }
   });
 
   it('keeps memory writes unavailable for the entire verification turn after its unknown effect is resolved', async () => {

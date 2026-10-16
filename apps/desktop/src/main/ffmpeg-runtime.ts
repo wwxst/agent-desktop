@@ -23,7 +23,7 @@ async function digest(path: string): Promise<string> {
 }
 
 /** 只用于受控 FFmpeg 内置资源，复用安装暂存和版本目录，不建立通用资产平台。 */
-export async function installFFmpegRuntime(staging: string, archiveDirectory: string): Promise<void> {
+export async function installFFmpegRuntime(staging: string, archiveDirectory: string, bundledArchive?: string): Promise<void> {
   const lock = JSON.parse(await readFile(join(staging, 'runtime.lock.json'), 'utf8')) as RuntimeLock;
   if (lock.platform !== 'win32' || lock.arch !== 'x64' || platform() !== lock.platform || arch() !== lock.arch) throw new Error('FFmpeg 正式插件目前仅支持 Windows x64。');
   if (!/^\d+\.\d+\.\d+$/.test(lock.version) || !/^[a-z0-9._-]+$/i.test(lock.archiveRoot)
@@ -33,10 +33,16 @@ export async function installFFmpegRuntime(staging: string, archiveDirectory: st
   let installed = false;
   try { installed = (await stat(runtime)).isDirectory(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   if (!installed) {
-    await mkdir(archiveDirectory, { recursive: true });
-    const archive = join(archiveDirectory, `${lock.sha256}.zip`);
+    const archive = bundledArchive ?? join(archiveDirectory, `${lock.sha256}.zip`);
+    // 首次默认安装只读取随包资源；缺失或损坏必须失败，不能转为联网下载。
     let cached = false;
-    try { cached = await digest(archive) === lock.sha256; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (bundledArchive !== undefined) {
+      if (await digest(archive) !== lock.sha256) throw new Error('随包 FFmpeg 运行资源的 SHA-256 校验失败。');
+      cached = true;
+    } else {
+      await mkdir(archiveDirectory, { recursive: true });
+      try { cached = await digest(archive) === lock.sha256; } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
     if (!cached) {
       const partial = `${archive}.partial`;
       try {

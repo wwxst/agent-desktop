@@ -35,7 +35,8 @@ test('persists real Desktop extension installation and enabled state across rest
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.DESKTOP_RENDERER_URL;
   delete env.ELECTRON_RUN_AS_NODE;
-  const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+  // 外网代理不可连接；默认能力及后续安装均须使用随包资源，本地模型夹具仍走回环地址。
+  const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`, '--proxy-server=http://127.0.0.1:9'], cwd: resolve(root, 'apps/desktop'), env });
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   try {
     app = await launch();
@@ -43,11 +44,20 @@ test('persists real Desktop extension installation and enabled state across rest
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('保留的草稿');
     await page.getByRole('button', { name: '插件和技能', exact: true }).click();
     await expect(page.getByRole('tab', { name: '公开', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('button', { name: '安装 语义视频剪辑' })).toBeVisible();
     const initial = await page.evaluate(() => window.agentDesktop.extensions.list());
-    expect(initial.plugins.map(item => item.id)).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision']);
+    expect(initial.plugins.map(item => item.id).sort()).toEqual(['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision'].sort());
+    const defaults = process.platform === 'win32' && process.arch === 'x64' ? initial.plugins : initial.plugins.filter(item => item.id === 'plugin:video-editing' || item.id === 'plugin:vision');
+    expect(defaults.every(item => item.installed && item.enabled)).toBe(true);
+    if (process.platform === 'win32' && process.arch === 'x64') expect(initial.whisperModel?.status).toBe('ready');
     expect(initial.marketplaces).toEqual([]);
     await page.screenshot({ path: resolve(evidence, 'desktop-default-plugins.png') });
+    await expect(app.evaluate(async ({ net }) => { await net.fetch('https://huggingface.co'); })).rejects.toThrow();
+    // 安装交互使用明确卸载后的场景；默认初始化的断言已在上面完成。
+    await page.evaluate(async () => {
+      await window.agentDesktop.extensions.uninstall('plugin:video-editing');
+      for (const plugin of (await window.agentDesktop.extensions.list()).plugins.filter(item => item.installed && item.enabled)) await window.agentDesktop.extensions.setEnabled(plugin.id, false);
+    });
+    await expect(page.getByRole('button', { name: '安装 语义视频剪辑' })).toBeVisible();
     await page.getByRole('button', { name: '安装 语义视频剪辑' }).click();
     await expect(page.getByRole('button', { name: '语义视频剪辑操作', exact: true })).toBeVisible();
     await expect(page.getByRole('status')).toContainText('语义视频剪辑 插件已安装');

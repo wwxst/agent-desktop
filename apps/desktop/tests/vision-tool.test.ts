@@ -44,10 +44,11 @@ describe('Vision host adapter', () => {
     const item = { description: '', kind: 'plugin' as const, enabled: true, installed: true };
     const vision: PluginFiles = { name: 'vision', directory: root, skills: [], item: { ...item, id: 'plugin:vision', name: 'Vision', source: 'builtin' }, servers: [{ name: 'vision', command: 'node', args: [failed] }] };
     const other: PluginFiles = { name: 'echo', directory: root, skills: [], item: { ...item, id: 'plugin:echo', name: 'Echo', source: 'local' }, servers: [{ name: 'echo', command: 'node', args: [echo] }] };
+    const image = join(root, 'frame.png'); await writeFile(image, 'image');
     const runtime = await prepareExtensions({ plugins: [vision, other], skills: [] }, async () => true, undefined, undefined, { visionConfiguration: { visionApiKey: 'fixture', visionBaseUrl: 'https://vision.example/v1', visionProtocol: 'responses' }, visionAccess: accessFor(root) });
     try {
-      expect(runtime.tools.some(tool => tool.name === 'analyze_images')).toBe(false);
-      expect(runtime.instructions).toContain('Vision 连接失败');
+      const analyze = runtime.tools.find(tool => tool.name === 'analyze_images')!;
+      expect(await analyze.execute({ images: [{ path: image, timestamp: 0 }] }, context)).toMatchObject({ status: 'error', failureKind: 'permanent', message: expect.stringContaining('Vision 连接失败') });
       expect(await runtime.tools.find(tool => tool.name === 'p_echo_echo_echo')!.execute({ text: 'ordinary capability' }, context)).toMatchObject({ status: 'success' });
     } finally { await runtime.close(); }
   });
@@ -88,7 +89,10 @@ describe('Vision host adapter', () => {
     const input = { images: [{ path: image, timestamp: 0 }] };
     try {
       const denied = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => false, undefined, undefined, options);
-      try { expect(denied.tools).toEqual([]); } finally { await denied.close(); }
+      try {
+        expect(await denied.tools[0]!.execute(input, context)).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' });
+        expect(started).toBe(false);
+      } finally { await denied.close(); }
       const rejected = await prepareExtensions({ plugins: [plugin], skills: [] }, async request => request.kind === 'plugin-start', undefined, undefined, options);
       try { expect(await rejected.tools[0]!.execute(input, context)).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' }); expect(started).toBe(false); }
       finally { await rejected.close(); }

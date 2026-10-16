@@ -85,7 +85,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
         next = { name: 'report_semantic_checks', input: { checks: facts.requirements.map(item => ({ requirementId: item.id, outcome: 'passed', detail: '本地协议夹具按完整帧观察返回结构化判定。' })) } };
       } else if (scenario !== undefined && tools.length > 0) {
         records.push({ scenario, tools, invokedTools, results });
-        const disabled = ['missing', 'missing-model', 'missing-key', 'disabled', 'uninstalled', 'restart-disabled', 'denied-start'].includes(scenario);
+        const disabled = ['missing', 'missing-model', 'missing-key', 'disabled', 'uninstalled', 'restart-disabled'].includes(scenario);
         if (!disabled) {
           const sequence: { name: string; input: object }[] = [{ name: 'set_working_directory', input: { path: workspace } },
             { name: 'analyze_images', input: { images: [{ path: scenario === 'unauthorized' ? unselected : image, timestamp: 1.25 }] } }];
@@ -121,7 +121,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
   for (const key of ['ELECTRON_RUN_AS_NODE', 'DESKTOP_RENDERER_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'FFMPEG_PATH', 'FFPROBE_PATH', 'WHISPER_CLI_PATH', 'WHISPER_MODEL_PATH']) delete env[key];
   env.PATH = `${process.env.SystemRoot}/System32;${process.env.SystemRoot}`;
   const executablePath = executable ?? createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
-  const launch = () => _electron.launch({ executablePath, args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+  const launch = () => _electron.launch({ executablePath, args: [...(executable ? [] : ['.']), `--user-data-dir=${profile}`, '--proxy-server=http://127.0.0.1:9'], cwd: resolve(root, 'apps/desktop'), env });
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   let page: Awaited<ReturnType<NonNullable<typeof app>['firstWindow']>>;
   const observeApprovals = () => page.evaluate(() => {
@@ -211,7 +211,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'deny'; });
     expect((await run('denied')).results[1]).toContain('用户拒绝'); expect(uploads).toHaveLength(uploadCount);
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'deny-start'; });
-    expect((await run('denied-start')).tools).not.toContain('analyze_images'); expect(uploads).toHaveLength(uploadCount);
+    expect((await run('denied-start')).results[1]).toContain('用户拒绝了插件服务启动'); expect(uploads).toHaveLength(uploadCount);
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'allow'; });
     networkMode = 'malformed'; expect((await run('malformed')).results[1]).toContain('逐图片 frames'); networkMode = 'normal';
     networkMode = 'hold'; await start('cancel');

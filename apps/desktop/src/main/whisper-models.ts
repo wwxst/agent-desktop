@@ -14,7 +14,7 @@ type ModelStatus = NonNullable<ExtensionSnapshot['whisperModel']>;
 export class WhisperModels {
   private operation: ModelStatus | undefined;
   private verified: { signature: string; path: string } | undefined;
-  constructor(private readonly directory: string, private readonly lockPath: string, private readonly changed: () => void) {}
+  constructor(private readonly directory: string, private readonly lockPath: string, private readonly changed: () => void, private readonly bundledModel?: string) {}
 
   private async lock(): Promise<ModelLock> {
     const lock = JSON.parse(await readFile(this.lockPath, 'utf8')) as ModelLock;
@@ -74,6 +74,8 @@ export class WhisperModels {
     return this.validatedPath(lock);
   }
   async install(source?: string): Promise<void> {
+    // 正式客户端恢复默认模型时复用随包文件；用户导入仍使用明确选择的来源。
+    source ??= this.bundledModel;
     const lock = await this.lock();
     await this.checkDirectory();
     await mkdir(this.directory, { recursive: true });
