@@ -10,6 +10,7 @@ import type {
   AgentTaskOutputItemResult,
   AgentTaskResult,
   ClientConversation,
+  ConversationContextUsage,
   ClientConversationMessage,
   ClientStateSnapshot,
   ClientSidebarState,
@@ -850,6 +851,21 @@ export function parsePermissionMode(value: unknown, field = 'permissionMode'): P
   return value;
 }
 
+/** 用量是可恢复的展示副本，只读取模型身份和本次请求的真实计数。 */
+function readContextUsage(value: unknown, field: string): ConversationContextUsage {
+  if (!isRecord(value) || !isRecord(value.model)) invalid(field);
+  const inputTokens = value.inputTokens;
+  const outputTokens = value.outputTokens;
+  if (typeof inputTokens !== 'number' || !Number.isSafeInteger(inputTokens) || inputTokens < 0) invalid(`${field}.inputTokens`);
+  if (typeof outputTokens !== 'number' || !Number.isSafeInteger(outputTokens) || outputTokens < 0) invalid(`${field}.outputTokens`);
+  return {
+    model: { providerId: readString(value.model.providerId, `${field}.model.providerId`),
+      modelId: readString(value.model.modelId, `${field}.model.modelId`) },
+    inputTokens,
+    outputTokens,
+  };
+}
+
 function readClientConversation(
   value: unknown,
   field: string,
@@ -882,6 +898,7 @@ function readClientConversation(
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
     ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
+    ...(value.contextUsage === undefined ? {} : { contextUsage: readContextUsage(value.contextUsage, `${field}.contextUsage`) }),
     ...(workingDirectory === undefined ? {} : { workingDirectory }),
     ...(value.permissionMode === undefined ? {} : { permissionMode: parsePermissionMode(value.permissionMode, `${field}.permissionMode`) }),
   };

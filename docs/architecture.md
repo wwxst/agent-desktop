@@ -417,6 +417,8 @@ Model（模型）只表达模型交互的通用能力。其输出至少能够表
 
 Model Request（模型请求）可以携带可选的文本增量回调。Provider 在流式响应中把 assistant text 增量实时上报给该回调，但回调只服务实时展示：Model 仍然返回完整 Model Response，Session 仍然只追加完整 `assistant.message`，任何 token 或增量都不会成为 Session 事实。
 
+Model Response（模型响应）的可选 `usage` 只承载供应商实际返回的输入、输出 token 计数。Chat Completions（聊天补全协议）请求包含用量的流式尾帧；Responses（响应协议）读取完成响应中的用量。Agent Loop（智能体循环）仅在主模型请求完整成功后通过 `onModelUsage` 上报，缺失用量也会上报未知；上下文摘要、标题、独立审批和子代理请求不混入主请求用量。Desktop（桌面宿主）附上本轮固定的模型身份，经现有运行期事件更新各聊天的 `contextUsage` 展示副本，并随客户端快照保存和恢复，不进入 Session（会话事实）、诊断 Trace（执行追踪）或推理上下文。它表示最近一次请求的输入与输出之和，不跨请求累计；容量取所选模型明确配置的 `contextWindow`，切换模型后不复用其他模型的计数，缺失容量或用量不以估算代替。
+
 ### Session
 
 ```text

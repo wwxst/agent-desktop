@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Agent } from '@agent-desktop/agent';
 import { ModelRequestError } from '@agent-desktop/model';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { ModelResponse, ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
+import type { ModelResponse, ModelToolDefinition, ModelUsage, ToolCall, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, TurnCancellationError, projectTurnState,
   type ExecutionBoundary, type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type ToolCalledEvent, type TurnId } from '@agent-desktop/session';
 import { ToolExecutionError, type Tool, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
@@ -234,6 +234,8 @@ export interface RunTurnOptions {
   readonly onToolResult?: ToolResultListener;
   readonly onToolProgress?: ToolProgressListener;
   readonly onModelText?: (stepId: StepId, text: string, purpose: 'delta' | 'commentary' | 'final') => void;
+  /** 只报告正式模型步骤的实际用量；缺失也通知宿主，避免把旧值当成本次结果。 */
+  readonly onModelUsage?: (usage: ModelUsage | undefined) => void;
   /** 当前只读子任务的真实预算；父任务不默认设置上限。 */
   readonly maxSteps?: number;
   /** 包含门禁拦截的调用尝试；只在明确的恢复轮次设置。 */
@@ -360,6 +362,9 @@ export async function runStartedTurn(
         });
         throw error;
       }
+
+      // 摘要请求由 prepareModelContext 内部执行，不进入正式步骤的用量通道。
+      options.onModelUsage?.(response.usage);
 
       await trace?.({
         type: 'model.completed',

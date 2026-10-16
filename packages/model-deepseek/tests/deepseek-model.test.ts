@@ -104,13 +104,14 @@ describe('DeepSeekModel', () => {
 
   it('requests an SSE stream and maps a Core request and plain text response', async () => {
     const fetchMock = stubResponse(streamResponse([
-      sseBody([choiceEvent({ role: 'assistant', content: 'Hello from DeepSeek.' }), choiceEvent({}, 'stop'), '[DONE]']),
+      sseBody([choiceEvent({ role: 'assistant', content: 'Hello from DeepSeek.' }), choiceEvent({}, 'stop'),
+        JSON.stringify({ choices: [], usage: { prompt_tokens: 52, completion_tokens: 8 } }), '[DONE]']),
     ]));
     const model = new DeepSeekModel({ apiKey: 'test-key' });
 
     const response = await model.complete(baseRequest);
 
-    expect(response).toEqual({ text: 'Hello from DeepSeek.', toolCalls: [] });
+    expect(response).toEqual({ text: 'Hello from DeepSeek.', toolCalls: [], usage: { inputTokens: 52, outputTokens: 8 } });
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.deepseek.com/chat/completions',
       expect.objectContaining({
@@ -130,6 +131,7 @@ describe('DeepSeekModel', () => {
       tools: [],
       thinking: { type: 'disabled' },
       stream: true,
+      stream_options: { include_usage: true },
     });
   });
 

@@ -70,6 +70,7 @@ function clientState(): ClientStateSnapshot {
         attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
         workingDirectory: 'D:\\videos',
         permissionMode: 'auto-review',
+        contextUsage: { model: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' }, inputTokens: 116000, outputTokens: 100 },
         messages: [
           {
             id: 1,

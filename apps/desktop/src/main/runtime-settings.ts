@@ -17,6 +17,7 @@ interface PersistedRuntimeSettings {
 }
 interface PersistedRuntimeSecrets { readonly providerApiKeys?: Readonly<Record<string, string>> }
 export interface RuntimeConfiguration {
+  readonly conversationModel: RuntimeModelReference;
   readonly deepSeekApiKey?: string;
   readonly deepSeekBaseUrl?: string;
   readonly deepSeekModel?: string;
@@ -161,16 +162,19 @@ function decrypt(value: string | undefined, storage: SafeStoragePort): string | 
   if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法读取 API 密钥。');
   return storage.decryptString(Buffer.from(value, 'base64'));
 }
-/** 环境变量更换默认端点后，未经确认的图片能力保持未知。 */
-function inheritedProviderCapabilities(provider: ProviderConfig): ProviderConfig {
-  return usesDefaultModelEndpoint(provider) ? provider : { ...provider, models: provider.models.map(model => ({ ...model,
-    capabilities: { ...model.capabilities, imageInput: 'unknown', imageUnderstanding: 'unknown' } })) };
+/** 官方容量和图片能力仅适用于官方端点；环境变量改为中转地址后不继承这些事实。 */
+function inheritedProviderMetadata(provider: ProviderConfig): ProviderConfig {
+  return usesDefaultModelEndpoint(provider) ? provider : { ...provider, models: provider.models.map(model => {
+    const { contextWindow: _window, maxOutputTokens: _output, ...definition } = model;
+    return { ...definition, capabilities: { ...model.capabilities, imageInput: 'unknown', imageUnderstanding: 'unknown' } };
+  }) };
 }
 function providerConfigs(saved: PersistedRuntimeSettings, environment: RuntimeEnvironment): readonly ProviderConfig[] {
   if (saved.modelProviders !== undefined) return saved.modelProviders;
-  return DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...provider }) => inheritedProviderCapabilities({ ...provider,
+  return DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...provider }) => inheritedProviderMetadata({ ...provider,
     baseUrl: envValue(environment, provider.id === 'deepseek' ? 'DEEPSEEK_BASE_URL' : 'OPENAI_BASE_URL') ?? provider.baseUrl,
-    models: provider.id === 'deepseek' && envValue(environment, 'DEEPSEEK_MODEL') ? [{ id: environment.DEEPSEEK_MODEL!.trim(), displayName: environment.DEEPSEEK_MODEL!.trim(), capabilities: provider.models.find(model => model.id === environment.DEEPSEEK_MODEL!.trim())?.capabilities ?? { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported' } }] : provider.models }));
+    models: provider.id === 'deepseek' && envValue(environment, 'DEEPSEEK_MODEL') ? [provider.models.find(model => model.id === environment.DEEPSEEK_MODEL!.trim())
+      ?? { id: environment.DEEPSEEK_MODEL!.trim(), displayName: environment.DEEPSEEK_MODEL!.trim(), capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported' } }] : provider.models }));
 }
 function selections(saved: PersistedRuntimeSettings, providers: readonly ProviderConfig[]) {
   return { conversationModel: saved.conversationModel ?? { providerId: 'deepseek', modelId: providers.find(item => item.id === 'deepseek')!.models[0]!.id },
@@ -203,7 +207,8 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
   const route = resolveVisionModel({ ...choice, modelProviders: providers.map(provider => ({ ...provider, apiKey: { configured: keyFor(provider.id) !== undefined } })) });
   const vision = route.available ? route : undefined;
   const visionKey = vision === undefined ? undefined : keyFor(vision.provider.id);
-  return { ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
+  return { conversationModel: choice.conversationModel,
+    ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
     deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
     useDeepSeekThinking: new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com',
     ...(conversation.model.contextWindow === undefined ? {} : { modelContextWindow: conversation.model.contextWindow }),

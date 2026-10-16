@@ -251,7 +251,7 @@ describe('runTurn', () => {
         requests.push(request);
         request.onTextDelta?.('step');
         return requests.length === 1
-          ? { text: 'calling', toolCalls: [{ id: callId, name: 'echo', input: 'x' }] }
+          ? { text: 'calling', toolCalls: [{ id: callId, name: 'echo', input: 'x' }], usage: { inputTokens: 35, outputTokens: 9 } }
           : { text: 'final', toolCalls: [] };
       },
     };
@@ -264,17 +264,19 @@ describe('runTurn', () => {
     });
     const deltas: string[] = [];
     const onTextDelta = (delta: string) => deltas.push(delta);
+    const usage: ModelResponse['usage'][] = [];
 
     await runTurn(
       createTestAgent(model, new InMemorySession(), tools),
       'use echo',
-      { onTextDelta },
+      { onTextDelta, onModelUsage: value => usage.push(value) },
     );
 
     expect(requests).toHaveLength(2);
     expect(requests[0]?.onTextDelta).toBe(onTextDelta);
     expect(requests[1]?.onTextDelta).toBe(onTextDelta);
     expect(deltas).toEqual(['step', 'step']);
+    expect(usage).toEqual([{ inputTokens: 35, outputTokens: 9 }, undefined]);
   });
 
   it('reports each Tool Result only after it has been appended to Session', async () => {

@@ -69,10 +69,18 @@ export interface ModelRequest {
   readonly onTextDelta?: (delta: string) => void;
 }
 
+/** 供应商返回的单次请求用量；输入包含本次实际发送的历史，不是跨请求累计值。 */
+export interface ModelUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
 /** 完整模型响应；文本和工具调用允许同时出现，Agent Loop 必须完整记录两者。 */
 export interface ModelResponse {
   readonly text?: string;
   readonly toolCalls: readonly ToolCall[];
+  /** 仅保留供应商实际报告的用量；缺失时不以字符或字节估算补齐。 */
+  readonly usage?: ModelUsage;
 }
 
 /** 模型供应商边界，核心层只依赖 complete 契约，不接触任何厂商 SDK。 */

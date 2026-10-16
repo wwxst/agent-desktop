@@ -2175,6 +2175,12 @@ input:focus-visible {
 .composer-permission-scope { margin: 5px 8px 3px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; line-height: 17px; }
 
 /* 右下角模型文字与发送按钮共用操作区；原生顶层浮层不受输入框裁剪。 */
+.composer-model-group { display: flex; align-items: center; min-width: 0; }
+.composer-context-usage { display: grid; flex: 0 0 22px; place-items: center; height: 28px; border-radius: 5px; color: var(--text-secondary); cursor: default; }
+.composer-context-usage:focus-visible { outline: 1px solid var(--text-muted); outline-offset: 1px; }
+.composer-context-track { opacity: .28; }
+.composer-context-tooltip { position: fixed; inset: auto; width: max-content; max-width: calc(100vw - 24px); margin: 7px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); background: var(--surface); box-shadow: 0 4px 16px rgb(0 0 0 / 12%); font-size: 11px; line-height: 17px; text-align: center; position-area: top; position-try-fallbacks: flip-block, top span-left, top span-right; }
+.composer-context-tooltip small { display: block; color: var(--text-muted); font-size: 10px; }
 .composer-model-picker { min-width: 0; }
 .composer-model-trigger { display: flex; align-items: center; gap: 5px; max-width: min(210px, 100%); min-height: 30px; padding: 4px 6px; border: 0; border-radius: 7px; color: var(--text-secondary); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
 .composer-model-trigger span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

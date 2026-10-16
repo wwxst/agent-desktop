@@ -4,6 +4,7 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelToolDefinition,
+  ModelUsage,
   ToolCall,
   ToolCallId,
 } from '@agent-desktop/model';
@@ -37,6 +38,18 @@ function responseRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/** 两种协议只转换当前展示所需的真实用量，流中常见的 null 表示尚未提供。 */
+function readUsage(value: unknown, inputField: 'prompt_tokens' | 'input_tokens', outputField: 'completion_tokens' | 'output_tokens'): ModelUsage | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!responseRecord(value)) throw new Error('模型用量必须是对象。');
+  const inputTokens = value[inputField]; const outputTokens = value[outputField];
+  if (typeof inputTokens !== 'number' || !Number.isSafeInteger(inputTokens) || inputTokens < 0
+    || typeof outputTokens !== 'number' || !Number.isSafeInteger(outputTokens) || outputTokens < 0) {
+    throw new Error('模型输入和输出用量必须是非负整数。');
+  }
+  return { inputTokens, outputTokens };
+}
+
 function responseResult(value: unknown): ModelResponse {
   if (!responseRecord(value) || value.status !== 'completed' || !Array.isArray(value.output)) throw new Error('Responses API 未返回完整结果。');
   let text = ''; const toolCalls: ToolCall[] = [];
@@ -56,7 +69,8 @@ function responseResult(value: unknown): ModelResponse {
       toolCalls.push({ id: item.call_id as ToolCallId, name: item.name, input: JSON.parse(item.arguments) as unknown });
     }
   }
-  return text ? { text, toolCalls } : { toolCalls };
+  const usage = readUsage(value.usage, 'input_tokens', 'output_tokens');
+  return { ...(text ? { text } : {}), toolCalls, ...(usage === undefined ? {} : { usage }) };
 }
 
 /** Responses 的会话输入由供应商边界转换；Core 继续只保存完整文本和工具事实。 */
@@ -370,7 +384,7 @@ function isSuccessfulFinishReason(finishReason: string): boolean {
 /**
  * 读取 SSE 流并拼装完整 Model Response。
  * 文本增量只通过 onTextDelta 实时上报；返回值始终是完整响应，
- * 因此 Session 仍然只记录完整 assistant 事实，不记录任何 token。
+ * 用量来自供应商的独立尾帧，随完整响应返回，不把正文增量当成 token 计数。
  * 只有收到 [DONE] 且终止原因是 stop 或 tool_calls 时，才认为响应完整。
  */
 async function readStreamedResponse(
@@ -384,6 +398,7 @@ async function readStreamedResponse(
   let receivedChoicesChunk = false;
   let receivedDone = false;
   let receivedFinishReason: string | undefined;
+  let usage: ModelUsage | undefined;
   let buffer = '';
 
   while (!receivedDone) {
@@ -409,6 +424,11 @@ async function readStreamedResponse(
         break;
       }
 
+      // include_usage 的尾帧可以是空 choices，必须先读取用量再判断正文分片。
+      if (isRecord(event.value)) {
+        const reportedUsage = readUsage(event.value.usage, 'prompt_tokens', 'completion_tokens');
+        if (reportedUsage !== undefined) usage = reportedUsage;
+      }
       const choice = readStreamChoice(event.value);
       if (choice === undefined) continue;
       receivedChoicesChunk = true;
@@ -467,7 +487,7 @@ async function readStreamedResponse(
     });
 
   // exactOptionalPropertyTypes 要求无文本时省略 text，而不是写入 text: undefined。
-  return text.length === 0 ? { toolCalls } : { text, toolCalls };
+  return { ...(text.length === 0 ? {} : { text }), toolCalls, ...(usage === undefined ? {} : { usage }) };
 }
 
 /**
@@ -508,6 +528,8 @@ export class DeepSeekModel implements Model {
         ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
         // 始终使用 SSE 流式响应，让文本增量能在 Turn 执行期间实时展示。
         stream: true,
+        // 请求协议原生的最终用量；未返回时保持未知，不从文本长度推算。
+        stream_options: { include_usage: true },
       }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     }).catch((error: unknown) => { throw classifyConnectionError(error, false); });

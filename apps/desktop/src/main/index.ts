@@ -1160,6 +1160,9 @@ function registerIpcHandlers(): void {
           onModelText: (stepId, text, purpose) => sendAgentEvent(purpose === 'delta'
             ? { type: 'text.delta', stepId, delta: text }
             : { type: 'model.text', stepId, text, purpose }),
+          // 固定本轮实际模型身份，设置中途切换也不会把旧请求用量归给新模型。
+          onModelUsage: usage => sendAgentEvent({ type: 'model.usage', sessionId,
+            usage: usage === undefined ? null : { model: settings.conversationModel, ...usage } }),
           onToolResult: (toolCallId, toolName, toolResult) => {
             sendTaskState(sessionId);
             // 先结清实时输出再发布最终详情：最终详情是权威结果，不能被迟到的进度覆盖。
