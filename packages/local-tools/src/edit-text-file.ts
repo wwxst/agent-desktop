@@ -9,8 +9,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function errorResult(message: string): ToolResult {
-  return { status: 'error', message };
+function errorResult(message: string, failureKind: 'permanent' | 'denied' = 'permanent'): ToolResult {
+  return { status: 'error', message, failureKind };
 }
 
 function isAborted(signal: AbortSignal | undefined): boolean {
@@ -55,6 +55,7 @@ async function readTextSnapshot(filePath: string): Promise<TextSnapshot> {
  * 从读取完成到批准执行期间的外部修改都不会被覆盖。
  */
 export class EditTextFileTool implements Tool {
+  readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'edit_text_file';
   readonly description = '先用 read_file 读取已有文本，再在当前工作目录内精确替换唯一匹配内容；写入前需要用户确认';
   readonly inputSchema = {
@@ -71,7 +72,8 @@ export class EditTextFileTool implements Tool {
 
   public constructor(private readonly workspace: WorkspacePort) {}
 
-  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+  async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    const { signal } = context;
     if (!isRecord(input)) return errorResult('edit_text_file requires an object input');
     const { filePath, expectedSha256, oldText, newText } = input;
     if (typeof filePath !== 'string' || filePath.length === 0) {
@@ -113,7 +115,7 @@ export class EditTextFileTool implements Tool {
       after: newText,
     }, signal);
     if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-    if (!approved) return errorResult(`用户拒绝修改该文件，未做任何写入：${scoped.path}`);
+    if (!approved) return errorResult(`用户拒绝修改该文件，未做任何写入：${scoped.path}`, 'denied');
 
     const current = await readTextSnapshot(scoped.path);
     if (!current.ok || !current.bytes.equals(snapshot.bytes)) {
@@ -123,6 +125,8 @@ export class EditTextFileTool implements Tool {
     if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
 
     try {
+      context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: snapshot.sha256,
+        expectedAfterSha256: createHash('sha256').update(updated, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(updated, 'utf8') });
       await writeFile(scoped.path, updated, 'utf8');
     } catch (error) {
       if (!(error instanceof Error)) throw error;

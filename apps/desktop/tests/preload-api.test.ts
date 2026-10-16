@@ -1,7 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDesktopApi } from '../src/preload/api.js';
+import type { AgentTaskStartRequest } from '@agent-desktop/client';
+
+const taskRequest = (prompt: string): AgentTaskStartRequest => ({ sessionId: 'session-a', prompt,
+  userMessageId: 1, assistantMessageId: 2, clientState: { activeSessionId: 'session-a', drafts: [], conversations: [{
+    id: 'session-a', title: prompt, titleManuallyRenamed: false, prompt, attachments: [], messages: [
+      { id: 1, role: 'user', text: prompt, attachments: [] },
+      { id: 2, role: 'assistant', status: 'processing', streamedText: '', activity: [], activityExpanded: true },
+    ],
+  }] } });
 
 describe('createDesktopApi', () => {
+  it('forwards one start snapshot for recovery and the explicit manual verification description', async () => {
+    const invoke = vi.fn(async () => ({ status: 'success', result: { responseText: 'continued', traceId: 'trace-recovery' } }));
+    const api = createDesktopApi({ invoke, send: () => {}, on: () => {}, removeListener: () => {} });
+    const request = taskRequest('继续未完成任务');
+    await api.recoverTask!(request, 'source-turn');
+    await api.recoverTask!(taskRequest('核验未确定的外部效果'), 'source-turn', 'verify');
+    await api.verifyTaskEffect!('session-a', 9, 'not-applied', '已检查旧进程已结束，目标文件未写入。');
+    expect(invoke.mock.calls).toEqual([
+      ['desktop:recover-task', { ...request, sourceTurnId: 'source-turn', mode: 'continue' }],
+      ['desktop:recover-task', { ...taskRequest('核验未确定的外部效果'), sourceTurnId: 'source-turn', mode: 'verify' }],
+      ['desktop:verify-task-effect', { sessionId: 'session-a', sourceEventIndex: 9, outcome: 'not-applied', description: '已检查旧进程已结束，目标文件未写入。' }],
+    ]);
+  });
   it('forwards update state, direct installation, retry and subscription cleanup', async () => {
     const invoke = vi.fn(async () => ({ status: 'ready' }));
     const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
@@ -92,6 +114,7 @@ describe('createDesktopApi', () => {
       'onPrepareClose',
       'openModelConfig',
       'openProjectDirectory',
+      'recoverTask',
       'removeAttachment',
       'resizeTerminal',
       'revealFile',
@@ -102,6 +125,7 @@ describe('createDesktopApi', () => {
       'selectAttachmentFiles',
       'selectProjectDirectory',
       'switchSession',
+      'verifyTaskEffect',
     ]);
 
     await api.getActiveSessionId();
@@ -116,7 +140,7 @@ describe('createDesktopApi', () => {
     await api.newSession();
     await api.switchSession('session-2');
     await api.deleteSession('session-2');
-    await api.runAgentTask('保留核心内容');
+    await api.runAgentTask(taskRequest('保留核心内容'));
     await api.cancelTask();
     // 审批只传请求标识和决定：待执行的操作参数不经过渲染层。
     await api.decideApproval('request-1', true);
@@ -134,7 +158,7 @@ describe('createDesktopApi', () => {
       { channel: 'desktop:new-session', args: [] },
       { channel: 'desktop:switch-session', args: ['session-2'] },
       { channel: 'desktop:delete-session', args: ['session-2'] },
-      { channel: 'desktop:run-agent-task', args: ['保留核心内容'] },
+      { channel: 'desktop:run-agent-task', args: [taskRequest('保留核心内容')] },
       { channel: 'desktop:cancel-task', args: [] },
       { channel: 'desktop:decide-approval', args: ['request-1', true] },
       { channel: 'desktop:reveal-file', args: ['D:\\videos\\step1.mp4'] },
@@ -145,9 +169,14 @@ describe('createDesktopApi', () => {
     const item = { id: 'call-1', kind: 'tool' as const, status: 'running' as const, toolName: 'probe_media' };
     listeners.get('desktop:agent-event')?.({}, { type: 'activity', item });
     listeners.get('desktop:agent-event')?.({}, { type: 'text.delta', delta: '实时增量' });
+    listeners.get('desktop:agent-event')?.({}, {
+      type: 'task.state', sessionId: 'session-a',
+      taskState: { rootTurnId: 'turn-1', latestTurnId: 'turn-1', status: 'started' },
+    });
     expect(events).toEqual([
       { type: 'activity', item },
       { type: 'text.delta', delta: '实时增量' },
+      { type: 'task.state', sessionId: 'session-a', taskState: { rootTurnId: 'turn-1', latestTurnId: 'turn-1', status: 'started' } },
     ]);
 
     unsubscribe();
@@ -166,7 +195,7 @@ describe('createDesktopApi', () => {
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toEqual(
+    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).rejects.toEqual(
       new Error('请先在设置中配置 DeepSeek API Key。'),
     );
   });
@@ -202,40 +231,33 @@ describe('createDesktopApi', () => {
     expect(invocations).toEqual([{ channel: 'desktop:reveal-file', args: ['D:\\videos\\done.mp4'] }]);
   });
 
-  it('preserves cancellation as AbortError across the IPC boundary', async () => {
+  it('passes cancellation as a plain result through both task entry points', async () => {
+    const result = { status: 'error', errorName: 'AbortError', errorMessage: '任务已取消。' } as const;
     const ipc = {
-      invoke: async () => {
-        throw new Error("Error invoking remote method 'desktop:run-agent-task': AbortError: This operation was aborted");
-      },
+      invoke: async () => result,
       send: () => undefined,
       on: () => undefined,
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toMatchObject({
-      name: 'AbortError', message: 'This operation was aborted',
-    });
+    const api = createDesktopApi(ipc);
+    await expect(api.runAgentTask(taskRequest('测试'))).resolves.toBe(result);
+    await expect(api.recoverTask!(taskRequest('继续'), 'source-turn')).resolves.toBe(result);
   });
 
-  it('reconstructs failed task output files from a structured IPC result', async () => {
+  it('passes failed task artifacts and task state without creating an Error before contextBridge', async () => {
     const outputFiles = [{ path: 'D:/videos/done.mp4', fileName: 'done.mp4' }];
+    const outputs = [{ outputItemId: 'done', status: 'published', ...outputFiles[0]! }] as const;
+    const taskState = { rootTurnId: 'turn-a', latestTurnId: 'turn-a', status: 'failed' } as const;
+    const result = { status: 'error', errorName: 'Error', errorMessage: '后续任务失败。', outputFiles, outputs, taskState } as const;
     const ipc = {
-      invoke: async () => ({
-        status: 'error',
-        errorName: 'AbortError',
-        errorMessage: 'This operation was aborted',
-        outputFiles,
-      }),
+      invoke: async () => result,
       send: () => undefined,
       on: () => undefined,
       removeListener: () => undefined,
     };
 
-    await expect(createDesktopApi(ipc).runAgentTask('测试')).rejects.toMatchObject({
-      name: 'AbortError',
-      message: 'This operation was aborted',
-      outputFiles,
-    });
+    await expect(createDesktopApi(ipc).runAgentTask(taskRequest('测试'))).resolves.toBe(result);
   });
 
   it('reports the close preparation result back to the Main process', async () => {

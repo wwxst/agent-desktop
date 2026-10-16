@@ -453,6 +453,7 @@ describe('desktop session persistence', () => {
       { role: 'user', content: '请记住数字 731。' },
       { role: 'assistant', content: '已经记住。', toolCalls: [] },
       { role: 'user', content: '被取消的剪辑任务' },
+      { role: 'user', content: expect.stringContaining('未知效果须先核验') },
       { role: 'user', content: '继续剪辑' },
     ]);
     // 新 Turn 只在完整历史之后追加事实。

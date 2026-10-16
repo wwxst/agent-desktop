@@ -1,5 +1,5 @@
 import type { ToolCallId } from '@agent-desktop/model';
-import type { SessionEvent, TurnId } from '@agent-desktop/session';
+import type { SessionEvent, ToolCalledEvent, ToolResultEvent, TurnId } from '@agent-desktop/session';
 
 /**
  * 视频交付模型：输出项、候选、候选验收与已交付文件。
@@ -288,6 +288,10 @@ function readVideoOutputFact(toolName: string | undefined, output: unknown): Vid
   return null;
 }
 
+/** 模型调用标识只在当前步骤内有意义，交付事实使用完整执行身份配对。 */
+export const videoToolCallKey = (event: ToolCalledEvent | ToolResultEvent): string =>
+  JSON.stringify([event.turnId, event.stepId, event.toolCallId]);
+
 /**
  * 从会话事实读出当前交付状态。
  *
@@ -298,7 +302,7 @@ export function readVideoDeliveryFacts(events: readonly SessionEvent[]): VideoDe
   // Trace 不复制工具内容，工具名必须从 Session 的 tool.called 事实里读。
   const toolNames = new Map<string, string>();
   for (const event of events) {
-    if (event.type === 'tool.called') toolNames.set(event.toolCallId, event.name);
+    if (event.type === 'tool.called') toolNames.set(videoToolCallKey(event), event.name);
   }
 
   let items: readonly OutputItem[] = [];
@@ -309,7 +313,7 @@ export function readVideoDeliveryFacts(events: readonly SessionEvent[]): VideoDe
 
   for (const event of events) {
     if (event.type !== 'tool.result' || event.result.status !== 'success') continue;
-    const fact = readVideoOutputFact(toolNames.get(event.toolCallId), event.result.output);
+    const fact = readVideoOutputFact(toolNames.get(videoToolCallKey(event)), event.result.output);
     if (fact === null) continue;
 
     switch (fact.kind) {

@@ -4,3 +4,7 @@ interface:
   default_prompt: 使用 $semantic-editing 根据我的内容要求剪辑视频并验收。
 policy:
   allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: mcp
+      value: ffmpeg

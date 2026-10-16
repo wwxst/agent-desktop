@@ -489,8 +489,10 @@ export class DeepSeekModel implements Model {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    // 摘要和正式请求各自使用本次额度；缺省时沿用实例配置，不修改后续请求的默认值。
+    const maxOutputTokens = request.maxOutputTokens ?? this.options.maxOutputTokens;
     if (this.options.protocol === 'responses') return completeResponses(request, { apiKey: this.apiKey, baseUrl: this.baseUrl,
-      model: this.model, ...(this.options.maxOutputTokens === undefined ? {} : { maxOutputTokens: this.options.maxOutputTokens }) });
+      model: this.model, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) });
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -503,7 +505,7 @@ export class DeepSeekModel implements Model {
         tools: request.tools.map(mapToolDefinition),
         // 第一版关闭 thinking，保持 Tool Call 往返与 MVP 行为一致。
         ...(this.options.disableThinking === false ? {} : { thinking: { type: 'disabled' } }),
-        ...(this.options.maxOutputTokens === undefined ? {} : { max_tokens: this.options.maxOutputTokens }),
+        ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
         // 始终使用 SSE 流式响应，让文本增量能在 Turn 执行期间实时展示。
         stream: true,
       }),

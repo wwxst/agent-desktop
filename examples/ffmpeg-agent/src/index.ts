@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { runTurn } from '@agent-desktop/agent-loop';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
+import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoFramesTool,
+  ExtractVideoRangeFramesTool, ExtractAudioTool, ExtractFullVideoFramesTool, TrimVideoTool, ConcatVideosTool,
+  AddAudioTool, AddSubtitlesTool, ResizeVideoTool, CropVideoTool, SetSpeedTool } from '@agent-desktop/video-ffmpeg';
+import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
+import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 import { type SessionEvent, type ToolResultEvent, type TurnId } from '@agent-desktop/session';
 import {
   createVideoAgent,
@@ -65,11 +70,15 @@ async function runCli(
 ): Promise<void> {
   const agent = createVideoAgent({
     deepSeekApiKey: apiKey,
-    whisperModelPath,
-    visionApiKey,
+    mediaTools: [new ProbeMediaTool(), new DecodeVideoTool(), new DetectBlackSegmentsTool(), new ExtractVideoFramesTool(),
+      new ExtractVideoRangeFramesTool(), new ExtractAudioTool(), new ExtractFullVideoFramesTool(), new TrimVideoTool(),
+      new ConcatVideosTool(), new AddAudioTool(), new AddSubtitlesTool(), new ResizeVideoTool(), new CropVideoTool(), new SetSpeedTool(),
+      new TranscribeAudioTool({ modelPath: whisperModelPath, ...(whisperCommand === undefined ? {} : { command: whisperCommand }) })],
+    ...(visionApiKey ? { visionTool: new AnalyzeImagesTool({
+      apiKey: visionApiKey,
+      ...(visionBaseUrl === undefined ? {} : { baseUrl: visionBaseUrl }),
+    }) } : {}),
     ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
-    ...(whisperCommand === undefined ? {} : { whisperCliPath: whisperCommand }),
-    ...(visionBaseUrl === undefined ? {} : { visionBaseUrl }),
   });
   const terminal = createInterface({ input, output });
 

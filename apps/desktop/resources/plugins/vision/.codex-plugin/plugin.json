@@ -1,0 +1,13 @@
+{
+  "name": "vision",
+  "version": "1.0.0",
+  "description": "独立图片及视频帧视觉观察，使用用户配置的 OpenAI 兼容 API。",
+  "interface": {
+    "displayName": "Vision",
+    "longDescription": "分析一至六张已授权 JPG/PNG 并返回结构化观察；调用前审批会说明图片外传的服务地址。请配置支持图片的当前对话模型及密钥，必要时在模型设置启用备用视觉模型。",
+    "developerName": "Agent Desktop",
+    "category": "Productivity",
+    "capabilities": ["Image analysis"]
+  },
+  "mcpServers": "./.mcp.json"
+}

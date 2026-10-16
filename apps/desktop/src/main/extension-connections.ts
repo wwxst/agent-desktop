@@ -3,28 +3,29 @@ import { randomUUID } from 'node:crypto';
 import { auth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
+import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 
-interface SecretStorage { isEncryptionAvailable(): boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string }
 interface Credentials { readonly values?: Readonly<Record<string, string>>; readonly client?: OAuthClientInformationMixed; readonly tokens?: OAuthTokens }
 
 /** 凭据只存在主进程和操作系统加密存储中；Renderer 只收到配置/连接状态。 */
 export class ExtensionConnections {
   private readonly pending = new Map<string, AbortController>();
-  constructor(private readonly database: string, private readonly storage: SecretStorage, private readonly openUrl: (url: string) => Promise<unknown>) {}
+  constructor(private readonly database: string, private readonly storage: SafeStoragePort, private readonly openUrl: (url: string) => Promise<unknown>) {}
   private read(key: string): Credentials {
     const data = readDesktopDocument(this.database, `extension-secret:${key}`);
     if (data === null) return {};
     if (typeof data !== 'object' || data === null || !('ciphertext' in data) || typeof data.ciphertext !== 'string') throw new Error('插件凭据存储无效。');
     return JSON.parse(this.storage.decryptString(Buffer.from(data.ciphertext, 'base64'))) as Credentials;
   }
-  private save(key: string, value: Credentials): void {
+  private async save(key: string, value: Credentials): Promise<void> {
     if (!this.storage.isEncryptionAvailable()) throw new Error('操作系统凭据加密不可用，无法保存插件密钥。');
-    writeDesktopDocuments(this.database, [{ name: `extension-secret:${key}`, value: { ciphertext: this.storage.encryptString(JSON.stringify(value)).toString('base64') } }]);
+    const ciphertext = (await encryptSecret(this.database, JSON.stringify(value), this.storage)).toString('base64');
+    writeDesktopDocuments(this.database, [{ name: `extension-secret:${key}`, value: { ciphertext } }]);
   }
   values(id: string, server: string): Readonly<Record<string, string>> { return this.read(`${id}/${server}`).values ?? {}; }
-  configure(id: string, server: string, values: Readonly<Record<string, string>>): void { const key = `${id}/${server}`; this.save(key, { values: { ...this.read(key).values, ...values } }); }
+  async configure(id: string, server: string, values: Readonly<Record<string, string>>): Promise<void> { const key = `${id}/${server}`; await this.save(key, { values: { ...this.read(key).values, ...values } }); }
   connected(id: string, server: string, url: string): boolean { return this.read(`${id}/${server}/${url}`).tokens !== undefined; }
-  disconnect(id: string, server: string, url: string): void { this.save(`${id}/${server}/${url}`, {}); }
+  async disconnect(id: string, server: string, url: string): Promise<void> { await this.save(`${id}/${server}/${url}`, {}); }
   cancel(id: string, server: string): void { this.pending.get(`${id}/${server}`)?.abort(new Error('账户授权已取消。')); }
   cancelAll(): void { for (const controller of this.pending.values()) controller.abort(new Error('账户授权已取消。')); }
   /** 执行中只读取或刷新现有授权；新授权由详情页显式发起。 */
@@ -34,17 +35,17 @@ export class ExtensionConnections {
       redirectUrl, clientMetadata: { client_name: 'Agent Desktop', redirect_uris: [redirectUrl], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' },
       state: () => state,
       clientInformation: () => this.read(key).client,
-      saveClientInformation: client => { this.save(key, { ...this.read(key), client }); },
+      saveClientInformation: client => this.save(key, { ...this.read(key), client }),
       tokens: () => this.read(key).tokens,
-      saveTokens: tokens => { this.save(key, { ...this.read(key), tokens }); },
+      saveTokens: tokens => this.save(key, { ...this.read(key), tokens }),
       saveCodeVerifier: value => { verifier = value; },
       codeVerifier: () => { if (verifier === undefined) throw new Error('授权校验值已失效。'); return verifier; },
       redirectToAuthorization: async authorizationUrl => { if (redirect === undefined) throw new Error(`请在插件详情中连接 ${server} 的账户。`); await redirect(authorizationUrl); },
-      invalidateCredentials: scope => {
+      invalidateCredentials: async scope => {
         const previous = this.read(key);
-        if (scope === 'all') this.save(key, {});
-        else if (scope === 'tokens') { const { tokens: _tokens, ...next } = previous; this.save(key, next); }
-        else if (scope === 'client') { const { client: _client, ...next } = previous; this.save(key, next); }
+        if (scope === 'all') await this.save(key, {});
+        else if (scope === 'tokens') { const { tokens: _tokens, ...next } = previous; await this.save(key, next); }
+        else if (scope === 'client') { const { client: _client, ...next } = previous; await this.save(key, next); }
         else if (scope === 'verifier') verifier = undefined;
       },
     };

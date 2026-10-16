@@ -12,7 +12,7 @@ interface SkillDialogProps {
   readonly icon: ReactNode;
   readonly feedback: ReactNode;
   readonly loading?: string | undefined;
-  readonly onPerform: (operation: () => Promise<ExtensionSnapshot>, loading: string, success: string, installed?: boolean) => Promise<ExtensionSnapshot | null | undefined>;
+  readonly onPerform: (operation: () => Promise<ExtensionSnapshot | null>, loading: string, success: string, installed?: boolean) => Promise<ExtensionSnapshot | null | undefined>;
   readonly onError: (message: string) => void;
   readonly onClose: () => void;
   readonly onTry?: (skill: ExtensionItem) => void;
@@ -41,7 +41,7 @@ export function SkillDialog({ skill, api, isProcessing, parentEnabled, icon, fee
     document.addEventListener('pointerdown', close);
     return () => document.removeEventListener('pointerdown', close);
   }, [menuOpen]);
-  const perform = (operation: () => Promise<ExtensionSnapshot>, pending: string, success: string, installed = false) => {
+  const perform = (operation: () => Promise<ExtensionSnapshot | null>, pending: string, success: string, installed = false) => {
     setMenuOpen(false);
     return onPerform(operation, pending, success, installed);
   };

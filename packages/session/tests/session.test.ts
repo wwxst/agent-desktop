@@ -3,6 +3,8 @@ import type { ToolCall, ToolCallId } from '@agent-desktop/model';
 import {
   InMemorySession,
   recoverSessionEvents,
+  SessionPersistenceError,
+  TurnCancellationError,
   type SessionEvent,
   type StepId,
   type TurnId,
@@ -13,6 +15,23 @@ const stepId = 'step-1' as StepId;
 const toolCallId = 'call-1' as ToolCallId;
 
 describe('InMemorySession', () => {
+  it('appends one event batch without retaining the caller array', () => {
+    const session = new InMemorySession();
+    const events: SessionEvent[] = [{ type: 'turn.started', turnId }, { type: 'user.message', turnId, content: 'hello' }];
+    session.appendMany(events);
+    events.pop();
+    expect(session.events()).toHaveLength(2);
+  });
+
+  it('keeps the original persistence cause and structured AbortError reason', () => {
+    const cause = new Error('disk full');
+    const error = new SessionPersistenceError(cause);
+    expect(error.cause).toBe(cause);
+    expect(error.name).toBe('SessionPersistenceError');
+    const cancellation = new TurnCancellationError('window-closed');
+    expect(cancellation.name).toBe('AbortError');
+    expect(cancellation.reason).toBe('window-closed');
+  });
   it('preserves append order and returns the current session history', () => {
     const session = new InMemorySession();
     const started: SessionEvent = { type: 'turn.started', turnId };
@@ -72,6 +91,24 @@ describe('InMemorySession', () => {
 describe('recoverSessionEvents', () => {
   const cancelledTurnId = 'turn-cancelled' as TurnId;
   const cancelledStepId = 'step-cancelled' as StepId;
+
+  it('does not complete a different Turn that reuses the same Step ID', () => {
+    const events: SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      { type: 'step.started', turnId, stepId },
+      { type: 'assistant.message', turnId, stepId, content: 'done', toolCalls: [] },
+      { type: 'step.completed', turnId, stepId },
+      { type: 'turn.completed', turnId },
+      { type: 'turn.started', turnId: cancelledTurnId },
+      { type: 'step.started', turnId: cancelledTurnId, stepId },
+      { type: 'assistant.message', turnId: cancelledTurnId, stepId, toolCalls: [{ id: toolCallId, name: 'echo', input: 'x' }] },
+      { type: 'tool.called', turnId: cancelledTurnId, stepId, toolCallId, name: 'echo', input: 'x' },
+      { type: 'tool.effect.prepared', turnId: cancelledTurnId, sourceEventIndex: 8, data: { intent: 'existing raw fact' } },
+      { type: 'turn.cancelled', turnId: cancelledTurnId, reason: 'user' },
+    ];
+    expect(recoverSessionEvents(events)).toEqual([events[0], events[1], events[2], events[3], events[4], events[5], events[9], events[10]]);
+    expect(events).toHaveLength(11);
+  });
 
   it('keeps a completed Step Tool Calling chain unchanged', () => {
     const toolCall: ToolCall = { id: toolCallId, name: 'trim_video', input: { start: 0 } };

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ffmpeg": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/ffmpeg.cjs"],
+      "env": { "FFPROBE_PATH": "${PLUGIN_ROOT}/runtime/bin/ffprobe.exe", "FFMPEG_PATH": "${PLUGIN_ROOT}/runtime/bin/ffmpeg.exe" }
+    }
+  }
+}

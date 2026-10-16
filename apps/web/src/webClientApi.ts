@@ -23,7 +23,6 @@ export function createWebClientApi(): AgentClientApi {
     modelProviders: structuredClone(DEFAULT_MODEL_PROVIDERS),
     conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
     fallbackVisionModel: null, fallbackVisionEnabled: false,
-    whisper: { modelPath: '', cliPath: '' },
     memoryEnabled: true,
     memoryFromToolChatsEnabled: true,
   };
@@ -91,8 +90,7 @@ export function createWebClientApi(): AgentClientApi {
         conversationModel: update.conversationModel ?? settings.conversationModel,
         fallbackVisionModel: update.fallbackVisionModel === undefined ? settings.fallbackVisionModel : update.fallbackVisionModel,
         fallbackVisionEnabled: update.fallbackVisionEnabled ?? settings.fallbackVisionEnabled,
-        ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }),
-        whisper: { modelPath: update.whisperModelPath === undefined ? settings.whisper.modelPath : update.whisperModelPath ?? '', cliPath: update.whisperCliPath === undefined ? settings.whisper.cliPath : update.whisperCliPath ?? '' } };
+        ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }) };
       // 关闭的候选不阻止删除供应商；显式改选与启用状态都依据本次更新校验。
       if (update.deleteModelProviderId !== undefined && !nextSettings.fallbackVisionEnabled && update.fallbackVisionModel === undefined
         && nextSettings.fallbackVisionModel?.providerId === update.deleteModelProviderId) nextSettings.fallbackVisionModel = null;
@@ -148,7 +146,7 @@ export function createWebClientApi(): AgentClientApi {
       sessionIds.add(activeSessionId);
       return activeSessionId;
     },
-    runAgentTask: async (prompt): Promise<AgentTaskResult> => {
+    runAgentTask: async ({ prompt }): Promise<AgentTaskResult> => {
       if (activeTaskController !== undefined) throw new Error('已有任务正在执行。');
       const controller = new AbortController();
       activeTaskController = controller;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolExecutionError, type Tool } from '@agent-desktop/tools';
 
 const echoTool: Tool = {
   name: 'echo',
@@ -23,5 +23,18 @@ describe('InMemoryToolRegistry', () => {
 
     expect(() => registry.register(echoTool)).toThrow('Tool already registered: echo');
     expect(registry.get('missing')).toBeUndefined();
+  });
+});
+
+describe('ToolExecutionError', () => {
+  it('retains the original failure and its execution classification', () => {
+    const cause = new Error('connection lost after the external request was sent');
+    const error = new ToolExecutionError(cause.message, 'unknown-outcome', { cause });
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('ToolExecutionError');
+    expect(error.message).toBe(cause.message);
+    expect(error.failureKind).toBe('unknown-outcome');
+    expect(error.cause).toBe(cause);
   });
 });

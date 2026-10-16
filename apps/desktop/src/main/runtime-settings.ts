@@ -1,6 +1,7 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import { DEFAULT_MODEL_PROVIDERS, usesDefaultModelEndpoint } from '@agent-desktop/client/model-defaults';
 import { getConversationCapability, getVisionCapability, resolveVisionModel, UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 import type { ModelApiProtocol, RuntimeModelDefinition, RuntimeModelProvider,
   RuntimeModelProviderUpdate, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/client';
 
@@ -11,8 +12,6 @@ interface PersistedRuntimeSettings {
   readonly conversationModel?: RuntimeModelReference;
   readonly fallbackVisionModel?: RuntimeModelReference | null;
   readonly fallbackVisionEnabled?: boolean;
-  readonly whisperModelPath?: string;
-  readonly whisperCliPath?: string;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
 }
@@ -22,6 +21,8 @@ export interface RuntimeConfiguration {
   readonly deepSeekBaseUrl?: string;
   readonly deepSeekModel?: string;
   readonly modelProtocol?: ModelApiProtocol;
+  /** 只读取当前所选模型的明确窗口；缺失时不按名称猜测。 */
+  readonly modelContextWindow?: number;
   readonly modelMaxOutputTokens?: number;
   readonly useDeepSeekThinking?: boolean;
   readonly visionApiKey?: string;
@@ -30,15 +31,8 @@ export interface RuntimeConfiguration {
   readonly visionProtocol?: ModelApiProtocol;
   readonly visionMaxOutputTokens?: number;
   readonly visionUnavailableReason?: string;
-  readonly whisperModelPath?: string;
-  readonly whisperCliPath?: string;
   readonly memoryEnabled?: boolean;
   readonly memoryFromToolChatsEnabled?: boolean;
-}
-export interface SafeStoragePort {
-  isEncryptionAvailable(): boolean;
-  encryptString(value: string): Buffer;
-  decryptString(value: Buffer): string;
 }
 type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 function record(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value); }
@@ -61,7 +55,7 @@ function baseUrl(value: unknown): string {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('API 地址必须是不含密钥或查询参数的 HTTP 地址。');
   return address;
 }
-export function parseModelDefinitions(value: unknown, legacy = false): readonly RuntimeModelDefinition[] {
+export function parseModelDefinitions(value: unknown): readonly RuntimeModelDefinition[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error('请至少添加一个模型。');
   const ids = new Set<string>();
   return value.map((model, index) => {
@@ -70,19 +64,12 @@ export function parseModelDefinitions(value: unknown, legacy = false): readonly 
     if (ids.has(id)) throw new Error(`模型 ID 重复：${id}`);
     ids.add(id);
     const displayName = text(model.displayName, `模型 ${index + 1}: 显示名称`);
-    // 旧目录只有文本任务与图片布尔字段；兼容只发生在磁盘读取边界。
-    let capabilities: RuntimeModelDefinition['capabilities'];
-    if (legacy && model.capabilities === undefined && typeof model.images === 'boolean') {
-      capabilities = { textInput: 'supported', textOutput: 'supported', imageInput: model.images ? 'supported' : 'unsupported', imageUnderstanding: model.images ? 'supported' : 'unsupported' };
-    } else {
-      if (!record(model.capabilities)) throw new Error(`模型 ${id} 的能力配置无效。`);
-      const parsed = { ...UNKNOWN_MODEL_CAPABILITIES };
-      for (const field of ['textInput', 'textOutput', 'imageInput', 'imageUnderstanding'] as const) {
-        const status = model.capabilities[field];
-        if (status !== 'supported' && status !== 'unsupported' && status !== 'unknown') throw new Error(`模型 ${id} 的 ${field} 能力无效。`);
-        parsed[field] = status;
-      }
-      capabilities = parsed;
+    if (!record(model.capabilities)) throw new Error(`模型 ${id} 的能力配置无效。`);
+    const capabilities = { ...UNKNOWN_MODEL_CAPABILITIES };
+    for (const field of ['textInput', 'textOutput', 'imageInput', 'imageUnderstanding'] as const) {
+      const status = model.capabilities[field];
+      if (status !== 'supported' && status !== 'unsupported' && status !== 'unknown') throw new Error(`模型 ${id} 的 ${field} 能力无效。`);
+      capabilities[field] = status;
     }
     const limits: { contextWindow?: number; maxOutputTokens?: number } = {};
     for (const field of ['contextWindow', 'maxOutputTokens'] as const) {
@@ -111,14 +98,11 @@ function providerUpdate(value: unknown): RuntimeModelProviderUpdate {
 }
 export function parseRuntimeSettingsUpdate(value: unknown): RuntimeSettingsUpdate {
   if (!record(value)) throw new Error('运行时设置更新无效。');
-  const update: { theme?: 'system' | 'light' | 'dark' | null; whisperModelPath?: string | null; whisperCliPath?: string | null; memoryEnabled?: boolean; memoryFromToolChatsEnabled?: boolean;
+  const update: { theme?: 'system' | 'light' | 'dark' | null; memoryEnabled?: boolean; memoryFromToolChatsEnabled?: boolean;
     modelProvider?: RuntimeModelProviderUpdate; deleteModelProviderId?: string; conversationModel?: RuntimeModelReference; fallbackVisionModel?: RuntimeModelReference | null; fallbackVisionEnabled?: boolean } = {};
   if (value.theme !== undefined) {
     if (value.theme !== null && !['system', 'light', 'dark'].includes(String(value.theme))) throw new Error('外观模式无效。');
     update.theme = value.theme as 'system' | 'light' | 'dark' | null;
-  }
-  for (const field of ['whisperModelPath', 'whisperCliPath'] as const) {
-    if (value[field] !== undefined) update[field] = value[field] === null ? null : optionalString(value[field], field)!;
   }
   if (value.modelProvider !== undefined) update.modelProvider = providerUpdate(value.modelProvider);
   if (value.deleteModelProviderId !== undefined) update.deleteModelProviderId = text(value.deleteModelProviderId, '供应商 ID');
@@ -136,7 +120,7 @@ export function parseRuntimeSettingsUpdate(value: unknown): RuntimeSettingsUpdat
   }
   return update;
 }
-/** 旧版固定两家配置只在持久化边界转换，新界面和运行时统一消费供应商目录。 */
+/** 持久化配置只解析当前供应商目录契约。 */
 export function parseStoredSettings(value: unknown): PersistedRuntimeSettings {
   if (!record(value)) throw new Error('运行时设置结构无效。');
   const common = parseRuntimeSettingsUpdate(value);
@@ -145,25 +129,17 @@ export function parseStoredSettings(value: unknown): PersistedRuntimeSettings {
     if (!Array.isArray(value.modelProviders)) throw new Error('保存的模型供应商目录无效。');
     providers = value.modelProviders.map(item => {
       if (!record(item)) throw new Error('保存的供应商配置无效。');
-      const parsed = { ...parseProviderQuery(item), displayName: text(item.displayName, '显示名称'), models: parseModelDefinitions(item.models, true) };
+      const parsed = { ...parseProviderQuery(item), displayName: text(item.displayName, '显示名称'), models: parseModelDefinitions(item.models) };
       return { id: parsed.id, displayName: parsed.displayName, baseUrl: parsed.baseUrl, protocol: parsed.protocol,
         models: parsed.models };
     });
     if (new Set(providers.map(item => item.id)).size !== providers.length) throw new Error('保存的供应商 ID 重复。');
-  } else if (['deepSeekBaseUrl', 'deepSeekModel', 'visionBaseUrl'].some(key => value[key] !== undefined)) {
-    providers = DEFAULT_MODEL_PROVIDERS.map(({ apiKey: _key, ...provider }) => inheritedProviderCapabilities({ ...provider,
-      baseUrl: optionalString(value[provider.id === 'deepseek' ? 'deepSeekBaseUrl' : 'visionBaseUrl'], '旧版 API 地址') || provider.baseUrl,
-      models: provider.id === 'deepseek' && value.deepSeekModel ? [{ id: text(value.deepSeekModel, '旧版模型名称'), displayName: text(value.deepSeekModel, '旧版模型名称'), capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported' } }] : provider.models }));
   }
   return { ...(common.theme === undefined || common.theme === null ? {} : { theme: common.theme }),
     ...(providers === undefined ? {} : { modelProviders: providers }),
     ...(common.conversationModel === undefined ? {} : { conversationModel: common.conversationModel }),
-    // 升级仅迁移备用候选；旧视觉选择从不隐式打开备用调用。
-    ...(common.fallbackVisionModel !== undefined ? { fallbackVisionModel: common.fallbackVisionModel }
-      : value.visionModel === undefined ? {} : { fallbackVisionModel: value.visionModel === null ? null : reference(value.visionModel) }),
+    ...(common.fallbackVisionModel === undefined ? {} : { fallbackVisionModel: common.fallbackVisionModel }),
     fallbackVisionEnabled: common.fallbackVisionEnabled ?? false,
-    ...(common.whisperModelPath == null ? {} : { whisperModelPath: common.whisperModelPath }),
-    ...(common.whisperCliPath == null ? {} : { whisperCliPath: common.whisperCliPath }),
     ...(common.memoryEnabled === undefined ? {} : { memoryEnabled: common.memoryEnabled }),
     ...(common.memoryFromToolChatsEnabled === undefined ? {} : { memoryFromToolChatsEnabled: common.memoryFromToolChatsEnabled }) };
 }
@@ -173,10 +149,6 @@ export function parseStoredSecrets(value: unknown): PersistedRuntimeSecrets {
   if (value.providerApiKeys !== undefined) {
     if (!record(value.providerApiKeys)) throw new Error('供应商密钥结构无效。');
     for (const [id, encrypted] of Object.entries(value.providerApiKeys)) keys[id] = text(encrypted, '加密密钥');
-  }
-  for (const [field, id] of [['deepSeekApiKey', 'deepseek'], ['visionApiKey', 'openai']] as const) {
-    const encrypted = optionalString(value[field], field);
-    if (encrypted !== undefined) keys[id] = encrypted;
   }
   return Object.keys(keys).length ? { providerApiKeys: keys } : {};
 }
@@ -189,7 +161,7 @@ function decrypt(value: string | undefined, storage: SafeStoragePort): string | 
   if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法读取 API 密钥。');
   return storage.decryptString(Buffer.from(value, 'base64'));
 }
-/** 旧固定配置和环境变量没有显式能力确认，换地址后仅保留原文本对话契约。 */
+/** 环境变量更换默认端点后，未经确认的图片能力保持未知。 */
 function inheritedProviderCapabilities(provider: ProviderConfig): ProviderConfig {
   return usesDefaultModelEndpoint(provider) ? provider : { ...provider, models: provider.models.map(model => ({ ...model,
     capabilities: { ...model.capabilities, imageInput: 'unknown', imageUnderstanding: 'unknown' } })) };
@@ -217,7 +189,7 @@ export async function loadRuntimeSettings(path: string, storage: SafeStoragePort
       const key = decrypt(secrets.providerApiKeys?.[provider.id], storage);
       return { ...provider, apiKey: key !== undefined ? { configured: true, source: 'saved' as const }
         : environmentKey(provider.id, environment) === undefined ? { configured: false } : { configured: true, source: 'environment' as const } };
-    }), ...selections(saved, providers), whisper: { modelPath: saved.whisperModelPath ?? '', cliPath: saved.whisperCliPath ?? '' },
+    }), ...selections(saved, providers),
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
@@ -231,26 +203,31 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
   const route = resolveVisionModel({ ...choice, modelProviders: providers.map(provider => ({ ...provider, apiKey: { configured: keyFor(provider.id) !== undefined } })) });
   const vision = route.available ? route : undefined;
   const visionKey = vision === undefined ? undefined : keyFor(vision.provider.id);
-  const whisperModelPath = saved.whisperModelPath ?? envValue(environment, 'WHISPER_MODEL_PATH');
-  const whisperCliPath = saved.whisperCliPath ?? envValue(environment, 'WHISPER_CLI_PATH');
   return { ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
     deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
     useDeepSeekThinking: new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com',
+    ...(conversation.model.contextWindow === undefined ? {} : { modelContextWindow: conversation.model.contextWindow }),
     ...(conversation.model.maxOutputTokens === undefined ? {} : { modelMaxOutputTokens: conversation.model.maxOutputTokens }),
-    ...(visionKey === undefined || vision === undefined ? {} : { visionApiKey: visionKey, visionBaseUrl: vision.provider.baseUrl,
+    ...(vision === undefined ? {} : { ...(visionKey === undefined ? {} : { visionApiKey: visionKey }), visionBaseUrl: vision.provider.baseUrl,
       visionModel: vision.model.id, visionProtocol: vision.provider.protocol,
       ...(vision.model.maxOutputTokens === undefined ? {} : { visionMaxOutputTokens: vision.model.maxOutputTokens }) }),
     ...(route.available ? {} : { visionUnavailableReason: route.reason }),
-    ...(whisperModelPath === undefined ? {} : { whisperModelPath }), ...(whisperCliPath === undefined ? {} : { whisperCliPath }),
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
 export async function saveRuntimeSettings(path: string, update: RuntimeSettingsUpdate, storage: SafeStoragePort): Promise<void> {
+  const apiKey = update.modelProvider?.apiKey;
+  let encryptedApiKey: string | undefined;
+  if (typeof apiKey === 'string' && apiKey.trim()) {
+    if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保存 API 密钥。');
+    encryptedApiKey = (await encryptSecret(path, apiKey.trim(), storage)).toString('base64');
+  }
+  // 等待加密依赖后再读取当前记录，合并到同步事务，保留等待期间已成功保存的外观和记忆设置。
   let saved = savedSettings(path); let secrets = savedSecrets(path);
-  for (const field of ['theme', 'whisperModelPath', 'whisperCliPath', 'memoryEnabled', 'memoryFromToolChatsEnabled'] as const) {
+  for (const field of ['theme', 'memoryEnabled', 'memoryFromToolChatsEnabled'] as const) {
     if (update[field] === undefined) continue;
     const next = { ...saved };
-    if (update[field] === null || update[field] === '') delete next[field]; else Object.assign(next, { [field]: update[field] });
+    if (update[field] === null) delete next[field]; else Object.assign(next, { [field]: update[field] });
     saved = next;
   }
   if (update.modelProvider !== undefined || update.deleteModelProviderId !== undefined || update.conversationModel !== undefined || update.fallbackVisionModel !== undefined || update.fallbackVisionEnabled !== undefined) {
@@ -263,10 +240,7 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       if (item.apiKey !== undefined) {
         const keys = { ...secrets.providerApiKeys };
         if (item.apiKey === null || !item.apiKey.trim()) delete keys[item.id];
-        else {
-          if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法保存 API 密钥。');
-          keys[item.id] = storage.encryptString(item.apiKey.trim()).toString('base64');
-        }
+        else keys[item.id] = encryptedApiKey!;
         secrets = { providerApiKeys: keys };
       }
     }

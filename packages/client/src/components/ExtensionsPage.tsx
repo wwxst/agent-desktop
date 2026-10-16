@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, ChevronDown, CirclePlus, Ellipsis, FolderClosed, FolderPlus, Globe, MessagesSquare, Paperclip, Plus, Puzzle, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, ChevronDown, CirclePlus, Download, Ellipsis, FolderClosed, FolderPlus, Globe, MessagesSquare, Paperclip, Plus, Puzzle, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react';
 import type { ExtensionClientApi, ExtensionItem, ExtensionSnapshot, McpServerSettings, McpServerUpdate } from '../api.js';
 import { SkillDialog } from './SkillDialog.js';
 import { ExtensionOperationStatus, ExtensionToast, type ExtensionNotice } from './ExtensionFeedback.js';
@@ -50,6 +50,7 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
   const [connectionValues, setConnectionValues] = useState<Record<string, string>>({});
   const [authorizing, setAuthorizing] = useState<{ id: string; server: string } | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const [confirmDeleteModel, setConfirmDeleteModel] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [rowMenuId, setRowMenuId] = useState<string | null>(null);
   const [operation, setOperation] = useState<ExtensionOperation | null>(null);
@@ -68,7 +69,7 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
     refresh(); const unsubscribe = api.onChanged(refresh);
     return () => { mounted = false; unsubscribe(); };
   }, [api]);
-  useEffect(() => { setSelectedId(requestedId ?? null); setOpenedSkillId(null); setQuery(''); setContent(null); setConfirmUninstall(false); setDetailMenuOpen(false); setRowMenuId(null); setAdding(false); setDialog(null); setMcpDraft(mcpDraftFor()); }, [view, requestedId]);
+  useEffect(() => { setSelectedId(requestedId ?? null); setOpenedSkillId(null); setQuery(''); setContent(null); setConfirmUninstall(false); setConfirmDeleteModel(false); setDetailMenuOpen(false); setRowMenuId(null); setAdding(false); setDialog(null); setMcpDraft(mcpDraftFor()); }, [view, requestedId]);
   useEffect(() => {
     if (selectedId === null) return;
     let mounted = true; setContent(null);
@@ -136,9 +137,13 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
   const matches = (item: ExtensionItem) => `${item.name} ${item.displayName ?? ''} ${item.shortDescription ?? ''} ${item.description} ${(item.keywords ?? []).join(' ')}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   const filtered = items.filter(matches); const disabled = busy || isProcessing;
   const snapshotError = snapshot?.errors?.join('\n') || undefined;
+  const whisperModel = snapshot?.whisperModel;
+  const modelProgress = whisperModel?.status === 'downloading'
+    ? `正在下载模型 ${Math.floor(whisperModel.downloadedBytes / whisperModel.size * 100)}% · ${(whisperModel.downloadedBytes / 1048576).toFixed(1)} / ${(whisperModel.size / 1048576).toFixed(1)} MB`
+    : whisperModel?.status === 'verifying' ? '正在校验模型' : undefined;
   const toast = (error === null ? notice : { variant: 'error' as const, message: error })
     ?? (snapshotError !== undefined && snapshotError !== dismissedSnapshotError ? { variant: 'error' as const, message: snapshotError } : null)
-    ?? (busy && operation !== null && (operation.id === undefined || operation.id === selectedId) ? { variant: 'progress' as const, message: operation.loading } : null);
+    ?? (busy && operation !== null && (operation.id === undefined || operation.id === selectedId) ? { variant: 'progress' as const, message: selectedId === 'plugin:whisper' ? modelProgress ?? operation.loading : operation.loading } : null);
   const closeToast = () => { setNotice(null); setError(null); if (notice === null && error === null && snapshotError !== undefined) setDismissedSnapshotError(snapshotError); };
   const noticeSkill = toast !== notice || notice?.skillId === undefined ? undefined : snapshot?.skills.find(skill => skill.id === notice.skillId && skill.installed && skill.enabled
     && (skill.pluginId === undefined || snapshot.plugins.some(plugin => plugin.id === skill.pluginId && plugin.enabled)));
@@ -248,12 +253,22 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
       {confirmUninstall && <div className="extension-uninstall"><p>卸载“{selected.name}”？</p><button type="button" disabled={disabled} onClick={() => setConfirmUninstall(false)}>取消</button><button type="button" disabled={disabled} onClick={() => void perform(async () => { const next = await api.uninstall(selected.id); setSelectedId(null); return next; }, itemFeedback(selected, '正在卸载', `${selected.displayName ?? selected.name} 插件已卸载`))}>确认卸载</button></div>}
       {selected.screenshots?.length ? <div className="extension-screenshots">{selected.screenshots.map(src => <img src={src} alt={`${selected.name}功能预览`} key={src} />)}</div> : suggestedSkills.length > 0 && <section className="extension-prompt-hero" aria-label="建议指令"><div className="extension-prompt-stack">{suggestedSkills.map(skill => <button className="extension-prompt-card" type="button" key={skill.id} disabled={disabled || !selected.enabled || !skill.enabled || onTrySkill === undefined} onClick={() => onTrySkill?.(skill, skill.defaultPrompt)}><span><ExtensionIcon item={skill} /><strong>{skill.displayName ?? skill.name}</strong><ArrowRight size={15} /></span><small>{skill.defaultPrompt}</small></button>)}</div></section>}
       <p className="extension-description extension-detail-lead">{selected.longDescription ?? selected.description}</p>
+      {selected.id === 'plugin:whisper' && selected.source === 'builtin' && whisperModel !== undefined && <section className="extension-detail-section whisper-model-section" aria-label="语音识别模型"><h3>语音识别模型</h3>
+        <div className="extension-connection"><div><strong>{whisperModel.name}</strong><p>多语言 · CPU · {(whisperModel.size / 1048576).toFixed(1)} MB</p><p>{whisperModel.status === 'ready' ? `已安装 · 磁盘占用 ${(whisperModel.diskBytes / 1048576).toFixed(1)} MB` : modelProgress ?? (whisperModel.status === 'error' ? whisperModel.message : '未安装')}</p></div>
+          <div className="whisper-model-actions">{whisperModel.status === 'ready' ? <button className="icon-button" type="button" title="删除模型" aria-label="删除 Whisper 模型" disabled={disabled} onClick={() => setConfirmDeleteModel(true)}><Trash2 size={17} /></button> : <>
+            <button className="extension-add" type="button" disabled={disabled || !selected.installed} onClick={() => void perform(() => api.manage({ action: 'install-whisper-model' }), itemFeedback(selected, '正在下载模型', `${whisperModel.name} 模型已安装`))}><Download size={16} />安装模型</button>
+            <button className="icon-button" type="button" title="选择本地模型" aria-label="选择本地 Whisper 模型" disabled={disabled || !selected.installed} onClick={() => void perform(() => api.manage({ action: 'import-whisper-model' }), itemFeedback(selected, '正在校验模型', `${whisperModel.name} 模型已安装`))}><FolderPlus size={17} /></button>
+          </>}</div>
+        </div>
+        {(whisperModel.status === 'downloading' || whisperModel.status === 'verifying') && <progress aria-label="Whisper 模型下载进度" value={whisperModel.downloadedBytes} max={whisperModel.size} />}
+        {confirmDeleteModel && <div className="extension-uninstall"><p>删除 {whisperModel.name} 模型？</p><button type="button" disabled={disabled} onClick={() => setConfirmDeleteModel(false)}>取消</button><button type="button" disabled={disabled} onClick={() => void perform(async () => { const next = await api.manage({ action: 'delete-whisper-model' }); setConfirmDeleteModel(false); return next; }, itemFeedback(selected, '正在删除模型', `${whisperModel.name} 模型已删除`))}>确认删除模型</button></div>}
+      </section>}
       {selected.defaultPrompt !== undefined || (selected.defaultPrompts?.length ?? 0) > 0 ? <div className="extension-detail-section extension-suggestions"><h3>建议指令</h3>{(selected.defaultPrompts ?? (selected.defaultPrompt === undefined ? [] : [selected.defaultPrompt])).map(prompt => <p className="extension-prompt" key={prompt}>{prompt}</p>)}</div> : null}
       {selected.skillNames?.length ? <section className="plugin-skills" aria-label="附带技能"><h3>技能 <span>{selected.skillNames.length}</span></h3>{selectedSkills.map(skill => row(skill, true))}</section> : null}
       <section className="extension-info" aria-label="信息"><h3>信息</h3><dl>{selected.capabilities?.length ? <><dt>功能</dt><dd>{selected.capabilities.join(', ')}</dd></> : null}{selected.developerName && <><dt>开发者</dt><dd>{selected.developerName}</dd></>}{selected.category && <><dt>类别</dt><dd>{selected.category}</dd></>}{selected.version && <><dt>版本</dt><dd>{selected.version}</dd></>}{selected.websiteUrl && <><dt>网站</dt><dd><a href={selected.websiteUrl} target="_blank" rel="noreferrer" aria-label="网站" title={selected.websiteUrl}><Globe size={14} /></a></dd></>}{selected.privacyPolicyUrl && <><dt>隐私政策</dt><dd><a href={selected.privacyPolicyUrl} target="_blank" rel="noreferrer" aria-label="隐私政策" title={selected.privacyPolicyUrl}><Globe size={14} /></a></dd></>}{selected.termsOfServiceUrl && <><dt>服务条款</dt><dd><a href={selected.termsOfServiceUrl} target="_blank" rel="noreferrer" aria-label="服务条款" title={selected.termsOfServiceUrl}><Globe size={14} /></a></dd></>}</dl></section>
       {selected.dependencies?.length ? <div className="extension-detail-section"><h3>工具依赖</h3><ul>{selected.dependencies.map(dependency => <li key={dependency}>{dependency}</li>)}</ul></div> : null}
       {selected.connections?.length ? <div className="extension-detail-section"><h3>连接</h3>{selected.connections.map(service => <div className="extension-connection" key={service.name}><div><strong>{service.name}</strong><p>{service.transport === 'app' ? '需要账户服务的连接地址' : service.url ?? '本地工具服务'}</p></div>{(service.transport !== 'stdio' || (service.variables?.length ?? 0) > 0) && <button type="button" disabled={disabled} onClick={() => openConnection(service.name)}>配置</button>}{service.url !== undefined && <button type="button" disabled={disabled} onClick={() => void connect(selected, service)}>{service.connected ? '断开' : '连接账户'}</button>}</div>)}</div> : null}
-      {selected.installed && selected.marketplaceId !== undefined && <button className="extension-back" type="button" disabled={disabled} onClick={() => void perform(() => api.manage({ action: 'update', id: selected.id }), itemFeedback(selected, '正在检查更新', `${selected.displayName ?? selected.name} 更新检查完成`))}>{selected.availableVersion === undefined ? '检查更新' : `更新至 ${selected.availableVersion}`}</button>}
+      {selected.installed && (selected.marketplaceId !== undefined || (selected.kind === 'plugin' && selected.source === 'builtin')) && <button className="extension-back" type="button" disabled={disabled} onClick={() => void perform(() => api.manage({ action: 'update', id: selected.id }), itemFeedback(selected, '正在检查更新', `${selected.displayName ?? selected.name} 更新检查完成`))}>{selected.availableVersion === undefined ? '检查更新' : `更新至 ${selected.availableVersion}`}</button>}
       {selected.versions?.length ? <div className="extension-detail-section"><h3>历史版本</h3>{selected.versions.map(version => <div className="extension-connection" key={version.id}><span>{version.version} · {new Date(version.createdAt).toLocaleString()}</span><button type="button" disabled={disabled} onClick={() => void perform(() => api.manage({ action: 'rollback', id: selected.id, versionId: version.id }), itemFeedback(selected, '正在回滚', `${selected.displayName ?? selected.name} 已回滚至 ${version.version}`))}>回滚</button></div>)}</div> : null}
       <details className="extension-detail-section" open={!isPlugin}><summary>{isPlugin ? '插件清单' : '技能指令'}</summary><pre>{content ?? '正在读取…'}</pre>{selected.path !== undefined && <p className="extension-path">{selected.path}</p>}</details>
     </section>}

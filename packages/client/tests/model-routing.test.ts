@@ -5,7 +5,7 @@ import { getConversationCapability, resolveVisionModel } from '../src/model-capa
 
 const settings: RuntimeSettings = { modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })),
   conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: true,
-  whisper: { cliPath: '', modelPath: '' }, memoryEnabled: true, memoryFromToolChatsEnabled: true };
+  memoryEnabled: true, memoryFromToolChatsEnabled: true };
 describe('capability based vision routing', () => {
   it('follows the primary model even when a valid fallback is enabled', () => {
     expect(resolveVisionModel(settings)).toMatchObject({ available: true, source: 'conversation', provider: { id: 'deepseek', protocol: 'chat-completions' }, model: { id: 'deepseek-flash' } });

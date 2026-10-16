@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -206,6 +206,23 @@ function resultsOf(session: InMemorySession): readonly OutputItemResult[] {
 }
 
 describe('video delivery declaration and write boundary', () => {
+  it('consumes canonical Probe evidence for a candidate accessed through a directory link', async () => {
+    const directory = await temporaryDirectory(); const target = await temporaryDirectory();
+    const link = join(directory, 'linked'); await symlink(target, link, 'junction');
+    await writeFile(join(target, 'source.mp4'), 'source');
+    const tools = createDeliveryTools();
+    const item = await declareItem(tools, join(link, 'source.mp4'), { kind: 'automatic' }, [{ kind: 'duration-range', minSeconds: 4, maxSeconds: 6 }]);
+    const candidate = await produceCandidate(tools, item.workingDirectory, 'candidate.mp4', item.sourcePath);
+    const canonical = await realpath(candidate.path); expect(canonical).not.toBe(candidate.path);
+    appendCheck(tools.session, 'decode_video', candidate.path, decodableEvidence(candidate.path));
+    appendCheck(tools.session, 'probe_media', candidate.path, { inputPath: join(target, 'source.mp4'), duration: 5 });
+    expect((await validateCandidate(tools, item.outputItemId, candidate.path)).checks[1]?.outcome).toBe('blocked');
+    appendCheck(tools.session, 'probe_media', candidate.path, { inputPath: canonical, duration: 5 });
+    expect((await validateCandidate(tools, item.outputItemId, candidate.path)).checks.every(check => check.outcome === 'passed')).toBe(true);
+    // CLI 仍返回原引用路径；同一验收契约继续接受它。
+    appendCheck(tools.session, 'probe_media', candidate.path, { inputPath: candidate.path, duration: 5 });
+    expect((await validateCandidate(tools, item.outputItemId, candidate.path)).checks.every(check => check.outcome === 'passed')).toBe(true);
+  });
   it('binds semantic evidence to the declared item, complete coverage, and unchanged bytes', async () => {
     const directory = await temporaryDirectory();
     const tools = createDeliveryTools();
@@ -443,6 +460,29 @@ describe('candidate validation', () => {
     });
 
     expect(result).toMatchObject({ status: 'error' });
+  });
+
+  it('rejects the latest same-path producer from a different source instead of reusing older matching production', async () => {
+    const directory = await temporaryDirectory();
+    const source = join(directory, 'source-a.mp4'); await writeFile(source, 'source a');
+    const otherSource = join(directory, 'source-b.mp4'); await writeFile(otherSource, 'source b');
+    const tools = createDeliveryTools();
+    const item = await declareItem(tools, source, { kind: 'automatic' });
+    const first = await produceCandidate(tools, item.workingDirectory, 'same-path.mp4', source);
+    appendCheck(tools.session, 'decode_video', first.path, decodableEvidence(first.path));
+    expect((await validateCandidate(tools, item.outputItemId, first.path)).checks[0]?.outcome).toBe('passed');
+
+    const second = await produceCandidate(tools, item.workingDirectory, 'same-path.mp4', otherSource);
+    await writeFile(second.path, 'candidate from source b');
+    // 补齐新文件检查仍不能修复来源错误；只允许最新生产事实决定当前候选归属。
+    appendCheck(tools.session, 'decode_video', second.path, decodableEvidence(second.path));
+    const result = await runTool(tools.session, tools.validate, {
+      outputItemId: item.outputItemId,
+      candidatePath: second.path,
+    });
+    expect(result).toMatchObject({ status: 'error', message: expect.stringContaining('来源匹配') });
+    expect(readVideoDeliveryFacts(tools.session.events()).validations).toHaveLength(1);
+    expect(await readFile(second.path, 'utf8')).toBe('candidate from source b');
   });
 
   it('rejects a merge candidate that includes an undeclared source', async () => {

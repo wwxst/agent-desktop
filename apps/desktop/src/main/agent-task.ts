@@ -1,5 +1,6 @@
 import {
   runTurn,
+  runStartedTurn,
   type ExecutionTrace,
   type ToolProgressListener,
   type ToolResultListener,
@@ -47,7 +48,7 @@ export function buildAgentPrompt(
         : [
             '本次没有选择主视频，只有音轨文件：',
             ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
-            '不要把这些音轨当作可剪辑的主视频；它们只能作为 add_audio 的声音来源。',
+            '不要把这些音轨当作可剪辑的主视频；WAV 可交给已安装的 transcribe_audio 识别语音，也可作为 add_audio 的声音来源。',
           ]),
     ].join('\n');
   }
@@ -56,10 +57,10 @@ export function buildAgentPrompt(
     prompt,
     '',
     ...videos.map((video, index) => `输入视频 ${index + 1}：${toPromptPath(video.path)}`),
-    // 音轨单独成段：它的用途是配合 add_audio 替换或叠加声音，不是第二个可拼接的视频。
+    // 音轨单独成段：可独立识别或用于配音，不能作为第二个可拼接的视频。
     ...(audios.length === 0 ? [] : [
       '',
-      '可用音轨（使用 add_audio 配合上面的主视频，不要当作视频输入）：',
+      '可用音轨（可用 transcribe_audio 识别 WAV 语音，或用 add_audio 配合主视频；不要当作视频输入）：',
       ...audios.map((audio, index) => `音轨 ${index + 1}：${toPromptPath(audio.path)}`),
     ]),
   ].join('\n');
@@ -118,6 +119,12 @@ export interface DesktopTaskOptions {
   readonly onToolResult?: ToolResultListener;
   readonly onToolProgress?: ToolProgressListener;
   readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
+  readonly contextBudget?: NonNullable<Parameters<typeof runTurn>[2]>['contextBudget'];
+  readonly qualifyToolEvidence?: NonNullable<Parameters<typeof runTurn>[2]>['qualifyToolEvidence'];
+  readonly beforeToolCall?: NonNullable<Parameters<typeof runTurn>[2]>['beforeToolCall'];
+  readonly maxSteps?: number;
+  readonly maxToolCalls?: number;
+  readonly turnId?: TurnId;
 }
 
 /**
@@ -142,8 +149,15 @@ export async function runDesktopAgentTask(
   attachments: readonly PromptAttachment[],
   options: DesktopTaskOptions,
 ) {
-  const result = await runTurn(agent, buildAgentPrompt(prompt, attachments), {
+  const turnId = options.turnId;
+  const result = turnId === undefined
+    ? await runTurn(agent, buildAgentPrompt(prompt, attachments), {
     trace: options.trace,
+    ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
+    ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
+    ...(options.beforeToolCall === undefined ? {} : { beforeToolCall: options.beforeToolCall }),
+    ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
+    ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
     ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
     // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -153,7 +167,20 @@ export async function runDesktopAgentTask(
     ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
     // 实时进度同样走独立通道，不写入 Session，也不进入模型上下文。
     ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
-  });
+      })
+    : await runStartedTurn(agent, turnId, {
+        trace: options.trace,
+        ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
+        ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
+        ...(options.beforeToolCall === undefined ? {} : { beforeToolCall: options.beforeToolCall }),
+        ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
+        ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
+        ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
+        ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
+        ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
+      });
   if (result.response.text === undefined) {
     throw new Error('Agent 未返回最终文本回复。');
   }

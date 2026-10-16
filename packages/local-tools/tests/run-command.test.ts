@@ -40,13 +40,22 @@ const realInterpreterAvailable = interpreterPath !== undefined && existsSync(int
 
 let base: string;
 let root: string;
+let cleanupController: AbortController;
+let fixtureSignal: AbortSignal;
+const commandSettlements: Promise<void>[] = [];
 
-beforeEach(async () => {
+beforeEach(async ({ signal }) => {
+  cleanupController = new AbortController();
+  // 测试超时必须取消真实进程；断言提前失败时也由 afterEach 取消尚未结束的操作。
+  fixtureSignal = AbortSignal.any([signal, cleanupController.signal]);
   base = await realpath(await mkdtemp(join(tmpdir(), 'agent-desktop-command-test-')));
   root = base;
 });
 
 afterEach(async () => {
+  cleanupController.abort();
+  // 工具在 child.close 后才结束；先等真实收尾，再删除仍可能被 PowerShell 占用的目录。
+  await Promise.all(commandSettlements.splice(0));
   await rm(base, { recursive: true, force: true });
 });
 
@@ -79,7 +88,15 @@ function commandPort(): CommandPort {
 }
 
 function toolFor(port: WorkspacePort): RunCommandTool {
-  return new RunCommandTool(port, commandPort());
+  const tool = new RunCommandTool(port, commandPort());
+  const execute = tool.execute.bind(tool);
+  tool.execute = (...parameters) => {
+    const operation = execute(...parameters);
+    // 清理只观察是否结束；调用方仍拿原 Promise 断言成功或原始失败，不改写测试结果。
+    commandSettlements.push(operation.then(() => undefined, () => undefined));
+    return operation;
+  };
+  return tool;
 }
 
 /** 执行上下文同时收集实时进度，便于断言来源和顺序。 */
@@ -90,7 +107,7 @@ function contextWithProgress(
   return {
     toolCallId: 'test-call' as ToolExecutionContext['toolCallId'],
     reportProgress: (event) => events.push(event),
-    ...(signal === undefined ? {} : { signal }),
+    signal: signal === undefined ? fixtureSignal : AbortSignal.any([fixtureSignal, signal]),
   };
 }
 
@@ -130,10 +147,12 @@ describe('RunCommandTool input and approval boundaries', () => {
 
     await expect(toolFor(port).execute({}, contextWithProgress([]))).resolves.toEqual({
       status: 'error',
+      failureKind: 'permanent',
       message: 'run_command requires command to be a non-empty string',
     });
     await expect(toolFor(port).execute({ command: '   ' }, contextWithProgress([]))).resolves.toEqual({
       status: 'error',
+      failureKind: 'permanent',
       message: 'run_command requires command to be a non-empty string',
     });
   });
@@ -146,7 +165,7 @@ describe('RunCommandTool input and approval boundaries', () => {
       contextWithProgress([]),
     );
 
-    expect(result).toEqual({ status: 'error', message: 'timeoutMs 必须是正数，且不超过 600000 毫秒。' });
+    expect(result).toEqual({ status: 'error', failureKind: 'permanent', message: 'timeoutMs 必须是正数，且不超过 600000 毫秒。' });
   });
 
   it('requires a confirmed working directory before asking for approval', async () => {
@@ -177,6 +196,7 @@ describe('RunCommandTool input and approval boundaries', () => {
     }]);
     expect(result).toEqual({
       status: 'error',
+      failureKind: 'denied',
       message: "用户拒绝执行该命令，未启动任何进程：Set-Content -LiteralPath 'denied.txt' -Value 'should-not-run'",
     });
     // 拒绝不产生任何输出。
@@ -201,8 +221,10 @@ describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShe
     const { port, requested } = portFor({ directory: root });
     const events: ToolProgressEvent[] = [];
 
+    // 这里验证命令执行和输出，不依赖 Write-Output 额外触发的 PowerShell 模块首次发现与准备。
+    // 直接写真实进程的标准输出，保留原超时和全部结果断言。
     const result = await toolFor(port).execute(
-      { command: "Write-Output 'command-ran'" },
+      { command: "[Console]::WriteLine('command-ran')" },
       contextWithProgress(events),
     );
 
@@ -221,7 +243,7 @@ describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShe
     const { port } = portFor({ directory: root });
 
     const result = await toolFor(port).execute(
-      { command: "Write-Output 'before-failure'; [Console]::Error.WriteLine('boom'); exit 3" },
+      { command: "[Console]::WriteLine('before-failure'); [Console]::Error.WriteLine('boom'); exit 3" },
       contextWithProgress([]),
     );
 
@@ -238,7 +260,7 @@ describe.skipIf(!realInterpreterAvailable)('RunCommandTool real Windows PowerShe
     const events: ToolProgressEvent[] = [];
 
     await toolFor(port).execute(
-      { command: "Write-Output '标准输出中文'; [Console]::Error.WriteLine('错误输出中文')" },
+      { command: "[Console]::WriteLine('标准输出中文'); [Console]::Error.WriteLine('错误输出中文')" },
       contextWithProgress(events),
     );
 

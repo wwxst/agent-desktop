@@ -1,0 +1,12 @@
+{
+  "name": "ffmpeg",
+  "version": "1.0.0",
+  "description": "本地媒体探测、解码、抽帧、音频处理与视频写出。",
+  "interface": {
+    "displayName": "FFmpeg",
+    "longDescription": "独立提供本地媒体工具。视频剪辑技能可组合使用这些能力。",
+    "developerName": "Agent Desktop",
+    "category": "Productivity"
+  },
+  "mcpServers": "./.mcp.json"
+}
