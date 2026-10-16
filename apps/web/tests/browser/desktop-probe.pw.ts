@@ -107,7 +107,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   env.PATH = `${process.env.SystemRoot}/System32;${process.env.SystemRoot}`;
   const executablePath = packagedExecutable ?? createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const launch = async () => {
-    const launched = await _electron.launch({ executablePath, args: [...(packagedExecutable === undefined ? ['.'] : []), `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+    const launched = await _electron.launch({ executablePath, args: [...(packagedExecutable === undefined ? ['.'] : []), `--user-data-dir=${profile}`, '--proxy-server=http://127.0.0.1:9'], cwd: resolve(root, 'apps/desktop'), env });
     // 手动创建的 Electron 上下文不由 Playwright 的 --trace 自动采集；保留真实页面故障现场。
     try { await launched.context().tracing.start({ screenshots: true, snapshots: true, sources: true }); }
     catch (error) { await launched.close(); throw error; }
@@ -143,7 +143,9 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   try {
     app = await launch(); page = await app.firstWindow(); await observeApprovals();
     await page.evaluate(async baseUrl => {
-      await window.agentDesktop.extensions.install('plugin:ffmpeg');
+      const defaults = (await window.agentDesktop.extensions.list()).plugins;
+      if (!defaults.every(plugin => plugin.installed && plugin.enabled)) throw new Error('基础插件未默认安装并启用。');
+      for (const plugin of defaults.filter(plugin => plugin.id !== 'plugin:ffmpeg')) await window.agentDesktop.extensions.setEnabled(plugin.id, false);
       await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false,
         modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] },
         conversationModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionEnabled: true });
@@ -185,8 +187,8 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await expect.poll(pids).toBe('');
     cancellationProcesses = { before: activePids, after: pids() };
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'allow'; });
-    // 语义交付显式安装独立视觉插件；前面的 Probe 审批仍只覆盖 FFmpeg。
-    await page.evaluate(() => window.agentDesktop.extensions.install('plugin:vision'));
+    // 语义交付重新启用默认视觉插件；前面的 Probe 审批仍只覆盖 FFmpeg。
+    await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:vision', true));
     const before = (await approvals()).filter(request => request.kind === 'plugin-tool').length;
     const delivered = await run('delivery');
     expect((await approvals()).filter(request => request.kind === 'plugin-tool')).toHaveLength(before + 6);

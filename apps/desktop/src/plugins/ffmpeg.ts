@@ -3,10 +3,8 @@ import { stat } from 'node:fs/promises';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoFramesTool,
-  ExtractVideoRangeFramesTool, ExtractAudioTool, ExtractFullVideoFramesTool, executeFileCommand,
-  TrimVideoTool, ConcatVideosTool, AddAudioTool, AddSubtitlesTool, ResizeVideoTool, CropVideoTool, SetSpeedTool,
-  type CommandExecutor } from '@agent-desktop/video-ffmpeg';
+import { executeFileCommand, type CommandExecutor } from '@agent-desktop/video-ffmpeg';
+import { ffmpegTools } from './ffmpeg-tools.js';
 
 // 服务只适配传输和明确的可执行程序路径；媒体参数、解析和错误契约复用原工具。
 const execute: CommandExecutor = async (command, args, signal) => {
@@ -19,10 +17,7 @@ const execute: CommandExecutor = async (command, args, signal) => {
   const restricted = command === 'ffprobe' ? [...limits, ...args] : args.flatMap(arg => arg === '-i' ? [...limits, arg] : [arg]);
   return executeFileCommand(executable, restricted, signal);
 };
-const tools = [new ProbeMediaTool(execute), new DecodeVideoTool(execute), new DetectBlackSegmentsTool(execute),
-  new ExtractVideoFramesTool(execute), new ExtractVideoRangeFramesTool(execute), new ExtractAudioTool(execute), new ExtractFullVideoFramesTool(execute),
-  new TrimVideoTool(execute), new ConcatVideosTool(execute), new AddAudioTool(execute), new AddSubtitlesTool(execute),
-  new ResizeVideoTool(execute), new CropVideoTool(execute), new SetSpeedTool(execute)];
+const tools = ffmpegTools(execute);
 const server = new Server({ name: 'ffmpeg', version: '1.0.0' }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map(tool => ({
   name: tool.name, description: tool.description, inputSchema: tool.inputSchema,

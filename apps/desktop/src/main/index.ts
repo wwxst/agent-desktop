@@ -1105,10 +1105,10 @@ function registerIpcHandlers(): void {
         const source = session.pendingSessionStart;
         // 在执行前消费；失败或取消后的继续任务不会重放已触发的启动命令。
         delete session.pendingSessionStart;
-        await runHostOperation(session, preparedStart.turnId, 'session-start', '运行会话启动钩子。',
+        if (extensions.hookEvents.has('SessionStart')) await runHostOperation(session, preparedStart.turnId, 'session-start', '运行会话启动钩子。',
           () => extensions.runHooks('SessionStart', { session_id: activeSessionId, source }));
       }
-      if (recovery === undefined) await runHostOperation(session, preparedStart.turnId, 'prompt-submit', '运行用户提示提交钩子。',
+      if (recovery === undefined && extensions.hookEvents.has('UserPromptSubmit')) await runHostOperation(session, preparedStart.turnId, 'prompt-submit', '运行用户提示提交钩子。',
         () => extensions.runHooks('UserPromptSubmit', { prompt: prompt.trim(), session_id: activeSessionId }));
       if (extensions.instructions !== '' || whisperUnavailable !== undefined) {
         const base = agent.systemPrompt.build();
@@ -1175,7 +1175,7 @@ function registerIpcHandlers(): void {
           },
         },
       );
-      if (recovery === undefined) await runHostOperation(session, result.turnId, 'stop', '运行本轮停止钩子。',
+      if (recovery === undefined && extensions.hookEvents.has('Stop')) await runHostOperation(session, result.turnId, 'stop', '运行本轮停止钩子。',
         () => extensions.runHooks('Stop', { session_id: activeSessionId, response: result.responseText }));
       await closeExtensionsSafely();
       // 产物身份是真实路径；文件名只是给界面看的标签，因此同名不同目录可以并存。
@@ -1439,6 +1439,14 @@ void app.whenReady().then(async () => {
     dialog.showErrorBox('无法恢复本地会话', message);
     app.quit();
     return;
+  }
+
+  try {
+    await extensionStore().initializeDefaults();
+  } catch (error) {
+    if (!(error instanceof Error) || error instanceof TypeError) throw error;
+    // 基础资源损坏由插件页展示真实错误，普通对话和文件任务仍可进入。
+    console.error('基础插件初始化失败：', error);
   }
 
   // 源码开发窗口没有安装位置，不能使用安装包更新器。

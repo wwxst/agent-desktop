@@ -78,12 +78,15 @@ describe('Whisper host adapter', () => {
   it('isolates a failed Whisper MCP connection and preserves other capabilities without any fallback', async () => {
     const root = await mkdtemp(join(tmpdir(), 'whisper-connection-')); roots.push(root);
     const script = join(root, 'closed.cjs'); await writeFile(script, 'process.exit(1)');
+    const audio = join(root, 'audio.wav'); await writeFile(audio, 'WAV');
     const plugin: PluginFiles = { name: 'whisper', directory: root, skills: [], item: { id: 'plugin:whisper', name: 'Whisper', description: '', kind: 'plugin', source: 'builtin', enabled: true, installed: true }, servers: [{ name: 'whisper', command: 'node', args: [script] }] };
-    const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true);
-    try { expect(runtime.tools).toEqual([]); expect(runtime.instructions).toContain('Whisper 连接失败'); }
+    const options = { whisperEnvironment: { WHISPER_CLI_PATH: process.execPath, WHISPER_MODEL_PATH: join(root, 'model.bin') },
+      whisperAccess: { workspace: { confirmedDirectory: () => root }, attachments: () => [], events: () => [] } };
+    const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, undefined, undefined, options);
+    try { expect(await runtime.tools[0]!.execute({ audioPath: audio }, context)).toMatchObject({ status: 'error', failureKind: 'permanent', message: expect.stringContaining('Whisper 连接失败') }); }
     finally { await runtime.close(); }
-    const refused = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => false);
-    try { expect(refused.tools).toEqual([]); } finally { await refused.close(); }
+    const refused = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => false, undefined, undefined, options);
+    try { expect(await refused.tools[0]!.execute({ audioPath: audio }, context)).toMatchObject({ status: 'error', failureKind: 'denied' }); } finally { await refused.close(); }
   });
 
   it('preserves the public transcript contract and canonicalizes an authorized path', async () => {

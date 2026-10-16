@@ -287,9 +287,21 @@ describe('actual extension runtime tool chain', () => {
       servers: files.servers.map(server => ({ ...server, name })) };
     const error = new SessionPersistenceError(new Error('startup checkpoint failed'));
     const connect = vi.spyOn(Client.prototype, 'connect');
-    await expect(prepareExtensions({ plugins: [builtin], skills: [] }, async () => { throw error; }, undefined, undefined,
-      { visionConfiguration: { visionApiKey: 'fixture', visionBaseUrl: 'https://vision.example/v1' } })).rejects.toBe(error);
-    expect(connect).not.toHaveBeenCalled();
+    const path = join(files.directory, name === 'whisper' ? 'fixture.wav' : 'fixture.png');
+    await writeFile(path, 'authorized fixture');
+    const access = { workspace: { confirmedDirectory: () => files.directory }, attachments: () => [], events: () => [] };
+    const approve = vi.fn(async () => { throw error; });
+    const runtime = await prepareExtensions({ plugins: [builtin], skills: [] }, approve, undefined, undefined,
+      { visionConfiguration: { visionApiKey: 'fixture', visionBaseUrl: 'https://vision.example/v1' },
+        whisperEnvironment: { WHISPER_CLI_PATH: process.execPath, WHISPER_MODEL_PATH: path }, whisperAccess: access, visionAccess: access });
+    try {
+      expect(approve).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      const input = name === 'whisper' ? { audioPath: path } : { images: [{ path, timestamp: 0 }] };
+      await expect(runtime.tools[0]!.execute(input, { toolCallId: 'lazy-start' as never, reportProgress: () => {} })).rejects.toBe(error);
+      expect(approve).toHaveBeenCalledOnce();
+      expect(connect).not.toHaveBeenCalled();
+    } finally { await runtime.close(); }
   });
 
   it('keeps tools wrapped by process hooks opaque even when the inner tool is read-only', async () => {

@@ -12,6 +12,7 @@ files:
   - dist/preload/**/*
   - dist/renderer/**/*
   - resources/**/*
+  - bundled-media/**/*
 win:
   target: nsis
   artifactName: Agent-Desktop-Setup-${version}-${arch}.${ext}

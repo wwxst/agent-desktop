@@ -4,11 +4,13 @@
 
 ## 插件和技能
 
-左侧入口提供按 Codex 参考图实现的插件与技能管理页：分类双列、搜索、详情、技能来源及已安装导航。默认进入个人插件，展示内置资源与实际安装；已撤下未接通服务的官方推荐目录。支持主动添加市场、本地导入、安装、启停、更新、回滚和卸载。已启用技能按任务描述匹配，也可输入 `$local-file-review` 指定。内置“语义视频剪辑”插件包含 `semantic-editing` 与 `short-drama-editing`。
+左侧入口提供按 Codex 参考图实现的插件与技能管理页：分类双列、搜索、详情、技能来源及已安装导航。默认进入公开插件，展示随包资源与用户主动添加市场的条目；已撤下未接通服务的官方推荐目录。支持主动添加市场、本地导入、安装、启停、更新、回滚和卸载。已启用技能按任务描述匹配，也可输入 `$local-file-review` 指定。内置“语义视频剪辑”插件包含 `semantic-editing` 与 `short-drama-editing`。
 
-Desktop 的十四项 FFmpeg 专业工具由独立“FFmpeg”插件提供；Windows x64 用户在插件页安装后即可使用，无需另装 Node、FFmpeg 或填写程序路径。安装从可信固定来源下载并校验 FFmpeg 8.1.2，支持禁用、更新、回滚和卸载。“语义视频剪辑”仅提供工作方法并声明工具依赖。缺少 FFmpeg 插件时普通任务继续，依赖媒体工具的验收明确受阻；CLI 仍显式使用本机实现。权限、结果契约及分发边界见 [FFmpeg 插件边界](docs/architecture.md#desktop-ffmpeg-插件) 和 [验收记录](docs/acceptance/ffmpeg-plugin-20261011.md)。
+Windows x64 完整包首次启动会离线安装并启用“语义视频剪辑”“FFmpeg”“Whisper”“Vision”四个基础插件，同时准备 Small 多语言语音模型，无需另装 Node、FFmpeg 或填写程序路径。后续启动尊重用户的禁用和卸载选择。普通问答不启动这些媒体服务，首次实际调用才按聊天权限模式执行启动和工具审批；联网模型仍需用户配置供应商与密钥。其它平台默认提供语义视频剪辑技能和 Vision，不提供 Windows 本地媒体运行资源。
 
-Whisper 独立提供 `transcribe_audio`：插件详情安装官方 CPU 运行资源及 Small 多语言模型，支持本地导入、完整性检查和模型删除；卸载插件保留模型。可独立识别 WAV，也可与 FFmpeg 和视频剪辑技能组合。禁用或卸载后没有 Desktop 内置语音回退，带音轨的语义验收明确受阻。边界及真实安装版证据见 [Whisper 插件](docs/architecture.md#desktop-whisper-插件) 和 [第三阶段验收](docs/acceptance/whisper-plugin-baseline-20261012.md)。
+Desktop 的十四项 FFmpeg 专业工具由独立“FFmpeg”插件提供；完整包携带已锁定并校验的 FFmpeg 8.1.2，支持禁用、更新、回滚和卸载。“语义视频剪辑”仅提供工作方法并声明工具依赖。缺少 FFmpeg 插件时普通任务继续，依赖媒体工具的验收明确受阻；CLI 仍显式使用本机实现。权限、结果契约及公开发行前仍需补齐的对应源码材料见 [FFmpeg 插件边界](docs/architecture.md#desktop-ffmpeg-插件)。
+
+Whisper 独立提供 `transcribe_audio`：官方 CPU 运行资源及 Small 多语言模型随完整包提供，模型删除后可从随包资源离线恢复，也支持本地导入和完整性检查；卸载插件保留模型。可独立识别 WAV，也可与 FFmpeg 和视频剪辑技能组合。禁用或卸载后没有 Desktop 内置语音回退，带音轨的语义验收明确受阻。边界见 [Whisper 插件](docs/architecture.md#desktop-whisper-插件)。
 
 Vision（视觉理解）独立提供 `analyze_images`：安装后使用本轮视觉路由解析出的供应商、模型、协议和加密密钥，观察已授权的 JPG/PNG 图片及视频抽帧。插件没有模型或程序下载；视觉请求会发送图片内容到所选服务，调用前审批展示该服务地址。禁用、卸载或视觉路由不可用时没有 Desktop 内置回退，普通任务继续，视觉语义验收明确受阻。边界与本阶段验证范围见 [Vision 插件](docs/architecture.md#desktop-vision-插件) 和 [验收记录](docs/acceptance/vision-plugin-20261012.md)。
 
@@ -127,7 +129,7 @@ pnpm deepseek-agent
 
 视觉分析会先抽取六张代表性 JPG，再通过 OpenAI Vision 返回结构化画面描述；本地语音理解会先由 FFmpeg 提取单声道 16 kHz 16-bit PCM WAV，再由 whisper.cpp 在本机返回完整文字和按秒的段落时间轴；DeepSeek 负责调用 Tool 和回答问题。运行视觉分析需要 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ffmpeg` 和 `ffprobe`；运行本地语音理解需要 `DEEPSEEK_API_KEY`、`WHISPER_MODEL_PATH`、`ffmpeg`、`ffprobe` 和本机 `whisper-cli`，也可以通过 `WHISPER_CLI_PATH` 指定可执行文件路径。
 
-本地语音 Tool 接入、自动化测试、真实 FFmpeg WAV 提取、真实 whisper.cpp JSON 时间轴和 Desktop 插件端到端链路均已验证。`transcribe_audio` 返回完整 `text`，并通过 `segments.start`、`segments.end` 和 `segments.text` 表示每段语音在视频第几秒说了什么。Desktop 的 Whisper 插件在 Windows x64 上从锁定的官方来源安装 CPU 运行资源，模型在插件详情中单独下载或导入并校验；不要求用户安装 Node、配置 `WHISPER_CLI_PATH` 或填写模型路径。CLI 仍是显式本机实现消费者。
+本地语音 Tool 接入、自动化测试、真实 FFmpeg WAV 提取、真实 whisper.cpp JSON 时间轴和 Desktop 插件端到端链路均已验证。`transcribe_audio` 返回完整 `text`，并通过 `segments.start`、`segments.end` 和 `segments.text` 表示每段语音在视频第几秒说了什么。Desktop 的 Windows x64 完整包携带已锁定的 Whisper CPU 运行资源和 Small 模型，首次启动离线安装；模型可在插件详情删除、离线恢复或导入并校验；不要求用户安装 Node、配置 `WHISPER_CLI_PATH` 或填写模型路径。CLI 仍是显式本机实现消费者。
 
 基于内容剪辑时，Agent 会先分析整段画面，在需要时进一步检查局部时间范围，然后自主选择保留片段并使用现有裁剪和拼接 Tool 生成新视频。
 
@@ -139,7 +141,7 @@ pnpm ffmpeg-agent
 
 所有 CLI 都输入 `/exit` 退出。仓库不会读取 `.env` 文件；CLI 不保存或输出 API Key，Desktop 设置中的密钥由系统安全存储加密保存。
 
-运行 Desktop（桌面应用）时，文字任务需要当前对话模型所属供应商的有效 API 密钥；默认 DeepSeek 可通过 `DEEPSEEK_API_KEY` 或设置页配置。需要语音理解时，在“插件和技能”中安装 Whisper 插件及其模型：
+运行 Desktop（桌面应用）时，文字任务需要当前对话模型所属供应商的有效 API 密钥；默认 DeepSeek 可通过 `DEEPSEEK_API_KEY` 或设置页配置。Windows x64 完整包首次启动已准备 Whisper 插件和模型；主动删除模型后，可在“插件和技能”中离线恢复：
 
 ```bash
 pnpm desktop

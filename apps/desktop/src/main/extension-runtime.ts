@@ -16,6 +16,9 @@ import { adaptFFmpegTool, FFMPEG_TOOLS, type ProbeFileAccess } from './ffmpeg-to
 import { adaptWhisperTool, WHISPER_TOOLS, type WhisperFileAccess } from './whisper-tool.js';
 import { adaptVisionTool, VISION_TOOLS } from './vision-tool.js';
 import type { RuntimeConfiguration } from './runtime-settings.js';
+import { ffmpegTools } from '../plugins/ffmpeg-tools.js';
+import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
+import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
 
 type Approve = (request: PluginApproval, signal?: AbortSignal) => Promise<boolean>;
 
@@ -73,10 +76,10 @@ export async function prepareExtensions(
   options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider; readonly probeAccess?: ProbeFileAccess; readonly whisperAccess?: WhisperFileAccess; readonly visionAccess?: ProbeFileAccess;
     readonly whisperEnvironment?: { readonly WHISPER_MODEL_PATH: string; readonly WHISPER_CLI_PATH: string };
     readonly visionConfiguration?: Pick<RuntimeConfiguration, 'visionApiKey' | 'visionBaseUrl' | 'visionModel' | 'visionProtocol' | 'visionMaxOutputTokens'> },
-): Promise<{ tools: Tool[]; instructions: string; runHooks(event: string, input: Readonly<Record<string, unknown>>): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
+): Promise<{ tools: Tool[]; instructions: string; hookEvents: ReadonlySet<string>; runHooks(event: string, input: Readonly<Record<string, unknown>>): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
   const tools: Tool[] = [];
   const clients: Client[] = [];
-  const connectedServers = new Set<string>();
+  const availableServers = new Set<string>();
   const unavailableServices: string[] = [];
   const selectedSkills = selectSkills(files.skills.filter(skill => skill.item.enabled
     && (skill.item.allowImplicitInvocation !== false || explicitlyMentionsSkill(skill.item.name, prompt))), prompt);
@@ -94,6 +97,8 @@ export async function prepareExtensions(
     if (dependency.type !== 'mcp' || dependency.url === undefined || plugins.some(plugin => plugin.servers.some(server => server.name === dependency.value))) continue;
     plugins.push({ name: skill.item.name, item: { ...skill.item, id: skill.item.id, name: skill.item.displayName ?? skill.item.name }, directory: skill.directory, skills: [], servers: [{ name: dependency.value, type: dependency.transport === 'sse' ? 'sse' : 'http', url: dependency.url, command: '', args: [] }] });
   }
+  // 宿主只为当前确有命令的钩子写入执行事实，避免空调用反复同步提交 SQLite。
+  const hookEvents = new Set(plugins.flatMap(plugin => plugin.hooks?.map(hook => hook.event) ?? []));
   const runHooks = async (event: string, input: Readonly<Record<string, unknown>>) => {
     for (const plugin of plugins) for (const hook of plugin.hooks ?? []) {
       // 启动钩子匹配 startup/resume 来源；工具钩子匹配真实工具名。
@@ -131,7 +136,7 @@ export async function prepareExtensions(
       });
     }
   };
-  const wrapTool = (tool: Tool): Tool => !plugins.some(plugin => (plugin.hooks?.length ?? 0) > 0) ? tool : ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
+  const wrapTool = (tool: Tool): Tool => hookEvents.size === 0 ? tool : ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
     async execute(input, context) { await runHooks('PreToolUse', { tool_name: tool.name, tool_input: input }); const result = await tool.execute(input, context); await runHooks('PostToolUse', { tool_name: tool.name, tool_input: input, tool_response: result }); return result; },
   });
   // 取消回调与 finally 可能同时关闭；两者等待同一个关闭操作，避免第二次调用提前返回。
@@ -149,124 +154,140 @@ export async function prepareExtensions(
         if (plugin.item.source === 'builtin' && plugin.item.id === 'plugin:video-editing' && server.name === 'ffmpeg-probe') continue;
         const isWhisper = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper' && server.name === 'whisper';
         const isVision = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:vision' && server.name === 'vision';
+        const isFFmpeg = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:ffmpeg' && server.name === 'ffmpeg';
         const vision = isVision ? options?.visionConfiguration : undefined;
+        if (isWhisper && options?.whisperEnvironment === undefined) {
+          unavailableServices.push('Whisper 不可用：请先准备本地语音模型和运行程序。');
+          continue;
+        }
         // 未选择视觉模型或缺少密钥时不启动上传服务，普通对话与其它插件仍然可用。
         if (isVision && (vision?.visionBaseUrl === undefined || vision.visionApiKey === undefined)) {
           unavailableServices.push(vision?.visionBaseUrl === undefined ? 'Vision 不可用：请先在设置中选择视觉模型。'
             : 'Vision 不可用：请先在设置中配置当前视觉模型的 API 密钥。');
           continue;
         }
-        const firstTool = tools.length;
-        let currentClient: Client | undefined;
-        let connected = false;
-        try {
-        const substitute = (value: string) => {
-          const resolved = value.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory)
-            .replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_match, name: string) => (isWhisper ? options?.whisperEnvironment?.[name as keyof NonNullable<NonNullable<typeof options>['whisperEnvironment']>] : undefined)
-              ?? (() => { throw new Error(`请先在 ${plugin.item.name} 的连接配置中填写 ${name}。`); })());
-          return resolved;
-        };
-        const configuredCommand = substitute(server.command);
-        // Electron 自带 Node 运行时供本地 Node 插件使用，避免用户额外安装 Node。
-        const command = configuredCommand === 'node' ? process.execPath : configuredCommand.startsWith('.') ? resolve(plugin.directory, configuredCommand) : configuredCommand;
-        const args = server.args.map(substitute);
-        if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: server.name,
-          command: server.url ?? JSON.stringify([command, ...args]), workingDirectory: plugin.directory }, signal)) continue;
-        signal?.throwIfAborted();
-        const client = new Client({ name: 'agent-desktop', version: '0.0.2' });
-        currentClient = client;
-        clients.push(client);
-        const provider = server.url === undefined ? undefined : options?.authProvider?.(plugin, server);
-        const remoteOptions = { ...(server.headers === undefined ? {} : { requestInit: { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) } }), ...(provider === undefined ? {} : { authProvider: provider }) };
-        const transport = server.url !== undefined
-          ? server.type === 'sse' ? new SSEClientTransport(new URL(server.url), remoteOptions) : new StreamableHTTPClientTransport(new URL(server.url), remoteOptions)
-          : new StdioClientTransport({ command, args, cwd: plugin.directory,
-            // 视觉密钥只在启动审批后交给随包服务，不写进清单、命令参数或公开审批内容。
-            env: { ...getDefaultEnvironment(), ...Object.fromEntries(Object.entries(server.env ?? {}).map(([key, value]) => [key, substitute(value)])), ...(isWhisper ? options?.whisperEnvironment : {}),
-              ...(vision === undefined ? {} : { VISION_API_KEY: vision.visionApiKey!, VISION_BASE_URL: vision.visionBaseUrl!,
-                ...(vision.visionModel === undefined ? {} : { VISION_MODEL: vision.visionModel }),
-                ...(vision.visionProtocol === undefined ? {} : { VISION_PROTOCOL: vision.visionProtocol }),
-                ...(vision.visionMaxOutputTokens === undefined ? {} : { VISION_MAX_OUTPUT_TOKENS: String(vision.visionMaxOutputTokens) }) }),
-              ...(configuredCommand === 'node' ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } });
-        // SDK 的 HTTP sessionId 明确允许 undefined，与本仓库 exactOptionalPropertyTypes 的接口声明不一致。
-        await client.connect(transport as Parameters<Client['connect']>[0]);
-        connected = true;
-        signal?.throwIfAborted();
-        let cursor: string | undefined;
-        do {
-          const listing = await client.listTools(cursor === undefined ? {} : { cursor }, { ...(signal === undefined ? {} : { signal }) });
-          for (const definition of listing.tools) {
-            const original = `p_${plugin.item.id.replace(/^(plugin|skill):/, '')}_${server.name}_${definition.name}`;
-            const qualified = original.replaceAll(/[^a-zA-Z0-9_-]/g, '_');
-            // 替换特殊字符或截断时加上原标识摘要，保留不同远程工具的身份。
-            const name = qualified.length <= 64 && qualified === original ? qualified : `${qualified.slice(0, 47)}_${createHash('sha256').update(original).digest('hex').slice(0, 16)}`;
-            const tool: Tool = { name, description: `[${plugin.item.name} / ${server.name}] ${definition.description ?? definition.name}`,
-              inputSchema: definition.inputSchema, executionBoundary: 'checkpointed',
-              async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
-                context.signal?.throwIfAborted();
-                if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', failureKind: 'permanent', message: '插件工具参数必须是对象。' };
-                // 图片上传审批显示目标服务，路径由视觉适配器先解析授权；密钥不进入审批。
-                const approved = await approve({ kind: 'plugin-tool', pluginName: vision === undefined ? plugin.item.name : `${plugin.item.name} 图片上传 → ${new URL(vision.visionBaseUrl!).origin}`, serverName: server.name,
-                  toolName: definition.name, arguments: JSON.stringify(input) }, context.signal).catch((error: unknown) => {
-                  if (error instanceof SessionPersistenceError) throw error;
-                  // 审批门禁以 AbortError 结束等待，原取消/保存错误仍以 signal.reason 为准。
-                  context.signal?.throwIfAborted();
-                  throw error;
-                });
-                context.signal?.throwIfAborted();
-                if (!approved) {
-                  return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' };
-                }
-                // 宿主批准后才跨过外部请求边界；保存失败在请求 try/catch 外原样传播。
-                context.checkpoint?.({ kind: 'mcp', pluginId: plugin.item.id, serverName: server.name, toolName: definition.name });
-                let result;
-                try { result = await client.callTool({ name: definition.name, arguments: input as Record<string, unknown> }, undefined,
-                  { ...(context.signal === undefined ? {} : { signal: context.signal }),
-                    ...(isWhisper ? { onprogress: () => {}, resetTimeoutOnProgress: true } : {}) }); }
-                catch (error) {
-                  if (error instanceof SessionPersistenceError) throw error;
-                  context.signal?.throwIfAborted();
-                  if (!(error instanceof Error) || error instanceof ToolExecutionError) throw error;
-                  throw new ToolExecutionError(error.message, 'unknown-outcome', { cause: error });
-                }
-                context.signal?.throwIfAborted();
-                // 服务端失败只说明返回了错误，不能证明它没有执行部分外部写入。
-                return result.isError === true ? { status: 'error', failureKind: 'unknown-outcome', message: '插件工具返回失败。', output: result } : { status: 'success', output: result };
-              },
-            };
-            // 仅随包安装的已知服务可占用既有公开名；同名第三方插件仍使用限定名称。
-            const mapped = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:ffmpeg'
-              && server.name === 'ffmpeg' && FFMPEG_TOOLS.has(definition.name)
-              ? adaptFFmpegTool(tool, options?.probeAccess, definition.name)
-              : plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper'
-                && server.name === 'whisper' && WHISPER_TOOLS.has(definition.name)
-                ? adaptWhisperTool(tool, options?.whisperAccess)
-                : isVision && VISION_TOOLS.has(definition.name) ? adaptVisionTool(tool, options?.visionAccess) : tool;
-            if (tools.some(existing => existing.name === mapped.name)) throw new Error(`插件工具名称冲突：${mapped.name}`);
-            tools.push(mapped);
-          }
-          cursor = listing.nextCursor;
-        } while (cursor !== undefined);
-        connectedServers.add(server.name);
-        } catch (error) {
-          // 保存故障属于当前轮次的致命事实，不能被媒体启动隔离降级成服务不可用。
-          if (error instanceof SessionPersistenceError || error instanceof ToolExecutionError) throw error;
+        // 随包服务的定义来自同一工具实现；首次实际调用才申请启动，普通问答不拉起媒体进程。
+        const deferredDefinitions = isFFmpeg ? ffmpegTools()
+          : isWhisper ? [new TranscribeAudioTool({ modelPath: options!.whisperEnvironment!.WHISPER_MODEL_PATH })]
+          : isVision ? [new AnalyzeImagesTool({ apiKey: vision!.visionApiKey!, protocol: vision!.visionProtocol ?? 'responses' })] : undefined;
+        const connect = async (): Promise<Client | undefined> => {
+          const substitute = (value: string) => {
+            const resolved = value.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory)
+              .replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_match, name: string) => (isWhisper ? options?.whisperEnvironment?.[name as keyof NonNullable<NonNullable<typeof options>['whisperEnvironment']>] : undefined)
+                ?? (() => { throw new Error(`请先在 ${plugin.item.name} 的连接配置中填写 ${name}。`); })());
+            return resolved;
+          };
+          const configuredCommand = substitute(server.command);
+          // Electron 自带 Node 运行时供本地 Node 插件使用，避免用户额外安装 Node。
+          const command = configuredCommand === 'node' ? process.execPath : configuredCommand.startsWith('.') ? resolve(plugin.directory, configuredCommand) : configuredCommand;
+          const args = server.args.map(substitute);
+          if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: server.name,
+            command: server.url ?? JSON.stringify([command, ...args]), workingDirectory: plugin.directory }, signal)) return undefined;
           signal?.throwIfAborted();
-          if ((!isWhisper && !isVision) || connected || !(error instanceof Error) || error instanceof TypeError) throw error;
-          await currentClient?.close();
-          tools.splice(firstTool);
-          unavailableServices.push(isWhisper ? `Whisper 连接失败：${error.message}。语音识别不可用，请重新安装插件。`
-            : `Vision 连接失败：${error.message}。画面分析不可用，请重新安装插件。`);
+          const client = new Client({ name: 'agent-desktop', version: '0.0.2' });
+          clients.push(client);
+          const provider = server.url === undefined ? undefined : options?.authProvider?.(plugin, server);
+          const remoteOptions = { ...(server.headers === undefined ? {} : { requestInit: { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) } }), ...(provider === undefined ? {} : { authProvider: provider }) };
+          const transport = server.url !== undefined
+            ? server.type === 'sse' ? new SSEClientTransport(new URL(server.url), remoteOptions) : new StreamableHTTPClientTransport(new URL(server.url), remoteOptions)
+            : new StdioClientTransport({ command, args, cwd: plugin.directory,
+              // 视觉密钥只在启动审批后交给随包服务，不写进清单、命令参数或公开审批内容。
+              env: { ...getDefaultEnvironment(), ...Object.fromEntries(Object.entries(server.env ?? {}).map(([key, value]) => [key, substitute(value)])), ...(isWhisper ? options?.whisperEnvironment : {}),
+                ...(vision === undefined ? {} : { VISION_API_KEY: vision.visionApiKey!, VISION_BASE_URL: vision.visionBaseUrl!,
+                  ...(vision.visionModel === undefined ? {} : { VISION_MODEL: vision.visionModel }),
+                  ...(vision.visionProtocol === undefined ? {} : { VISION_PROTOCOL: vision.visionProtocol }),
+                  ...(vision.visionMaxOutputTokens === undefined ? {} : { VISION_MAX_OUTPUT_TOKENS: String(vision.visionMaxOutputTokens) }) }),
+                ...(configuredCommand === 'node' ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } });
+          // SDK 的 HTTP sessionId 明确允许 undefined，与本仓库 exactOptionalPropertyTypes 的接口声明不一致。
+          try { await client.connect(transport as Parameters<Client['connect']>[0]); }
+          catch (error) { await client.close(); throw error; }
+          signal?.throwIfAborted();
+          return client;
+        };
+        let connecting: Promise<Client | undefined> | undefined;
+        const getClient = () => connecting ??= connect();
+        const definitions: { name: string; description?: string | undefined; inputSchema: unknown }[] = [];
+        if (deferredDefinitions !== undefined) definitions.push(...deferredDefinitions);
+        else {
+          const client = await getClient();
+          if (client === undefined) continue;
+          let cursor: string | undefined;
+          do {
+            const listing = await client.listTools(cursor === undefined ? {} : { cursor }, { ...(signal === undefined ? {} : { signal }) });
+            definitions.push(...listing.tools);
+            cursor = listing.nextCursor;
+          } while (cursor !== undefined);
         }
+        for (const definition of definitions) {
+          const original = `p_${plugin.item.id.replace(/^(plugin|skill):/, '')}_${server.name}_${definition.name}`;
+          const qualified = original.replaceAll(/[^a-zA-Z0-9_-]/g, '_');
+          // 替换特殊字符或截断时加上原标识摘要，保留不同远程工具的身份。
+          const name = qualified.length <= 64 && qualified === original ? qualified : `${qualified.slice(0, 47)}_${createHash('sha256').update(original).digest('hex').slice(0, 16)}`;
+          const tool: Tool = { name, description: `[${plugin.item.name} / ${server.name}] ${definition.description ?? definition.name}`,
+            inputSchema: definition.inputSchema, executionBoundary: 'checkpointed',
+            async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+              context.signal?.throwIfAborted();
+              if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', failureKind: 'permanent', message: '插件工具参数必须是对象。' };
+              let client: Client | undefined;
+              try { client = await getClient(); }
+              catch (error) {
+                if (error instanceof SessionPersistenceError || error instanceof ToolExecutionError) throw error;
+                context.signal?.throwIfAborted();
+                if (!(error instanceof Error) || error instanceof TypeError) throw error;
+                // 握手失败尚未调用媒体工具；保留本轮失败，不自动重连或影响其它服务。
+                return { status: 'error', failureKind: 'permanent', message: `${plugin.item.name} 连接失败：${error.message}` };
+              }
+              if (client === undefined) return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' };
+              // 图片上传审批显示目标服务，路径由视觉适配器先解析授权；密钥不进入审批。
+              const approved = await approve({ kind: 'plugin-tool', pluginName: vision === undefined ? plugin.item.name : `${plugin.item.name} 图片上传 → ${new URL(vision.visionBaseUrl!).origin}`, serverName: server.name,
+                toolName: definition.name, arguments: JSON.stringify(input) }, context.signal).catch((error: unknown) => {
+                if (error instanceof SessionPersistenceError) throw error;
+                // 审批门禁以 AbortError 结束等待，原取消/保存错误仍以 signal.reason 为准。
+                context.signal?.throwIfAborted();
+                throw error;
+              });
+              context.signal?.throwIfAborted();
+              if (!approved) {
+                return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' };
+              }
+              // 宿主批准后才跨过外部请求边界；保存失败在请求 try/catch 外原样传播。
+              context.checkpoint?.({ kind: 'mcp', pluginId: plugin.item.id, serverName: server.name, toolName: definition.name });
+              let result;
+              try { result = await client.callTool({ name: definition.name, arguments: input as Record<string, unknown> }, undefined,
+                { ...(context.signal === undefined ? {} : { signal: context.signal }),
+                  ...(isWhisper ? { onprogress: () => {}, resetTimeoutOnProgress: true } : {}) }); }
+              catch (error) {
+                if (error instanceof SessionPersistenceError) throw error;
+                context.signal?.throwIfAborted();
+                if (!(error instanceof Error) || error instanceof ToolExecutionError) throw error;
+                throw new ToolExecutionError(error.message, 'unknown-outcome', { cause: error });
+              }
+              context.signal?.throwIfAborted();
+              // 服务端失败只说明返回了错误，不能证明它没有执行部分外部写入。
+              return result.isError === true ? { status: 'error', failureKind: 'unknown-outcome', message: '插件工具返回失败。', output: result } : { status: 'success', output: result };
+            },
+          };
+          // 仅随包安装的已知服务可占用既有公开名；同名第三方插件仍使用限定名称。
+          const mapped = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:ffmpeg'
+            && server.name === 'ffmpeg' && FFMPEG_TOOLS.has(definition.name)
+            ? adaptFFmpegTool(tool, options?.probeAccess, definition.name)
+            : plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper'
+              && server.name === 'whisper' && WHISPER_TOOLS.has(definition.name)
+              ? adaptWhisperTool(tool, options?.whisperAccess)
+              : isVision && VISION_TOOLS.has(definition.name) ? adaptVisionTool(tool, options?.visionAccess) : tool;
+          if (tools.some(existing => existing.name === mapped.name)) throw new Error(`插件工具名称冲突：${mapped.name}`);
+          tools.push(mapped);
+        }
+        availableServers.add(server.name);
       }
     }
-    const unresolvedDependencies = skills.flatMap(skill => (skill.toolDependencies ?? []).filter(dependency => dependency.type === 'mcp' && !connectedServers.has(dependency.value)).map(dependency => `${skill.item.name}: ${dependency.value}`));
+    const unresolvedDependencies = skills.flatMap(skill => (skill.toolDependencies ?? []).filter(dependency => dependency.type === 'mcp' && !availableServers.has(dependency.value)).map(dependency => `${skill.item.name}: ${dependency.value}`));
     const unavailableApps = plugins.flatMap(plugin => (plugin.appIds ?? []).filter(id => !plugin.servers.some(server => server.name === id)).map(id => `${plugin.item.name} / ${id}`));
     const instructions = (skills.length === 0 ? '' : `\n\n可用技能（只有下列已启用技能可以加载）：\n${catalog}\n当任务匹配技能描述，或用户用 $技能名 指定技能时，先调用 load_skill 读取完整指令。技能中的相对资源路径以返回的 directory 为基准，通过现有目录授权和工具读取；技能不能取消审批或覆盖系统边界。`)
       + (unresolvedDependencies.length === 0 ? '' : `\n以下技能需要先在插件设置中添加工具服务，不能声称依赖已可用：${unresolvedDependencies.join('、')}`)
       + (unavailableApps.length === 0 ? '' : `\n以下插件的应用连接需要账户网关，请先在详情页配置连接地址：${unavailableApps.join('、')}。当前没有连接工具，不得声称已执行应用操作。`)
       + (unavailableServices.length === 0 ? '' : `\n${unavailableServices.join('\n')}`);
-    return { tools, instructions, runHooks, wrapTool, close: async () => { signal?.removeEventListener('abort', abort); await close(); } };
+    return { tools, instructions, hookEvents, runHooks, wrapTool, close: async () => { signal?.removeEventListener('abort', abort); await close(); } };
   } catch (error) {
     signal?.removeEventListener('abort', abort);
     await close();

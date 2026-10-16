@@ -46,25 +46,27 @@ export async function verifyWhisperRuntime(root: string): Promise<string> {
     if (await realpath(path) !== path || !(await stat(path)).isFile()
       || (await stat(path)).size !== lock.files[name]!.size || await whisperFileDigest(path) !== lock.files[name]!.sha256) throw new Error(`Whisper ${name} 完整性校验失败。`);
   }
-  const executable = join(directory, 'whisper-cli.exe');
-  // 锁定摘要和官方版本 URL 共同确认版本；--help 检查 CPU 及系统运行库能否实际加载。
-  const { stdout, stderr } = await execute(executable, ['--help'], { windowsHide: true, timeout: 15_000 });
-  if (!(stdout + stderr).includes('--model')) throw new Error('Whisper CPU 程序或系统运行库不可用。');
-  return executable;
+  return join(directory, 'whisper-cli.exe');
 }
 
 /** 专用于 Whisper 内置插件，沿用已有暂存、归档缓存与版本回滚。 */
-export async function installWhisperRuntime(staging: string, archiveDirectory: string): Promise<void> {
+export async function installWhisperRuntime(staging: string, archiveDirectory: string, bundledArchive?: string): Promise<void> {
   const lock = await runtimeLock(staging);
   let installed = false;
   try { installed = (await stat(join(staging, 'runtime'))).isDirectory(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   if (!installed) {
-    await mkdir(archiveDirectory, { recursive: true });
-    const archive = join(archiveDirectory, `${lock.sha256}.zip`);
+    const archive = bundledArchive ?? join(archiveDirectory, `${lock.sha256}.zip`);
+    // 随包资源是默认安装的唯一来源，缺失或损坏时保持离线失败语义。
     let cached = false;
-    try { cached = await whisperFileDigest(archive) === lock.sha256; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (bundledArchive !== undefined) {
+      if (await whisperFileDigest(archive) !== lock.sha256) throw new Error('随包 Whisper 运行资源的 SHA-256 校验失败。');
+      cached = true;
+    } else {
+      await mkdir(archiveDirectory, { recursive: true });
+      try { cached = await whisperFileDigest(archive) === lock.sha256; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    }
     if (!cached) {
       const partial = `${archive}.partial`;
       try {
@@ -81,5 +83,8 @@ export async function installWhisperRuntime(staging: string, archiveDirectory: s
     await execute(join(process.env.SystemRoot, 'System32', 'tar.exe'), ['-xf', archive, '-C', staging], { windowsHide: true });
     await renameDirectory(join(staging, lock.archiveRoot), join(staging, 'runtime'));
   }
-  await verifyWhisperRuntime(staging);
+  const executable = await verifyWhisperRuntime(staging);
+  // 安装时检查可加载性；每轮只核对文件完整性，普通问答不启动语音进程。
+  const { stdout, stderr } = await execute(executable, ['--help'], { windowsHide: true, timeout: 15_000 });
+  if (!(stdout + stderr).includes('--model')) throw new Error('Whisper CPU 程序或系统运行库不可用。');
 }

@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { randomUUID } from 'node:crypto';
+import { arch, platform } from 'node:os';
 import type { ExtensionItem, ExtensionSnapshot, McpServerUpdate } from '@agent-desktop/client';
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import { ExtensionMarketplaces, marketPath } from './extension-marketplaces.js';
@@ -326,8 +327,63 @@ export class DesktopExtensions {
   private watchedRoots: string[] = [];
   private watchers: FSWatcher[] = [];
   private changeTimer: ReturnType<typeof setTimeout> | undefined;
+  private initializationError: string | undefined;
   constructor(private readonly databasePath: string, private readonly root: string, private readonly resources: string, private readonly connections?: ExtensionConnections, changed: () => void = () => {}) {
-    this.whisperModels = new WhisperModels(join(root, 'models', 'whisper'), join(resources, 'plugins', 'whisper', 'models.lock.json'), changed);
+    this.whisperModels = new WhisperModels(join(root, 'models', 'whisper'), join(resources, 'plugins', 'whisper', 'models.lock.json'), changed,
+      platform() === 'win32' && arch() === 'x64' ? join(resources, '..', 'bundled-media', 'models', 'ggml-small.bin') : undefined);
+  }
+  /** 首次准备基础插件；已有记录（包括用户卸空的记录）保留原选择。 */
+  async initializeDefaults(): Promise<void> {
+    this.initializationError = undefined;
+    if (readDesktopDocument(this.databasePath, 'extensions') !== null) return;
+    const localMedia = platform() === 'win32' && arch() === 'x64';
+    const defaults = catalog.filter(entry => entry.kind === 'plugin'
+      && (localMedia || entry.id === 'plugin:video-editing' || entry.id === 'plugin:vision'));
+    const staging = join(this.root, '.staging', `defaults-${randomUUID()}`);
+    const published: string[] = [];
+    const installed: InstalledExtension[] = [];
+    try {
+      await mkdir(staging, { recursive: true });
+      for (const entry of defaults) {
+        const source = join(this.resources, entry.directory);
+        const destination = this.directory('plugin', entry.name);
+        // 不覆盖未被数据库登记的已有目录，避免把不明文件当作可清理的残片。
+        try { await stat(destination); throw new Error(`基础插件目录已经存在：${destination}`); }
+        catch (error) { if (!missing(error)) throw error; }
+        await validatePackageLinks(source);
+        const prepared = join(staging, entry.name);
+        await cp(source, prepared, { recursive: true, dereference: true });
+        await this.prepareRuntime(prepared, entry.id, 'builtin', true);
+        const item = (await readPlugin(prepared, entry.id, 'builtin')).item;
+        installed.push({ id: entry.id, kind: 'plugin', name: entry.name, source: 'builtin', ...(item.version === undefined ? {} : { version: item.version }) });
+      }
+      if (localMedia) await this.whisperModels.install();
+      await mkdir(join(this.root, 'plugins'), { recursive: true });
+      for (const entry of defaults) {
+        const destination = this.directory('plugin', entry.name);
+        await renameDirectory(join(staging, entry.name), destination);
+        published.push(destination);
+      }
+      // 全部资源准备并发布成功后才提交，不能把半套安装登记为初始化完成。
+      this.save({ installed, disabled: [] });
+    } catch (error) {
+      for (const destination of published) await rm(destination, { recursive: true, force: true });
+      if (!(error instanceof Error)) throw error;
+      this.initializationError = `基础能力准备失败：${error.message}。请确认软件资源完整后在插件页刷新。`;
+      throw error;
+    } finally { await rm(staging, { recursive: true, force: true }); }
+  }
+  /** 随包档案优先复用；默认初始化必须离线完成，手动安装仍可下载锁定资源。 */
+  private async prepareRuntime(staging: string, id: string, origin: InstalledExtension['source'], bundledOnly = false): Promise<void> {
+    if (origin !== 'builtin' || (id !== 'plugin:ffmpeg' && id !== 'plugin:whisper')) return;
+    const lock = JSON.parse(await readFile(join(staging, 'runtime.lock.json'), 'utf8')) as { sha256: string };
+    const archive = join(this.resources, '..', 'bundled-media', 'archives', `${lock.sha256}.zip`);
+    let bundledArchive: string | undefined = archive;
+    if (!bundledOnly) {
+      try { await stat(archive); } catch (error) { if (!missing(error)) throw error; bundledArchive = undefined; }
+    }
+    if (id === 'plugin:ffmpeg') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'), bundledArchive);
+    else await installWhisperRuntime(staging, join(this.root, '.whisper-archives'), bundledArchive);
   }
   /** 独立配置整体加密，一次提交；公开列表只投影变量名称。 */
   private mcpRecords(): StandaloneMcpRecord[] {
@@ -472,9 +528,10 @@ export class DesktopExtensions {
       } else skills.push({ ...(await readSkillMetadata(directory, entry.id, 'builtin')).item, installed: false, enabled: false });
     }
     const markets = this.markets(); const errors: string[] = [];
+    if (this.initializationError !== undefined) errors.push(this.initializationError);
     if (plugins.some(item => item.id === 'plugin:video-editing' && item.installed)
       && !plugins.some(item => item.id === 'plugin:ffmpeg' && item.installed && item.enabled)) {
-      errors.push('视频剪辑需要安装并启用独立 FFmpeg 插件；旧版内含的探测服务已停用，请升级视频剪辑技能。会话和文件保留。');
+      errors.push('请在插件页安装并启用独立 FFmpeg 插件，以使用视频剪辑功能。');
     }
     const remoteItems: ExtensionItem[] = [];
     for (const entry of await markets.entries()) {
@@ -510,8 +567,7 @@ export class DesktopExtensions {
     await validatePackageLinks(source);
     await mkdir(join(this.root, '.staging'), { recursive: true }); const staging = join(this.root, '.staging', `${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`); await mkdir(join(this.root, `${kind}s`), { recursive: true });
     try { await cp(source, staging, { recursive: true, dereference: true });
-      if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
-      if (id === 'plugin:whisper' && origin === 'builtin') await installWhisperRuntime(staging, join(this.root, '.whisper-archives'));
+      await this.prepareRuntime(staging, id, origin);
       const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin); await renameDirectory(staging, destination); return parsed.item; } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
   }
   /** 先完成暂存目录解析，再交换旧目录；新包解析失败时旧版本仍然保留。 */
@@ -525,8 +581,7 @@ export class DesktopExtensions {
     let backedUp = false;
     try {
       await cp(source, staging, { recursive: true, dereference: true });
-      if (id === 'plugin:ffmpeg' && origin === 'builtin') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'));
-      if (id === 'plugin:whisper' && origin === 'builtin') await installWhisperRuntime(staging, join(this.root, '.whisper-archives'));
+      await this.prepareRuntime(staging, id, origin);
       const parsed = kind === 'plugin' ? await readPlugin(staging, id, origin) : await readSkill(staging, id, origin);
       try { await renameDirectory(destination, backup); backedUp = true; } catch (error) { if (!missing(error)) throw error; }
       try {
@@ -636,6 +691,7 @@ export class DesktopExtensions {
   }
   /** 本机内置资源同步：失败项不覆盖当前安装；不包含 Codex 远程插件同步。 */
   async reconcile(): Promise<ExtensionReconcileResult> {
+    await this.initializeDefaults();
     const state = this.state(); const changed: string[] = []; const failed: { id: string; message: string }[] = [];
     const installed = [...state.installed];
     for (let index = 0; index < installed.length; index += 1) {

@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExtensions, readPlugin } from '../src/main/extensions.js';
 import { readDesktopDocument } from '../src/main/desktop-database.js';
+import * as ffmpegRuntime from '../src/main/ffmpeg-runtime.js';
+import * as whisperRuntime from '../src/main/whisper-runtime.js';
 
 // 本套使用真实文件和 SQLite；Electron 运行资源下载不属于这些安装用例。
 vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extensions test'); } } }));
@@ -95,24 +97,44 @@ describe('Desktop extensions persisted local packages', () => {
     expect(await store.readSkill(preview.id)).toContain('开场钩子');
     expect(await store.skillPath(preview.id)).toContain('SKILL.md');
     await expect(store.skillPath('D:/private/SKILL.md')).rejects.toThrow('找不到技能');
-    await store.install('plugin:video-editing');
+    // 默认初始化验证真实目录及 SQLite；运行程序与模型在专项边界和真实桌面中验收。
+    const ffmpegInstall = vi.spyOn(ffmpegRuntime, 'installFFmpegRuntime').mockResolvedValue();
+    vi.spyOn(whisperRuntime, 'installWhisperRuntime').mockResolvedValue();
+    vi.spyOn(store.whisperModels, 'install').mockResolvedValue();
+    if (process.platform === 'win32' && process.arch === 'x64') {
+      ffmpegInstall.mockRejectedValueOnce(new Error('随包资源损坏'));
+      await expect(store.initializeDefaults()).rejects.toThrow('随包资源损坏');
+      expect(readDesktopDocument(database, 'extensions')).toBeNull();
+      await expect(realpath(join(root, 'extensions/plugins/video-editing'))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    await store.initializeDefaults();
     await store.install('skill:local-file-review');
     let snapshot = await store.list();
+    const defaults = process.platform === 'win32' && process.arch === 'x64'
+      ? ['plugin:video-editing', 'plugin:ffmpeg', 'plugin:whisper', 'plugin:vision'] : ['plugin:video-editing', 'plugin:vision'];
+    expect(snapshot.plugins.filter(item => item.installed).map(item => item.id).sort()).toEqual([...defaults].sort());
+    expect(snapshot.plugins.filter(item => item.installed).every(item => item.enabled)).toBe(true);
     expect(snapshot.skills.find(item => item.pluginId !== undefined)?.enabled).toBe(true);
     expect(snapshot.plugins.find(item => item.id === 'plugin:video-editing')?.skillNames).toEqual(['semantic-editing', 'short-drama-editing']);
-    expect((await store.files()).plugins[0]?.servers).toEqual([]);
-    expect(snapshot.errors?.join(' ')).toContain('独立 FFmpeg');
+    expect((await store.files()).plugins.find(item => item.item.id === 'plugin:video-editing')?.servers).toEqual([]);
+    if (process.platform === 'win32' && process.arch === 'x64') expect(snapshot.errors).toEqual([]);
     expect(snapshot.skills.find(item => item.name === 'short-drama-editing')?.description).toContain('短剧');
     expect(await store.skillPath(preview.id)).toBe(await realpath(join(root, 'extensions/plugins/video-editing/skills/short-drama-editing/SKILL.md')));
     await store.setEnabled('plugin:video-editing', false);
     const restored = new DesktopExtensions(database, join(root, 'extensions'), resources);
+    await restored.initializeDefaults();
     snapshot = await restored.list();
-    expect(snapshot.plugins[0]?.enabled).toBe(false);
+    expect(snapshot.plugins.find(item => item.id === 'plugin:video-editing')?.enabled).toBe(false);
     expect(snapshot.skills.find(item => item.pluginId !== undefined)?.enabled).toBe(false);
     await expect(restored.setEnabled('plugin:video-editing/semantic-editing', true)).rejects.toThrow('所属插件');
     await restored.uninstall('plugin:video-editing');
+    await restored.initializeDefaults();
+    expect((await restored.list()).plugins.find(item => item.id === 'plugin:video-editing')?.installed).toBe(false);
     expect((await restored.files()).skills.some(item => item.item.pluginId !== undefined)).toBe(false);
     expect(await restored.readDetail('skill:local-file-review')).toContain('delegate_tasks');
+    for (const item of [...(await restored.list()).plugins, ...(await restored.list()).skills].filter(item => item.installed && item.pluginId === undefined)) await restored.uninstall(item.id);
+    await restored.initializeDefaults();
+    expect((await restored.list()).plugins.every(item => !item.installed)).toBe(true);
   });
 
   it('copies imported resources and resolves installations relative to the current computer', async () => {

@@ -5,3 +5,4 @@ coverage/
 logs/
 playwright-report/
 test-results/
+apps/desktop/bundled-media/
