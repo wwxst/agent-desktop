@@ -1,5 +1,3 @@
-import type { ChildProcess } from 'node:child_process';
-import { channel } from 'node:diagnostics_channel';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -40,110 +38,25 @@ const interpreterPath = systemRoot === undefined
   : join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const realInterpreterAvailable = interpreterPath !== undefined && existsSync(interpreterPath);
 
-let diagnosticTestName = '';
-let stopProcessDiagnostics = () => {};
-
-/** 临时取证只记录阶段、时间和字节数，不记录命令、输出或环境变量值。 */
-function diagnose(
-  testName: string,
-  stage: string,
-  details: Record<string, string | number | boolean | null | undefined> = {},
-): void {
-  if (process.platform !== 'win32') return;
-  console.log(JSON.stringify({
-    source: 'run-command-diagnostic', testName, stage,
-    monotonicMs: performance.now(), unixMs: Date.now(), ...details,
-  }));
-}
-
-/** Node 创建子进程时 stdio 尚未就绪；只在 spawn 事件后订阅真实输出。 */
-function observeProcesses(testName: string): () => void {
-  if (process.platform !== 'win32') return () => {};
-  const children = new WeakMap<ChildProcess, number>();
-  let nextChildId = 0;
-  const created = channel('child_process');
-  const spawnStart = channel('tracing:child_process.spawn:start');
-  const spawnEnd = channel('tracing:child_process.spawn:end');
-  const onCreated = (message: unknown) => {
-    const child = (message as { process: ChildProcess }).process;
-    const childId = nextChildId++;
-    children.set(child, childId);
-    diagnose(testName, 'child.created', { childId });
-    child.once('spawn', () => {
-      diagnose(testName, 'child.spawn', { childId, pid: child.pid });
-      child.stdout?.once('data', (chunk: Buffer) => {
-        diagnose(testName, 'child.stdout.first', { childId, bytes: chunk.length });
-      });
-      child.stderr?.once('data', (chunk: Buffer) => {
-        diagnose(testName, 'child.stderr.first', { childId, bytes: chunk.length });
-      });
-    });
-    child.once('exit', (code, signal) => {
-      diagnose(testName, 'child.exit', { childId, code, signal });
-    });
-    child.once('close', (code, signal) => {
-      diagnose(testName, 'child.close', { childId, code, signal });
-    });
-  };
-  const onSpawnStart = (message: unknown) => {
-    const child = (message as { process: ChildProcess }).process;
-    diagnose(testName, 'os.spawn.start', { childId: children.get(child) });
-  };
-  const onSpawnEnd = (message: unknown) => {
-    const child = (message as { process: ChildProcess }).process;
-    diagnose(testName, 'os.spawn.end', { childId: children.get(child), pid: child.pid });
-  };
-  created.subscribe(onCreated);
-  spawnStart.subscribe(onSpawnStart);
-  spawnEnd.subscribe(onSpawnEnd);
-  return () => {
-    created.unsubscribe(onCreated);
-    spawnStart.unsubscribe(onSpawnStart);
-    spawnEnd.unsubscribe(onSpawnEnd);
-  };
-}
-
 let base: string;
 let root: string;
 let cleanupController: AbortController;
 let fixtureSignal: AbortSignal;
 const commandSettlements: Promise<void>[] = [];
 
-beforeEach(async ({ signal, task }) => {
-  diagnosticTestName = task.name;
-  diagnose(diagnosticTestName, 'fixture.begin', {
-    modulePathPresent: process.env.PSModulePath !== undefined,
-    modulePathItems: process.env.PSModulePath?.split(';').filter(Boolean).length ?? 0,
-    analysisCachePathPresent: process.env.PSModuleAnalysisCachePath !== undefined,
-    analysisCachePathItems: process.env.PSModuleAnalysisCachePath?.split(';').filter(Boolean).length ?? 0,
-  });
-  stopProcessDiagnostics = observeProcesses(diagnosticTestName);
-  const testName = diagnosticTestName;
-  signal.addEventListener('abort', () => diagnose(testName, 'test.signal.abort'), { once: true });
+beforeEach(async ({ signal }) => {
   cleanupController = new AbortController();
   // 测试超时必须取消真实进程；断言提前失败时也由 afterEach 取消尚未结束的操作。
   fixtureSignal = AbortSignal.any([signal, cleanupController.signal]);
-  fixtureSignal.addEventListener('abort', () => diagnose(testName, 'fixture.signal.abort', {
-    testSignalAborted: signal.aborted,
-    cleanupSignalAborted: cleanupController.signal.aborted,
-  }), { once: true });
   base = await realpath(await mkdtemp(join(tmpdir(), 'agent-desktop-command-test-')));
   root = base;
-  diagnose(testName, 'fixture.ready');
 });
 
 afterEach(async () => {
-  diagnose(diagnosticTestName, 'cleanup.begin');
-  try {
-    cleanupController.abort();
-    // 工具在 child.close 后才结束；先等真实收尾，再删除仍可能被 PowerShell 占用的目录。
-    await Promise.all(commandSettlements.splice(0));
-    diagnose(diagnosticTestName, 'cleanup.commands.settled');
-    await rm(base, { recursive: true, force: true });
-    diagnose(diagnosticTestName, 'cleanup.end');
-  } finally {
-    stopProcessDiagnostics();
-  }
+  cleanupController.abort();
+  // 工具在 child.close 后才结束；先等真实收尾，再删除仍可能被 PowerShell 占用的目录。
+  await Promise.all(commandSettlements.splice(0));
+  await rm(base, { recursive: true, force: true });
 });
 
 /** 可观察的审批替身：记录被批准的确切操作，并按用例决定是否批准。 */
@@ -158,7 +71,6 @@ function portFor(options: {
       confirmedDirectory: () => options.directory,
       requestApproval: async (target) => {
         requested.push(target);
-        diagnose(diagnosticTestName, 'approval.resolved', { approved: options.approve ?? true });
         return options.approve ?? true;
       },
       confirmDirectory: () => undefined,
@@ -176,19 +88,12 @@ function commandPort(): CommandPort {
 }
 
 function toolFor(port: WorkspacePort): RunCommandTool {
-  const testName = diagnosticTestName;
   const tool = new RunCommandTool(port, commandPort());
   const execute = tool.execute.bind(tool);
   tool.execute = (...parameters) => {
-    diagnose(testName, 'tool.enter');
     const operation = execute(...parameters);
     // 清理只观察是否结束；调用方仍拿原 Promise 断言成功或原始失败，不改写测试结果。
-    commandSettlements.push(operation.then(
-      (result) => diagnose(testName, 'tool.settled', { status: result.status }),
-      (error: unknown) => diagnose(testName, 'tool.settled', {
-        rejected: true, errorName: error instanceof Error ? error.name : typeof error,
-      }),
-    ));
+    commandSettlements.push(operation.then(() => undefined, () => undefined));
     return operation;
   };
   return tool;
