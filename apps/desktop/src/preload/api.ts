@@ -147,6 +147,7 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     decideApproval: async (requestId, approved) => {
       await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);
     },
+    setPermissionMode: mode => invokeExtension(DESKTOP_CHANNELS.setPermissionMode, mode) as ReturnType<DesktopApi['setPermissionMode']>,
     answerQuestion: async (requestId, answer) => {
       try { await ipc.invoke(DESKTOP_CHANNELS.answerQuestion, requestId, answer); }
       catch (error) { throw unwrapRemoteError(error); }

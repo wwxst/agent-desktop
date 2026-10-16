@@ -11,9 +11,9 @@ export const FFMPEG_READ_TOOLS = new Set(['probe_media', 'decode_video', 'detect
   'extract_video_range_frames', 'extract_audio', 'extract_full_video_frames']);
 export const FFMPEG_TOOLS = new Set([...FFMPEG_READ_TOOLS, ...VIDEO_WRITE_TOOL_NAMES]);
 
-/** 授权只取宿主事实；模型声明的目标和 MCP 审批都不能代替目录或附件授权。 */
+/** 授权只取宿主文件范围、目录和附件事实；模型声明的目标及 MCP 审批不自行扩大范围。 */
 export interface ProbeFileAccess {
-  readonly workspace: Pick<WorkspacePort, 'confirmedDirectory'>;
+  readonly workspace: Pick<WorkspacePort, 'confirmedDirectory' | 'fileAccess'>;
   readonly attachments: () => readonly string[];
   readonly events: () => readonly SessionEvent[];
 }
@@ -29,6 +29,7 @@ async function authorizedSource(path: string, access: ProbeFileAccess): Promise<
   requireLocalPath(path);
   const canonical = await realpath(path);
   requireLocalPath(canonical);
+  if (access.workspace.fileAccess === 'all') return true;
   const directory = access.workspace.confirmedDirectory();
   if (directory !== undefined && await isInsideDirectory(canonical, directory)) return true;
   for (const attachment of access.attachments()) {
@@ -123,6 +124,8 @@ async function authorizeOutput(path: string, access: ProbeFileAccess, video = fa
   if (!isAbsolute(path) && directory === undefined) throw new Error('相对路径需要先确认工作目录。');
   const canonical = await resolveThroughExistingParent(isAbsolute(path) ? path : resolve(directory!, path));
   requireLocalPath(canonical);
+  // 全文件授权放开中间产物目录；视频写出仍须归属于已声明输出项。
+  if (!video && access.workspace.fileAccess === 'all') return canonical;
   if (!video && directory !== undefined && (canonical === await realpath(directory) || await isInsideDirectory(canonical, directory))) return canonical;
   for (const item of readVideoDeliveryFacts(access.events()).items) {
     if (!await isInsideDirectory(canonical, item.workingDirectory)) continue;
@@ -218,11 +221,13 @@ export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined,
   };
 }
 
-/** 最终目标必须位于确认目录，或授权来源附件所在目录；声明不能自授予磁盘权限。 */
+/** 最终目标服从宿主文件范围；受限时只能使用确认目录或授权来源附件所在目录。 */
 async function authorizeTarget(path: string, sources: readonly string[], access: ProbeFileAccess): Promise<void> {
   requireLocalPath(path);
   if (!isAbsolute(path)) throw new Error('视频交付目标必须使用本地绝对路径。');
   const canonical = await resolveThroughExistingParent(path);
+  requireLocalPath(canonical);
+  if (access.workspace.fileAccess === 'all') return;
   const directory = access.workspace.confirmedDirectory();
   if (directory !== undefined && await isInsideDirectory(canonical, directory)) return;
   for (const source of sources) {

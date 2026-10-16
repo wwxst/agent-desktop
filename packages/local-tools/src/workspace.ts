@@ -4,11 +4,11 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
 /**
- * 宿主需要用户明确批准的一项确切操作。
+ * 需要宿主按当前权限模式审批的一项确切操作。
  * `kind` 让宿主和界面知道这是什么操作，`path` 是工具已经解析过的真实路径；
- * 修改文件还携带用户批准的原内容和新内容。
+ * 修改文件还携带待批准的原内容和新内容。
  *
- * 命令审批携带解释器、完整命令、执行起点和生效超时：用户批准的就是这些确切值，
+ * 命令审批携带解释器、完整命令、执行起点和生效超时：宿主批准的就是这些确切值，
  * 界面没有改写它们的通道，工具也不会在批准之后换一个解释器或目录执行。
  */
 export type ApprovalTarget =
@@ -40,10 +40,12 @@ export type ApprovalTarget =
  * 也不自己决定要不要审批——审批是宿主的职责，工具只等待宿主的答复。
  */
 export interface WorkspacePort {
+  /** 宿主明确授予全文件范围；未声明时仅使用已确认的工作目录。 */
+  readonly fileAccess?: 'all';
   /** 当前会话已经确认的工作目录；还没有基准时返回 undefined。 */
   confirmedDirectory(): string | undefined;
   /**
-   * 请求宿主展示一次操作确认。
+   * 请求宿主审批一次操作；宿主按当前权限模式决定是否需要展示确认。
    * 取消、关闭或请求失效时必须用 AbortError 结束等待，不能把取消伪装成普通工具失败。
    */
   requestApproval(target: ApprovalTarget, signal?: AbortSignal): Promise<boolean>;
@@ -71,11 +73,11 @@ function isAborted(signal: AbortSignal | undefined): boolean {
  * 把当前会话的工作目录设置为一个真实存在的目录。
  *
  * 目录是相对路径的解析基准，也是后续本地文件工具的读取范围来源，因此这里必须落在**真实路径**上：
- * 先 `realpath` 消掉 `..`、符号链接和 Windows 目录联接，再让用户确认，用户确认的就是实际会被使用的目录。
+ * 先 `realpath` 消掉 `..`、符号链接和 Windows 目录联接，再请求宿主审批，批准的就是实际会被使用的目录。
  */
 export class SetWorkingDirectoryTool implements Tool {
   readonly name = 'set_working_directory';
-  readonly description = '把当前会话的工作目录设置为一个已存在的目录；首次使用该目录需要用户确认';
+  readonly description = '把当前会话的工作目录设置为一个已存在的目录；首次使用该目录由宿主审批';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -116,7 +118,7 @@ export class SetWorkingDirectoryTool implements Tool {
       return errorResult(`无法使用该目录（${code ?? error.message}）：${candidate}`);
     }
 
-    // 已经确认的同一目录不重复审批；换到新目录必须重新确认。
+    // 已经确认的同一目录不重复审批；换到新目录重新交给宿主决定。
     if (base === directory) {
       return { status: 'success', output: { directory } };
     }

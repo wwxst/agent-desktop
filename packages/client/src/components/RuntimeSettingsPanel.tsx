@@ -145,7 +145,7 @@ export function RuntimeSettingsPanel({ api, isProcessing, isOpen, onClose, onOpe
                 </section>
                 <section className="settings-section">
                   <h2>执行权限</h2>
-                  <div className="settings-info-row"><div><strong>本地操作审批</strong><p>目录授权、文件写入、终端和插件操作在对话中请求批准。</p></div><span>按操作请求</span></div>
+                  <div className="settings-info-row"><div><strong>聊天权限模式</strong><p>每个聊天独立保存权限模式，可在输入框的加号右侧选择。</p></div><span>在输入框设置</span></div>
                 </section>
               </div>
               <div hidden={section !== 'appearance'}>

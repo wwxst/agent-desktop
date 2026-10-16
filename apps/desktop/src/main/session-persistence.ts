@@ -16,6 +16,7 @@ import type {
   Attachment,
   AttachmentRole,
   TerminalSnapshot,
+  PermissionMode,
 } from '@agent-desktop/client';
 import { isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTurnState, type SessionEvent, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
 import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
@@ -30,6 +31,7 @@ export interface PersistedDesktopSession {
   readonly attachments: readonly PersistedAttachment[];
   /** 会话工作目录；旧快照没有这个字段时按「尚未确认目录」读取。 */
   readonly workingDirectory?: string;
+  readonly permissionMode?: PermissionMode;
   readonly events: readonly SessionEvent[];
 }
 
@@ -842,6 +844,12 @@ function readClientAttachments(value: Record<string, unknown>, field: string): r
   });
 }
 
+/** 权限方式来自 IPC 或磁盘，只接受当前三种真实行为。 */
+export function parsePermissionMode(value: unknown, field = 'permissionMode'): PermissionMode {
+  if (value !== 'ask' && value !== 'auto-review' && value !== 'full-access') invalid(field);
+  return value;
+}
+
 function readClientConversation(
   value: unknown,
   field: string,
@@ -875,6 +883,7 @@ function readClientConversation(
     attachments: readClientAttachments(value, field),
     ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
     ...(workingDirectory === undefined ? {} : { workingDirectory }),
+    ...(value.permissionMode === undefined ? {} : { permissionMode: parsePermissionMode(value.permissionMode, `${field}.permissionMode`) }),
   };
 }
 
@@ -1004,6 +1013,7 @@ function parseDesktopSession(
       attachments: readAttachments(value, field),
       ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
       ...(workingDirectory === undefined ? {} : { workingDirectory }),
+      ...(value.permissionMode === undefined ? {} : { permissionMode: parsePermissionMode(value.permissionMode, `${field}.permissionMode`) }),
       events,
       ...(turnMessageBindings === undefined ? {} : { turnMessageBindings }),
       ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),

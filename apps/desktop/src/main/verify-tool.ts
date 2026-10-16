@@ -52,7 +52,7 @@ export class VerifyToolOutcomeTool implements Tool {
     if (currentTurn?.type !== 'turn.started') return error('核验工具必须在当前活动 Turn 中执行。');
 
     // 既有目标按完整真实路径校验；创建目标不存在时，改用父目录授权，避免把“尚未创建”误当越界。
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), prepared.data.path);
+    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), prepared.data.path, this.workspace.fileAccess === 'all');
     let targetPath: string;
     if (scoped.ok) targetPath = scoped.path;
     else {
@@ -63,7 +63,7 @@ export class VerifyToolOutcomeTool implements Tool {
         else throw cause;
       }
       if (!missing) return error(scoped.message);
-      const parent = await resolveScopedPath(this.workspace.confirmedDirectory(), dirname(prepared.data.path));
+      const parent = await resolveScopedPath(this.workspace.confirmedDirectory(), dirname(prepared.data.path), this.workspace.fileAccess === 'all');
       if (!parent.ok) return error(parent.message);
       targetPath = join(parent.path, basename(prepared.data.path));
     }

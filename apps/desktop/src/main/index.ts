@@ -29,6 +29,7 @@ import { FFMPEG_TOOLS, authorizeVideoDeliveryTool } from './ffmpeg-tool.js';
 import { WHISPER_TOOLS } from './whisper-tool.js';
 import { verifyWhisperRuntime } from './whisper-runtime.js';
 import { ToolApprovalGate } from './tool-approval.js';
+import { reviewApproval } from './approval-review.js';
 import { UserQuestionGate } from './user-question.js';
 import { runReadOnlySubagent, type SubagentRecord } from './subagent.js';
 import { SessionTerminal, terminalPortFor } from './terminal-host.js';
@@ -42,6 +43,7 @@ import {
   DesktopPersistentSession,
   parseClientState,
   parseDesktopState,
+  parsePermissionMode,
   saveDesktopState,
   type PersistedDesktopState,
   type TurnMessageBinding,
@@ -52,6 +54,7 @@ import type {
   AttachmentRole,
   ClientAssistantMessage,
   ClientStateSnapshot,
+  PermissionMode,
 } from '@agent-desktop/client';
 import type { OutputItemResult } from '@agent-desktop/video-agent';
 import {
@@ -116,6 +119,8 @@ interface DesktopSessionState {
    * 它与附件互相独立：选择附件不会改变工作目录，目录也不会被最后一次附件选择覆盖。
    */
   workingDirectory?: string;
+  /** 当前聊天的审批策略；未选择时采用请求批准模式。 */
+  permissionMode?: PermissionMode;
 }
 
 /** 宿主侧的附件：路径是身份，角色决定用途。 */
@@ -263,6 +268,7 @@ function currentPersistedState(snapshot: ClientStateSnapshot, replacement?: { re
       id,
       attachments: session.attachments,
       ...(session.workingDirectory === undefined ? {} : { workingDirectory: session.workingDirectory }),
+      ...(session.permissionMode === undefined ? {} : { permissionMode: session.permissionMode }),
       events: replacement?.id === id ? replacement.events : session.session.events(),
       turnMessageBindings: replacement?.id === id ? replacement.bindings : session.session.turnMessageBindings(),
       ...(session.terminalHistory === undefined ? {} : { terminalHistory: session.terminalHistory }),
@@ -277,6 +283,9 @@ function reconcileRecoveredClientState(snapshot: ClientStateSnapshot): ClientSta
   const reconcile = (conversation: ClientStateSnapshot['conversations'][number]) => {
     const session = sessions.get(conversation.id);
     if (session === undefined) return conversation;
+    // Renderer 只保存展示副本，不能用旧快照改写宿主已确认的权限方式。
+    const { permissionMode: _staleMode, ...rest } = conversation;
+    conversation = { ...rest, ...(session.permissionMode === undefined ? {} : { permissionMode: session.permissionMode }) };
     const events = session.session.events();
     const bindings = session.session.turnMessageBindings();
     // 旧历史没有明确关联时保持原展示，不按相同文字或消息顺序猜测 Turn。
@@ -355,6 +364,7 @@ async function restoreDesktopState(): Promise<void> {
     const session = sessions.get(savedSession.id)!;
     session.attachments.push(...savedSession.attachments);
     session.subagentHistory.push(...savedSession.subagentHistory ?? []);
+    if (savedSession.permissionMode !== undefined) session.permissionMode = savedSession.permissionMode;
     if (savedSession.terminalHistory !== undefined) session.terminalHistory = savedSession.terminalHistory;
     if (savedSession.workingDirectory !== undefined) {
       session.workingDirectory = savedSession.workingDirectory;
@@ -501,6 +511,7 @@ const commandOutput = new CommandOutputProjection((activityId, detail) => {
  */
 function workspacePortFor(sessionId: string): WorkspacePort {
   return {
+    ...(sessions.get(sessionId)?.permissionMode === 'full-access' ? { fileAccess: 'all' as const } : {}),
     confirmedDirectory: () => sessions.get(sessionId)?.workingDirectory,
     requestApproval: (target, signal) => approvalGate.request(target, signal),
     confirmDirectory: (directory) => {
@@ -776,6 +787,25 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(DESKTOP_CHANNELS.getActiveSessionId, () => activeSessionId);
 
+  ipcMain.handle(DESKTOP_CHANNELS.setPermissionMode, async (_event, value: unknown): Promise<PermissionMode> => {
+    if (isTaskRunning) throw new Error('Agent 正在执行，无法变更权限模式。');
+    if (persistenceFailure !== undefined) throw persistenceFailure;
+    const mode = parsePermissionMode(value);
+    const session = activeSession();
+    if (clientState === null) throw new Error('当前聊天尚未保存。');
+    const applyMode = (conversation: ClientStateSnapshot['conversations'][number]) => conversation.id === activeSessionId
+      ? { ...conversation, permissionMode: mode } : conversation;
+    const snapshot = { ...clientState, conversations: clientState.conversations.map(applyMode),
+      ...(clientState.drafts === undefined ? {} : { drafts: clientState.drafts.map(applyMode) }) };
+    const state = currentPersistedState(snapshot);
+    // 先提交候选快照，保存失败时保留旧模式；返回成功后界面才更新选中项。
+    await saveDesktopState(persistenceFilePath(), { ...state,
+      sessions: state.sessions.map(saved => saved.id === activeSessionId ? { ...saved, permissionMode: mode } : saved) });
+    session.permissionMode = mode;
+    clientState = snapshot;
+    return mode;
+  });
+
   ipcMain.handle(DESKTOP_CHANNELS.selectAttachmentFiles, async () => {
     if (mainWindow === null) throw new Error('Desktop window is not available');
     const session = activeSession();
@@ -935,6 +965,10 @@ function registerIpcHandlers(): void {
         persistenceFilePath(),
         safeStorage,
       );
+      // 权限属于当前聊天，本轮固定模式；自动审查使用独立请求和同一个取消信号。
+      const permissionMode = session.permissionMode ?? 'ask';
+      approvalGate.configure({ mode: permissionMode,
+        review: (target, signal) => reviewApproval(target, settings, session.session.events(), signal) });
       if (settings.deepSeekApiKey === undefined) {
         throw new Error('请先在设置中配置当前对话模型的 API 密钥。');
       }
@@ -1039,7 +1073,7 @@ function registerIpcHandlers(): void {
               // 子任务完成记录与父 Session 同一快照落盘；保存失败会终止当前轮次，不能只留在内存。
               persistSessionResourceState(sessionId);
               currentChildren.set(record.result.taskId, record.result);
-            });
+            }, workspacePortFor(sessionId).fileAccess);
           };
         })(),
       });
@@ -1092,6 +1126,13 @@ function registerIpcHandlers(): void {
           agent = { ...agent, systemPrompt: { build: () => base + memoryPrompt + instructionPrompt } };
         }
       }
+      const basePrompt = agent.systemPrompt.build();
+      const permissionPrompt = permissionMode === 'full-access'
+        ? '当前聊天为完全访问：宿主已允许本地文件范围和操作自动批准，无需重复请求授权。相对路径仍需要明确工作目录；操作系统权限、输入校验、任务恢复核验和视频验收规则继续生效。'
+        : permissionMode === 'auto-review'
+          ? '当前聊天为帮我批准：工作目录内常规文本编辑可直接执行，目录变更、命令、终端和插件操作由独立模型审查。审查拒绝或失败表示操作未执行，不得绕过；目录范围外请先通过 set_working_directory 请求授权。'
+          : '当前聊天为请求批准：工作目录内常规文本编辑可直接执行，目录变更、命令、终端和插件操作会请求用户批准。目录范围外请先通过 set_working_directory 请求授权。';
+      agent = { ...agent, systemPrompt: { build: () => `${basePrompt}\n${permissionPrompt}` } };
       // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
       const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');
       await mkdir(logsDirectory, { recursive: true });

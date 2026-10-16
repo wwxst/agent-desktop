@@ -10,13 +10,45 @@ import type {
   Attachment,
   ExtensionItem,
   ExtensionSnapshot,
+  ClientConversation,
+  ClientStateSnapshot,
 } from '@agent-desktop/client';
+
+const CLIENT_STATE_KEY = 'agent-desktop:web-client-state';
+
+/** Web 只保存本机展示快照；权限选择随聊天恢复，不进入全局模型设置。 */
+function loadWebClientState(): ClientStateSnapshot | null {
+  if (typeof localStorage === 'undefined') return null;
+  const raw = localStorage.getItem(CLIENT_STATE_KEY);
+  if (raw === null) return null;
+  const value = JSON.parse(raw) as ClientStateSnapshot;
+  if (typeof value !== 'object' || value === null || typeof value.activeSessionId !== 'string'
+    || !Array.isArray(value.conversations) || (value.drafts !== undefined && !Array.isArray(value.drafts))) throw new Error('网页聊天配置无效。');
+  const conversations = [...value.conversations, ...value.drafts ?? []];
+  if (!conversations.some(conversation => conversation.id === value.activeSessionId)
+    || conversations.some(conversation => typeof conversation.id !== 'string'
+      || (conversation.permissionMode !== undefined && !['ask', 'auto-review', 'full-access'].includes(conversation.permissionMode)))) throw new Error('网页聊天权限配置无效。');
+  return value;
+}
 
 /** Web Host 仅用于 UI 开发和自动化测试，不连接真实 Agent Runtime。 */
 export function createWebClientApi(): AgentClientApi {
-  let activeSessionId = 'web-session-1';
+  let clientState = loadWebClientState();
+  let activeSessionId = clientState?.activeSessionId ?? 'web-session-1';
   let nextSession = 2;
-  const sessionIds = new Set([activeSessionId]);
+  const savedConversations = [...clientState?.conversations ?? [], ...clientState?.drafts ?? []];
+  const sessionIds = new Set(savedConversations.length === 0 ? [activeSessionId] : savedConversations.map(conversation => conversation.id));
+  const saveClientSnapshot = (snapshot: ClientStateSnapshot) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(CLIENT_STATE_KEY, JSON.stringify(snapshot));
+    clientState = structuredClone(snapshot);
+  };
+  const createSession = () => {
+    while (sessionIds.has(`web-session-${nextSession}`)) nextSession += 1;
+    activeSessionId = `web-session-${nextSession}`;
+    nextSession += 1;
+    sessionIds.add(activeSessionId);
+    return activeSessionId;
+  };
   const listeners = new Set<(event: AgentRuntimeEvent) => void>();
   const extensionListeners = new Set<() => void>();
   let settings: RuntimeSettings = loadWebRuntimeSettings() ?? {
@@ -111,9 +143,28 @@ export function createWebClientApi(): AgentClientApi {
     deleteMemories: async () => { memories = []; },
     loadCustomInstructions: async () => customInstructions,
     saveCustomInstructions: async content => { customInstructions = { ...customInstructions, content }; return customInstructions; },
-    loadClientState: async () => null,
-    saveClientState: async () => undefined,
-    // Web 开发宿主没有窗口关闭流程，也不保存状态，因此不会请求关闭前提交。
+    loadClientState: async () => clientState === null ? null : structuredClone(clientState),
+    saveClientState: async snapshot => {
+      // 模式由宿主的选择入口修改，旧展示快照不能覆盖刚保存成功的模式。
+      const restoreMode = (conversation: ClientConversation): ClientConversation => {
+        const { permissionMode: _staleMode, ...rest } = conversation;
+        const mode = [...clientState?.conversations ?? [], ...clientState?.drafts ?? []]
+          .find(saved => saved.id === conversation.id)?.permissionMode;
+        return { ...rest, ...(mode === undefined ? {} : { permissionMode: mode }) };
+      };
+      saveClientSnapshot({ ...snapshot, conversations: snapshot.conversations.map(restoreMode),
+        ...(snapshot.drafts === undefined ? {} : { drafts: snapshot.drafts.map(restoreMode) }) });
+    },
+    setPermissionMode: async mode => {
+      if (activeTaskController !== undefined) throw new Error('Agent 正在执行，无法变更权限模式。');
+      if (clientState === null) throw new Error('当前聊天尚未保存。');
+      const applyMode = (conversation: ClientConversation): ClientConversation => conversation.id === activeSessionId
+        ? { ...conversation, permissionMode: mode } : conversation;
+      saveClientSnapshot({ ...clientState, conversations: clientState.conversations.map(applyMode),
+        ...(clientState.drafts === undefined ? {} : { drafts: clientState.drafts.map(applyMode) }) });
+      return mode;
+    },
+    // Web 开发宿主没有桌面窗口关闭流程，不请求关闭前提交。
     onPrepareClose: () => () => undefined,
     getActiveSessionId: async () => activeSessionId,
     // Web 开发宿主提供一个固定的主视频附件，供界面与自动化测试使用。
@@ -121,12 +172,7 @@ export function createWebClientApi(): AgentClientApi {
       { path: 'E:/videos/web-test-video.mp4', name: 'web-test-video.mp4', role: 'video' },
     ]),
     removeAttachment: async () => undefined,
-    newSession: async () => {
-      activeSessionId = `web-session-${nextSession}`;
-      nextSession += 1;
-      sessionIds.add(activeSessionId);
-      return activeSessionId;
-    },
+    newSession: async () => createSession(),
     // 浏览器仅提供明确的界面夹具；真实系统目录选择由桌面宿主负责。
     selectProjectDirectory: async () => 'D:/projects/web-project',
     openProjectDirectory: async () => { throw new Error('请在桌面应用中打开项目文件夹。'); },
@@ -141,10 +187,7 @@ export function createWebClientApi(): AgentClientApi {
         if (sessionId === activeSessionId) activeSessionId = sessionIds.values().next().value!;
         return activeSessionId;
       }
-      activeSessionId = `web-session-${nextSession}`;
-      nextSession += 1;
-      sessionIds.add(activeSessionId);
-      return activeSessionId;
+      return createSession();
     },
     runAgentTask: async ({ prompt }): Promise<AgentTaskResult> => {
       if (activeTaskController !== undefined) throw new Error('已有任务正在执行。');

@@ -186,7 +186,7 @@ interface RunCommandRequest {
 
 /**
  * Windows PowerShell 5.1 的重定向输出默认不是 UTF-8；工具统一按 UTF-8 增量解码，
- * 因此启动脚本先固定输出编码，再执行用户批准的原命令。编码参数也避免再经过一层 shell 拼接。
+ * 因此启动脚本先固定输出编码，再执行宿主批准的原命令。编码参数也避免再经过一层 shell 拼接。
  */
 function encodePowerShellCommand(command: string): string {
   const script = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false);\n${command}`;
@@ -305,10 +305,10 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
 }
 
 /**
- * 在用户确认的目录中运行一条本机命令。
+ * 在宿主授权范围内的真实目录中运行一条本机命令。
  *
- * 每次调用都重新审批：没有「本会话始终允许」，也不根据命令前缀推断只读。
- * 用户拒绝时不启动任何进程，要改命令就由模型重新提交一次新请求。
+ * 每次调用都交给宿主按当前权限模式审批，不根据命令前缀推断只读。
+ * 宿主拒绝时不启动任何进程，要改命令就由模型重新提交一次新请求。
  *
  * 这是一项以当前用户权限执行的本机命令授权。工作目录只是执行起点，
  * 无法限制脚本访问其他目录、网络或调用其他程序；首期不是操作系统沙箱。
@@ -316,7 +316,7 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
 export class RunCommandTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'run_command';
-  readonly description = '在当前会话已确认的工作目录中运行一条本机命令（Windows 非交互 PowerShell），每次调用都需要用户批准；读取文件、列目录、搜索文本和精确编辑已有文件继续使用各自的专用 Tool，不要改写成命令。命令以当前用户权限运行，工作目录只是执行起点而不是沙箱。';
+  readonly description = '在宿主授权范围内的真实目录中运行一条本机命令（Windows 非交互 PowerShell），每次调用由宿主按当前权限模式审批；读取文件、列目录、搜索文本和精确编辑已有文件继续使用各自的专用 Tool，不要改写成命令。命令以当前用户权限运行，工作目录只是执行起点而不是沙箱。';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -356,8 +356,8 @@ export class RunCommandTool implements Tool {
       return errorResult(`timeoutMs 必须是正数，且不超过 ${MAX_TIMEOUT_MS} 毫秒。`);
     }
 
-    // 执行起点必须是会话已确认目录范围内的真实目录；没有目录时明确指引先设置目录。
-    const scope = await resolveScopedPath(this.workspace.confirmedDirectory(), workingDirectory);
+    // 执行起点始终解析为真实目录；是否允许工作目录外的路径由宿主文件范围决定。
+    const scope = await resolveScopedPath(this.workspace.confirmedDirectory(), workingDirectory, this.workspace.fileAccess === 'all');
     if (!scope.ok) return errorResult(scope.message);
     if (!(await stat(scope.path)).isDirectory()) {
       return errorResult(`不是目录：${scope.path}`);

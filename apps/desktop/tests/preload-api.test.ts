@@ -124,6 +124,7 @@ describe('createDesktopApi', () => {
       'saveRuntimeSettings',
       'selectAttachmentFiles',
       'selectProjectDirectory',
+      'setPermissionMode',
       'switchSession',
       'verifyTaskEffect',
     ]);
@@ -144,6 +145,7 @@ describe('createDesktopApi', () => {
     await api.cancelTask();
     // 审批只传请求标识和决定：待执行的操作参数不经过渲染层。
     await api.decideApproval('request-1', true);
+    await api.setPermissionMode('auto-review');
     await api.revealFile('D:\\videos\\step1.mp4');
     expect(invocations).toEqual([
       { channel: 'desktop:get-active-session-id', args: [] },
@@ -161,6 +163,7 @@ describe('createDesktopApi', () => {
       { channel: 'desktop:run-agent-task', args: [taskRequest('保留核心内容')] },
       { channel: 'desktop:cancel-task', args: [] },
       { channel: 'desktop:decide-approval', args: ['request-1', true] },
+      { channel: 'desktop:set-permission-mode', args: ['auto-review'] },
       { channel: 'desktop:reveal-file', args: ['D:\\videos\\step1.mp4'] },
     ]);
 

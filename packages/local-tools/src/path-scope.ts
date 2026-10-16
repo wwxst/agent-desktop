@@ -14,18 +14,18 @@ function failure(code: unknown, fallback: string, target: string, label: string)
 }
 
 /**
- * 把请求路径解析到会话已确认的工作目录范围内。
+ * 按宿主授予的文件范围解析请求路径；默认限制在已确认工作目录内。
  *
  * 范围判断必须落在**真实路径**上：`..`、符号链接和 Windows 目录联接先由 `realpath` 消掉，
  * 再用「相对根目录的路径是否跳出根」判断。字符串前缀在这里是错的——`D:\work-evil` 以 `D:\work`
  * 为前缀却完全在范围外，而一个指向根目录之外的联接又不会有任何可疑的前缀。
  *
- * `requested` 省略时解析到根目录本身；没有根目录时只接受绝对路径，但绝对路径同样要落在根目录内，
- * 否则一律给出「请先用 set_working_directory 指定包含它的目录」这一具体指引，而不是悄悄扩大范围。
+ * 完全访问只取消范围限制，不取消真实路径解析；相对路径和省略路径仍需要工作目录作为基准。
  */
 export async function resolveScopedPath(
   rootDirectory: string | undefined,
   requested: string | undefined,
+  allowOutsideWorkspace = false,
 ): Promise<ScopedPath> {
   let root: string | undefined;
   if (rootDirectory !== undefined) {
@@ -69,6 +69,9 @@ export async function resolveScopedPath(
     return failure((error as NodeJS.ErrnoException).code, error.message, candidate, '无法访问该路径');
   }
 
+  // 全文件授权允许真实绝对路径位于工作目录之外，也允许尚未设置工作目录。
+  if (allowOutsideWorkspace) return { ok: true, path: real };
+
   if (root === undefined) {
     return {
       ok: false,
@@ -91,13 +94,14 @@ export async function resolveScopedPath(
  *
  * 目标本身还不存在，因此不能对它做 `realpath`：这里对**父目录**做真实路径范围判断，再拼上文件名。
  * 父目录不存在时直接失败——当前不创建中间目录（递归创建不在本阶段范围内）。
- * 复用同一条范围规则：父目录的真实路径必须落在根目录内，所以 `..` 与联接同样无法把目标挪出范围。
+ * 父目录复用同一条宿主范围规则；完全访问仍不能跳过真实父目录解析。
  */
 export async function resolveCreatablePath(
   rootDirectory: string | undefined,
   requested: string,
+  allowOutsideWorkspace = false,
 ): Promise<ScopedPath> {
-  const parent = await resolveScopedPath(rootDirectory, dirname(requested));
+  const parent = await resolveScopedPath(rootDirectory, dirname(requested), allowOutsideWorkspace);
   if (!parent.ok) return parent;
   return { ok: true, path: join(parent.path, basename(requested)) };
 }

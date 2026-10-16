@@ -218,7 +218,7 @@ test('keeps the first draft turn and its binding across a forced exit and two re
   }
 });
 
-test('runs real file approvals, plans and command outcome verification before releasing a blocked writer', async ({}, info) => {
+test('runs workspace file changes, command approvals, plans and outcome verification before releasing a blocked writer', async ({}, info) => {
   test.skip(info.project.name !== 'chromium-desktop' || process.platform !== 'win32', '普通工具链只在 Windows 真实 Electron 项目验证。');
   test.setTimeout(150_000);
   const root = resolve('../..');
@@ -231,6 +231,7 @@ test('runs real file approvals, plans and command outcome verification before re
   const deniedPath = resolve(workspace, 'denied.txt');
   const markerPath = resolve(workspace, 'command-marker.txt');
   const blockedPath = resolve(workspace, 'after-verification.txt');
+  const deniedCommand = "[System.IO.File]::WriteAllText('denied.txt', 'must-not-exist')";
   const command = "[System.IO.File]::WriteAllText('command-marker.txt', 'actual-command-effect'); exit 7";
   await mkdir(profile, { recursive: true }); await mkdir(workspace, { recursive: true });
   let sessionId: string;
@@ -275,9 +276,9 @@ test('runs real file approvals, plans and command outcome verification before re
             : step === 1 ? { name: 'write_text_file', input: { filePath: blockedPath, content: 'written-after-manual-verification' }, id: 'core-released' }
               : step === 2 ? { name: 'update_plan', input: await plan('released'), id: 'core-plan-released' } : undefined;
         } else {
-          const denied = { filePath: deniedPath, content: 'must-not-exist' };
+          const denied = { command: deniedCommand, timeoutMs: 10_000 };
           if (step === 0) action = { name: 'update_plan', input: await plan('initial'), id: 'core-plan-initial' };
-          else if (step === 1 || step === 2) action = { name: 'write_text_file', input: denied, id: `core-denied-${step}` };
+          else if (step === 1 || step === 2) action = { name: 'run_command', input: denied, id: `core-denied-${step}` };
           else if (step === 3) action = { name: 'write_text_file', input: { filePath: textPath, content: 'before-edit\n' }, id: 'core-create' };
           else if (step === 4) action = { name: 'read_file', input: { filePath: textPath }, id: 'core-read' };
           else if (step === 5) action = { name: 'edit_text_file', input: { filePath: textPath,
@@ -320,15 +321,9 @@ test('runs real file approvals, plans and command outcome verification before re
     await page.getByLabel('剪辑需求').fill('真实创建和读取普通文本、精确修改、更新计划并核验命令副作用');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     const approval = page.getByRole('region', { name: '操作审批' });
-    await expect(approval).toContainText(deniedPath);
+    await expect(approval).toContainText(deniedCommand);
     await approval.getByRole('button', { name: '拒绝', exact: true }).click();
-    // 重复拒绝应直接返回门禁结果，下一个真正的审批已经是新的创建目标。
-    await expect(approval).toContainText(textPath);
-    await expect(approval).toContainText('允许 Agent 创建这个文件吗？');
-    await approval.getByRole('button', { name: '允许', exact: true }).click();
-    await expect(approval).toContainText('原内容'); await expect(approval).toContainText('before-edit');
-    await expect(approval).toContainText('新内容'); await expect(approval).toContainText('after-edit');
-    await approval.getByRole('button', { name: '允许', exact: true }).click();
+    // 同轮重复命令不再审批；工作区文本创建和精确编辑直接完成，下一个待批操作是新命令。
     await expect(approval).toContainText(command); await expect(approval).toContainText(workspace);
     await approval.getByRole('button', { name: '允许', exact: true }).click();
     await expect(page.getByText('普通工具链完成，命令实际效果待人工核验', { exact: true })).toBeVisible();
@@ -355,7 +350,7 @@ test('runs real file approvals, plans and command outcome verification before re
     expect(conversation.messages.at(-1)).toMatchObject({ taskState: { status: 'blocked', unknownEffects: [{ sourceEventIndex: commandIndex, label: 'run_command' }],
       plan: { revision: 3, steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'blocked' }] } } });
     approvals = await page.evaluate(() => (window as unknown as { coreApprovals: ApprovalRequest[] }).coreApprovals);
-    expect(approvals.map(request => request.kind)).toEqual(['create-file', 'create-file', 'edit-file', 'command']);
+    expect(approvals.map(request => request.kind)).toEqual(['command', 'command']);
     await expect(page.getByRole('button', { name: '确认已完成', exact: true })).toBeDisabled();
     await page.screenshot({ path: resolve(evidence, '01-before-manual-verification.png') });
     const description = '已读取 command-marker.txt，字节为 actual-command-effect；进程退出码为 7，确认该命令实际写入已完成。';
@@ -365,19 +360,17 @@ test('runs real file approvals, plans and command outcome verification before re
     const verification = (await session()).events.find(event => event.type === 'effect.outcome.verified' && event.sourceEventIndex === commandIndex);
     expect(verification).toMatchObject({ scope: 'entire-call', outcome: 'completed', evidence: { source: 'user', description } });
     await page.getByRole('button', { name: '继续未完成任务', exact: true }).click();
-    await expect(approval).toContainText(blockedPath);
-    await approval.getByRole('button', { name: '允许', exact: true }).click();
     await expect(page.getByText('人工核验后的剩余任务完成', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     await expect.poll(savedTaskStatus).toBe('completed');
     expect(await readFile(blockedPath, 'utf8')).toBe('written-after-manual-verification');
-    expect((await session()).events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(1);
+    expect((await session()).events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(3);
     const finished = await readState(databasePath, app); await writeFile(resolve(evidence, '02-after-manual-continue.json'), JSON.stringify(finished, null, 2));
     expect(finished.clientState.conversations.find(item => item.id === sessionId)!.messages.at(-1)).toMatchObject({ taskState: { status: 'completed', plan: { revision: 5,
       steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'completed' }, { status: 'completed' }] } } });
     await page.screenshot({ path: resolve(evidence, '02-after-manual-continue.png') });
     approvals = await page.evaluate(() => (window as unknown as { coreApprovals: ApprovalRequest[] }).coreApprovals);
-    expect(approvals.map(request => request.kind)).toEqual(['create-file', 'create-file', 'edit-file', 'command', 'create-file']);
+    expect(approvals.map(request => request.kind)).toEqual(['command', 'command']);
     await app.close(); app = undefined;
     const requestCount = requests.length;
     app = await launch(); page = await app.firstWindow();

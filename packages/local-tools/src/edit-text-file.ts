@@ -21,7 +21,7 @@ type TextSnapshot =
   | { readonly ok: true; readonly bytes: Buffer; readonly text: string; readonly sha256: string }
   | { readonly ok: false; readonly message: string };
 
-/** 编辑必须保留文件的原始字节事实；审批后用同一份快照确认用户批准的仍是当前内容。 */
+/** 编辑必须保留文件的原始字节事实；审批后用同一份快照确认宿主批准的仍是当前内容。 */
 async function readTextSnapshot(filePath: string): Promise<TextSnapshot> {
   let bytes: Buffer;
   try {
@@ -48,16 +48,16 @@ async function readTextSnapshot(filePath: string): Promise<TextSnapshot> {
 }
 
 /**
- * 经用户批准后，对已有 UTF-8 文本执行一次唯一匹配的精确替换。
+ * 经宿主批准后，对已有 UTF-8 文本执行一次唯一匹配的精确替换。
  *
  * `expectedSha256` 把调用绑定到先前 `read_file` 读到的完整文件版本；工具在审批前读取完整内容并
- * 计算真正要写入的结果，批准后再次读取并比较原始字节。因此用户看到的变更与实际写入一致，
+ * 计算真正要写入的结果，批准后再次读取并比较原始字节。因此审批参数与实际写入一致，
  * 从读取完成到批准执行期间的外部修改都不会被覆盖。
  */
 export class EditTextFileTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'edit_text_file';
-  readonly description = '先用 read_file 读取已有文本，再在当前工作目录内精确替换唯一匹配内容；写入前需要用户确认';
+  readonly description = '先用 read_file 读取已有文本，再在宿主授权范围内精确替换唯一匹配内容；写入前由宿主审批';
   readonly inputSchema = {
     type: 'object',
     properties: {
@@ -89,7 +89,7 @@ export class EditTextFileTool implements Tool {
       return errorResult('edit_text_file requires newText to be a string');
     }
 
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), filePath);
+    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), filePath, this.workspace.fileAccess === 'all');
     if (!scoped.ok) return errorResult(scoped.message);
 
     const snapshot = await readTextSnapshot(scoped.path);
