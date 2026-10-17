@@ -718,13 +718,10 @@ function registerIpcHandlers(): void {
     });
   });
 
-  ipcMain.handle(DESKTOP_CHANNELS.loadRuntimeSettings, () => loadRuntimeSettings(
-    persistenceFilePath(),
-    safeStorage,
-  ));
+  ipcMain.handle(DESKTOP_CHANNELS.loadRuntimeSettings, () => loadRuntimeSettings(persistenceFilePath()));
   ipcMain.handle(DESKTOP_CHANNELS.listProviderModels, (_event, query: unknown) => listProviderModels(persistenceFilePath(), parseProviderQuery(query), safeStorage));
   ipcMain.handle(DESKTOP_CHANNELS.openModelConfig, async () => {
-    const settings = await loadRuntimeSettings(persistenceFilePath(), safeStorage);
+    const settings = await loadRuntimeSettings(persistenceFilePath());
     const path = join(app.getPath('temp'), 'agent-desktop-model-config.json');
     // 提供可阅读的配置快照；权威配置仍由设置页写入数据库，快照从不包含密钥。
     await writeFile(path, JSON.stringify({ modelProviders: settings.modelProviders.map(({ apiKey: _key, ...provider }) => provider),
@@ -742,7 +739,7 @@ function registerIpcHandlers(): void {
       parsed,
       safeStorage,
     );
-    return loadRuntimeSettings(persistenceFilePath(), safeStorage);
+    return loadRuntimeSettings(persistenceFilePath());
   });
   ipcMain.handle(DESKTOP_CHANNELS.loadMemories, () => loadMemories(persistenceFilePath()));
   ipcMain.handle(DESKTOP_CHANNELS.deleteMemories, () => {

@@ -157,10 +157,20 @@ function savedSettings(path: string): PersistedRuntimeSettings { const raw = rea
 function savedSecrets(path: string): PersistedRuntimeSecrets { const raw = readDesktopDocument(path, 'runtime-secrets'); return raw === null ? {} : parseStoredSecrets(raw); }
 function envValue(environment: RuntimeEnvironment, name: string): string | undefined { return environment[name]?.trim() || undefined; }
 function environmentKey(id: string, environment: RuntimeEnvironment): string | undefined { return id === 'deepseek' ? envValue(environment, 'DEEPSEEK_API_KEY') : id === 'openai' ? envValue(environment, 'OPENAI_API_KEY') : undefined; }
-function decrypt(value: string | undefined, storage: SafeStoragePort): string | undefined {
+/** 设置页只报告密钥存在性；解密留到实际使用，避免失效密文堵住重新录入入口。 */
+function apiKeyStatus(id: string, secrets: PersistedRuntimeSecrets, environment: RuntimeEnvironment): RuntimeModelProvider['apiKey'] {
+  return secrets.providerApiKeys?.[id] !== undefined ? { configured: true, source: 'saved' }
+    : environmentKey(id, environment) === undefined ? { configured: false } : { configured: true, source: 'environment' };
+}
+function decrypt(value: string | undefined, storage: SafeStoragePort, providerName: string): string | undefined {
   if (value === undefined) return undefined;
   if (!storage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法读取 API 密钥。');
-  return storage.decryptString(Buffer.from(value, 'base64'));
+  try { return storage.decryptString(Buffer.from(value, 'base64')); }
+  catch (error) {
+    // 保留坏密文及底层原因；用户显式保存新密钥后再由现有事务覆盖。
+    if (!(error instanceof Error)) throw error;
+    throw new Error(`${providerName} 的已保存 API 密钥无法解密。请在设置 → 模型中重新填写 API 密钥并保存。`, { cause: error });
+  }
 }
 /** 官方容量和图片能力仅适用于官方端点；环境变量改为中转地址后不继承这些事实。 */
 function inheritedProviderMetadata(provider: ProviderConfig): ProviderConfig {
@@ -186,27 +196,23 @@ function selectedModel(providers: readonly ProviderConfig[], choice: RuntimeMode
   if (provider === undefined || model === undefined) throw new Error('当前使用的模型不在目录中，请先切换模型再删除。');
   return { provider, model };
 }
-export async function loadRuntimeSettings(path: string, storage: SafeStoragePort, environment: RuntimeEnvironment = process.env): Promise<RuntimeSettings> {
+export async function loadRuntimeSettings(path: string, environment: RuntimeEnvironment = process.env): Promise<RuntimeSettings> {
   const saved = savedSettings(path); const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
   return { ...(saved.theme === undefined ? {} : { theme: saved.theme }),
-    modelProviders: providers.map(provider => {
-      const key = decrypt(secrets.providerApiKeys?.[provider.id], storage);
-      return { ...provider, apiKey: key !== undefined ? { configured: true, source: 'saved' as const }
-        : environmentKey(provider.id, environment) === undefined ? { configured: false } : { configured: true, source: 'environment' as const } };
-    }), ...selections(saved, providers),
+    modelProviders: providers.map(provider => ({ ...provider, apiKey: apiKeyStatus(provider.id, secrets, environment) })), ...selections(saved, providers),
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
 export async function loadRuntimeConfiguration(path: string, storage: SafeStoragePort, environment: RuntimeEnvironment = process.env): Promise<RuntimeConfiguration> {
   const saved = savedSettings(path); const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
   const choice = selections(saved, providers); const conversation = selectedModel(providers, choice.conversationModel);
-  const keyFor = (id: string) => decrypt(secrets.providerApiKeys?.[id], storage) ?? environmentKey(id, environment);
-  const conversationKey = keyFor(conversation.provider.id);
+  const keyFor = (provider: ProviderConfig) => decrypt(secrets.providerApiKeys?.[provider.id], storage, provider.displayName) ?? environmentKey(provider.id, environment);
+  const conversationKey = keyFor(conversation.provider);
   if (getConversationCapability(conversation.model) !== 'supported') throw new Error('当前模型的文本对话能力未确认支持。');
   // 本次调用形成不可变快照，后续保存模型选择不会回写已经创建的 Agent。
-  const route = resolveVisionModel({ ...choice, modelProviders: providers.map(provider => ({ ...provider, apiKey: { configured: keyFor(provider.id) !== undefined } })) });
+  const route = resolveVisionModel({ ...choice, modelProviders: providers.map(provider => ({ ...provider, apiKey: apiKeyStatus(provider.id, secrets, environment) })) });
   const vision = route.available ? route : undefined;
-  const visionKey = vision === undefined ? undefined : keyFor(vision.provider.id);
+  const visionKey = vision === undefined ? undefined : vision.provider.id === conversation.provider.id ? conversationKey : keyFor(vision.provider);
   return { conversationModel: choice.conversationModel,
     ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
     deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
@@ -268,7 +274,7 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       if (fallbackVisionModel === null) throw new Error('请先配置备用视觉模型。');
       const fallback = selectedModel(providers, fallbackVisionModel);
       if (getVisionCapability(fallback.model) !== 'supported') throw new Error('备用视觉模型必须确认支持图片输入与视觉理解。');
-      if (!(decrypt(secrets.providerApiKeys?.[fallback.provider.id], storage) ?? environmentKey(fallback.provider.id, process.env))) throw new Error('备用视觉模型未配置 API 密钥。');
+      if (!apiKeyStatus(fallback.provider.id, secrets, process.env).configured) throw new Error('备用视觉模型未配置 API 密钥。');
     }
     saved = { ...saved, modelProviders: providers, conversationModel, fallbackVisionModel, fallbackVisionEnabled };
   }
@@ -276,7 +282,7 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
   writeDesktopDocuments(path, [{ name: 'runtime-settings', value: saved }, { name: 'runtime-secrets', value: secrets }]);
 }
 export async function listProviderModels(path: string, query: Pick<RuntimeModelProviderUpdate, 'id' | 'baseUrl' | 'protocol' | 'apiKey'>, storage: SafeStoragePort): Promise<readonly RuntimeModelDefinition[]> {
-  const key = query.apiKey === undefined ? decrypt(savedSecrets(path).providerApiKeys?.[query.id], storage) ?? environmentKey(query.id, process.env) : query.apiKey;
+  const key = query.apiKey === undefined ? decrypt(savedSecrets(path).providerApiKeys?.[query.id], storage, query.id) ?? environmentKey(query.id, process.env) : query.apiKey;
   if (!key) throw new Error('请先填写 API 密钥。');
   const response = await fetch(`${query.baseUrl}/models`, { headers: { Authorization: `Bearer ${key}` } });
   if (!response.ok) throw new Error(`获取模型失败：HTTP ${response.status}`);

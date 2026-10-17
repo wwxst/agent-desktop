@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { _electron, expect, test } from '@playwright/test';
 
 test('automatically saves full-page settings with themes and extension navigation', async ({ page }, info) => {
@@ -236,7 +237,11 @@ test('persists providers and encrypted credentials and executes both protocols t
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.DESKTOP_RENDERER_URL; delete env.ELECTRON_RUN_AS_NODE;
   env.DEEPSEEK_API_KEY = 'desktop-model-choice-fixture-key';
-  const launch = () => _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+  const launch = async () => {
+    const launched = await _electron.launch({ executablePath, args: ['.', `--user-data-dir=${profile}`], cwd: resolve(root, 'apps/desktop'), env });
+    expect(resolve(await launched.evaluate(({ app }) => app.getPath('userData')))).toBe(profile);
+    return launched;
+  };
   let app: Awaited<ReturnType<typeof launch>> | undefined;
   try {
     app = await launch(); let page = await app.firstWindow();
@@ -269,10 +274,36 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByRole('button', { name: '关闭设置' }).click();
     await page.getByRole('button', { name: /^选择对话模型：/ }).click();
     await page.getByRole('menuitemradio', { name: /本地模型/ }).click();
+    await expect(page.getByRole('button', { name: '选择对话模型：本地模型', exact: true })).toBeVisible();
+    await app.close(); app = undefined;
+    // 只损坏本用例隔离目录的已保存密文；关闭应用后写入，不与生产数据库事务竞争。
+    const database = new DatabaseSync(resolve(profile, 'agent-desktop.sqlite'));
+    try {
+      const row = database.prepare('SELECT value FROM desktop_documents WHERE name = ?').get('runtime-secrets');
+      const secrets = JSON.parse(row!.value as string) as { providerApiKeys: Record<string, string> };
+      const ciphertext = Buffer.from(secrets.providerApiKeys[custom.id]!, 'base64');
+      ciphertext[ciphertext.length - 1] = ciphertext[ciphertext.length - 1]! ^ 1;
+      secrets.providerApiKeys[custom.id] = ciphertext.toString('base64');
+      database.prepare('UPDATE desktop_documents SET value = ? WHERE name = ?').run(JSON.stringify(secrets), 'runtime-secrets');
+    } finally { database.close(); }
+    app = await launch(); page = await app.firstWindow();
     await models();
     await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
     expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: custom.id, modelId: 'local-model' });
     await expect(page.getByLabel('当前视觉模型', { exact: true })).toHaveCount(0);
+    expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).modelProviders.find(provider => provider.id === custom.id)?.apiKey).toEqual({ configured: true, source: 'saved' });
+    await page.getByRole('button', { name: '关闭设置' }).click();
+    const requestsBeforeFailure = requests.length;
+    await page.getByRole('textbox', { name: '剪辑需求' }).fill('验证已损坏的保存密钥');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.getByRole('alert', { name: 'Agent 回复' }).last()).toContainText('本地测试供应商 的已保存 API 密钥无法解密。请在设置 → 模型中重新填写 API 密钥并保存。');
+    await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
+    expect(requests).toHaveLength(requestsBeforeFailure);
+    await models();
+    await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
+    await page.getByLabel('本地测试供应商 API 密钥', { exact: true }).fill('desktop-test-key');
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(page.locator('.model-provider-editor')).toHaveCount(0);
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await expect(page.getByRole('button', { name: '恢复默认模型', exact: true })).toHaveCount(0);
     await expect(page.getByLabel('本地测试供应商 API 密钥')).toHaveValue('*'.repeat(64));
