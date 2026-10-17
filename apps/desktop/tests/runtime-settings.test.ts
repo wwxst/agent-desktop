@@ -45,21 +45,21 @@ describe('desktop runtime settings', () => {
   it('preserves appearance independently of selected models', async () => {
     const { database } = await paths();
     await saveRuntimeSettings(database, { theme: 'dark' }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ theme: 'dark' });
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ theme: 'dark' });
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('theme');
     await saveRuntimeSettings(database, { theme: null }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).not.toHaveProperty('theme');
+    expect(await loadRuntimeSettings(database, {})).not.toHaveProperty('theme');
   });
   it('persists memory controls with enabled defaults', async () => {
     const { database } = await paths();
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ memoryEnabled: true, memoryFromToolChatsEnabled: true });
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ memoryEnabled: true, memoryFromToolChatsEnabled: true });
     await saveRuntimeSettings(database, { memoryEnabled: false, memoryFromToolChatsEnabled: false }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ memoryEnabled: false, memoryFromToolChatsEnabled: false });
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ memoryEnabled: false, memoryFromToolChatsEnabled: false });
   });
   it('uses environment defaults and reports secret sources without exposing keys', async () => {
     const { database } = await paths();
     const env = { DEEPSEEK_API_KEY: 'environment-key', DEEPSEEK_BASE_URL: 'https://proxy.test/v1', DEEPSEEK_MODEL: 'environment-model', WHISPER_MODEL_PATH: 'a.bin' };
-    const settings = await loadRuntimeSettings(database, storage, env);
+    const settings = await loadRuntimeSettings(database, env);
     expect(settings.modelProviders[0]).toMatchObject({ baseUrl: 'https://proxy.test/v1', apiKey: { configured: true, source: 'environment' }, models: [{ id: 'environment-model' }] });
     expect(JSON.stringify(settings)).not.toContain('environment-key');
     const configuration = await loadRuntimeConfiguration(database, storage, env);
@@ -70,14 +70,25 @@ describe('desktop runtime settings', () => {
     const { database } = await paths();
     const choice = { providerId: 'custom-test', modelId: 'test-model' };
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'plain-test-secret' }), conversationModel: choice }, storage);
-    const settings = await loadRuntimeSettings(database, storage, {});
+    const settings = await loadRuntimeSettings(database, {});
     expect(settings.conversationModel).toEqual(choice);
     expect(settings.modelProviders.at(-1)).toMatchObject({ apiKey: { configured: true, source: 'saved' } });
     expect(JSON.stringify(settings)).not.toContain('plain-test-secret');
     expect((await readFile(database)).includes(Buffer.from('plain-test-secret'))).toBe(false);
     expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ conversationModel: choice, deepSeekApiKey: 'plain-test-secret', deepSeekModel: 'test-model', modelProtocol: 'responses', modelContextWindow: 128000, modelMaxOutputTokens: 4000, visionProtocol: 'responses', visionModel: 'test-model', visionMaxOutputTokens: 4000 });
+    const secrets = readDesktopDocument(database, 'runtime-secrets');
+    const failingStorage: SafeStoragePort = { ...storage, decryptString: value => {
+      if (value.toString('utf8') === 'protected:plain-test-secret') throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.');
+      return storage.decryptString(value);
+    } };
+    expect((await loadRuntimeSettings(database, {})).modelProviders.at(-1)?.apiKey).toEqual({ configured: true, source: 'saved' });
+    await expect(loadRuntimeConfiguration(database, failingStorage, {})).rejects.toThrow(/测试供应商.*设置 → 模型.*重新填写/);
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual(secrets);
+    await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'replacement-secret' }) }, failingStorage);
+    expect(readDesktopDocument(database, 'runtime-secrets')).not.toEqual(secrets);
+    expect(await loadRuntimeConfiguration(database, failingStorage, {})).toMatchObject({ deepSeekApiKey: 'replacement-secret', visionApiKey: 'replacement-secret' });
     await saveRuntimeSettings(database, { modelProvider: provider({ displayName: '修改名称' }) }, storage);
-    expect(await loadRuntimeConfiguration(database, storage, {})).toHaveProperty('deepSeekApiKey', 'plain-test-secret');
+    expect(await loadRuntimeConfiguration(database, storage, {})).toHaveProperty('deepSeekApiKey', 'replacement-secret');
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: null }), fallbackVisionModel: null, fallbackVisionEnabled: false }, storage);
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('deepSeekApiKey');
     expect(await loadRuntimeConfiguration(database, storage, {})).not.toHaveProperty('visionApiKey');
@@ -135,16 +146,22 @@ describe('desktop runtime settings', () => {
     const { apiKey: _key, ...deepseek } = DEFAULT_MODEL_PROVIDERS[0]!;
     await saveRuntimeSettings(database, { modelProvider: { ...deepseek, apiKey: 'saved-key' } }, storage);
     expect(await loadRuntimeConfiguration(database, storage, { DEEPSEEK_API_KEY: 'env-key' })).toHaveProperty('deepSeekApiKey', 'saved-key');
+    const secrets = readDesktopDocument(database, 'runtime-secrets');
+    const failingStorage: SafeStoragePort = { ...storage, decryptString: () => { throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.'); } };
+    await expect(loadRuntimeConfiguration(database, failingStorage, { DEEPSEEK_API_KEY: 'env-key' })).rejects.toThrow(/DeepSeek.*重新填写/);
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual(secrets);
+    expect((await loadRuntimeSettings(database, { DEEPSEEK_API_KEY: 'env-key' })).modelProviders[0]!.apiKey).toEqual({ configured: true, source: 'saved' });
     await saveRuntimeSettings(database, { modelProvider: { ...deepseek, apiKey: null } }, storage);
-    expect((await loadRuntimeSettings(database, storage, { DEEPSEEK_API_KEY: 'env-key' })).modelProviders[0]!.apiKey).toEqual({ configured: true, source: 'environment' });
+    expect((await loadRuntimeSettings(database, { DEEPSEEK_API_KEY: 'env-key' })).modelProviders[0]!.apiKey).toEqual({ configured: true, source: 'environment' });
+    expect(await loadRuntimeConfiguration(database, failingStorage, { DEEPSEEK_API_KEY: 'env-key' })).toHaveProperty('deepSeekApiKey', 'env-key');
   });
   it('rejects deletion of a selected supplier, then deletes it and its secret after switching', async () => {
     const { database } = await paths();
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'test-key' }), conversationModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
     await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test' }, storage)).rejects.toThrow('切换模型');
-    expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(3);
+    expect((await loadRuntimeSettings(database, {})).modelProviders).toHaveLength(3);
     await saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test', conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' } }, storage);
-    expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(2);
+    expect((await loadRuntimeSettings(database, {})).modelProviders).toHaveLength(2);
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: {} });
     await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage)).rejects.toThrow('切换模型');
   });
@@ -156,15 +173,15 @@ describe('desktop runtime settings', () => {
     const fallbackVisionModel = { providerId: 'openai', modelId: DEFAULT_MODEL_PROVIDERS[1]!.models[0]!.id };
     await saveRuntimeSettings(database, { fallbackVisionModel, fallbackVisionEnabled: true }, storage);
     await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'openai' }, storage)).rejects.toThrow('切换模型');
-    expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(2);
+    expect((await loadRuntimeSettings(database, {})).modelProviders).toHaveLength(2);
     await saveRuntimeSettings(database, { deleteModelProviderId: 'openai', fallbackVisionEnabled: false }, storage);
-    expect(await loadRuntimeSettings(database, storage, { OPENAI_API_KEY: 'environment-key' })).toMatchObject({
+    expect(await loadRuntimeSettings(database, { OPENAI_API_KEY: 'environment-key' })).toMatchObject({
       modelProviders: [{ id: 'deepseek' }], fallbackVisionModel: null, fallbackVisionEnabled: false,
     });
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: { deepseek: expect.any(String) } });
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'custom-key' }), conversationModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
     await saveRuntimeSettings(database, { deleteModelProviderId: 'deepseek' }, storage);
-    const restored = await loadRuntimeSettings(database, storage, { DEEPSEEK_API_KEY: 'environment-key' });
+    const restored = await loadRuntimeSettings(database, { DEEPSEEK_API_KEY: 'environment-key' });
     expect(restored.modelProviders.map(item => item.id)).toEqual(['custom-test']);
     expect(restored.conversationModel).toEqual({ providerId: 'custom-test', modelId: 'test-model' });
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: { 'custom-test': expect.any(String) } });
@@ -174,11 +191,19 @@ describe('desktop runtime settings', () => {
     const { database } = await paths();
     const fallbackVisionModel = { providerId: 'custom-test', modelId: 'test-model' };
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'test-key' }), fallbackVisionModel, fallbackVisionEnabled: true }, storage);
+    const secrets = readDesktopDocument(database, 'runtime-secrets');
+    const failingStorage: SafeStoragePort = { ...storage, decryptString: () => { throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.'); } };
+    const { apiKey: _key, ...deepseek } = DEFAULT_MODEL_PROVIDERS[0]!;
+    await saveRuntimeSettings(database, { modelProvider: { ...deepseek, displayName: '主模型供应商' } }, failingStorage);
+    const settings = await loadRuntimeSettings(database, {});
+    expect(settings).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel });
+    expect(settings.modelProviders[0]!.displayName).toBe('主模型供应商');
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual(secrets);
     await saveRuntimeSettings(database, { fallbackVisionEnabled: false }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel });
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel });
     await saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test' }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: null });
-    expect((await loadRuntimeSettings(database, storage, {})).modelProviders).toHaveLength(2);
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: null });
+    expect((await loadRuntimeSettings(database, {})).modelProviders).toHaveLength(2);
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({ providerApiKeys: {} });
   });
   it('protects an enabled visual supplier unless the same update selects a valid replacement', async () => {
@@ -186,11 +211,11 @@ describe('desktop runtime settings', () => {
     const fallbackVisionModel = { providerId: 'custom-test', modelId: 'test-model' };
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'test-key' }), fallbackVisionModel, fallbackVisionEnabled: true }, storage);
     await expect(saveRuntimeSettings(database, { deleteModelProviderId: 'custom-test' }, storage)).rejects.toThrow('切换模型');
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel });
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel });
     const replacement = { providerId: 'replacement', modelId: 'test-model' };
     await saveRuntimeSettings(database, { modelProvider: provider({ id: 'replacement', apiKey: 'next-key' }), deleteModelProviderId: 'custom-test', fallbackVisionModel: replacement }, storage);
-    expect(await loadRuntimeSettings(database, storage, {})).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel: replacement });
-    expect((await loadRuntimeSettings(database, storage, {})).modelProviders.some(item => item.id === 'custom-test')).toBe(false);
+    expect(await loadRuntimeSettings(database, {})).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel: replacement });
+    expect((await loadRuntimeSettings(database, {})).modelProviders.some(item => item.id === 'custom-test')).toBe(false);
     expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ visionApiKey: 'next-key' });
   });
   it('requires an existing model and image capability for visual selection', async () => {
@@ -208,7 +233,11 @@ describe('desktop runtime settings', () => {
     await saveRuntimeSettings(database, { modelProvider: provider({ apiKey: 'custom-key' }), conversationModel: { providerId: 'custom-test', modelId: 'test-model' } }, storage);
     const snapshot = await loadRuntimeConfiguration(database, storage, {});
     await saveRuntimeSettings(database, { conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' } }, storage);
-    const next = await loadRuntimeConfiguration(database, storage, { DEEPSEEK_API_KEY: 'main-key' });
+    const secrets = readDesktopDocument(database, 'runtime-secrets');
+    const failingStorage: SafeStoragePort = { ...storage, decryptString: () => { throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.'); } };
+    expect((await loadRuntimeSettings(database, {})).modelProviders.at(-1)?.apiKey).toEqual({ configured: true, source: 'saved' });
+    const next = await loadRuntimeConfiguration(database, failingStorage, { DEEPSEEK_API_KEY: 'main-key' });
+    expect(readDesktopDocument(database, 'runtime-secrets')).toEqual(secrets);
     expect(snapshot).toMatchObject({ deepSeekModel: 'test-model', deepSeekApiKey: 'custom-key', visionModel: 'test-model', visionApiKey: 'custom-key', visionProtocol: 'responses' });
     expect(next).toMatchObject({ deepSeekModel: 'deepseek-flash', deepSeekApiKey: 'main-key', visionModel: 'deepseek-flash', visionApiKey: 'main-key', visionProtocol: 'chat-completions' });
   });
