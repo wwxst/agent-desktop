@@ -202,6 +202,10 @@ merge feature branch → main
 合并功能分支到主分支
   │
   ▼
+push main → verify → delete merged task branches
+推送主分支   核对一致   清理本次已合并分支
+  │
+  ▼
 tag (milestone)
 里程碑完成后创建标签
 ```
@@ -383,6 +387,8 @@ Real Verification            PASS（仅涉及真实外部链路时要求）
 集成候选的真实云 Vision（视觉分析）和 Responses（响应协议）仍是 `main` 合并门禁。2026-10-14 已对运行时代码 `b4dd427c169c9a68a6a41eaa87f02819c39804f5` 使用 DeepSeek 官方 `deepseek-flash` 完成两项补充验收，结论与覆盖限制见[真实云验收报告](acceptance/deepseek-flash-cloud-20261014.md)。该证据关闭本候选此前的两项云验证缺项，历史报告中的 `SKIP` 保留；后续涉及外部链路的变更仍需适用的真实验证，不能以本机协议夹具或双平台 CI 代替。进入最终合并审查还须核对候选准确提交的工程门禁与审查结果，并取得正式合并授权。
 
 合并方式为 `merge feature branch → main`。只有 milestone（里程碑）完成后才创建 tag（标签）。
+
+合并并推送成功后，按根 [`AGENTS.md` 的工程规则](../AGENTS.md#engineering-rules工程规则) 自动完成本次任务分支清理，再汇报交付结果。
 
 ### Commit Report（提交汇报）
 
