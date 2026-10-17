@@ -84,6 +84,7 @@ Commit 28 让 DeepSeek Provider 改用 SSE 流式响应，Model 文本增量经 
 * 不把 Tool（工具）的具体实现耦合进 Agent Loop（Agent 循环）。
 * 修改异常处理、进程调用、第三方数据解析或生命周期逻辑前，先阅读 [`docs/defensive-patterns.md`](docs/defensive-patterns.md)。
 * 从 Commit 14 开始，新增能力禁止直接在 `main` 开发；必须遵守 [`docs/engineering.md`](docs/engineering.md) 定义的 Feature Branch（功能分支）、验证、Review（审查）和合并流程。
+* 每次完成已授权的合并、提交和推送，确认本地 `main` 与远端一致后，必须自动清理本次任务已合并的本地及远端功能分支，无需再次询问。删除前确认各分支的全部提交已包含在远端 `main` 中，且分支未被任何工作树使用；保留 `main`、未合并分支和无关分支。分支清理不授权删除工作树、未提交文件或真实用户数据。
 
 # Code Comment Standard（代码注释规范）
 
