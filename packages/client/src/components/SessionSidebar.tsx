@@ -4,6 +4,7 @@ import { Archive, AtSign, Box, ChevronDown, ChevronRight, Folder, FolderOpen, Mo
 import type { AppUpdateApi, ClientConversation, ClientProject, ClientSidebarState, ExtensionClientApi, ExtensionItem } from '../api.js';
 import { ExtensionIcon } from './ExtensionsPage.js';
 import { AppUpdateButton } from './AppUpdateButton.js';
+import { ExtensionToast } from './ExtensionFeedback.js';
 
 interface SessionSidebarProps {
   readonly conversations: readonly ClientConversation[];
@@ -87,11 +88,11 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
     menuTrigger.current = source;
     setError(''); setPanel('main'); setMenu(target);
   };
-  // 异步目录与会话操作失败时显示真实原因，菜单不会假装已成功。
+  // 异步操作结束后收起原生顶层菜单，失败原因交给页面顶部提示，不被菜单遮挡。
   const run = async (operation: () => void | Promise<void>) => {
     setBusy(true); setError('');
     try { await operation(); closeMenu(); }
-    catch (failure) { if (!(failure instanceof Error)) throw failure; setError(failure.message); }
+    catch (failure) { if (!(failure instanceof Error)) throw failure; closeMenu(); setError(failure.message); }
     finally { setBusy(false); }
   };
   const finishRename = (save: boolean) => {
@@ -106,6 +107,7 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
   const projects = [...sidebar.projects].sort((a, b) => Number(b.pinned) - Number(a.pinned));
   const processingIn = (items: readonly ClientConversation[]) => isProcessing && items.some(item => item.id === activeSessionId);
   const runningMark = <span className="sidebar-running" role="status" aria-label="进行中" />;
+  const feedback = error === '' ? null : <ExtensionToast notice={{ variant: 'error', message: error }} onClose={() => setError('')} />;
 
   const renderConversation = (conversation: ClientConversation, section: string) => {
     const selected = conversation.id === activeSessionId && activeView === 'conversation';
@@ -212,13 +214,11 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
         </nav>
         <div className="extensions-installed-heading">已安装</div>
         <nav aria-label="已安装插件">{installedPlugins.map(item => <button type="button" key={item.id} title={item.name} onClick={() => onSelectPlugin(item.id)}><ExtensionIcon item={item} /><span className="extension-installed-name">{item.name}</span></button>)}</nav>
-        {error && <p className="sidebar-error" role="alert">{error}</p>}
       </aside>
     ) : activeView === 'settings' ? null : (
     <aside className="app-sidebar" aria-label="工作区导航">
       <div className="sidebar-brand"><strong>Agent Desktop</strong></div>
       <button ref={newSessionButton} className="sidebar-new-session" type="button" aria-label="新会话" title="新会话" disabled={disabled} onClick={() => void run(() => onNewSession())}><SquarePen size={16} /><span>新会话</span></button>
-      {error && <p className="sidebar-error" role="alert">{error}</p>}
       <nav className="sidebar-session-list" aria-label="会话列表">
         {sidebar.grouped && <section aria-label="项目">
           <div className="sidebar-section-heading">
@@ -252,6 +252,7 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
       {renderMenu()}
     </aside>
     )}
+    {removeTarget === undefined && feedback}
     {removeTarget !== undefined && <dialog ref={removeDialog} className="session-delete-dialog" aria-labelledby="project-remove-title" aria-describedby="project-remove-description"
       onCancel={event => { event.preventDefault(); closeRemoveDialog(); }}>
       <button className="session-dialog-close" type="button" aria-label="关闭" title="关闭" onClick={() => closeRemoveDialog()}><X size={16} /></button>
@@ -261,6 +262,7 @@ export function SessionSidebar({ conversations, sidebar, activeSessionId, active
         <button ref={removeCancelButton} type="button" onClick={() => closeRemoveDialog()}>取消</button>
         <button className="session-delete-confirm" type="button" disabled={disabled} onClick={() => { onRemoveProject(removeTarget.id); closeRemoveDialog(true); }}>移除项目</button>
       </div>
+      {feedback}
     </dialog>}
     </>
   );

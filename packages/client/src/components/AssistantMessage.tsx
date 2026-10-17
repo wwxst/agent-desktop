@@ -53,7 +53,7 @@ export function AssistantMessage({
   // 人工核验必须带上用户实际检查的事实，不能由按钮代填“已完成”。
   const [verificationDescriptions, setVerificationDescriptions] = useState<Record<number, string>>({});
   const taskState = message.taskState ?? (message.status === 'completed' ? message.result.taskState : undefined);
-  const recoverable = taskState !== undefined && (taskState.status === 'failed' || taskState.status === 'cancelled'
+  const recoverable = onRecover !== undefined && taskState !== undefined && (taskState.status === 'failed' || taskState.status === 'cancelled'
     || taskState.status === 'interrupted' || taskState.status === 'blocked');
   const unknownEffects = taskState?.unknownEffects ?? [];
   return (

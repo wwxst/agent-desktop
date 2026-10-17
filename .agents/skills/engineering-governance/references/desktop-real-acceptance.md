@@ -33,7 +33,7 @@ const app = await electron.launch({
 
 ⚠️ 从 Node 侧调用 esbuild 时必须用真实 JS 入口 `node_modules/.pnpm/esbuild@0.27.4/node_modules/esbuild/bin/esbuild`。`node_modules/.bin/esbuild` 是 **shell 脚本**，用 `node` 执行会报 `SyntaxError: missing ) after argument list`。
 
-`--user-data-dir` 会改变 `app.getPath('userData')`，因此不会碰开发者真实数据。**每次运行都换带时间戳的新目录**：沙箱的批量删除保护会拦住清理上一次 Chromium profile（200+ 文件）。
+`--user-data-dir` 会改变 `app.getPath('userData')`。每次运行必须使用本任务新建、非空的独立绝对路径；完成后按 [`docs/engineering.md` 的验收隔离与清理规则](../../../../docs/engineering.md#acceptance-isolation-and-cleanup验收隔离与清理) 清理测试配置目录，并将必要失败证据独立保留。
 
 `electron.launch` 在本机偶发 `Timeout 180000ms exceeded`，脚本里要重试 2–3 次。
 

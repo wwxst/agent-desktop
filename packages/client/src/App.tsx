@@ -25,6 +25,7 @@ import { Composer } from './components/Composer.js';
 import { ConversationPanel } from './components/ConversationPanel.js';
 import { RuntimeSettingsPanel } from './components/RuntimeSettingsPanel.js';
 import { ExtensionsPage } from './components/ExtensionsPage.js';
+import { ExtensionToast } from './components/ExtensionFeedback.js';
 import { SessionSidebar } from './components/SessionSidebar.js';
 import { UserQuestion } from './components/UserQuestion.js';
 import { X } from 'lucide-react';
@@ -559,7 +560,7 @@ export function App({ api }: AppProps) {
     const taskPrompt = recovery === undefined
       ? conversation.prompt.trim()
       : recovery.mode === 'verify' ? '核验未确定的外部效果' : '继续未完成任务';
-    if (!taskPrompt || isProcessing || isSavingSettings || isSavingPermissionMode || conversation.archived) return;
+    if (!taskPrompt || isProcessing || isSavingSettings || isSavingPermissionMode || conversation.archived || runtimeSettings?.conversationModel === null) return;
     setTaskActionError('');
 
     // 主动发送是明确的“看最新内容”动作，即使此前在向上阅读也回到最新一轮。
@@ -602,6 +603,7 @@ export function App({ api }: AppProps) {
     setDrafts(nextDrafts);
     setConversations(nextConversations);
     nextMessageId.current += 2;
+    setDismissedTitleFailure(titleFailureKey);
     setIsProcessing(true);
 
     try {
@@ -741,6 +743,8 @@ export function App({ api }: AppProps) {
   const titleFailure = !activeConversation.titleManuallyRenamed
     ? messages.find(message => message.role === 'assistant' && message.status === 'completed' && message.result.conversationTitleError !== undefined)
     : undefined;
+  const [dismissedTitleFailure, setDismissedTitleFailure] = useState<string>();
+  const titleFailureKey = titleFailure === undefined ? undefined : `${activeSessionId}:${titleFailure.id}`;
   const hasConversation = messages.length > 0;
   // 状态条只投影当前会话已经产生的真实轮次和最近一轮模型步骤，不推测 token 或缓存数据。
   const latestAssistant = [...messages].reverse().find((message): message is Extract<ClientConversationMessage, { role: 'assistant' }> => message.role === 'assistant');
@@ -762,7 +766,7 @@ export function App({ api }: AppProps) {
   const composer = (
     <>
     {activeConversation.archived && <div className="conversation-archive-notice">此会话已归档，可查看历史。<button type="button" onClick={() => void archiveSessions([activeSessionId], false)}>恢复会话</button></div>}
-    {titleFailure?.role === 'assistant' && titleFailure.status === 'completed' && <p className="conversation-title-notice" role="status">自动命名失败：{titleFailure.result.conversationTitleError}。可在会话菜单中重命名。</p>}
+    {titleFailureKey !== dismissedTitleFailure && titleFailure?.role === 'assistant' && titleFailure.status === 'completed' && <ExtensionToast notice={{ variant: 'error', message: `自动命名失败：${titleFailure.result.conversationTitleError}。可在会话菜单中重命名。` }} onClose={() => setDismissedTitleFailure(titleFailureKey)} />}
     {activeConversation.terminalHistory !== undefined && <TerminalView snapshot={activeConversation.terminalHistory} api={api} />}
     <Composer
       attachments={attachments}
@@ -859,7 +863,7 @@ export function App({ api }: AppProps) {
           onHistoryScroll={handleHistoryScroll}
           onToggleActivity={toggleActivity}
           onRevealFile={(path) => api.revealFile(path)}
-          onRecover={recoverTask}
+          {...(runtimeSettings?.conversationModel === null ? {} : { onRecover: recoverTask })}
           onVerifyEffect={(sourceEventIndex, outcome, description) => void verifyTaskEffect(sourceEventIndex, outcome, description)}
         />
         </div>
@@ -869,7 +873,7 @@ export function App({ api }: AppProps) {
         <button className="session-dialog-close" type="button" aria-label="关闭" title="关闭" disabled={isDeleting} onClick={closeDeleteDialog}><X size={16} /></button>
         <h2 id="session-delete-title">删除 {deleteTarget.title}?</h2>
         <p id="session-delete-description">这只会从应用中删除该会话。你电脑上的文件和已生成的视频不会被删除。</p>
-        {deleteError && <p className="sidebar-error" role="alert">{deleteError}</p>}
+        {deleteError && <ExtensionToast notice={{ variant: 'error', message: deleteError }} onClose={() => setDeleteError('')} />}
         <div className="session-delete-actions">
           <button ref={deleteCancelButton} type="button" disabled={isDeleting} onClick={closeDeleteDialog}>取消</button>
           <button className="session-delete-confirm" type="button" disabled={isDeleting || isProcessing || !isSessionReady} onClick={() => void confirmDelete()}>{isDeleting ? '正在删除…' : '删除会话'}</button>

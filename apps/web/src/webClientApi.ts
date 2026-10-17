@@ -1,4 +1,4 @@
-import { getConversationCapability, getVisionCapability, resolveCatalogModel } from '@agent-desktop/client/model-capabilities';
+import { findFirstConversationModel, getConversationCapability, getVisionCapability, resolveCatalogModel } from '@agent-desktop/client/model-capabilities';
 import { loadWebRuntimeSettings, saveWebRuntimeSettings } from './runtime-settings-storage.js';
 import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 import type {
@@ -118,15 +118,20 @@ export function createWebClientApi(): AgentClientApi {
         const id = update.deleteModelProviderId;
         providers = providers.filter(item => item.id !== id);
       }
+      let conversationModel = update.conversationModel === undefined ? settings.conversationModel : update.conversationModel;
+      if (update.conversationModel === undefined && ((conversationModel === null && update.modelProvider !== undefined)
+        || (update.deleteModelProviderId !== undefined && conversationModel?.providerId === update.deleteModelProviderId))) conversationModel = findFirstConversationModel(providers);
       const nextSettings = { ...settings, modelProviders: providers,
-        conversationModel: update.conversationModel ?? settings.conversationModel,
+        conversationModel,
         fallbackVisionModel: update.fallbackVisionModel === undefined ? settings.fallbackVisionModel : update.fallbackVisionModel,
         fallbackVisionEnabled: update.fallbackVisionEnabled ?? settings.fallbackVisionEnabled,
         ...(update.theme === undefined ? {} : { theme: update.theme ?? 'system' }) };
-      // 关闭的候选不阻止删除供应商；显式改选与启用状态都依据本次更新校验。
-      if (update.deleteModelProviderId !== undefined && !nextSettings.fallbackVisionEnabled && update.fallbackVisionModel === undefined
-        && nextSettings.fallbackVisionModel?.providerId === update.deleteModelProviderId) nextSettings.fallbackVisionModel = null;
-      if (getConversationCapability(resolveCatalogModel(providers, nextSettings.conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
+      // 删除供应商同时移除仍指向它的视觉候选，保留本次更新明确选择的其他候选。
+      if (update.deleteModelProviderId !== undefined && nextSettings.fallbackVisionModel?.providerId === update.deleteModelProviderId) {
+        nextSettings.fallbackVisionModel = null;
+        nextSettings.fallbackVisionEnabled = false;
+      }
+      if (nextSettings.conversationModel !== null && getConversationCapability(resolveCatalogModel(providers, nextSettings.conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
       if (nextSettings.fallbackVisionModel !== null) resolveCatalogModel(providers, nextSettings.fallbackVisionModel);
       if (nextSettings.fallbackVisionEnabled) {
         if (nextSettings.fallbackVisionModel === null) throw new Error('请先配置备用视觉模型。');

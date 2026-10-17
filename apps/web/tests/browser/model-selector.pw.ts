@@ -50,7 +50,7 @@ test('keeps composer model selection synchronized, focused and contained across 
   await page.keyboard.press('Home');
   await expect(menu.getByRole('menuitemradio', { name: /DeepSeek V4 Pro/ })).toBeFocused();
   await page.keyboard.press('End');
-  await expect(menu.getByRole('menuitem', { name: '配置自定义模型' })).toBeFocused();
+  await expect(menu.getByRole('menuitem', { name: '配置模型' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(menu).not.toBeVisible();
   await expect(page.getByRole('button', { name: '发送' })).toBeFocused();
@@ -66,7 +66,7 @@ test('keeps composer model selection synchronized, focused and contained across 
   await page.mouse.click(10, 10);
   await expect(menu).not.toBeVisible();
   await trigger.click();
-  await menu.getByRole('menuitem', { name: '配置自定义模型' }).click();
+  await menu.getByRole('menuitem', { name: '配置模型' }).click();
   await expect(page.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
   await expect(page.getByLabel('当前视觉模型')).toHaveCount(0);
   await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
@@ -103,7 +103,7 @@ test('keeps composer model selection synchronized, focused and contained across 
   await menu.getByRole('menuitemradio', { name: /Long Model Name/ }).click();
   trigger = page.getByRole('button', { name: /选择对话模型：Long Model Name/ });
   await trigger.click();
-  await menu.getByRole('menuitem', { name: '配置自定义模型' }).click();
+  await menu.getByRole('menuitem', { name: '配置模型' }).click();
   await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
   expect((await savedSettings()).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'long-model' });
   await page.getByRole('button', { name: '关闭设置' }).click();

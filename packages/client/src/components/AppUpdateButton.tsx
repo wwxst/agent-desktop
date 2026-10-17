@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Download, LoaderCircle } from 'lucide-react';
 import type { AppUpdateApi, AppUpdateState } from '../api.js';
+import { ExtensionToast } from './ExtensionFeedback.js';
 
 /** 导航栏只展示宿主更新事实；点击已就绪图标直接安装，不打开版本详情页。 */
 export function AppUpdateButton({ api, isProcessing }: { readonly api: AppUpdateApi; readonly isProcessing: boolean }) {
@@ -10,15 +11,16 @@ export function AppUpdateButton({ api, isProcessing }: { readonly api: AppUpdate
   useEffect(() => {
     let active = true;
     let received = false;
-    const unsubscribe = api.onStateChanged(next => { received = true; setState(next); setError(''); });
-    void api.getState().then(next => { if (active && !received) setState(next); }).catch(failure => {
+    const unsubscribe = api.onStateChanged(next => { received = true; setState(next); setError(next.status === 'error' ? next.message : ''); });
+    void api.getState().then(next => { if (active && !received) { setState(next); setError(next.status === 'error' ? next.message : ''); } }).catch(failure => {
       if (!(failure instanceof Error)) throw failure;
       if (active) setError(failure.message);
     });
     return () => { active = false; unsubscribe(); };
   }, [api]);
 
-  if (state.status === 'idle' || state.status === 'checking') return error ? <p className="app-update-error" role="alert">{error}</p> : null;
+  const feedback = error === '' ? null : <ExtensionToast notice={{ variant: 'error', message: error }} onClose={() => setError('')} />;
+  if (state.status === 'idle' || state.status === 'checking') return feedback;
   if (state.status === 'unavailable') return <p className="app-update-error unavailable" role="status">暂未提供在线更新</p>;
   const waiting = state.status === 'downloading' || state.status === 'installing';
   const label = state.status === 'error' ? '重试更新'
@@ -37,6 +39,6 @@ export function AppUpdateButton({ api, isProcessing }: { readonly api: AppUpdate
       disabled={waiting || busy || isProcessing} onClick={() => void run()}>
       {waiting ? <LoaderCircle className="app-update-spinner" size={18} /> : state.status === 'error' ? <AlertCircle size={18} /> : <Download size={18} />}
     </button>
-    {message && <p className="app-update-error" role="alert">{message}</p>}
+    {feedback}
   </>;
 }

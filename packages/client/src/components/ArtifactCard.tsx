@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ExtensionToast } from './ExtensionFeedback.js';
 
 interface ArtifactCardProps {
   readonly fileName: string;
@@ -59,8 +60,8 @@ export function ArtifactCard({ fileName, onOpen }: ArtifactCardProps) {
   const kind = artifactKind(fileName);
 
   const open = () => {
-    void onOpen().then(
-      () => setOpenError(null),
+    setOpenError(null);
+    void onOpen().catch(
       (error: unknown) => setOpenError(
         error instanceof Error ? error.message : '无法定位该文件。',
       ),
@@ -79,7 +80,7 @@ export function ArtifactCard({ fileName, onOpen }: ArtifactCardProps) {
           打开文件
         </button>
       </div>
-      {openError !== null && <p className="artifact-error" role="status">{openError}</p>}
+      {openError !== null && <ExtensionToast notice={{ variant: 'error', message: openError }} onClose={() => setOpenError(null)} />}
     </section>
   );
 }

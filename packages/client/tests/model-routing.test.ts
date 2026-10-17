@@ -17,6 +17,7 @@ describe('capability based vision routing', () => {
     expect(resolveVisionModel({ ...textOnly, fallbackVisionModel: null })).toMatchObject({ available: false });
   });
   it('does not route unknown capability or missing primary credentials to a backup', () => {
+    expect(resolveVisionModel({ ...settings, conversationModel: null })).toMatchObject({ available: false, reason: expect.stringContaining('未配置对话模型') });
     const unknown = { ...settings, modelProviders: settings.modelProviders.map(provider => ({ ...provider, models: provider.models.map(model => ({ ...model, capabilities: { ...model.capabilities, imageInput: 'unknown' as const } })) })) };
     expect(resolveVisionModel(unknown)).toMatchObject({ available: false, reason: expect.stringContaining('未知') });
     expect(resolveVisionModel({ ...settings, modelProviders: settings.modelProviders.map(provider => provider.id === 'deepseek' ? { ...provider, apiKey: { configured: false } } : provider) })).toMatchObject({ available: false, reason: expect.stringContaining('密钥') });

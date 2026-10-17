@@ -340,19 +340,19 @@ export interface RuntimeSettings {
   /** 未保存外观偏好时跟随系统；与模型配置共用本机设置存储。 */
   readonly theme?: 'system' | 'light' | 'dark';
   readonly modelProviders: readonly RuntimeModelProvider[];
-  readonly conversationModel: RuntimeModelReference;
+  readonly conversationModel: RuntimeModelReference | null;
   readonly fallbackVisionModel: RuntimeModelReference | null;
   readonly fallbackVisionEnabled: boolean;
   readonly memoryEnabled: boolean;
   readonly memoryFromToolChatsEnabled: boolean;
 }
 
-/** undefined 表示不修改，null 表示清除本机保存值并回退到环境变量或 Provider 默认值。 */
+/** undefined 表示不修改；null 清除对应选择或本机保存值。 */
 export interface RuntimeSettingsUpdate {
   readonly theme?: 'system' | 'light' | 'dark' | null;
   readonly modelProvider?: RuntimeModelProviderUpdate;
   readonly deleteModelProviderId?: string;
-  readonly conversationModel?: RuntimeModelReference;
+  readonly conversationModel?: RuntimeModelReference | null;
   readonly fallbackVisionModel?: RuntimeModelReference | null;
   readonly fallbackVisionEnabled?: boolean;
   readonly memoryEnabled?: boolean;

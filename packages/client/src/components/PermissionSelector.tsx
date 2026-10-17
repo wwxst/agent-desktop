@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Check, Shield, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import type { PermissionMode } from '../api.js';
+import { ExtensionToast } from './ExtensionFeedback.js';
 
 const modes = [
   { value: 'ask', label: '请求批准', description: '工作区内编辑文件，目录授权、命令和插件操作前询问', icon: ShieldQuestion },
@@ -57,11 +58,13 @@ export function PermissionSelector({ mode, busy, disabled, onSelect }: {
       setSaving(false);
     }
   };
+  // 原生菜单打开时提示留在同一顶层；关闭菜单不会丢失保存失败的原因。
+  const feedback = error && <ExtensionToast notice={{ variant: 'error', message: error }} onClose={() => setError('')} />;
 
   return <div className="composer-permission-picker">
     <button ref={trigger} type="button" className="composer-permission-trigger" data-mode={mode}
       aria-label={`选择操作权限：${current.label}`} title={current.label} aria-haspopup="menu" aria-expanded={open}
-      disabled={disabled || pending} onClick={() => { setError(''); if (open) close(); else setOpen(true); }}
+      disabled={disabled || pending} onClick={() => { if (open) close(); else setOpen(true); }}
       onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); } }}>
       <Shield size={14} aria-hidden="true" /><span>{mode === 'full-access' ? '完全访问' : current.label}</span>
     </button>
@@ -73,7 +76,7 @@ export function PermissionSelector({ mode, busy, disabled, onSelect }: {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }
         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        const buttons = Array.from(menu.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+        const buttons = Array.from(menu.current!.querySelectorAll<HTMLButtonElement>('button[role^="menuitem"]:not(:disabled)'));
         const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
           : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
@@ -86,8 +89,9 @@ export function PermissionSelector({ mode, busy, disabled, onSelect }: {
         <span className="composer-permission-name">{label}<small>{description}</small></span>
         {mode === value && <Check size={15} aria-label="已选中" />}
       </button>)}
-      {error && <p className="composer-permission-error" role="alert">{error}</p>}
+      {open && feedback}
       <p className="composer-permission-scope">本机命令和插件以当前用户权限运行。</p>
     </div>
+    {!open && feedback}
   </div>;
 }
