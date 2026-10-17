@@ -6,7 +6,12 @@ import { ExtensionsPage } from '../src/components/ExtensionsPage.js';
 
 afterEach(cleanup);
 // jsdom 没有原生对话框顶层；这里只替换浏览器能力，技能和组件状态仍真实运行。
-beforeAll(() => { HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); }; });
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
+  // jsdom 不计算布局，提示避让和换行由真实浏览器验收。
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+});
 
 function setup() {
   let snapshot: ExtensionSnapshot = { plugins: [], skills: [] };
@@ -40,7 +45,16 @@ describe('extension catalog notifications and separate skill reading', () => {
     await act(async () => finish({ plugins: [whisper], skills: [], whisperModel: { ...model, status: 'ready', diskBytes: model.size, downloadedBytes: model.size } }));
     expect(screen.getByRole('status').textContent).toContain('Whisper Small 模型已安装');
     fireEvent.click(screen.getByRole('button', { name: '删除 Whisper 模型' }));
-    fireEvent.click(screen.getByRole('button', { name: '确认删除模型' }));
+    let confirmation = within(screen.getByRole('dialog', { name: '删除 Whisper Small 模型？' }));
+    expect(confirmation.getByRole('button', { name: '取消' })).toBe(document.activeElement);
+    expect(host.api.manage).not.toHaveBeenCalledWith({ action: 'delete-whisper-model' });
+    fireEvent.click(confirmation.getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '删除 Whisper 模型' }));
+    confirmation = within(screen.getByRole('dialog', { name: '删除 Whisper Small 模型？' }));
+    fireEvent.click(confirmation.getByRole('button', { name: '确认删除模型' }));
+    expect(confirmation.getByRole('button', { name: '取消' })).toHaveProperty('disabled', true);
+    expect(confirmation.getByRole('button', { name: '正在处理…' })).toHaveProperty('disabled', true);
     await act(async () => finish({ plugins: [whisper], skills: [], whisperModel: model }));
     fireEvent.click(screen.getByRole('button', { name: '选择本地 Whisper 模型' }));
     await act(async () => finish(null));
@@ -99,13 +113,24 @@ describe('extension catalog notifications and separate skill reading', () => {
 
   it('reports confirmed uninstall and does not offer a stale skill', async () => {
     const host = setup();
-    host.api.uninstall = async () => ({ plugins: [plugin], skills: [] });
+    host.api.uninstall = vi.fn().mockRejectedValueOnce(new Error('文件仍被占用')).mockResolvedValue({ plugins: [plugin], skills: [] });
     render(<ExtensionsPage api={host.api} view="plugins" requestedId={plugin.id} isProcessing={false} onTrySkill={vi.fn()} />);
     await screen.findByText('暂无已安装的扩展');
     act(() => host.update({ plugins: [{ ...plugin, installed: true, enabled: true }], skills: [skill] }));
     fireEvent.click(await screen.findByRole('button', { name: '插件操作' }));
     fireEvent.click(screen.getByRole('menuitem', { name: '卸载' }));
-    fireEvent.click(screen.getByRole('button', { name: '确认卸载' }));
+    let confirmation = within(screen.getByRole('dialog', { name: '卸载“语义视频剪辑”？' }));
+    expect(host.api.uninstall).not.toHaveBeenCalled();
+    fireEvent.click(confirmation.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('region', { name: '视频详情' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '插件操作' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '卸载' }));
+    confirmation = within(screen.getByRole('dialog', { name: '卸载“语义视频剪辑”？' }));
+    fireEvent.click(confirmation.getByRole('button', { name: '确认卸载' }));
+    expect((await confirmation.findByRole('alert')).textContent).toContain('文件仍被占用');
+    expect(screen.queryByText('语义视频剪辑 插件已卸载')).toBeNull();
+    fireEvent.click(confirmation.getByRole('button', { name: '关闭提示' }));
+    fireEvent.click(confirmation.getByRole('button', { name: '确认卸载' }));
     await screen.findByText('语义视频剪辑 插件已卸载');
     expect(screen.queryByRole('button', { name: '立即试用' })).toBeNull();
     expect(screen.getByRole('button', { name: '安装 视频' })).toBeTruthy();
@@ -214,6 +239,39 @@ describe('extension catalog notifications and separate skill reading', () => {
     fireEvent.click(editor.getByRole('button', { name: '移除环境变量 2' }));
     fireEvent.click(editor.getByRole('button', { name: '保存' }));
     await waitFor(() => expect(host.api.manage).toHaveBeenLastCalledWith({ action: 'save-mcp-server', server: { id: server.id, name: server.name, transport: 'stdio', command: 'node', args: ['script.mjs'], url: '', environment: { TOKEN: '' }, headers: {} } }));
+    fireEvent.click(await screen.findByRole('button', { name: '配置 local-tools' }));
+    const editorElement = await screen.findByRole('dialog', { name: '配置 MCP 服务器' });
+    editor = within(editorElement);
+    fireEvent.change(editor.getByLabelText('服务器名称'), { target: { value: '未提交的服务器名称' } });
+    fireEvent.change(editor.getByLabelText('环境变量 1 值'), { target: { value: 'unsaved-secret-value' } });
+    // 只替换真实删除接口边界；取消、草稿、父子弹窗和反馈继续由生产组件维护。
+    host.api.manage = vi.fn().mockRejectedValueOnce(new Error('配置存储暂不可写')).mockResolvedValue({ plugins: [], skills: [], mcpServers: [] });
+    fireEvent.click(editor.getByRole('button', { name: '删除服务器' }));
+    let confirmation = within(screen.getByRole('dialog', { name: '删除“local-tools”？' }));
+    expect(confirmation.getByRole('button', { name: '取消' })).toBe(document.activeElement);
+    expect(host.api.manage).not.toHaveBeenCalled();
+    fireEvent.click(confirmation.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('dialog', { name: '配置 MCP 服务器' })).toBe(editorElement);
+    expect(editor.getByLabelText('服务器名称')).toHaveProperty('value', '未提交的服务器名称');
+    expect(editor.getByLabelText('环境变量 1 值')).toHaveProperty('value', 'unsaved-secret-value');
+    fireEvent.click(editor.getByRole('button', { name: '删除服务器' }));
+    const confirmationElement = screen.getByRole('dialog', { name: '删除“local-tools”？' });
+    confirmation = within(confirmationElement);
+    fireEvent.click(confirmation.getByRole('button', { name: '确认删除服务器' }));
+    expect((await confirmation.findByRole('alert')).textContent).toContain('配置存储暂不可写');
+    expect(screen.getByRole('dialog', { name: '删除“local-tools”？' })).toBe(confirmationElement);
+    expect(screen.getByRole('dialog', { name: '配置 MCP 服务器' })).toBe(editorElement);
+    expect(editor.getByLabelText('服务器名称')).toHaveProperty('value', '未提交的服务器名称');
+    expect(editor.getByLabelText('环境变量 1 值')).toHaveProperty('value', 'unsaved-secret-value');
+    expect(host.api.manage).toHaveBeenCalledTimes(1);
+    expect(host.api.manage).toHaveBeenLastCalledWith({ action: 'remove-mcp-server', id: server.id });
+    fireEvent.click(confirmation.getByRole('button', { name: '关闭提示' }));
+    fireEvent.click(confirmation.getByRole('button', { name: '确认删除服务器' }));
+    await screen.findByText('暂无 MCP 服务器');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(host.api.manage).toHaveBeenCalledTimes(2);
+    expect(host.api.manage).toHaveBeenLastCalledWith({ action: 'remove-mcp-server', id: server.id });
+    expect(screen.getByRole('status').textContent).toBe('local-tools 服务器已删除');
   });
   it('manages installed plugins, MCP search and marketplace actions from settings', async () => {
     const host = setup();
@@ -243,6 +301,9 @@ describe('extension catalog notifications and separate skill reading', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '升级' })).toHaveProperty('disabled', false));
     host.api.manage = vi.fn(async () => ({ plugins: [plugin], skills: [], marketplaces: [] }));
     fireEvent.click(screen.getByRole('button', { name: '移除 本地市场' }));
+    const confirmation = within(screen.getByRole('dialog', { name: '移除“本地市场”？' }));
+    expect(host.api.manage).not.toHaveBeenCalled();
+    fireEvent.click(confirmation.getByRole('button', { name: '移除市场' }));
     await waitFor(() => expect(host.api.manage).toHaveBeenCalledWith({ action: 'remove-marketplace', id: 'local' }));
     await screen.findByText('暂无插件市场');
     fireEvent.click(screen.getByRole('button', { name: '浏览目录' }));

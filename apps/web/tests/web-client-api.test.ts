@@ -111,12 +111,10 @@ describe('Web Dev API', () => {
     expect(persisted).not.toContain('builtin');
     expect((await createWebClientApi().loadRuntimeSettings()).modelProviders).toEqual(before.modelProviders);
   });
-  it('deletes unused initially supplied providers without restoring them in a new Web host', async () => {
+  it('deletes supplied providers through the last model without restoring them in a new Web host', async () => {
     let persisted: string | null = null;
     vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'agent-desktop:web-runtime-settings' ? persisted : null, setItem: (_key: string, value: string) => { persisted = value; } });
     const api = createWebClientApi();
-    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'deepseek' })).rejects.toThrow('切换模型');
-    expect((await api.loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek', 'openai']);
     await api.saveRuntimeSettings({ deleteModelProviderId: 'openai' });
     expect((await createWebClientApi().loadRuntimeSettings()).modelProviders.map(item => item.id)).toEqual(['deepseek']);
     const conversationModel = { providerId: 'custom-web', modelId: 'web-model' };
@@ -125,6 +123,12 @@ describe('Web Dev API', () => {
     const restored = await createWebClientApi().loadRuntimeSettings();
     expect(restored.modelProviders.map(item => item.id)).toEqual(['custom-web']);
     expect(restored.conversationModel).toEqual(conversationModel);
+    await api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' });
+    expect(await createWebClientApi().loadRuntimeSettings()).toMatchObject({ modelProviders: [], conversationModel: null });
+    await api.saveRuntimeSettings({ theme: 'dark' });
+    expect(await createWebClientApi().loadRuntimeSettings()).toMatchObject({ modelProviders: [], conversationModel: null, theme: 'dark' });
+    await api.saveRuntimeSettings({ modelProvider: visualProvider() });
+    expect(await createWebClientApi().loadRuntimeSettings()).toMatchObject({ modelProviders: [{ id: 'custom-web' }], conversationModel });
   });
   it('preserves a disabled visual candidate until its supplier is explicitly deleted and persists the cleared choice', async () => {
     let persisted: string | null = null;
@@ -138,24 +142,26 @@ describe('Web Dev API', () => {
     expect(restored).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: null });
     expect(restored.modelProviders.some(item => item.id === 'custom-web')).toBe(false);
   });
-  it('protects an enabled visual supplier unless the same update selects a valid replacement', async () => {
+  it('clears an enabled visual supplier on deletion and preserves an explicit replacement', async () => {
     const api = createWebClientApi();
     const fallbackVisionModel = { providerId: 'custom-web', modelId: 'web-model' };
     await api.saveRuntimeSettings({ modelProvider: visualProvider(), fallbackVisionModel, fallbackVisionEnabled: true });
-    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' })).rejects.toThrow('切换模型');
-    expect(await api.loadRuntimeSettings()).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel });
+    expect(await api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' })).toMatchObject({ fallbackVisionEnabled: false, fallbackVisionModel: null });
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), fallbackVisionModel, fallbackVisionEnabled: true });
     const replacement = { providerId: 'replacement', modelId: 'web-model' };
     const saved = await api.saveRuntimeSettings({ modelProvider: visualProvider('replacement'), deleteModelProviderId: 'custom-web', fallbackVisionModel: replacement });
     expect(saved).toMatchObject({ fallbackVisionEnabled: true, fallbackVisionModel: replacement });
     expect(saved.modelProviders.some(item => item.id === 'custom-web')).toBe(false);
   });
-  it('protects the conversation supplier unless the same update selects a valid replacement', async () => {
+  it('selects the first remaining conversation model and preserves an explicit replacement on supplier deletion', async () => {
     const api = createWebClientApi();
     const conversationModel = { providerId: 'custom-web', modelId: 'web-model' };
     await api.saveRuntimeSettings({ modelProvider: visualProvider(), conversationModel });
-    await expect(api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' })).rejects.toThrow('切换模型');
-    expect(await api.loadRuntimeSettings()).toMatchObject({ conversationModel });
-    const replacement = { providerId: 'deepseek', modelId: 'deepseek-v4-pro' };
+    expect(await api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web' })).toMatchObject({
+      conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+    });
+    await api.saveRuntimeSettings({ modelProvider: visualProvider(), conversationModel });
+    const replacement = { providerId: 'deepseek', modelId: 'deepseek-flash' };
     expect(await api.saveRuntimeSettings({ deleteModelProviderId: 'custom-web', conversationModel: replacement })).toMatchObject({ conversationModel: replacement });
   });
 });

@@ -1,13 +1,18 @@
 // @vitest-environment jsdom
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import type { AgentClientApi, RuntimeSettings } from '../src/api.js';
 import { DEFAULT_MODEL_PROVIDERS } from '../src/model-defaults.js';
 import { UNKNOWN_MODEL_CAPABILITIES } from '../src/model-capabilities.js';
 import { ModelProvidersSettings } from '../src/components/ModelProvidersSettings.js';
 
 afterEach(cleanup);
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); };
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+});
 const deepseekModel = DEFAULT_MODEL_PROVIDERS.find(provider => provider.id === 'deepseek')!.models[0]!;
 const openaiModel = DEFAULT_MODEL_PROVIDERS.find(provider => provider.id === 'openai')!.models[0]!;
 // 供应商目录本身由配置测试覆盖；编辑测试只保留每家一个真实目录项。
@@ -195,6 +200,8 @@ it('adjusts deleted model references without enabling a disabled fallback candid
     modelProviders: initial.modelProviders.map(provider => provider.id === 'deepseek' ? { ...provider, models: [{ ...model, capabilities }, { ...model, id: 'replacement', displayName: '替代模型', capabilities }] } : provider) };
   const { save } = setup(undefined, undefined, settings);
   fireEvent.click(screen.getByLabelText('删除模型 1'));
+  expect(screen.getByLabelText('模型 1 ID')).toHaveProperty('value', model.id);
+  fireEvent.click(within(screen.getByRole('dialog', { name: '删除模型' })).getByRole('button', { name: '确认删除' }));
   fireEvent.click(screen.getByRole('button', { name: '保存' }));
   await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ conversationModel: { providerId: 'deepseek', modelId: 'replacement' }, fallbackVisionModel: { providerId: 'deepseek', modelId: 'replacement' } })));
   expect(save.mock.calls[0]![0]).not.toHaveProperty('fallbackVisionEnabled');
@@ -211,15 +218,17 @@ it('keeps provider and fallback edits disabled during a turn without a duplicate
   expect(screen.getByLabelText('备用视觉模型')).toHaveProperty('disabled', true);
   expect(save).not.toHaveBeenCalled();
 });
-it('confirms supplier deletion and keeps its card after a failed save', async () => {
+it('confirms the last supplier deletion and keeps its card after a failed save', async () => {
+  const settings = { ...initial, modelProviders: initial.modelProviders.filter(provider => provider.id === 'deepseek') };
   const save = vi.fn<AgentClientApi['saveRuntimeSettings']>().mockRejectedValueOnce(new Error('删除失败')).mockResolvedValue({
-    ...initial, modelProviders: initial.modelProviders.filter(provider => provider.id !== 'openai'), fallbackVisionModel: null,
+    ...settings, modelProviders: [], conversationModel: null, fallbackVisionModel: null, fallbackVisionEnabled: false,
   });
-  setup(save, undefined, initial, { openEditor: false, isProcessing: false });
-  const remove = screen.getByRole('button', { name: '删除OpenAI供应商' });
-  expect(screen.getByRole('button', { name: '删除DeepSeek供应商' })).toBeTruthy();
+  setup(save, undefined, settings, { openEditor: false, isProcessing: false });
+  const remove = screen.getByRole('button', { name: '删除DeepSeek供应商' });
   fireEvent.click(remove);
-  expect(screen.getByText('删除“OpenAI”及其本机密钥？')).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: '删除供应商' })).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: '取消' }));
+  expect(screen.getByText('删除“DeepSeek”及其本机密钥？')).toBeTruthy();
   expect(save).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: '取消' }));
   expect(screen.queryByRole('button', { name: '确认删除' })).toBeNull();
@@ -227,12 +236,13 @@ it('confirms supplier deletion and keeps its card after a failed save', async ()
   fireEvent.click(remove);
   fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
   await screen.findByText('删除失败');
-  expect(screen.getByRole('region', { name: 'OpenAI供应商' })).toBeTruthy();
-  expect(save).toHaveBeenCalledWith({ deleteModelProviderId: 'openai' });
-  fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
-  await waitFor(() => expect(screen.queryByRole('region', { name: 'OpenAI供应商' })).toBeNull());
-  expect(screen.queryByRole('button', { name: '确认删除' })).toBeNull();
+  expect(within(screen.getByRole('dialog')).getByRole('alert').className).toContain('extension-toast-error');
   expect(screen.getByRole('region', { name: 'DeepSeek供应商' })).toBeTruthy();
+  expect(save).toHaveBeenCalledWith({ deleteModelProviderId: 'deepseek' });
+  fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'DeepSeek供应商' })).toBeNull());
+  expect(screen.queryByRole('button', { name: '确认删除' })).toBeNull();
+  expect(screen.getByRole('button', { name: '添加模型提供商' })).toBeTruthy();
 });
 it('keeps an unverified fallback candidate disabled and closed', () => {
   const settings: RuntimeSettings = { ...initial, fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'unknown' },

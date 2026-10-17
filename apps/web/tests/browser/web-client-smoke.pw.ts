@@ -39,8 +39,8 @@ test('runs the shared client task and preserves session state', async ({ page })
   await secretInput.fill('');
   await page.getByLabel('模型 1 ID', { exact: true }).focus();
   await expect(secretInput).toHaveValue('*'.repeat(64));
-  await page.getByRole('button', { name: '本地工具', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'FFmpeg', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '插件与技能', exact: true }).click();
+  await expect(page.getByRole('button', { name: '浏览目录', exact: true })).toBeVisible();
   await expectNoHorizontalOverflow(page);
   await page.setViewportSize({ width: 800, height: 600 });
   await expectNoHorizontalOverflow(page);

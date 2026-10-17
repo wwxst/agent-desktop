@@ -12,6 +12,14 @@ export function getConversationCapability(model: Pick<RuntimeModelDefinition, 'c
 export function getVisionCapability(model: Pick<RuntimeModelDefinition, 'capabilities'>): ModelCapabilityStatus {
   return combinedCapability(model.capabilities.textInput, model.capabilities.imageInput, model.capabilities.imageUnderstanding, model.capabilities.textOutput);
 }
+/** 目录按显示顺序选取首个确认支持对话的模型；空目录保持未配置状态。 */
+export function findFirstConversationModel(providers: readonly Pick<RuntimeModelProvider, 'id' | 'models'>[]): RuntimeModelReference | null {
+  for (const provider of providers) {
+    const model = provider.models.find(model => getConversationCapability(model) === 'supported');
+    if (model !== undefined) return { providerId: provider.id, modelId: model.id };
+  }
+  return null;
+}
 export function resolveCatalogModel(providers: readonly RuntimeModelProvider[], reference: RuntimeModelReference) {
   const provider = providers.find(item => item.id === reference.providerId);
   const model = provider?.models.find(item => item.id === reference.modelId);
@@ -22,6 +30,7 @@ export type VisionModelRoute = { readonly available: true; readonly provider: Ru
 
 /** 路由只解析能力与显式配置，不接收请求异常，因此超时或鉴权错误不会触发备用。 */
 export function resolveVisionModel(settings: Pick<RuntimeSettings, 'modelProviders' | 'conversationModel' | 'fallbackVisionModel' | 'fallbackVisionEnabled'>): VisionModelRoute {
+  if (settings.conversationModel === null) return { available: false, reason: '未配置对话模型，请先在模型设置中配置。' };
   const main = resolveCatalogModel(settings.modelProviders, settings.conversationModel);
   const capability = getVisionCapability(main.model);
   if (capability === 'supported') return main.provider.apiKey.configured

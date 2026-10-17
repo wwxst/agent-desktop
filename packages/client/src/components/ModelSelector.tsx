@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUpRight, Check, ChevronDown } from 'lucide-react';
 import type { RuntimeModelReference, RuntimeSettings } from '../api.js';
 import { getConversationCapability, getVisionCapability } from '../model-capabilities.js';
+import { ExtensionToast } from './ExtensionFeedback.js';
 
 // Simple Icons（CC0）公开品牌路径，本地随包渲染并跟随主题颜色，不在菜单打开时请求网络。
 // DeepSeek: https://github.com/simple-icons/simple-icons/blob/develop/icons/deepseek.svg
@@ -18,23 +19,27 @@ export function ModelSelector({ settings, settingsError, busy, disabled, onSelec
 }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
+  const [dismissedSettingsError, setDismissedSettingsError] = useState('');
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const options = settings?.modelProviders.flatMap(provider => provider.models
     .filter(model => getConversationCapability(model) !== 'unsupported')
-    .map(model => ({ provider, model, selected: provider.id === settings.conversationModel.providerId && model.id === settings.conversationModel.modelId }))) ?? [];
+    .map(model => ({ provider, model, selected: provider.id === settings.conversationModel?.providerId && model.id === settings.conversationModel?.modelId }))) ?? [];
   const current = options.find(option => option.selected);
-  const label = current?.model.displayName ?? (settings === null ? '加载模型…' : settings.conversationModel.modelId);
+  const label = current?.model.displayName ?? (settings === null ? '加载模型…' : settings.conversationModel?.modelId ?? '未配置模型');
   const close = (restoreFocus = true) => { menu.current?.hidePopover(); setOpen(false); if (restoreFocus) trigger.current?.focus(); };
   useLayoutEffect(() => {
     if (!open) return;
     menu.current!.showPopover({ source: trigger.current! });
     const selected = menu.current!.querySelector<HTMLButtonElement>('[aria-checked="true"]:not(:disabled)');
-    (selected ?? menu.current!.querySelector<HTMLButtonElement>('button:not(:disabled)'))?.focus();
+    (selected ?? menu.current!.querySelector<HTMLButtonElement>('button[role^="menuitem"]:not(:disabled)'))?.focus();
   }, [open]);
+  const message = error || (settingsError !== dismissedSettingsError ? settingsError : '');
+  // 提示随菜单进入顶层，关闭菜单后仍可在页顶查看、关闭真实失败原因。
+  const feedback = message && <ExtensionToast notice={{ variant: 'error', message }} onClose={() => { setError(''); setDismissedSettingsError(settingsError); }} />;
   return <div className="composer-model-picker">
     <button ref={trigger} type="button" className="composer-model-trigger" aria-label={`选择对话模型：${label}`} title={current ? `${current.provider.displayName} · ${label}` : label}
-      aria-haspopup="menu" aria-expanded={open} disabled={disabled || busy} onClick={() => { setError(''); if (open) close(); else setOpen(true); }}
+      aria-haspopup="menu" aria-expanded={open} disabled={disabled || busy} onClick={() => { if (open) close(); else setOpen(true); }}
       onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); } }}>
       <span>{label}</span><ChevronDown size={12} aria-hidden="true" />
     </button>
@@ -46,7 +51,7 @@ export function ModelSelector({ settings, settingsError, busy, disabled, onSelec
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }
         if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
-        const buttons = Array.from(menu.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+        const buttons = Array.from(menu.current!.querySelectorAll<HTMLButtonElement>('button[role^="menuitem"]:not(:disabled)'));
         const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
         buttons[next]?.focus();
@@ -63,8 +68,9 @@ export function ModelSelector({ settings, settingsError, busy, disabled, onSelec
           {selected && <Check size={15} aria-label="已选中" />}
         </button>;
       })}</div>
-      {(error || settingsError) && <p className="composer-model-error" role="alert">{error || settingsError}</p>}
-      <button type="button" role="menuitem" className="composer-model-configure" onClick={() => { close(false); onConfigure(); }}><span>配置自定义模型</span><ArrowUpRight size={14} /></button>
+      {open && feedback}
+      <button type="button" role="menuitem" className="composer-model-configure" onClick={() => { close(false); onConfigure(); }}><span>配置模型</span><ArrowUpRight size={14} /></button>
     </div>
+    {!open && feedback}
   </div>;
 }

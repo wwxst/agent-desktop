@@ -6,6 +6,7 @@ import { AttachmentChip } from './AttachmentChip.js';
 import { ModelSelector } from './ModelSelector.js';
 import { PermissionSelector } from './PermissionSelector.js';
 import { ContextUsage } from './ContextUsage.js';
+import { ExtensionToast } from './ExtensionFeedback.js';
 
 function finalDirectoryName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -66,9 +67,10 @@ export function Composer({
   settings, contextUsage, settingsError, isSavingSettings, onSelectModel, onConfigureModels,
   permissionMode, onSelectPermissionMode,
 }: ComposerProps) {
+  const modelMissing = settings?.conversationModel === null;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    onSend();
+    if (!modelMissing) onSend();
   };
   const directoryName = workingDirectory === undefined ? undefined : finalDirectoryName(workingDirectory);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -87,7 +89,6 @@ export function Composer({
   const closeProjectMenu = () => {
     projectMenu.current?.hidePopover();
     setProjectMenuOpen(false);
-    setProjectError('');
   };
 
   const runProjectAction = async (action: () => Promise<void>) => {
@@ -103,6 +104,8 @@ export function Composer({
       setProjectBusy(false);
     }
   };
+  // 打开菜单时由原生顶层浮层承载提示；收起菜单后仍保留在页面顶部。
+  const projectFeedback = projectError && <ExtensionToast notice={{ variant: 'error', message: projectError }} onClose={() => setProjectError('')} />;
 
   return (
     <div className="composer-stack">
@@ -111,7 +114,7 @@ export function Composer({
         <button ref={projectTrigger} className="composer-directory" type="button"
           aria-label={projectLabel === undefined ? '选择项目目录' : `项目目录：${projectLabel}`}
           aria-expanded={projectMenuOpen} disabled={projectDisabled} title={workingDirectory ?? '选择项目目录'}
-          onClick={() => { setProjectError(''); setProjectMenuOpen(open => !open); }}>
+          onClick={() => setProjectMenuOpen(open => !open)}>
           <Folder className="composer-directory-icon" size={15} />
           <span className="composer-directory-path">{projectLabel ?? '选择项目目录'}</span>
           <ChevronDown className="composer-directory-chevron" size={10} />
@@ -128,8 +131,9 @@ export function Composer({
           {projects.length > 0 && <hr />}
           <button type="button" disabled={projectBusy} onClick={() => void runProjectAction(onCreateProject)}><Plus size={15} /><span>新建项目</span></button>
           <button type="button" disabled={projectBusy} onClick={() => void runProjectAction(() => onSelectProject(undefined))}><X size={15} /><span>不在项目中工作</span></button>
-          {projectError && <p className="composer-project-error" role="alert">{projectError}</p>}
+          {projectMenuOpen && projectFeedback}
         </div>
+        {!projectMenuOpen && projectFeedback}
       </div>
       <form className="composer" onSubmit={submit}>
       {attachments.length > 0 && (
@@ -157,7 +161,7 @@ export function Composer({
           // 输入法确认和 Shift+Enter 留给文本框，只有普通 Enter 提交真实任务。
           if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
-          if (!isProcessing && !isArchived && !isSavingSettings && prompt.trim()) onSend();
+          if (!isProcessing && !isArchived && !isSavingSettings && !modelMissing && prompt.trim()) onSend();
         }}
       />
 
@@ -190,7 +194,7 @@ export function Composer({
             type="submit"
             aria-label={isProcessing ? '停止' : '发送'}
             title={isProcessing ? '停止' : '发送'}
-            disabled={isArchived || (!isProcessing && (!prompt.trim() || isSavingSettings))}
+            disabled={isArchived || (!isProcessing && (!prompt.trim() || isSavingSettings || modelMissing))}
             onClick={isProcessing ? (event) => { event.preventDefault(); onCancel(); } : undefined}
           >
             {isProcessing ? (
@@ -209,6 +213,7 @@ export function Composer({
         </div>
       </div>
       </form>
+      {modelMissing && !isProcessing && <div className="composer-status" role="status">未配置模型，请先在模型菜单中配置模型。</div>}
       {executionStatus !== undefined && (
         <div className="composer-status" aria-label="执行状态">
           <span className="composer-status-item">

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { AgentClientApi, RuntimeModelDefinition, RuntimeModelProvider, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '../api.js';
 import { getConversationCapability, getVisionCapability, UNKNOWN_MODEL_CAPABILITIES } from '../model-capabilities.js';
+import { DeleteConfirmationDialog } from './DeleteConfirmationDialog.js';
+import { ExtensionToast, type ExtensionNotice } from './ExtensionFeedback.js';
 
 // 固定长度的显示掩码，不读取真实密钥及其长度，也不写入供应商草稿。
 const MASKED_API_KEY = '*'.repeat(64);
@@ -51,23 +53,23 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
   const [draft, setDraft] = useState<ProviderDraft | null>(null);
   const [expandedModel, setExpandedModel] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
-  const [deleting, setDeleting] = useState<string | null>(null);
-  useEffect(() => { if (!isOpen) { setDraft(null); setExpandedModel(null); setDeleting(null); setError(''); } }, [isOpen]);
+  const [notice, setNotice] = useState<ExtensionNotice | null>(null);
+  const [deleting, setDeleting] = useState<{ kind: 'provider'; id: string; name: string } | { kind: 'model'; index: number; name: string } | null>(null);
+  useEffect(() => { if (!isOpen) { setDraft(null); setExpandedModel(null); setDeleting(null); setNotice(null); } }, [isOpen]);
   const disabled = busy || isProcessing;
-  const conversationDraftError = draft !== null && settings.conversationModel.providerId === draft.id
-    && !draft.models.some(model => model.id.trim() === settings.conversationModel.modelId && getConversationCapability(model) === 'supported')
+  const conversationDraftError = draft !== null && settings.conversationModel?.providerId === draft.id
+    && !draft.models.some(model => model.id.trim() === settings.conversationModel?.modelId && getConversationCapability(model) === 'supported')
     && !draft.models.some(model => getConversationCapability(model) === 'supported')
     ? '该供应商没有已确认支持对话的模型，请先在聊天输入框切换当前对话模型。' : null;
   const openEditor = (provider: RuntimeModelProvider) => {
     setDraft({ id: provider.id, displayName: provider.displayName, baseUrl: provider.baseUrl, protocol: provider.protocol, models: provider.models.map(modelDraft) });
-    setExpandedModel(null); setError(''); setMessage(''); setDeleting(null);
+    setExpandedModel(null); setNotice(null); setDeleting(null);
   };
   const save = async (update: RuntimeSettingsUpdate, closeEditor = false) => {
-    setBusy(true); setError(''); setMessage('');
-    try { onSettings(await api.saveRuntimeSettings(update)); if (closeEditor) setDraft(null); setDeleting(null); }
-    catch (failure) { if (!(failure instanceof Error)) throw failure; setError(failure.message); }
+    setBusy(true); setNotice(null);
+    try { onSettings(await api.saveRuntimeSettings(update)); if (closeEditor || update.deleteModelProviderId === draft?.id) setDraft(null); setDeleting(null);
+      if (update.deleteModelProviderId !== undefined) setNotice({ variant: 'success', message: '供应商已删除。' }); }
+    catch (failure) { if (!(failure instanceof Error)) throw failure; setNotice({ variant: 'error', message: failure.message }); }
     finally { setBusy(false); }
   };
   const updateModel = (index: number, update: Partial<ModelDraft>) => setDraft(current => current === null ? null : ({ ...current, models: current.models.map((model, i) => i === index ? { ...model, ...update } : model) }));
@@ -75,7 +77,7 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
     if (draft === null || draftError(draft) !== null || conversationDraftError !== null) return;
     const models = modelsFromDraft(draft.models);
     // 用户删除正在使用的目录项时，在同一保存里改用该供应商的首个有效模型。
-    const conversationModel = settings.conversationModel.providerId === draft.id && !models.some(model => model.id === settings.conversationModel.modelId && getConversationCapability(model) === 'supported')
+    const conversationModel = settings.conversationModel?.providerId === draft.id && !models.some(model => model.id === settings.conversationModel?.modelId && getConversationCapability(model) === 'supported')
       ? { providerId: draft.id, modelId: models.find(model => getConversationCapability(model) === 'supported')!.id } : undefined;
     // 仅删除目录项才调整备用候选；未知能力仍保留候选，供用户确认，不能擅自换模型。
     const imageModel = models.find(model => getVisionCapability(model) === 'supported');
@@ -91,7 +93,7 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
   };
   const fetchModels = async () => {
     if (draft === null) return;
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setNotice(null);
     try {
       const fetched = await api.listProviderModels({ id: draft.id, baseUrl: draft.baseUrl.trim().replace(/\/+$/, ''), protocol: draft.protocol,
         ...(draft.apiKey === undefined || draft.apiKey === '' ? {} : { apiKey: draft.apiKey }) });
@@ -101,8 +103,8 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
         for (const model of fetched) if (!models.some(existing => existing.id === model.id)) models.push(modelDraft(model));
         return { ...current, models };
       });
-      setMessage(`已获取 ${fetched.length} 个模型，保存后生效。`);
-    } catch (failure) { if (!(failure instanceof Error)) throw failure; setError(failure.message); }
+      setNotice({ variant: 'success', message: `已获取 ${fetched.length} 个模型，保存后生效。` });
+    } catch (failure) { if (!(failure instanceof Error)) throw failure; setNotice({ variant: 'error', message: failure.message }); }
     finally { setBusy(false); }
   };
   const editor = (provider: RuntimeModelProvider | undefined) => draft !== null && <form className="model-provider-editor" aria-label={`${draft.displayName || '新供应商'}编辑`} onSubmit={event => { event.preventDefault(); void saveDraft(); }} onKeyDown={event => {
@@ -129,7 +131,7 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
     <div className="model-catalog">{draft.models.map((model, index) => <div className="model-catalog-entry" key={index}>
       <div className="model-catalog-row"><input aria-label={`模型 ${index + 1} ID`} placeholder="模型 ID" value={model.id} disabled={disabled} onChange={event => updateModel(index, { id: event.target.value, capabilities: UNKNOWN_MODEL_CAPABILITIES })} /><input aria-label={`模型 ${index + 1} 显示名称`} placeholder="显示名称" value={model.displayName} disabled={disabled} onChange={event => updateModel(index, { displayName: event.target.value })} />
         <button type="button" className="icon-button" aria-label={`模型 ${index + 1} 参数`} aria-expanded={expandedModel === index} onClick={() => setExpandedModel(expandedModel === index ? null : index)}>{expandedModel === index ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>
-        <button type="button" className="icon-button" aria-label={`删除模型 ${index + 1}`} disabled={disabled} onClick={() => { setDraft({ ...draft, models: draft.models.filter((_item, i) => i !== index) }); setExpandedModel(null); }}><Trash2 size={15} /></button>
+        <button type="button" className="icon-button" aria-label={`删除模型 ${index + 1}`} disabled={disabled} onClick={() => { setNotice(null); setDeleting({ kind: 'model', index, name: model.displayName || model.id || `模型 ${index + 1}` }); }}><Trash2 size={15} /></button>
       </div>
       {expandedModel === index && <div className="model-catalog-parameters"><label className="model-provider-field"><span>上下文窗口</span><input aria-label={`模型 ${index + 1} 上下文窗口`} placeholder="256K" value={model.contextWindow} disabled={disabled} onChange={event => updateModel(index, { contextWindow: event.target.value })} /></label><label className="model-provider-field"><span>最大输出 token 数</span><input aria-label={`模型 ${index + 1} 最大输出 token 数`} placeholder="32K" value={model.maxOutputTokens} disabled={disabled} onChange={event => updateModel(index, { maxOutputTokens: event.target.value })} /></label>
         {([['textInput', '文本输入'], ['textOutput', '文本输出'], ['imageInput', '图片输入'], ['imageUnderstanding', '视觉理解']] as const).map(([capability, label]) => <label className="model-provider-field" key={capability}><span>{label}</span><select aria-label={`模型 ${index + 1} ${label}`} value={model.capabilities[capability]} disabled={disabled} onChange={event => updateModel(index, { capabilities: { ...model.capabilities, [capability]: event.target.value } as RuntimeModelDefinition['capabilities'] })}><option value="unknown">未知（未验证）</option><option value="supported">已确认支持</option><option value="unsupported">明确不支持</option></select></label>)}
@@ -143,18 +145,18 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
   </form>;
   const modelOptions = settings.modelProviders.flatMap(provider => provider.models.map(model => ({ provider, model, reference: { providerId: provider.id, modelId: model.id } })));
   const choiceValue = (reference: RuntimeModelReference | null) => reference === null ? '' : JSON.stringify(reference);
+  const feedback = notice !== null && <ExtensionToast notice={notice} onClose={() => setNotice(null)} />;
   return <div className="model-provider-settings">
-    <div className="model-settings-heading"><h1>模型</h1><button type="button" className="model-small-button" title="打开不含密钥的只读配置快照" onClick={() => { void api.openModelConfig().catch((failure: unknown) => { if (!(failure instanceof Error)) throw failure; setError(failure.message); }); }}>打开配置文件</button></div>
+    <div className="model-settings-heading"><h1>模型</h1><button type="button" className="model-small-button" title="打开不含密钥的只读配置快照" onClick={() => { setNotice(null); void api.openModelConfig().catch((failure: unknown) => { if (!(failure instanceof Error)) throw failure; setNotice({ variant: 'error', message: failure.message }); }); }}>打开配置文件</button></div>
     <p className="model-settings-description">填入各提供商的 API 密钥即可使用其模型。</p>
-    {error && <p className="settings-error" role="alert">{error}</p>}{message && <p className="model-settings-message" role="status">{message}</p>}
+    {deleting === null && isOpen && feedback}
     {settings.modelProviders.map(provider => <section className="model-provider-card" key={provider.id} aria-label={`${provider.displayName}供应商`}>
       <div className="model-provider-header"><strong>{provider.displayName}</strong><span className={`model-provider-dot${provider.apiKey.configured ? ' configured' : ''}`} aria-label={provider.apiKey.configured ? '密钥已配置' : '密钥未配置'} title={provider.apiKey.configured ? '密钥已配置' : '密钥未配置'} />
-        <div className="model-provider-actions"><button type="button" disabled={disabled} onClick={() => draft?.id === provider.id ? setDraft(null) : openEditor(provider)}>编辑</button><button className="icon-button model-provider-delete" type="button" aria-label={`删除${provider.displayName}供应商`} title={`删除${provider.displayName}供应商`} disabled={disabled} onClick={() => { setDeleting(provider.id); setDraft(null); setError(''); }}><Trash2 size={15} /></button></div>
+        <div className="model-provider-actions"><button type="button" disabled={disabled} onClick={() => draft?.id === provider.id ? setDraft(null) : openEditor(provider)}>编辑</button><button className="icon-button model-provider-delete" type="button" aria-label={`删除${provider.displayName}供应商`} title={`删除${provider.displayName}供应商`} disabled={disabled} onClick={() => { setDeleting({ kind: 'provider', id: provider.id, name: provider.displayName }); setNotice(null); }}><Trash2 size={15} /></button></div>
       </div>{draft?.id === provider.id && editor(provider)}
-      {deleting === provider.id && <div className="model-delete-confirm"><span>删除“{provider.displayName}”及其本机密钥？</span><button type="button" disabled={busy} onClick={() => setDeleting(null)}>取消</button><button type="button" className="model-delete" disabled={disabled} onClick={() => void save({ deleteModelProviderId: provider.id })}>确认删除</button></div>}
     </section>)}
     {draft !== null && !settings.modelProviders.some(provider => provider.id === draft.id) && <section className="model-provider-card">{editor(undefined)}</section>}
-    <button className="model-add-provider" type="button" disabled={disabled || draft !== null} onClick={() => { setDraft({ id: `custom-${crypto.randomUUID()}`, displayName: '', baseUrl: '', protocol: 'chat-completions', models: [modelDraft({ id: '', displayName: '', capabilities: UNKNOWN_MODEL_CAPABILITIES })] }); setError(''); setMessage(''); }}><Plus size={16} />添加模型提供商</button>
+    <button className="model-add-provider" type="button" disabled={disabled || draft !== null} onClick={() => { setDraft({ id: `custom-${crypto.randomUUID()}`, displayName: '', baseUrl: '', protocol: 'chat-completions', models: [modelDraft({ id: '', displayName: '', capabilities: UNKNOWN_MODEL_CAPABILITIES })] }); setNotice(null); }}><Plus size={16} />添加模型提供商</button>
     <details className="model-provider-custom model-advanced-settings"><summary>高级设置</summary>
         <label className="model-provider-field"><span>备用视觉模型</span><select aria-label="备用视觉模型" value={settings.fallbackVisionEnabled ? choiceValue(settings.fallbackVisionModel) : ''} disabled={disabled} onChange={event => {
           // 选择模型才显式启用；关闭保留旧候选，两者都以保存成功后的配置显示。
@@ -166,5 +168,12 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
         })}</select></label>
         <p className="model-settings-description">主模型不支持图片时使用。</p>
     </details>
+    {isOpen && deleting !== null && <DeleteConfirmationDialog title={`删除${deleting.kind === 'provider' ? '供应商' : '模型'}`}
+      description={deleting.kind === 'provider' ? `删除“${deleting.name}”及其本机密钥？` : `从模型目录中删除“${deleting.name}”？保存供应商后生效。`}
+      confirmLabel="确认删除" busy={busy} disabled={isProcessing} onClose={() => setDeleting(null)} feedback={feedback}
+      onConfirm={() => {
+        if (deleting.kind === 'provider') void save({ deleteModelProviderId: deleting.id });
+        else { setDraft(current => current === null ? null : { ...current, models: current.models.filter((_item, index) => index !== deleting.index) }); setExpandedModel(null); setDeleting(null); }
+      }} />}
   </div>;
 }

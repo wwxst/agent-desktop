@@ -64,11 +64,11 @@ test('orders real activity, reveals files and reports a real reveal failure', as
   // 文件引用来自真实路径：输入显示文件名，输出带方向前缀。
   await expect(rows.nth(1).getByRole('button', { name: '定位文件：E:/videos/web-test-video.mp4' })).toBeVisible();
 
-  // 定位失败：真实错误只出现在产生它的活动行内。
+  // 定位失败沿用统一顶部提示，保留宿主的真实原因。
   await rows.nth(2).getByRole('button', { name: '定位文件：E:/videos/moved-away.mp4' }).click();
-  await expect(rows.nth(2).getByRole('status'))
-    .toHaveText('文件不存在或已被移动：E:/videos/moved-away.mp4');
-  await expect(rows.nth(1).getByRole('status')).toHaveCount(0);
+  const feedback = page.getByRole('alert');
+  await expect(feedback).toHaveText('文件不存在或已被移动：E:/videos/moved-away.mp4');
+  expect((await feedback.boundingBox())!.y).toBe(24);
   await page.screenshot({ animations: 'disabled', path: info.outputPath('activity-reveal-failure.png') });
 
   // 窄窗口：活动行、文件按钮和状态互不遮挡，也不产生横向溢出。
@@ -81,6 +81,8 @@ test('orders real activity, reveals files and reports a real reveal failure', as
     ) - window.innerWidth)).toBeLessThanOrEqual(0);
     await page.screenshot({ animations: 'disabled', path: info.outputPath(`activity-${width}x${height}.png`) });
   }
+  await page.getByRole('button', { name: '关闭提示' }).click();
+  await expect(feedback).toHaveCount(0);
 });
 
 test('restores persisted activity with its own files and status', async ({ page }, info) => {

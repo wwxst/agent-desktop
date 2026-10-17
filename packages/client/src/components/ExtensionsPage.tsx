@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, ChevronDown, CirclePlus, Download, Ellipsis, FolderClosed, FolderPlus, Globe, MessagesSquare, Paperclip, Plus, Puzzle, RefreshCw, Search, Settings, Trash2, X } from 'lucide-react';
 import type { ExtensionClientApi, ExtensionItem, ExtensionSnapshot, McpServerSettings, McpServerUpdate } from '../api.js';
 import { SkillDialog } from './SkillDialog.js';
+import { DeleteConfirmationDialog } from './DeleteConfirmationDialog.js';
 import { ExtensionOperationStatus, ExtensionToast, type ExtensionNotice } from './ExtensionFeedback.js';
 
 const categoryOrder = ['Communication', 'Creativity', 'Data & Analytics', 'Developer Tools', 'Productivity', 'Other'];
@@ -16,6 +17,15 @@ interface ExtensionFeedback {
   readonly variant?: 'installed' | 'success';
 }
 interface ExtensionOperation { readonly id?: string; readonly loading: string }
+interface DeleteRequest {
+  readonly title: string;
+  readonly description: string;
+  readonly confirmLabel: string;
+  readonly operation: () => Promise<ExtensionSnapshot | null>;
+  readonly feedback: ExtensionFeedback;
+  readonly onSuccess?: () => void;
+  readonly returnFocus?: HTMLElement;
+}
 type ItemNotice = ExtensionNotice & { readonly item?: ExtensionItem; readonly skillId?: string };
 
 function mcpDraftFor(server?: McpServerSettings): McpDraft {
@@ -49,8 +59,7 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
   const [connection, setConnection] = useState('');
   const [connectionValues, setConnectionValues] = useState<Record<string, string>>({});
   const [authorizing, setAuthorizing] = useState<{ id: string; server: string } | null>(null);
-  const [confirmUninstall, setConfirmUninstall] = useState(false);
-  const [confirmDeleteModel, setConfirmDeleteModel] = useState(false);
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
   const [rowMenuId, setRowMenuId] = useState<string | null>(null);
   const [operation, setOperation] = useState<ExtensionOperation | null>(null);
@@ -69,7 +78,7 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
     refresh(); const unsubscribe = api.onChanged(refresh);
     return () => { mounted = false; unsubscribe(); };
   }, [api]);
-  useEffect(() => { setSelectedId(requestedId ?? null); setOpenedSkillId(null); setQuery(''); setContent(null); setConfirmUninstall(false); setConfirmDeleteModel(false); setDetailMenuOpen(false); setRowMenuId(null); setAdding(false); setDialog(null); setMcpDraft(mcpDraftFor()); }, [view, requestedId]);
+  useEffect(() => { setSelectedId(requestedId ?? null); setOpenedSkillId(null); setQuery(''); setContent(null); setDeleteRequest(null); setDetailMenuOpen(false); setRowMenuId(null); setAdding(false); setDialog(null); setMcpDraft(mcpDraftFor()); }, [view, requestedId]);
   useEffect(() => {
     if (selectedId === null) return;
     let mounted = true; setContent(null);
@@ -106,7 +115,6 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
     try {
       const next = await operationCall();
       if (next !== null) setSnapshot(next);
-      setConfirmUninstall(false);
       if (next !== null) {
         // 本地导入由目录选择器决定对象，使用返回快照中的新安装条目显示真实名称与技能。
         const item = feedback.id === undefined && feedback.variant === 'installed'
@@ -152,6 +160,17 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
     {...(noticeSkill === undefined || onTrySkill === undefined ? {} : { onTry: () => { closeToast(); onTrySkill(noticeSkill); } })} />;
   const itemFeedback = (item: ExtensionItem, loading: string, success: string, variant?: 'installed'): ExtensionFeedback => ({ id: item.id, name: item.displayName ?? item.name, item, loading, success, ...(variant === undefined ? {} : { variant }) });
   const install = (item: ExtensionItem) => perform(() => api.install(item.pluginId ?? item.id), itemFeedback(item, '正在安装', `${item.displayName ?? item.name} ${item.kind === 'plugin' ? '插件' : '技能'}已安装`, 'installed'));
+  const requestDelete = (request: DeleteRequest) => { setError(null); setNotice(null); setDeleteRequest(request); };
+  const requestUninstall = (item: ExtensionItem, returnFocus: HTMLElement) => requestDelete({ title: `卸载“${item.displayName ?? item.name}”？`, description: '卸载后将无法使用该插件及其附带技能，现有聊天和生成的文件会保留。', confirmLabel: '确认卸载', returnFocus,
+    operation: () => api.uninstall(item.id), feedback: itemFeedback(item, '正在卸载', `${item.displayName ?? item.name} 插件已卸载`), onSuccess: () => setSelectedId(null) });
+  const requestRemoveMarket = (market: (NonNullable<ExtensionSnapshot['marketplaces']>)[number]) => requestDelete({ title: `移除“${market.name}”？`, description: '这只会移除该插件市场来源，已经安装的插件会保留。', confirmLabel: '移除市场',
+    operation: () => api.manage({ action: 'remove-marketplace', id: market.id }), feedback: { name: market.name, loading: '正在移除市场', success: `${market.name} 市场已移除` } });
+  const confirmDelete = async () => {
+    const request = deleteRequest!;
+    const next = await perform(request.operation, request.feedback);
+    // 宿主成功返回后才关闭；失败继续在确认弹窗中展示同一条顶部提示。
+    if (next != null) { request.onSuccess?.(); setDeleteRequest(null); }
+  };
   const toggle = (item: ExtensionItem, pill = false) => <label className={pill ? 'skill-toggle' : 'extension-switch'} title={item.enabled ? '停用' : '启用'}>
     <input type="checkbox" role="switch" aria-label={`启用 ${item.name}`} checked={item.enabled} disabled={disabled || (item.pluginId !== undefined && snapshot?.plugins.find(plugin => plugin.id === item.pluginId)?.enabled !== true)} onChange={event => { const enabled = event.target.checked; void perform(() => api.setEnabled(item.id, enabled), itemFeedback(item, enabled ? '正在启用' : '正在停用', `${item.displayName ?? item.name} 已${enabled ? '启用' : '停用'}`)); }} /><span aria-hidden="true"><Check size={17} /></span>
   </label>;
@@ -160,13 +179,13 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
     const skill = trialSkillFor(item.id);
     const currentOperation = operation?.id === item.id ? operation : undefined;
     return <article className={`extension-row${currentOperation === undefined ? '' : ' extension-row-busy'}`} key={item.id}>
-      <button className="extension-open" type="button" onClick={() => { setRowMenuId(null); if (item.kind === 'skill') setOpenedSkillId(item.id); else setSelectedId(item.id); setConfirmUninstall(false); }} aria-label={`查看 ${item.name}`}><ExtensionIcon item={item} /><span className="extension-summary"><strong><span className="extension-entry-name" title={item.displayName ?? item.name}>{item.displayName ?? item.name}</span>{managed ? item.displayName !== undefined && item.displayName !== item.name && <small>{item.name}</small> : item.kind === 'plugin' && <FolderClosed size={13} />}</strong><span title={item.shortDescription ?? item.description}>{item.shortDescription ?? item.description}</span></span></button>
+      <button className="extension-open" type="button" onClick={() => { setRowMenuId(null); if (item.kind === 'skill') setOpenedSkillId(item.id); else setSelectedId(item.id); }} aria-label={`查看 ${item.name}`}><ExtensionIcon item={item} /><span className="extension-summary"><strong><span className="extension-entry-name" title={item.displayName ?? item.name}>{item.displayName ?? item.name}</span>{managed ? item.displayName !== undefined && item.displayName !== item.name && <small>{item.name}</small> : item.kind === 'plugin' && <FolderClosed size={13} />}</strong><span title={item.shortDescription ?? item.description}>{item.shortDescription ?? item.description}</span></span></button>
       {currentOperation !== undefined ? <ExtensionOperationStatus loading={currentOperation.loading} /> : managed ? toggle(item, true) : item.installed ? item.kind === 'plugin' ? <div className="extension-row-actions" ref={rowMenuId === item.id ? rowMenu : undefined}>
         <button className="icon-button extension-row-more" type="button" aria-label={`${item.name}操作`} aria-haspopup="menu" aria-expanded={rowMenuId === item.id} disabled={busy} onClick={() => setRowMenuId(rowMenuId === item.id ? null : item.id)}><Ellipsis size={18} /></button>
         {rowMenuId === item.id && <div className="skill-menu extension-row-menu" role="menu" aria-label={`${item.name}操作`}>
           <button type="button" role="menuitem" disabled={disabled || !item.enabled || skill === undefined || !skill.enabled || onTrySkill === undefined} onClick={() => { setRowMenuId(null); if (skill !== undefined) onTrySkill?.(skill); }}><MessagesSquare size={17} />立即试用</button>
-          <button type="button" role="menuitem" onClick={() => { setRowMenuId(null); setSelectedId(item.id); setConfirmUninstall(false); }}><Settings size={17} />管理</button>
-          <button className="extension-row-uninstall" type="button" role="menuitem" disabled={disabled} onClick={() => { setRowMenuId(null); setSelectedId(item.id); setConfirmUninstall(true); }}><Trash2 size={17} />卸载</button>
+          <button type="button" role="menuitem" onClick={() => { setRowMenuId(null); setSelectedId(item.id); }}><Settings size={17} />管理</button>
+          <button className="extension-row-uninstall" type="button" role="menuitem" disabled={disabled} onClick={() => { const trigger = rowMenu.current!.querySelector<HTMLButtonElement>('button')!; setRowMenuId(null); requestUninstall(item, trigger); }}><Trash2 size={17} />卸载</button>
         </div>}
       </div> : toggle(item, pill) : <button className="icon-button extension-install" type="button" aria-label={`安装 ${item.name}`} title={`安装 ${item.name}`} disabled={disabled || item.installable === false} onClick={() => void install(item)}><Plus size={20} /></button>}
     </article>;
@@ -203,7 +222,7 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
   return <Container className={`extensions-page${isManagement ? ' plugin-settings' : ''}`} aria-label={`${title}管理`} onKeyDown={event => {
     if (!isManagement || event.key !== 'Escape') return;
     // 弹层先处理 Escape，避免同一按键同时把整个设置页关闭。
-    if (dialog !== null || openedSkill !== undefined) { event.stopPropagation(); return; }
+    if (dialog !== null || openedSkill !== undefined || deleteRequest !== null) { event.stopPropagation(); return; }
     if (adding || detailMenuOpen || rowMenuId !== null) {
       event.preventDefault(); event.stopPropagation(); setAdding(false); setDetailMenuOpen(false); setRowMenuId(null);
     }
@@ -230,7 +249,7 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
           {mcpPlugins.length > 0 && <section className="plugin-settings-mcp" aria-label="来自插件的 MCP"><h2>来自插件</h2>{filteredMcp.map(item => <button className="plugin-mcp-row" type="button" key={item.id} onClick={() => setSelectedId(item.id)}><span>{item.displayName ?? item.name}</span><span className="plugin-mcp-names">{item.connections?.filter(service => service.transport !== 'app').map(service => service.name).join('、')}</span></button>)}</section>}
           {filteredMcp.length + filteredStandalone.length === 0 && <p className="extensions-empty">{query.trim() ? '没有匹配结果' : '暂无 MCP 服务器'}</p>}
         </>}
-        {managementTab === 'markets' && <div className="plugin-settings-list">{filteredMarkets.map(market => <article className="plugin-market-row" key={market.id}><span className="extension-symbol plugin" aria-hidden="true"><Globe size={20} /></span><div className="plugin-market-summary"><strong>{market.name}</strong><span>{snapshot.plugins.filter(plugin => plugin.marketplaceId === market.id).length} 个插件</span><span title={market.source}>{market.source}</span></div><button className="plugin-market-update" type="button" disabled={disabled} title="刷新所有市场目录" onClick={() => void perform(() => api.reconcile())}>升级</button><button className="icon-button" type="button" aria-label={`移除 ${market.name}`} disabled={disabled} onClick={() => void perform(() => api.manage({ action: 'remove-marketplace', id: market.id }))}><Trash2 size={15} /></button></article>)}{filteredMarkets.length === 0 && <p className="extensions-empty">{query.trim() ? '没有匹配结果' : '暂无插件市场'}</p>}</div>}
+        {managementTab === 'markets' && <div className="plugin-settings-list">{filteredMarkets.map(market => <article className="plugin-market-row" key={market.id}><span className="extension-symbol plugin" aria-hidden="true"><Globe size={20} /></span><div className="plugin-market-summary"><strong>{market.name}</strong><span>{snapshot.plugins.filter(plugin => plugin.marketplaceId === market.id).length} 个插件</span><span title={market.source}>{market.source}</span></div><button className="plugin-market-update" type="button" disabled={disabled} title="刷新所有市场目录" onClick={() => void perform(() => api.reconcile())}>升级</button><button className="icon-button" type="button" aria-label={`移除 ${market.name}`} disabled={disabled} onClick={() => requestRemoveMarket(market)}><Trash2 size={15} /></button></article>)}{filteredMarkets.length === 0 && <p className="extensions-empty">{query.trim() ? '没有匹配结果' : '暂无插件市场'}</p>}</div>}
       </> : isPlugin ? <><div className="extension-tabs" role="tablist" aria-label="插件筛选"><button type="button" role="tab" aria-selected={filter === 'public'} onClick={() => setFilter('public')}>公开</button><button type="button" role="tab" aria-selected={filter === 'personal'} onClick={() => setFilter('personal')}>个人</button></div>{pluginGroups}</> : <>
         {section('已安装', filtered.filter(item => item.installed), 'extension-installed-section')}
         <div className="extension-tabs extension-source-tabs" role="tablist" aria-label="技能来源"><button type="button" role="tab" aria-selected={skillSource === 'project'} onClick={() => setSkillSource('project')}>当前项目</button><button type="button" role="tab" aria-selected={skillSource === 'system'} onClick={() => setSkillSource('system')}>系统</button></div>
@@ -245,23 +264,21 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
           {selected.installed && toggle(selected, true)}
           {selected.installed ? <div className="extension-detail-menu" ref={detailMenu}>
             <button className="icon-button" type="button" aria-label="插件操作" aria-expanded={detailMenuOpen} disabled={busy} onClick={() => setDetailMenuOpen(!detailMenuOpen)}><Ellipsis size={18} /></button>
-            {detailMenuOpen && <div className="skill-menu extension-detail-menu-popover" role="menu"><button role="menuitem" type="button" disabled={disabled} onClick={() => { setDetailMenuOpen(false); setConfirmUninstall(true); }}><Trash2 size={15} />卸载</button></div>}
+            {detailMenuOpen && <div className="skill-menu extension-detail-menu-popover" role="menu"><button role="menuitem" type="button" disabled={disabled} onClick={() => { setDetailMenuOpen(false); requestUninstall(selected, detailMenu.current!.querySelector<HTMLButtonElement>('button')!); }}><Trash2 size={15} />卸载</button></div>}
           </div> : <button className="extension-add" type="button" disabled={disabled || selected.installable === false} onClick={() => void install(selected)}>安装</button>}
           {trialSkill !== undefined && onTrySkill !== undefined && <button className="skill-try" type="button" disabled={disabled || !selected.enabled || !trialSkill.enabled} onClick={() => onTrySkill(trialSkill)}><MessagesSquare size={15} />使用</button>}
         </div>
       </div>
-      {confirmUninstall && <div className="extension-uninstall"><p>卸载“{selected.name}”？</p><button type="button" disabled={disabled} onClick={() => setConfirmUninstall(false)}>取消</button><button type="button" disabled={disabled} onClick={() => void perform(async () => { const next = await api.uninstall(selected.id); setSelectedId(null); return next; }, itemFeedback(selected, '正在卸载', `${selected.displayName ?? selected.name} 插件已卸载`))}>确认卸载</button></div>}
       {selected.screenshots?.length ? <div className="extension-screenshots">{selected.screenshots.map(src => <img src={src} alt={`${selected.name}功能预览`} key={src} />)}</div> : suggestedSkills.length > 0 && <section className="extension-prompt-hero" aria-label="建议指令"><div className="extension-prompt-stack">{suggestedSkills.map(skill => <button className="extension-prompt-card" type="button" key={skill.id} disabled={disabled || !selected.enabled || !skill.enabled || onTrySkill === undefined} onClick={() => onTrySkill?.(skill, skill.defaultPrompt)}><span><ExtensionIcon item={skill} /><strong>{skill.displayName ?? skill.name}</strong><ArrowRight size={15} /></span><small>{skill.defaultPrompt}</small></button>)}</div></section>}
       <p className="extension-description extension-detail-lead">{selected.longDescription ?? selected.description}</p>
       {selected.id === 'plugin:whisper' && selected.source === 'builtin' && whisperModel !== undefined && <section className="extension-detail-section whisper-model-section" aria-label="语音识别模型"><h3>语音识别模型</h3>
         <div className="extension-connection"><div><strong>{whisperModel.name}</strong><p>多语言 · CPU · {(whisperModel.size / 1048576).toFixed(1)} MB</p><p>{whisperModel.status === 'ready' ? `已安装 · 磁盘占用 ${(whisperModel.diskBytes / 1048576).toFixed(1)} MB` : modelProgress ?? (whisperModel.status === 'error' ? whisperModel.message : '未安装')}</p></div>
-          <div className="whisper-model-actions">{whisperModel.status === 'ready' ? <button className="icon-button" type="button" title="删除模型" aria-label="删除 Whisper 模型" disabled={disabled} onClick={() => setConfirmDeleteModel(true)}><Trash2 size={17} /></button> : <>
+          <div className="whisper-model-actions">{whisperModel.status === 'ready' ? <button className="icon-button" type="button" title="删除模型" aria-label="删除 Whisper 模型" disabled={disabled} onClick={() => requestDelete({ title: `删除 ${whisperModel.name} 模型？`, description: '删除本机语音识别模型后，需要重新安装才能使用语音识别。', confirmLabel: '确认删除模型', operation: () => api.manage({ action: 'delete-whisper-model' }), feedback: itemFeedback(selected, '正在删除模型', `${whisperModel.name} 模型已删除`) })}><Trash2 size={17} /></button> : <>
             <button className="extension-add" type="button" disabled={disabled || !selected.installed} onClick={() => void perform(() => api.manage({ action: 'install-whisper-model' }), itemFeedback(selected, '正在安装模型', `${whisperModel.name} 模型已安装`))}><Download size={16} />安装模型</button>
             <button className="icon-button" type="button" title="选择本地模型" aria-label="选择本地 Whisper 模型" disabled={disabled || !selected.installed} onClick={() => void perform(() => api.manage({ action: 'import-whisper-model' }), itemFeedback(selected, '正在校验模型', `${whisperModel.name} 模型已安装`))}><FolderPlus size={17} /></button>
           </>}</div>
         </div>
         {(whisperModel.status === 'downloading' || whisperModel.status === 'verifying') && <progress aria-label="Whisper 模型安装进度" value={whisperModel.downloadedBytes} max={whisperModel.size} />}
-        {confirmDeleteModel && <div className="extension-uninstall"><p>删除 {whisperModel.name} 模型？</p><button type="button" disabled={disabled} onClick={() => setConfirmDeleteModel(false)}>取消</button><button type="button" disabled={disabled} onClick={() => void perform(async () => { const next = await api.manage({ action: 'delete-whisper-model' }); setConfirmDeleteModel(false); return next; }, itemFeedback(selected, '正在删除模型', `${whisperModel.name} 模型已删除`))}>确认删除模型</button></div>}
       </section>}
       {selected.defaultPrompt !== undefined || (selected.defaultPrompts?.length ?? 0) > 0 ? <div className="extension-detail-section extension-suggestions"><h3>建议指令</h3>{(selected.defaultPrompts ?? (selected.defaultPrompt === undefined ? [] : [selected.defaultPrompt])).map(prompt => <p className="extension-prompt" key={prompt}>{prompt}</p>)}</div> : null}
       {selected.skillNames?.length ? <section className="plugin-skills" aria-label="附带技能"><h3>技能 <span>{selected.skillNames.length}</span></h3>{selectedSkills.map(skill => row(skill, true))}</section> : null}
@@ -286,15 +303,16 @@ export function ExtensionsPage({ api, view, isProcessing, requestedId, onTrySkil
       <label>服务器名称<input autoFocus required value={mcpDraft.name} onChange={event => setMcpDraft({ ...mcpDraft, name: event.target.value })} /></label>
       <label>传输方式<select value={mcpDraft.transport} onChange={event => setMcpDraft({ ...mcpDraft, transport: event.target.value as McpDraft['transport'] })}><option value="stdio">本地命令（stdio）</option><option value="http">HTTP</option><option value="sse">SSE</option></select></label>
       {mcpDraft.transport === 'stdio' ? <><label>启动命令<input required value={mcpDraft.command} placeholder="npx" onChange={event => setMcpDraft({ ...mcpDraft, command: event.target.value })} /></label><label>启动参数（每行一个）<textarea rows={3} value={mcpDraft.args} placeholder={'-y\n@modelcontextprotocol/server-filesystem'} onChange={event => setMcpDraft({ ...mcpDraft, args: event.target.value })} /></label>{secretFields('environment', '环境变量')}</> : <><label>服务器地址<input required type="url" value={mcpDraft.url} placeholder="https://…/mcp" onChange={event => setMcpDraft({ ...mcpDraft, url: event.target.value })} /></label>{secretFields('headers', '请求头')}</>}
-      <div className="mcp-editor-actions"><button className="extension-add" type="submit">保存</button>{editedMcp !== undefined && <button className="extension-add mcp-delete" type="button" onClick={() => void perform(async () => { const next = await api.manage({ action: 'remove-mcp-server', id: editedMcp.id }); closeDialog(); return next; })}>删除服务器</button>}
+      <div className="mcp-editor-actions"><button className="extension-add" type="submit">保存</button>{editedMcp !== undefined && <button className="extension-add mcp-delete" type="button" onClick={() => requestDelete({ title: `删除“${editedMcp.name}”？`, description: '删除此 MCP 服务器后，将无法继续调用它提供的工具。', confirmLabel: '确认删除服务器', operation: () => api.manage({ action: 'remove-mcp-server', id: editedMcp.id }), feedback: { name: editedMcp.name, loading: '正在删除服务器', success: `${editedMcp.name} 服务器已删除` }, onSuccess: closeDialog })}>删除服务器</button>}
       {editedMcp !== undefined && editedMcp.transport !== 'stdio' && <button className="extension-add" type="button" onClick={() => void connect({ id: editedMcp.id }, editedMcp)}>{editedMcp.connected ? '断开账户' : '连接账户'}</button>}</div>
-    </fieldset>{authorizing !== null && <button className="extension-back" type="button" onClick={() => { void api.manage({ action: 'cancel-connect', ...authorizing }).catch((error: unknown) => { if (error instanceof Error) setError(error.message); }); }}>取消连接</button>}</form> : dialog === 'settings' ? <><h3>插件市场</h3><p>从已添加的来源发现和安装插件。</p>{(snapshot?.marketplaces ?? []).map(market => <div className="extension-connection" key={market.id}><div><strong>{market.name}</strong><p>{market.source}</p></div><button type="button" disabled={disabled} onClick={() => void perform(() => api.manage({ action: 'remove-marketplace', id: market.id }))}>移除</button></div>)}<button className="extension-add" type="button" disabled={disabled} onClick={() => { setMarketSource(''); setDialog('marketplace'); }}>添加插件市场</button><button className="extension-back" type="button" disabled={disabled} onClick={() => void perform(() => api.reconcile())}>刷新所有来源</button></> : dialog === 'marketplace' ? <form onSubmit={event => { event.preventDefault(); void perform(async () => { const next = await api.manage({ action: 'add-marketplace', source: marketSource }); setDialog(null); return next; }); }}><p>输入 Git 仓库地址、GitHub 的 owner/repo，或本地市场目录。</p><label>市场来源<input autoFocus value={marketSource} placeholder="https://github.com/openai/plugins.git" onChange={event => setMarketSource(event.target.value)} /></label><button className="extension-add" type="submit" disabled={disabled || !marketSource.trim()}>添加</button></form> : <form onSubmit={event => { event.preventDefault(); if (selected !== undefined) void perform(async () => { const next = await api.manage({ action: 'configure', id: selected.id, server: connection, values: connectionValues }); setDialog(null); setConnectionValues({}); return next; }); }}>
+    </fieldset>{authorizing !== null && <button className="extension-back" type="button" onClick={() => { void api.manage({ action: 'cancel-connect', ...authorizing }).catch((error: unknown) => { if (error instanceof Error) setError(error.message); }); }}>取消连接</button>}</form> : dialog === 'settings' ? <><h3>插件市场</h3><p>从已添加的来源发现和安装插件。</p>{(snapshot?.marketplaces ?? []).map(market => <div className="extension-connection" key={market.id}><div><strong>{market.name}</strong><p>{market.source}</p></div><button type="button" disabled={disabled} onClick={() => requestRemoveMarket(market)}>移除</button></div>)}<button className="extension-add" type="button" disabled={disabled} onClick={() => { setMarketSource(''); setDialog('marketplace'); }}>添加插件市场</button><button className="extension-back" type="button" disabled={disabled} onClick={() => void perform(() => api.reconcile())}>刷新所有来源</button></> : dialog === 'marketplace' ? <form onSubmit={event => { event.preventDefault(); void perform(async () => { const next = await api.manage({ action: 'add-marketplace', source: marketSource }); setDialog(null); return next; }); }}><p>输入 Git 仓库地址、GitHub 的 owner/repo，或本地市场目录。</p><label>市场来源<input autoFocus value={marketSource} placeholder="https://github.com/openai/plugins.git" onChange={event => setMarketSource(event.target.value)} /></label><button className="extension-add" type="submit" disabled={disabled || !marketSource.trim()}>添加</button></form> : <form onSubmit={event => { event.preventDefault(); if (selected !== undefined) void perform(async () => { const next = await api.manage({ action: 'configure', id: selected.id, server: connection, values: connectionValues }); setDialog(null); setConnectionValues({}); return next; }); }}>
       <p>{connection}</p>{(service?.transport === 'app' || service?.url !== undefined) && <label>连接地址<input type="url" placeholder={service?.url ?? 'https://…/mcp'} value={connectionValues.url ?? ''} onChange={event => setConnectionValues({ ...connectionValues, url: event.target.value })} /></label>}{service?.variables?.map(variable => <label key={variable}>{variable}<input type="password" autoComplete="off" value={connectionValues[variable] ?? ''} onChange={event => setConnectionValues({ ...connectionValues, [variable]: event.target.value })} /></label>)}<p>密钥使用操作系统加密保存。账户授权在系统浏览器中完成。</p><button className="extension-add" type="submit" disabled={disabled || Object.values(connectionValues).every(value => value === '')}>保存</button>
-    </form>}{toastElement}
-  </dialog>}{dialog === null && openedSkill === undefined && toastElement}{openedSkill !== undefined && <SkillDialog skill={openedSkill} api={api} isProcessing={disabled}
+    </form>}{deleteRequest === null && toastElement}
+  </dialog>}{dialog === null && openedSkill === undefined && deleteRequest === null && toastElement}{openedSkill !== undefined && <SkillDialog skill={openedSkill} api={api} isProcessing={disabled}
     parentEnabled={openedSkill.pluginId === undefined || snapshot?.plugins.find(plugin => plugin.id === openedSkill.pluginId)?.enabled === true}
     icon={<ExtensionIcon item={openedSkill} />} feedback={toastElement} loading={operation?.id === openedSkill.id ? operation.loading : undefined}
     onPerform={(call, loading, success, installed) => perform(call, itemFeedback(openedSkill, loading, success, installed ? 'installed' : undefined))}
-    onError={message => setNotice({ variant: 'error', message })} onClose={() => setOpenedSkillId(null)}
-    {...(onTrySkill === undefined ? {} : { onTry: onTrySkill })} />}</Container>;
+    onError={message => setNotice({ variant: 'error', message })} onClearFeedback={() => { setError(null); setNotice(null); }} onClose={() => setOpenedSkillId(null)}
+    {...(onTrySkill === undefined ? {} : { onTry: onTrySkill })} />}{deleteRequest !== null && <DeleteConfirmationDialog title={deleteRequest.title} description={deleteRequest.description} confirmLabel={deleteRequest.confirmLabel} busy={busy} disabled={isProcessing}
+      onConfirm={() => void confirmDelete()} onClose={() => setDeleteRequest(null)} feedback={toastElement} {...(deleteRequest.returnFocus === undefined ? {} : { returnFocus: deleteRequest.returnFocus })} />}</Container>;
 }

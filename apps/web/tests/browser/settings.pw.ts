@@ -13,6 +13,7 @@ test('automatically saves full-page settings with themes and extension navigatio
   await expect(page.getByRole('heading', { name: '常规', exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(page.getByRole('complementary', { name: '工作区导航' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '本地工具', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   await expect(page.getByRole('button', { name: '保存设置' })).toHaveCount(0);
   await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
@@ -26,10 +27,8 @@ test('automatically saves full-page settings with themes and extension navigatio
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.model-provider-editor')).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem('agent-desktop:web-runtime-settings'))).not.toContain('"builtin"');
-  await page.getByRole('button', { name: '本地工具', exact: true }).click();
-  await expect(page.getByLabel('模型文件路径', { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Whisper CLI 路径', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Whisper', exact: true }).click();
+  await page.getByRole('button', { name: '插件与技能', exact: true }).click();
+  await page.getByRole('button', { name: '浏览目录', exact: true }).click();
   await expect(page.getByRole('main', { name: '插件管理' })).toBeVisible();
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
@@ -49,7 +48,7 @@ test('automatically saves full-page settings with themes and extension navigatio
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   for (const [width, height] of [[1280, 720], [800, 600], [400, 500]]) {
     await page.setViewportSize({ width: width!, height: height! });
-    for (const name of ['常规', '模型与执行', '本地工具', '插件与技能', '外观']) {
+    for (const name of ['常规', '模型与执行', '插件与技能', '外观']) {
       await page.getByRole('button', { name, exact: true }).click();
       await expect(page.getByRole('heading', { name: name === '模型与执行' ? '模型' : name === '插件与技能' ? '插件' : name, exact: true })).toBeVisible();
       if (name === '模型与执行') {
@@ -86,9 +85,22 @@ test('edits provider catalogs and validates drafts at desktop and narrow widths'
   // 所有供应商使用同一删除确认；取消不会修改已经保存的目录。
   await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
   await expect(page.getByText('删除“OpenAI”及其本机密钥？', { exact: true })).toBeVisible();
-  await page.getByRole('region', { name: 'OpenAI供应商' }).getByRole('button', { name: '取消', exact: true }).click();
+  const deletion = page.getByRole('dialog', { name: '删除供应商', exact: true });
+  await expect(deletion.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+  expect(await deletion.evaluate(element => element.matches(':modal'))).toBe(true);
+  for (const [width, height] of [[1280, 720], [800, 600], [400, 600]]) {
+    await page.setViewportSize({ width: width!, height: height! });
+    expect(await deletion.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: info.outputPath(`provider-delete-${width}.png`) });
+  }
+  await deletion.getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '删除OpenAI供应商', exact: true })).toBeFocused();
   await expect(page.getByRole('button', { name: '确认删除', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(deletion).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
   await page.getByRole('region', { name: 'DeepSeek供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
   await expect(page.getByRole('button', { name: '恢复默认模型', exact: true })).toHaveCount(0);
   await page.getByLabel('模型 1 参数', { exact: true }).click();
@@ -123,14 +135,33 @@ test('edits provider catalogs and validates drafts at desktop and narrow widths'
   for (const provider of ['DeepSeek', 'OpenAI']) await expect(page.getByRole('button', { name: `删除${provider}供应商`, exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('provider-trash-dark-400.png') });
   await page.getByRole('button', { name: '删除OpenAI供应商', exact: true }).click();
+  await page.screenshot({ path: info.outputPath('provider-delete-dark-400.png') });
   await page.getByRole('button', { name: '确认删除', exact: true }).click();
   await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveText('供应商已删除。');
+  expect((await page.getByRole('status').boundingBox())!.y).toBe(24);
+  await page.getByRole('button', { name: '关闭提示' }).click();
   await page.reload();
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('button', { name: '模型与执行', exact: true }).click();
   await expect(page.getByRole('region', { name: 'OpenAI供应商' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除DeepSeek供应商', exact: true })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem('agent-desktop:web-runtime-settings'))).not.toContain('"builtin"');
+  await page.getByRole('button', { name: '删除DeepSeek供应商', exact: true }).click();
+  await page.getByRole('button', { name: '确认删除', exact: true }).click();
+  await expect(page.locator('.model-provider-card')).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveText('供应商已删除。');
+  expect(JSON.parse((await page.evaluate(() => localStorage.getItem('agent-desktop:web-runtime-settings')))!).conversationModel).toBeNull();
+  await page.getByRole('button', { name: '关闭设置' }).click();
+  await expect(page.getByRole('button', { name: '选择对话模型：未配置模型', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: '剪辑需求' }).fill('未配置模型时保留的草稿');
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+  await page.screenshot({ path: info.outputPath('providers-empty.png') });
+  await page.reload();
+  await expect(page.getByRole('button', { name: '选择对话模型：未配置模型', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型与执行', exact: true }).click();
+  await expect(page.locator('.model-provider-card')).toHaveCount(0);
 });
 
 test('manages installed plugins, MCP and markets from Desktop settings', async ({}, info) => {
@@ -201,6 +232,10 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
     await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
     await page.screenshot({ path: resolve(evidence, 'markets-dark.png') });
     await page.getByRole('button', { name: '移除 本地插件市场' }).click();
+    await page.getByRole('dialog', { name: '移除“本地插件市场”？' }).getByRole('button', { name: '取消', exact: true }).click();
+    await expect(page.getByRole('tab', { name: '市场 1' })).toBeVisible();
+    await page.getByRole('button', { name: '移除 本地插件市场' }).click();
+    await page.getByRole('dialog', { name: '移除“本地插件市场”？' }).getByRole('button', { name: '移除市场', exact: true }).click();
     await expect(page.getByRole('tab', { name: '市场 0' })).toBeVisible();
     await page.getByRole('tab', { name: pluginTab }).click();
     await expect(page.getByRole('switch', { name: '启用 代码审查' })).toBeChecked();
@@ -350,18 +385,29 @@ test('persists providers and encrypted credentials and executes both protocols t
     await models();
     await page.getByRole('button', { name: '删除本地测试供应商供应商', exact: true }).click();
     await page.getByRole('button', { name: '确认删除', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('切换模型');
-    await page.getByRole('button', { name: '关闭设置' }).click();
-    await page.getByRole('button', { name: '选择对话模型：本地模型' }).click();
-    await page.getByRole('menuitemradio', { name: /DeepSeek V4 Pro/ }).click();
-    await models();
-    await expect(page.getByLabel('当前对话模型')).toHaveCount(0);
-    expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'deepseek-v4-pro' });
-    await page.getByRole('button', { name: '删除本地测试供应商供应商', exact: true }).click();
-    await page.getByRole('button', { name: '确认删除', exact: true }).click();
     await expect(page.getByRole('region', { name: '本地测试供应商供应商' })).toHaveCount(0);
+    await expect(page.getByRole('status')).toHaveText('供应商已删除。');
+    expect((await page.getByRole('status').boundingBox())!.y).toBe(24);
+    await page.screenshot({ path: resolve(evidence, 'desktop-provider-delete-success.png') });
+    expect((await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).conversationModel).toEqual({ providerId: 'deepseek', modelId: 'deepseek-v4-pro' });
+    await page.getByRole('button', { name: '关闭提示' }).click();
     // 密钥只能存在于系统加密后的数据库值中，文件字节不能包含明文。
     expect((await readFile(resolve(profile, 'agent-desktop.sqlite'))).includes(Buffer.from('desktop-test-key'))).toBe(false);
+    await page.getByRole('button', { name: '删除DeepSeek供应商', exact: true }).click();
+    await page.getByRole('button', { name: '确认删除', exact: true }).click();
+    await expect(page.locator('.model-provider-card')).toHaveCount(0);
+    saved = await page.evaluate(() => window.agentDesktop.loadRuntimeSettings());
+    expect(saved).toMatchObject({ modelProviders: [], conversationModel: null, fallbackVisionModel: null, fallbackVisionEnabled: false });
+    await page.getByRole('button', { name: '关闭设置' }).click();
+    await expect(page.getByRole('button', { name: '选择对话模型：未配置模型', exact: true })).toBeVisible();
+    await page.getByRole('textbox', { name: '剪辑需求' }).fill('未配置模型时保留的草稿');
+    await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+    await page.screenshot({ path: resolve(evidence, 'desktop-providers-empty.png') });
+    await app.close(); app = await launch(); page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '选择对话模型：未配置模型', exact: true })).toBeVisible();
+    await models();
+    await expect(page.locator('.model-provider-card')).toHaveCount(0);
+    expect(await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({ modelProviders: [], conversationModel: null });
   } finally { if (app) await app.close(); await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); }
 });
 
@@ -461,6 +507,10 @@ test('adds standalone MCP through settings and runs its real tool after restart'
     await settings(); await page.getByRole('tab', { name: mcpTab }).click();
     await page.getByRole('button', { name: '配置 local-tools' }).click();
     await page.getByRole('button', { name: '删除服务器' }).click();
+    await page.getByRole('dialog', { name: '删除“local-tools”？' }).getByRole('button', { name: '取消', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '配置 MCP 服务器' })).toBeVisible();
+    await page.getByRole('button', { name: '删除服务器' }).click();
+    await page.getByRole('button', { name: '确认删除服务器', exact: true }).click();
     await expect(page.getByRole('tab', { name: `MCP ${process.platform === 'win32' && process.arch === 'x64' ? 3 : 1}` })).toBeVisible();
   } finally {
     await app?.close();

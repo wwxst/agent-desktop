@@ -23,9 +23,9 @@ export function loadWebRuntimeSettings(): RuntimeSettings | null {
     }
   }
   const isReference = (reference: unknown) => record(reference) && typeof reference.providerId === 'string' && typeof reference.modelId === 'string';
-  if (!isReference(value.conversationModel) || (value.fallbackVisionModel !== null && !isReference(value.fallbackVisionModel))) throw new Error('网页模型选择无效。');
+  if ((value.conversationModel !== null && !isReference(value.conversationModel)) || (value.fallbackVisionModel !== null && !isReference(value.fallbackVisionModel))) throw new Error('网页模型选择无效。');
   const settings = value as unknown as RuntimeSettings;
-  resolveCatalogModel(settings.modelProviders, settings.conversationModel);
+  if (settings.conversationModel !== null) resolveCatalogModel(settings.modelProviders, settings.conversationModel);
   if (settings.fallbackVisionModel !== null) resolveCatalogModel(settings.modelProviders, settings.fallbackVisionModel);
   return settings;
 }

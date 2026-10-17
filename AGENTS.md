@@ -71,9 +71,10 @@ Commit 28 让 DeepSeek Provider 改用 SSE 流式响应，Model 文本增量经 
 * 避免循环依赖。
 * 公共接口必须有明确职责。
 * 核心行为使用已有测试验证；新增测试遵循本文最小实现规范。
+* 测试、验收和临时诊断必须遵守 [`docs/engineering.md` 的验收隔离与清理规则](docs/engineering.md#acceptance-isolation-and-cleanup验收隔离与清理)，结束后自动清理本任务测试供应商、测试对话与临时资产，并记录必要证据和未清理项。
 * 改架构时同步更新文档。
 * 修改 Desktop UI（桌面端用户界面）时，必须使用 [`.agents/skills/desktop-frontend/SKILL.md`](.agents/skills/desktop-frontend/SKILL.md)，并以 [`docs/desktop-ui.md`](docs/desktop-ui.md) 作为视觉行为的唯一文档来源。
-* 插件与技能操作的加载状态和结果提示必须统一遵守 [`docs/desktop-ui.md`](docs/desktop-ui.md) 的强制反馈规范，不得因页面、操作入口或插件来源采用不同提示样式。
+* 删除确认与操作结果提示必须统一遵守 [`docs/desktop-ui.md`](docs/desktop-ui.md) 的强制弹窗规范，不得因页面、操作入口或插件来源采用不同样式；插件与技能操作的加载状态同样遵守该文档。
 * 界面参考图和第三方界面只授权视觉对照；不得据此新增当前 milestone 未明确要求的控件、产品概念或功能。
 * 创建 package、修改 TypeScript 配置、引入依赖或修改 workspace 前，必须遵守 [`docs/engineering.md`](docs/engineering.md) 工程基线。
 * 面向人阅读的文档中，英文术语必须同时提供中文名称和简要说明；代码标识、文件名、命令、协议字段等技术原文可以保留英文。

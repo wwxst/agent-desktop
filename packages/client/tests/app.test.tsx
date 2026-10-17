@@ -4,6 +4,7 @@ import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/index.js';
+import { RuntimeSettingsPanel } from '../src/components/RuntimeSettingsPanel.js';
 import type { AgentClientApi, AgentRuntimeEvent, AgentTaskResult, AppUpdateState, ClientStateSnapshot } from '../src/index.js';
 
 const api: AgentClientApi = {
@@ -63,7 +64,9 @@ function savedConversation(id: string, title: string): ClientStateSnapshot['conv
 
 // jsdom 不实现布局滚动与顶层浮层；命中区域和关闭行为由真实浏览器测试验证。
 beforeAll(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); };
   HTMLElement.prototype.scrollIntoView = vi.fn();
   HTMLElement.prototype.showPopover = function () { this.style.display = 'block'; };
   HTMLElement.prototype.hidePopover = function () { this.style.display = 'none'; };
@@ -93,7 +96,7 @@ describe('shared App', () => {
     expect(input).toHaveProperty('value', '保留草稿');
     expect(screen.getByLabelText('视频附件：draft.mp4')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '选择对话模型：DeepSeek V4.1 Flash' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '配置自定义模型' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '配置模型' }));
     expect(await screen.findByRole('heading', { name: '模型' })).toBeTruthy();
     expect(screen.queryByLabelText('当前对话模型')).toBeNull();
     expect(save).toHaveBeenCalledOnce();
@@ -105,7 +108,7 @@ describe('shared App', () => {
     expect(input).toHaveProperty('value', '保留草稿');
     expect(screen.getByLabelText('视频附件：draft.mp4')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '选择对话模型：GPT-5.6 Luna' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '配置自定义模型' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '配置模型' }));
     expect(screen.queryByLabelText('当前对话模型')).toBeNull();
     expect(save).toHaveBeenLastCalledWith({ conversationModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' } });
   });
@@ -171,7 +174,11 @@ describe('shared App', () => {
     await waitFor(() => expect(button).toHaveProperty('disabled', false));
     expect(button.nextElementSibling).toBe(screen.getByRole('button', { name: '设置' }));
     fireEvent.click(button);
-    await screen.findByText('无法保存本地会话：磁盘不可写');
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '无法保存本地会话：磁盘不可写');
+    expect(screen.getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(button).toHaveProperty('disabled', false);
     expect(install).toHaveBeenCalledOnce();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -179,8 +186,12 @@ describe('shared App', () => {
   it('follows download and readiness events, hides absent updates and unsubscribes', async () => {
     let receive!: (state: AppUpdateState) => void;
     const unsubscribe = vi.fn();
-    const view = render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'idle' }), onStateChanged: listener => { receive = listener; return unsubscribe; }, install: async () => {}, retry: async () => {} } }} />);
+    const view = render(<App api={{ ...api, appUpdates: { getState: async () => { throw new Error('无法读取更新状态'); }, onStateChanged: listener => { receive = listener; return unsubscribe; }, install: async () => {}, retry: async () => {} } }} />);
     await screen.findByLabelText('剪辑需求');
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '无法读取更新状态');
+    expect(screen.getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByRole('button', { name: '安装更新' })).toBeNull();
     act(() => receive({ status: 'downloading', percent: 45 }));
     expect(screen.getByRole('button', { name: '正在下载更新 45%' })).toHaveProperty('disabled', true);
@@ -195,6 +206,9 @@ describe('shared App', () => {
     const install = vi.fn(async () => {});
     render(<App api={{ ...api, appUpdates: { getState: async () => ({ status: 'error', message: '下载失败：HTTP 503' }), onStateChanged: () => () => {}, install, retry } }} />);
     await screen.findByText('下载失败：HTTP 503');
+    expect(screen.getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
     const button = screen.getByRole('button', { name: '重试更新' });
     await waitFor(() => expect(button).toHaveProperty('disabled', false));
     fireEvent.click(button);
@@ -293,17 +307,78 @@ describe('shared App', () => {
     render(<App api={{ ...api, loadRuntimeSettings: async () => { throw new Error('设置文件无法读取'); } }} />);
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', '设置文件无法读取');
+    expect(screen.getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByText('正在加载设置…')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('设置未加载。')).toBeTruthy();
   });
 
   it('keeps the composer draft when settings opens and closes', async () => {
-    render(<App api={api} />);
+    let finishDelete!: () => void;
+    const deleteMemories = vi.fn<AgentClientApi['deleteMemories']>().mockRejectedValueOnce(new Error('记忆删除失败'))
+      .mockImplementationOnce(() => new Promise(resolve => { finishDelete = resolve; }));
+    const saveCustomInstructions = vi.fn<AgentClientApi['saveCustomInstructions']>().mockRejectedValue(new Error('指令保存失败'));
+    const app = render(<App api={{ ...api, deleteMemories, saveCustomInstructions }} />);
     const input = await screen.findByLabelText('剪辑需求');
     fireEvent.change(input, { target: { value: '尚未发送的草稿' } });
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '个性化' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除' }));
+    let dialog = screen.getByRole('dialog', { name: '删除全部 Codex 记忆？' });
+    expect(deleteMemories).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(deleteMemories).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    dialog = screen.getByRole('dialog', { name: '删除全部 Codex 记忆？' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }));
+    expect(await within(dialog).findByRole('alert')).toHaveProperty('textContent', '记忆删除失败');
+    expect(within(dialog).getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭提示' }));
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }));
+    expect(within(dialog).getByRole('button', { name: '取消' })).toHaveProperty('disabled', true);
+    expect(within(dialog).getByRole('button', { name: '关闭' })).toHaveProperty('disabled', true);
+    fireEvent(dialog, new Event('cancel', { cancelable: true, bubbles: true }));
+    expect(screen.getByRole('dialog', { name: '删除全部 Codex 记忆？' })).toBe(dialog);
+    await act(async () => finishDelete());
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('status')).toHaveProperty('textContent', '已删除全部 Codex 记忆。');
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Codex 指令/ }));
+    dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('AGENTS.md 内容'), { target: { value: '保留指令草稿' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+    expect(await within(dialog).findByRole('alert')).toHaveProperty('textContent', '指令保存失败');
+    expect(within(dialog).getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    expect(within(dialog).getByLabelText('AGENTS.md 内容')).toHaveProperty('value', '保留指令草稿');
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭提示' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(await screen.findByRole('button', { name: '关闭设置' }));
     expect(screen.getByLabelText('剪辑需求')).toBe(input);
     expect(input).toHaveProperty('value', '尚未发送的草稿');
+    app.unmount();
+    // 父视图直接改变分区或可见状态时，也必须释放原生模态与未提交的删除确认。
+    const props = { api, isProcessing: false, isOpen: true, section: 'personalization', settings: await api.loadRuntimeSettings(), settingsError: '',
+      onClose: vi.fn(), onOpenExtensions: vi.fn(), archivedConversations: [], onOpenConversation: async () => {}, onRestoreConversation: async () => {},
+      onRequestDelete: vi.fn(), onSaveSettings: api.saveRuntimeSettings, onSettings: vi.fn(), onSectionChange: vi.fn() };
+    const panel = render(<RuntimeSettingsPanel {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
+    expect(screen.getByRole('dialog', { name: '删除全部 Codex 记忆？' })).toBeTruthy();
+    panel.rerender(<RuntimeSettingsPanel {...props} section="appearance" />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    panel.rerender(<RuntimeSettingsPanel {...props} />);
+    await act(async () => {});
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Codex 指令/ }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    panel.rerender(<RuntimeSettingsPanel {...props} isOpen={false} />);
+    expect(document.querySelector('dialog[open]')).toBeNull();
+    panel.rerender(<RuntimeSettingsPanel {...props} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('changes Send to Stop, shows cancelled, and can send again', async () => {
@@ -328,20 +403,38 @@ describe('shared App', () => {
     expect(runAgentTask).toHaveBeenCalledTimes(2);
   });
 
-  it('renders with explicitly supplied host capabilities', async () => {
-    render(<App api={api} />);
+  it('renders host capabilities without a configured model and keeps model configuration available', async () => {
+    const run = vi.fn(api.runAgentTask);
+    render(<App api={{ ...api, runAgentTask: run, loadRuntimeSettings: async () => ({ ...await api.loadRuntimeSettings(), modelProviders: [], conversationModel: null, fallbackVisionModel: null }) }} />);
     expect(await screen.findByText('Agent Desktop')).toBeTruthy();
     expect(screen.getByRole('button', { name: '新会话' })).toBeTruthy();
     expect(screen.queryByText('本地运行')).toBeNull();
+    const model = await screen.findByRole('button', { name: '选择对话模型：未配置模型' });
+    const input = screen.getByLabelText('剪辑需求');
+    fireEvent.change(input, { target: { value: '保留未配置时的草稿' } });
+    expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
+    expect(screen.getByText('未配置模型，请先在模型菜单中配置模型。')).toBeTruthy();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(run).not.toHaveBeenCalled();
+    fireEvent.click(model);
+    fireEvent.click(screen.getByRole('menuitem', { name: '配置模型' }));
+    expect(await screen.findByRole('heading', { name: '模型' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '添加模型提供商' })).toBeTruthy();
   });
 
   it('saves the appearance preference through the host and restores it on startup', async () => {
     const base = await api.loadRuntimeSettings();
-    const saveRuntimeSettings = vi.fn(async () => ({ ...base, theme: 'dark' as const }));
+    const saveRuntimeSettings = vi.fn<AgentClientApi['saveRuntimeSettings']>().mockRejectedValueOnce(new Error('外观保存失败')).mockResolvedValue({ ...base, theme: 'dark' as const });
     render(<App api={{ ...api, saveRuntimeSettings }} />);
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
     fireEvent.click(screen.getByRole('button', { name: '外观' }));
     fireEvent.click(await screen.findByRole('button', { name: '深色' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '外观保存失败');
+    expect(screen.getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    expect(screen.getByRole('button', { name: '深色' })).toHaveProperty('ariaPressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '深色' }));
     expect(screen.queryByRole('button', { name: '保存设置' })).toBeNull();
     await waitFor(() => expect(saveRuntimeSettings).toHaveBeenCalledWith(expect.objectContaining({ theme: 'dark' })));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
@@ -356,6 +449,7 @@ describe('shared App', () => {
     const input = await screen.findByLabelText('剪辑需求');
     fireEvent.change(input, { target: { value: '跨页面草稿' } });
     fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    expect(screen.queryByRole('button', { name: '本地工具' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '插件与技能' }));
     fireEvent.click(await screen.findByRole('button', { name: '浏览目录' }));
     expect(await screen.findByRole('main', { name: '插件管理' })).toBeTruthy();
@@ -862,7 +956,7 @@ describe('shared App', () => {
     await vi.waitFor(() => expect(revealFile).toHaveBeenCalledWith('D:/videos/part1.mp4'));
   });
 
-  it('shows the real artifact reveal failure inside the artifact card', async () => {
+  it('shows the real artifact reveal failure in the shared top notice', async () => {
     const revealFile = vi.fn(async () => {
       throw new Error('文件不存在或已被移动：D:/videos/missing.mp4');
     });
@@ -884,11 +978,12 @@ describe('shared App', () => {
     expect(card).not.toBeNull();
     fireEvent.click(within(card as HTMLElement).getByRole('button', { name: '打开文件' }));
 
-    expect(await within(card as HTMLElement).findByText('文件不存在或已被移动：D:/videos/missing.mp4'))
-      .toBeTruthy();
+    expect((await screen.findByRole('alert')).textContent).toContain('文件不存在或已被移动：D:/videos/missing.mp4');
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('shows the host reveal message verbatim in the activity row', async () => {
+  it('shows the host activity reveal message verbatim in the shared top notice', async () => {
     const missingPath = 'D:\\work\\notes-moved.txt';
     const revealFile = vi.fn(async () => {
       // 宿主边界（Desktop Preload）已经剥离 Electron 的 invoke 包装，界面只转发真实原因。
@@ -925,10 +1020,11 @@ describe('shared App', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: `定位文件：${missingPath}` }));
 
-    // 活动行只显示宿主的可操作消息，不出现 Electron IPC 的技术包装。
-    const inlineError = await screen.findByText(`文件不存在或已被移动：${missingPath}`);
-    expect(inlineError.closest('.activity-file-error')).not.toBeNull();
+    // 顶部提示只显示宿主的可操作消息，不出现 Electron IPC 的技术包装。
+    expect((await screen.findByRole('alert')).textContent).toContain(`文件不存在或已被移动：${missingPath}`);
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('shows the real artifact type for video, subtitle, text and unknown files', async () => {
@@ -1558,12 +1654,24 @@ describe('shared App', () => {
     }] };
     const saveClientState = vi.fn(api.saveClientState);
     const newSession = vi.fn(async () => 'session-b');
-    render(<App api={{ ...api, loadClientState: async () => saved, selectProjectDirectory: async () => 'D:/projects/demo', newSession, saveClientState }} />);
+    const openProjectDirectory = vi.fn<AgentClientApi['openProjectDirectory']>().mockRejectedValueOnce(new Error('项目目录无法打开')).mockResolvedValue(undefined);
+    render(<App api={{ ...api, loadClientState: async () => saved, selectProjectDirectory: async () => 'D:/projects/demo', newSession, saveClientState, openProjectDirectory }} />);
     await screen.findByRole('button', { name: '已有聊天' });
     fireEvent.click(screen.getByRole('button', { name: '添加项目' }));
     fireEvent.click(await screen.findByRole('button', { name: '在 demo 中新建会话' }));
     await waitFor(() => expect(newSession).toHaveBeenCalledWith('D:/projects/demo'));
     await waitFor(() => expect(screen.getByLabelText('项目目录：demo').getAttribute('title')).toBe('D:/projects/demo'));
+    fireEvent.click(screen.getByRole('button', { name: '项目操作：demo' }));
+    fireEvent.click(screen.getByRole('button', { name: '在资源管理器中打开' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '项目目录无法打开');
+    expect(screen.getByRole('alert').classList.contains('extension-toast-error')).toBe(true);
+    expect(document.querySelector('.sidebar-session-menu')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '项目操作：demo' }));
+    fireEvent.click(screen.getByRole('button', { name: '在资源管理器中打开' }));
+    await waitFor(() => expect(document.querySelector('.sidebar-session-menu')).toBeNull());
+    expect(openProjectDirectory).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole('button', { name: '会话操作：已有聊天' }));
     fireEvent.click(screen.getByRole('button', { name: /移到项目/ }));
     fireEvent.click(screen.getByRole('button', { name: 'demo' }));

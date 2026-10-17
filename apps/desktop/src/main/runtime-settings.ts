@@ -1,6 +1,6 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import { DEFAULT_MODEL_PROVIDERS, usesDefaultModelEndpoint } from '@agent-desktop/client/model-defaults';
-import { getConversationCapability, getVisionCapability, resolveVisionModel, UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { findFirstConversationModel, getConversationCapability, getVisionCapability, resolveVisionModel, UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 import type { ModelApiProtocol, RuntimeModelDefinition, RuntimeModelProvider,
   RuntimeModelProviderUpdate, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/client';
@@ -9,7 +9,7 @@ type ProviderConfig = Omit<RuntimeModelProvider, 'apiKey'>;
 interface PersistedRuntimeSettings {
   readonly theme?: 'system' | 'light' | 'dark';
   readonly modelProviders?: readonly ProviderConfig[];
-  readonly conversationModel?: RuntimeModelReference;
+  readonly conversationModel?: RuntimeModelReference | null;
   readonly fallbackVisionModel?: RuntimeModelReference | null;
   readonly fallbackVisionEnabled?: boolean;
   readonly memoryEnabled?: boolean;
@@ -100,14 +100,14 @@ function providerUpdate(value: unknown): RuntimeModelProviderUpdate {
 export function parseRuntimeSettingsUpdate(value: unknown): RuntimeSettingsUpdate {
   if (!record(value)) throw new Error('运行时设置更新无效。');
   const update: { theme?: 'system' | 'light' | 'dark' | null; memoryEnabled?: boolean; memoryFromToolChatsEnabled?: boolean;
-    modelProvider?: RuntimeModelProviderUpdate; deleteModelProviderId?: string; conversationModel?: RuntimeModelReference; fallbackVisionModel?: RuntimeModelReference | null; fallbackVisionEnabled?: boolean } = {};
+    modelProvider?: RuntimeModelProviderUpdate; deleteModelProviderId?: string; conversationModel?: RuntimeModelReference | null; fallbackVisionModel?: RuntimeModelReference | null; fallbackVisionEnabled?: boolean } = {};
   if (value.theme !== undefined) {
     if (value.theme !== null && !['system', 'light', 'dark'].includes(String(value.theme))) throw new Error('外观模式无效。');
     update.theme = value.theme as 'system' | 'light' | 'dark' | null;
   }
   if (value.modelProvider !== undefined) update.modelProvider = providerUpdate(value.modelProvider);
   if (value.deleteModelProviderId !== undefined) update.deleteModelProviderId = text(value.deleteModelProviderId, '供应商 ID');
-  if (value.conversationModel !== undefined) update.conversationModel = reference(value.conversationModel);
+  if (value.conversationModel !== undefined) update.conversationModel = value.conversationModel === null ? null : reference(value.conversationModel);
   if (value.fallbackVisionModel !== undefined) update.fallbackVisionModel = value.fallbackVisionModel === null ? null : reference(value.fallbackVisionModel);
   if (value.fallbackVisionEnabled !== undefined) {
     if (typeof value.fallbackVisionEnabled !== 'boolean') throw new Error('备用视觉开关必须是布尔值。');
@@ -187,7 +187,7 @@ function providerConfigs(saved: PersistedRuntimeSettings, environment: RuntimeEn
       ?? { id: environment.DEEPSEEK_MODEL!.trim(), displayName: environment.DEEPSEEK_MODEL!.trim(), capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported' } }] : provider.models }));
 }
 function selections(saved: PersistedRuntimeSettings, providers: readonly ProviderConfig[]) {
-  return { conversationModel: saved.conversationModel ?? { providerId: 'deepseek', modelId: providers.find(item => item.id === 'deepseek')!.models[0]!.id },
+  return { conversationModel: saved.conversationModel === undefined ? findFirstConversationModel(providers) : saved.conversationModel,
     fallbackVisionModel: saved.fallbackVisionModel ?? null, fallbackVisionEnabled: saved.fallbackVisionEnabled ?? false };
 }
 function selectedModel(providers: readonly ProviderConfig[], choice: RuntimeModelReference) {
@@ -205,7 +205,9 @@ export async function loadRuntimeSettings(path: string, environment: RuntimeEnvi
 }
 export async function loadRuntimeConfiguration(path: string, storage: SafeStoragePort, environment: RuntimeEnvironment = process.env): Promise<RuntimeConfiguration> {
   const saved = savedSettings(path); const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
-  const choice = selections(saved, providers); const conversation = selectedModel(providers, choice.conversationModel);
+  const choice = selections(saved, providers);
+  if (choice.conversationModel === null) throw new Error('尚未配置对话模型，请在设置 → 模型中添加供应商并选择模型。');
+  const conversation = selectedModel(providers, choice.conversationModel);
   const keyFor = (provider: ProviderConfig) => decrypt(secrets.providerApiKeys?.[provider.id], storage, provider.displayName) ?? environmentKey(provider.id, environment);
   const conversationKey = keyFor(conversation.provider);
   if (getConversationCapability(conversation.model) !== 'supported') throw new Error('当前模型的文本对话能力未确认支持。');
@@ -262,13 +264,20 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       providers = providers.filter(provider => provider.id !== id);
       const keys = { ...secrets.providerApiKeys }; delete keys[id]; secrets = { providerApiKeys: keys };
     }
-    const conversationModel = update.conversationModel ?? choices.conversationModel;
+    let conversationModel = update.conversationModel === undefined ? choices.conversationModel : update.conversationModel;
+    // 空选择录入有效目录后即可恢复对话；删除当前供应商也在同一保存里调整选择。
+    if (update.conversationModel === undefined && ((conversationModel === null && update.modelProvider !== undefined)
+      || (update.deleteModelProviderId !== undefined && conversationModel?.providerId === update.deleteModelProviderId))) {
+      conversationModel = findFirstConversationModel(providers);
+    }
     let fallbackVisionModel = update.fallbackVisionModel === undefined ? choices.fallbackVisionModel : update.fallbackVisionModel;
-    const fallbackVisionEnabled = update.fallbackVisionEnabled ?? choices.fallbackVisionEnabled;
-    // 关闭时保留候选；只有用户删除其供应商时才清除，显式改选仍按新引用校验。
-    if (update.deleteModelProviderId !== undefined && !fallbackVisionEnabled && update.fallbackVisionModel === undefined
-      && fallbackVisionModel?.providerId === update.deleteModelProviderId) fallbackVisionModel = null;
-    if (getConversationCapability(selectedModel(providers, conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
+    let fallbackVisionEnabled = update.fallbackVisionEnabled ?? choices.fallbackVisionEnabled;
+    // 删除供应商一并清除其备用引用，避免已启用的备用配置继续阻止删除。
+    if (update.deleteModelProviderId !== undefined && fallbackVisionModel?.providerId === update.deleteModelProviderId) {
+      fallbackVisionModel = null;
+      fallbackVisionEnabled = false;
+    }
+    if (conversationModel !== null && getConversationCapability(selectedModel(providers, conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
     if (fallbackVisionModel !== null) selectedModel(providers, fallbackVisionModel);
     if (fallbackVisionEnabled) {
       if (fallbackVisionModel === null) throw new Error('请先配置备用视觉模型。');

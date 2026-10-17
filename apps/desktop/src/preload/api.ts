@@ -80,7 +80,8 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
     loadRuntimeSettings: () => ipc.invoke(
       DESKTOP_CHANNELS.loadRuntimeSettings,
     ) as ReturnType<DesktopApi['loadRuntimeSettings']>,
-    saveRuntimeSettings: (update) => ipc.invoke(
+    // 保存失败也要剥离 Electron invoke 的技术前缀，设置页才能展示宿主真实原因。
+    saveRuntimeSettings: (update) => invokeExtension(
       DESKTOP_CHANNELS.saveRuntimeSettings,
       update,
     ) as ReturnType<DesktopApi['saveRuntimeSettings']>,

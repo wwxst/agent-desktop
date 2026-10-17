@@ -87,8 +87,14 @@ test('persists real Desktop extension installation and enabled state across rest
     await detail.getByRole('button', { name: '插件操作' }).click();
     await page.screenshot({ path: resolve(evidence, 'desktop-plugin-detail-menu.png') });
     await detail.getByRole('menuitem', { name: '卸载' }).click();
-    await expect(detail.getByRole('button', { name: '确认卸载' })).toBeVisible();
-    await detail.getByRole('button', { name: '取消', exact: true }).click();
+    const confirmation = page.getByRole('dialog', { name: '卸载“语义视频剪辑”？' });
+    await expect(confirmation).toBeVisible();
+    expect(await confirmation.evaluate(element => element.matches(':modal'))).toBe(true);
+    await expect(confirmation.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+    await page.screenshot({ path: resolve(evidence, 'desktop-plugin-uninstall-confirmation.png') });
+    await confirmation.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(confirmation).not.toBeVisible();
+    await expect(detail).toBeVisible();
     await detail.getByRole('region', { name: '信息' }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: resolve(evidence, 'desktop-plugin-detail-info.png') });
     const pluginSkills = page.getByRole('region', { name: '附带技能' });

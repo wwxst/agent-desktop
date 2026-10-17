@@ -64,8 +64,11 @@ test('keeps downloading disabled and shows a real failure with a retry action', 
   await expect(error).toHaveText('下载失败：HTTP 503');
   const box = (await error.boundingBox())!;
   expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
-  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBe(24);
   await page.screenshot({ path: resolve(`logs/app-update-20261002/${info.project.name}-error.png`) });
+  await page.getByRole('button', { name: '关闭提示' }).click();
+  await expect(error).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '重试更新' })).toBeEnabled();
   await page.getByRole('button', { name: '重试更新' }).click();
   await expect(error).toHaveCount(0);
   await expect(page.getByRole('button', { name: '正在下载更新 0%' })).toBeDisabled();

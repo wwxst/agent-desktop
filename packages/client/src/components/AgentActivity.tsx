@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ExtensionToast } from './ExtensionFeedback.js';
 import type {
   AgentActivityDetail,
   AgentActivityFile,
@@ -265,16 +266,13 @@ export function AgentActivity({
   onRevealFile,
 }: AgentActivityProps) {
   const summary = processSummary(items, isProcessing);
-  const [fileError, setFileError] = useState<{ readonly id: string; readonly message: string } | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [expandedResults, setExpandedResults] = useState<ReadonlySet<string>>(() => new Set());
 
-  const reveal = (id: string, path: string) => {
-    void onRevealFile(path).then(
-      () => setFileError(null),
-      (error: unknown) => setFileError({
-        id,
-        message: error instanceof Error ? error.message : '无法定位该文件。',
-      }),
+  const reveal = (path: string) => {
+    setFileError(null);
+    void onRevealFile(path).catch(
+      (error: unknown) => setFileError(error instanceof Error ? error.message : '无法定位该文件。'),
     );
   };
 
@@ -318,13 +316,13 @@ export function AgentActivity({
                       ? <code>{detail}</code>
                       : <span className="activity-note">{detail}</span>)}
                     {inputFiles.map((file) => (
-                      <FileButton key={file.path} file={file} onReveal={() => reveal(item.id, file.path)} />
+                      <FileButton key={file.path} file={file} onReveal={() => reveal(file.path)} />
                     ))}
                     {inputFiles.length > 0 && outputFiles.length > 0 && (
                       <span className="activity-file-separator" aria-hidden="true">→</span>
                     )}
                     {outputFiles.map((file) => (
-                      <FileButton key={file.path} file={file} onReveal={() => reveal(item.id, file.path)} />
+                      <FileButton key={file.path} file={file} onReveal={() => reveal(file.path)} />
                     ))}
                   </div>
                   {item.retryNote !== undefined && <span className="activity-note">{item.retryNote}</span>}
@@ -344,15 +342,13 @@ export function AgentActivity({
                     </button>
                   )}
                 </div>
-                {fileError?.id === item.id && (
-                  <p className="activity-file-error" role="status">{fileError.message}</p>
-                )}
                 {resultExpanded && item.detail !== undefined && <ActivityResultDetail detail={item.detail} />}
               </li>
             );
           })}
         </ol>
       )}
+      {fileError !== null && <ExtensionToast notice={{ variant: 'error', message: fileError }} onClose={() => setFileError(null)} />}
     </section>
   );
 }

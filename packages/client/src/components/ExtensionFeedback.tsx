@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { AlertCircle, CheckCircle2, LoaderCircle, X } from 'lucide-react';
 
 export interface ExtensionNotice {
@@ -18,7 +18,19 @@ export function ExtensionToast({ notice, icon, onClose, onTry, tryDisabled }: {
   readonly onTry?: () => void;
   readonly tryDisabled?: boolean;
 }) {
-  return <div className={`extension-toast extension-toast-${notice.variant}`} role={notice.variant === 'error' ? 'alert' : 'status'}>
+  const toast = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = toast.current!;
+    const dialog = element.closest('dialog');
+    if (dialog === null) return;
+    // 窄窗口中提示会换行；按真实高度为原生弹窗留位，避免遮住顶部操作。
+    const reserveSpace = () => dialog.style.setProperty('--feedback-height', `${element.getBoundingClientRect().height}px`);
+    reserveSpace();
+    const observer = new ResizeObserver(reserveSpace);
+    observer.observe(element);
+    return () => { observer.disconnect(); dialog.style.removeProperty('--feedback-height'); };
+  }, []);
+  return <div ref={toast} className={`extension-toast extension-toast-${notice.variant}`} role={notice.variant === 'error' ? 'alert' : 'status'}>
     {notice.variant === 'progress' ? <LoaderCircle className="extension-toast-spinner" size={16} aria-hidden="true" />
       : notice.variant === 'error' ? <AlertCircle size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
     {notice.variant === 'installed' && icon}
