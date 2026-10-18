@@ -130,6 +130,6 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 
 ## 7. Git 状态
 
-本地功能分支的 Browser 路径修复 `94ace18` 和 safe-storage 测试时限修复 `2d3ac88` 已推送；最新 Actions run `39119918572` 的 Windows 与 Ubuntu jobs 均通过。`main` 尚未合并。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
+本地功能分支的 Browser 路径修复 `94ace18` 和 safe-storage 测试时限修复 `2d3ac88` 已推送；代码修复提交 `2d3ac88` 的 Actions run `39119918572` 与验收记录提交 `6f372ac` 的 run `39120238708` 中，Windows、Ubuntu jobs 均通过。`main` 尚未合并。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
 
 最终结论保持 `CHANGES_REQUIRED`，不能将本轮自动化门禁通过等同于完整架构交付通过。
