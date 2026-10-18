@@ -120,6 +120,6 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 
 ## 7. Git 状态
 
-本地功能分支已有提交 `89289d3`、`b6c16ba` 和 `14c7683`；最新两个修复提交尚未推送，分支领先 `origin/codex/agent-platform-v2` 两个提交。HTTPS 推送因无法连接 GitHub:443 失败，SSH-over-443 因本机没有可用公钥失败；远端 CI 因此仍停留在提交 `89289d3`。没有合并 `main`。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
+本地功能分支已有提交 `89289d3`、`b6c16ba`、`14c7683`、`568ce70` 和 `824b6f9`；后四个提交尚未推送，分支领先 `origin/codex/agent-platform-v2` 四个提交。此前 HTTPS 推送因无法连接 GitHub:443 失败，SSH-over-443 因本机没有可用公钥失败；远端 CI 因此仍停留在提交 `89289d3`。没有合并 `main`。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
 
 最终结论保持 `CHANGES_REQUIRED`，不能将本轮自动化门禁通过等同于完整架构交付通过。
