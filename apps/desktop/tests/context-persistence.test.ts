@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createContextSourceDigest, runTurn, validateContextCompactedEvent } from '@agent-desktop/agent-loop';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import { OpenAICompatibleModel } from '@agent-desktop/model-deepseek';
 import type { ToolCallId } from '@agent-desktop/model';
 import { InMemorySession, type ContextCompactedEvent, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
@@ -86,7 +86,7 @@ describe('persisted model context', () => {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     if (address === null || typeof address === 'string') throw new Error('测试 HTTP 地址缺失。');
-    const model = new DeepSeekModel({ apiKey: 'local-key', protocol,
+    const model = new OpenAICompatibleModel({ apiKey: 'local-key', model: 'fixture-model', protocol,
       baseUrl: `http://127.0.0.1:${address.port}/v1`, maxOutputTokens: 4096, disableThinking: false });
     const tools = new InMemoryToolRegistry();
     tools.register({ name: 'read', description: '读取资料', inputSchema: { type: 'object', properties: { path: { type: 'string' } } },

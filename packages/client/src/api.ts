@@ -413,6 +413,7 @@ export type ApprovalRequest = {
     readonly reason?: string;
   };
 } & (
+  | { readonly kind: 'tool-action'; readonly capability: string; readonly action: string; readonly arguments: string; readonly sessionScope?: string }
   | { readonly kind: 'plugin-start'; readonly pluginName: string; readonly serverName: string; readonly command: string; readonly workingDirectory: string }
   | { readonly kind: 'plugin-tool'; readonly pluginName: string; readonly serverName: string; readonly toolName: string; readonly arguments: string }
   | { readonly kind: 'terminal-start'; readonly interpreter: string; readonly command: string; readonly workingDirectory: string }
@@ -641,7 +642,7 @@ export interface AgentClientApi {
    * 对当前待决操作提交允许或拒绝。
    * 宿主只接受当前请求的标识：客户端不能用一次迟到的批准重新启动已经失效的操作。
    */
-  decideApproval(requestId: string, approved: boolean): Promise<void>;
+  decideApproval(requestId: string, approved: boolean, scope?: 'once' | 'session'): Promise<void>;
   /** 为当前聊天保存权限模式；执行中的任务不能变更审批方式。 */
   setPermissionMode(mode: PermissionMode): Promise<PermissionMode>;
   answerQuestion(requestId: string, answer: QuestionAnswer): Promise<void>;

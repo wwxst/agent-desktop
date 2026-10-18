@@ -10,9 +10,6 @@ import type {
 } from '@agent-desktop/model';
 import { ModelRequestError } from '@agent-desktop/model';
 
-const DEFAULT_MODEL = 'deepseek-v4-pro';
-const DEFAULT_BASE_URL = 'https://api.deepseek.com';
-
 /** 两种模型协议复用同一错误分类，交给现有 Agent Loop 的有限重试处理。 */
 function responseHttpError(response: Response, label: string): ModelRequestError {
   const kind = [429, 502, 503, 504].includes(response.status) ? 'transient-service'
@@ -74,7 +71,7 @@ function responseResult(value: unknown): ModelResponse {
 }
 
 /** Responses 的会话输入由供应商边界转换；Core 继续只保存完整文本和工具事实。 */
-async function completeResponses(request: ModelRequest, options: { apiKey: string; baseUrl: string; model: string; maxOutputTokens?: number }): Promise<ModelResponse> {
+async function completeResponses(request: ModelRequest, options: { apiKey: string; baseUrl: string; model: string; maxOutputTokens?: number; authorizeNetwork?: OpenAICompatibleModelOptions['authorizeNetwork'] }): Promise<ModelResponse> {
   const input = request.messages.flatMap<Record<string, unknown>>(message => {
     if (message.role === 'tool') return [{ type: 'function_call_output', call_id: message.toolCallId, output: message.content }];
     if (message.role === 'user') return [{ role: 'user', content: message.content }];
@@ -83,8 +80,9 @@ async function completeResponses(request: ModelRequest, options: { apiKey: strin
       ...message.toolCalls.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: JSON.stringify(call.input) })),
     ];
   });
+  await options.authorizeNetwork?.({ url: `${options.baseUrl}/responses`, method: 'POST' }, request.signal);
   const response = await fetch(`${options.baseUrl}/responses`, {
-    method: 'POST', headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
+    method: 'POST', redirect: 'manual', headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: options.model, instructions: request.systemPrompt, input, stream: true, store: false,
       tools: request.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })),
       ...(options.maxOutputTokens === undefined ? {} : { max_output_tokens: options.maxOutputTokens }) }),
@@ -126,38 +124,40 @@ async function completeResponses(request: ModelRequest, options: { apiKey: strin
   }
 }
 
-/** DeepSeek Provider 的最小配置，不提前加入采样或重试选项。 */
-export interface DeepSeekModelOptions {
+/** OpenAI 兼容协议的实际配置；供应商与模型必须由真实入口显式选择。 */
+export interface OpenAICompatibleModelOptions {
   readonly apiKey: string;
-  readonly model?: string;
-  readonly baseUrl?: string;
+  readonly model: string;
+  readonly baseUrl: string;
   readonly protocol?: 'chat-completions' | 'responses';
   readonly maxOutputTokens?: number;
   readonly disableThinking?: boolean;
+  /** 宿主网络策略；Provider 不自行决定是否允许外部请求。 */
+  readonly authorizeNetwork?: (request: { readonly url: string; readonly method?: string }, signal?: AbortSignal) => Promise<void>;
 }
 
-interface DeepSeekFunctionCall {
+interface ChatFunctionCall {
   readonly name: string;
   readonly arguments: string;
 }
 
-interface DeepSeekToolCall {
+interface ChatToolCall {
   readonly id: string;
   readonly type: 'function';
-  readonly function: DeepSeekFunctionCall;
+  readonly function: ChatFunctionCall;
 }
 
-type DeepSeekMessage =
+type ChatMessage =
   | { readonly role: 'system'; readonly content: string }
   | { readonly role: 'user'; readonly content: string }
   | {
     readonly role: 'assistant';
     readonly content: string | null;
-    readonly tool_calls?: readonly DeepSeekToolCall[];
+    readonly tool_calls?: readonly ChatToolCall[];
   }
   | { readonly role: 'tool'; readonly tool_call_id: string; readonly content: string };
 
-interface DeepSeekToolDefinition {
+interface ChatToolDefinition {
   readonly type: 'function';
   readonly function: {
     readonly name: string;
@@ -167,7 +167,7 @@ interface DeepSeekToolDefinition {
 }
 
 /** 流式 Tool Call 分片；除 index 外所有字段都是可选增量。 */
-interface DeepSeekToolCallDelta {
+interface ChatToolCallDelta {
   readonly index: number;
   readonly id?: string;
   readonly function?: {
@@ -177,9 +177,9 @@ interface DeepSeekToolCallDelta {
 }
 
 /** choices[0].delta 只包含当前实现需要的文本与 Tool Call 增量。 */
-interface DeepSeekStreamDelta {
+interface ChatStreamDelta {
   readonly content?: string | null;
-  readonly tool_calls?: readonly DeepSeekToolCallDelta[];
+  readonly tool_calls?: readonly ChatToolCallDelta[];
 }
 
 /** 同一个 index 的分片合并结果；id 与 name 是身份，argsJson 是增量拼接。 */
@@ -195,23 +195,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * System Prompt 在 Core 中保持独立字段；只有具体 Provider 知道 DeepSeek 需要 system role。
+ * System Prompt 在 Core 中保持独立字段；协议适配器负责转换为 system role。
  * 这一步是 HTTP 协议转换，不会把供应商消息类型泄漏回 Agent Core。
  */
-function mapMessages(request: ModelRequest): DeepSeekMessage[] {
+function mapMessages(request: ModelRequest): ChatMessage[] {
   return [
     { role: 'system', content: request.systemPrompt },
     ...request.messages.map(mapMessage),
   ];
 }
 
-function mapMessage(message: ModelMessage): DeepSeekMessage {
+function mapMessage(message: ModelMessage): ChatMessage {
   switch (message.role) {
     case 'user':
       return { role: 'user', content: message.content };
     case 'assistant': {
-      // DeepSeek Function Calling 使用 JSON 字符串传递 arguments，而 Core 保持 unknown 输入。
-      const toolCalls = message.toolCalls.map((toolCall): DeepSeekToolCall => ({
+      // Chat Completions Function Calling 使用 JSON 字符串传递 arguments，而 Core 保持 unknown 输入。
+      const toolCalls = message.toolCalls.map((toolCall): ChatToolCall => ({
         id: toolCall.id,
         type: 'function',
         function: {
@@ -229,7 +229,7 @@ function mapMessage(message: ModelMessage): DeepSeekMessage {
         };
     }
     case 'tool':
-      // Tool Result 用原 ToolCallId 回传，让 DeepSeek 能关联此前的 function call。
+      // Tool Result 用原 ToolCallId 回传，让模型服务关联此前的 function call。
       return {
         role: 'tool',
         tool_call_id: message.toolCallId,
@@ -238,8 +238,8 @@ function mapMessage(message: ModelMessage): DeepSeekMessage {
   }
 }
 
-/** 把 Core 工具描述投影为 DeepSeek Function Calling 的 tools 协议。 */
-function mapToolDefinition(tool: ModelToolDefinition): DeepSeekToolDefinition {
+/** 把 Core 工具描述投影为 Chat Completions Function Calling 的 tools 协议。 */
+function mapToolDefinition(tool: ModelToolDefinition): ChatToolDefinition {
   return {
     type: 'function',
     function: {
@@ -287,7 +287,7 @@ function readSseEvent(rawEvent: string): SseEvent | undefined {
   try {
     return { kind: 'payload', value: JSON.parse(payload) as unknown };
   } catch {
-    throw new Error('DeepSeek API stream returned an invalid SSE data payload');
+    throw new Error('Chat Completions API stream returned an invalid SSE data payload');
   }
 }
 
@@ -296,8 +296,8 @@ function readSseEvent(rawEvent: string): SseEvent | undefined {
  * delta（增量）与 finish_reason（终止原因）在协议里同级；
  * 终止分片只带 finish_reason，delta 可能为空对象或缺失，因此 delta 允许为 undefined。
  */
-interface DeepSeekStreamChoice {
-  readonly delta: DeepSeekStreamDelta | undefined;
+interface ChatStreamChoice {
+  readonly delta: ChatStreamDelta | undefined;
   readonly finishReason: string | undefined;
 }
 
@@ -307,7 +307,7 @@ interface DeepSeekStreamChoice {
  * 把它当成 delta 的字段会丢掉真实的终止语义。
  * 没有 choices 或首个 choice 不是对象时返回 undefined，让调用方跳过该事件。
  */
-function readStreamChoice(payload: unknown): DeepSeekStreamChoice | undefined {
+function readStreamChoice(payload: unknown): ChatStreamChoice | undefined {
   if (!isRecord(payload) || !Array.isArray(payload.choices)) return undefined;
   const firstChoice: unknown = payload.choices[0];
   if (!isRecord(firstChoice)) return undefined;
@@ -315,7 +315,7 @@ function readStreamChoice(payload: unknown): DeepSeekStreamChoice | undefined {
   const finishReason = firstChoice.finish_reason;
   return {
     // delta 缺失或不是对象时视为没有增量，而不是把损坏的形状当成空增量继续处理。
-    delta: isRecord(firstChoice.delta) ? (firstChoice.delta as DeepSeekStreamDelta) : undefined,
+    delta: isRecord(firstChoice.delta) ? (firstChoice.delta as ChatStreamDelta) : undefined,
     // finish_reason 为 null 表示该分片不是终止分片；空字符串同样不携带终止语义。
     finishReason: typeof finishReason === 'string' && finishReason.length > 0 ? finishReason : undefined,
   };
@@ -338,7 +338,7 @@ function acceptToolCallIdentity(current: string, incoming: unknown): string {
  */
 function requireToolCallField(value: string, field: string): string {
   if (value.length === 0) {
-    throw new Error(`DeepSeek API streamed Tool Call is missing ${field}`);
+    throw new Error(`Chat Completions API streamed Tool Call is missing ${field}`);
   }
   return value;
 }
@@ -346,11 +346,11 @@ function requireToolCallField(value: string, field: string): string {
 /** 把同一 index 的分片合并成一个 Tool Call，arguments 按到达顺序拼接。 */
 function appendToolCallDelta(
   toolCalls: Map<number, StreamedToolCall>,
-  delta: DeepSeekToolCallDelta,
+  delta: ChatToolCallDelta,
 ): void {
   // index 决定分片归属与最终 Tool 执行顺序，缺失或非法说明响应已经损坏。
   if (!Number.isInteger(delta.index) || delta.index < 0) {
-    throw new Error('DeepSeek API streamed Tool Call is missing a valid index');
+    throw new Error('Chat Completions API streamed Tool Call is missing a valid index');
   }
 
   const toolCall = toolCalls.get(delta.index) ?? { id: '', name: '', argsJson: '' };
@@ -363,12 +363,12 @@ function appendToolCallDelta(
   toolCalls.set(delta.index, toolCall);
 }
 
-/** 将 DeepSeek 的 JSON arguments 还原为 Core Tool 可以直接接收的 unknown 输入。 */
+/** 将协议的 JSON arguments 还原为 Core Tool 可以直接接收的 unknown 输入。 */
 function mapToolArguments(toolName: string, argsJson: string): unknown {
   try {
     return JSON.parse(argsJson) as unknown;
   } catch {
-    throw new Error(`DeepSeek API returned invalid tool arguments JSON for ${toolName}`);
+    throw new Error(`Chat Completions API returned invalid tool arguments JSON for ${toolName}`);
   }
 }
 
@@ -401,120 +401,128 @@ async function readStreamedResponse(
   let usage: ModelUsage | undefined;
   let buffer = '';
 
-  while (!receivedDone) {
-    const { done, value } = await reader.read().catch((error: unknown) => {
-      // 已有正文或工具分片时禁止重试，防止重复展示或执行。
-      throw classifyConnectionError(error, text.length > 0 || streamedToolCalls.size > 0);
-    });
-    // 流结束时必须 flush 解码器，取回可能保留的最后一个多字节序列，避免静默丢字节。
-    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+  try {
+    while (!receivedDone) {
+      const { done, value } = await reader.read().catch((error: unknown) => {
+        // 已有正文或工具分片时禁止重试，防止重复展示或执行。
+        throw classifyConnectionError(error, text.length > 0 || streamedToolCalls.size > 0);
+      });
+      // 流结束时必须 flush 解码器，取回可能保留的最后一个多字节序列，避免静默丢字节。
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
 
-    // SSE 用空行分隔事件；缓冲区末尾可能是不完整事件，必须留给下一段。
-    let boundary = findEventBoundary(buffer);
-    while (boundary !== undefined) {
-      const event = readSseEvent(buffer.slice(0, boundary.index));
-      buffer = buffer.slice(boundary.index + boundary.length);
-      boundary = findEventBoundary(buffer);
-      if (event === undefined) continue;
+      // SSE 用空行分隔事件；缓冲区末尾可能是不完整事件，必须留给下一段。
+      let boundary = findEventBoundary(buffer);
+      while (boundary !== undefined) {
+        const event = readSseEvent(buffer.slice(0, boundary.index));
+        buffer = buffer.slice(boundary.index + boundary.length);
+        boundary = findEventBoundary(buffer);
+        if (event === undefined) continue;
 
-      // [DONE] 就是协议终点：立即结束读取，不等服务端关闭 HTTP body，
-      // 也不让 DONE 之后到达的帧再影响结果；它本身不是 choices 分片。
-      if (event.kind === 'done') {
-        receivedDone = true;
-        break;
-      }
-
-      // include_usage 的尾帧可以是空 choices，必须先读取用量再判断正文分片。
-      if (isRecord(event.value)) {
-        const reportedUsage = readUsage(event.value.usage, 'prompt_tokens', 'completion_tokens');
-        if (reportedUsage !== undefined) usage = reportedUsage;
-      }
-      const choice = readStreamChoice(event.value);
-      if (choice === undefined) continue;
-      receivedChoicesChunk = true;
-
-      // 终止分片只带 finish_reason，delta 可能为空，因此两者都要读取，不能提前跳过。
-      const delta = choice.delta;
-      if (delta !== undefined) {
-        // 空字符串增量没有展示价值，也不能进入返回值。
-        if (typeof delta.content === 'string' && delta.content.length > 0) {
-          text += delta.content;
-          onTextDelta?.(delta.content);
+        // [DONE] 就是协议终点：立即结束读取，不等服务端关闭 HTTP body，
+        // 也不让 DONE 之后到达的帧再影响结果；它本身不是 choices 分片。
+        if (event.kind === 'done') {
+          receivedDone = true;
+          break;
         }
 
-        for (const toolCallDelta of delta.tool_calls ?? []) {
-          appendToolCallDelta(streamedToolCalls, toolCallDelta);
+        // include_usage 的尾帧可以是空 choices，必须先读取用量再判断正文分片。
+        if (isRecord(event.value)) {
+          const reportedUsage = readUsage(event.value.usage, 'prompt_tokens', 'completion_tokens');
+          if (reportedUsage !== undefined) usage = reportedUsage;
+        }
+        const choice = readStreamChoice(event.value);
+        if (choice === undefined) continue;
+        receivedChoicesChunk = true;
+
+        // 终止分片只带 finish_reason，delta 可能为空，因此两者都要读取，不能提前跳过。
+        const delta = choice.delta;
+        if (delta !== undefined) {
+          // 空字符串增量没有展示价值，也不能进入返回值。
+          if (typeof delta.content === 'string' && delta.content.length > 0) {
+            text += delta.content;
+            onTextDelta?.(delta.content);
+          }
+
+          for (const toolCallDelta of delta.tool_calls ?? []) {
+            appendToolCallDelta(streamedToolCalls, toolCallDelta);
+          }
+        }
+
+        // 只有 stop 与 tool_calls 代表完整响应；length、content_filter、insufficient_system_resource、
+        // aborted 都意味着文本或 Tool Call 可能被截断，必须立即失败，且不能被后面的分片覆盖。
+        if (choice.finishReason !== undefined) {
+          if (!isSuccessfulFinishReason(choice.finishReason)) {
+            throw new Error(`Chat Completions API stream terminated with finish_reason ${choice.finishReason}`);
+          }
+          receivedFinishReason = choice.finishReason;
         }
       }
 
-      // 只有 stop 与 tool_calls 代表完整响应；length、content_filter、insufficient_system_resource、
-      // aborted 都意味着文本或 Tool Call 可能被截断，必须立即失败，且不能被后面的分片覆盖。
-      if (choice.finishReason !== undefined) {
-        if (!isSuccessfulFinishReason(choice.finishReason)) {
-          throw new Error(`DeepSeek API stream terminated with finish_reason ${choice.finishReason}`);
-        }
-        receivedFinishReason = choice.finishReason;
-      }
+      if (done) break;
     }
 
-    if (done) break;
-  }
+    // 协议要求以 data: [DONE] 结束；缺失说明响应被截断，不能把部分结果伪装成成功响应。
+    if (!receivedDone) {
+      throw new Error('Chat Completions API stream ended before [DONE]');
+    }
+    // 200 响应里没有任何 choices 分片说明响应不符合协议，不能伪装成空成功结果。
+    if (!receivedChoicesChunk) {
+      throw new Error('Chat Completions API stream ended without a choices chunk');
+    }
+    // [DONE] 前没有终止原因，说明服务端没有给出结束语义，无法判断响应是否完整。
+    if (receivedFinishReason === undefined) {
+      throw new Error('Chat Completions API stream ended without a terminating finish_reason');
+    }
 
-  // 协议要求以 data: [DONE] 结束；缺失说明响应被截断，不能把部分结果伪装成成功响应。
-  if (!receivedDone) {
-    throw new Error('DeepSeek API stream ended before [DONE]');
-  }
-  // 200 响应里没有任何 choices 分片说明响应不符合协议，不能伪装成空成功结果。
-  if (!receivedChoicesChunk) {
-    throw new Error('DeepSeek API stream ended without a choices chunk');
-  }
-  // [DONE] 前没有终止原因，说明服务端没有给出结束语义，无法判断响应是否完整。
-  if (receivedFinishReason === undefined) {
-    throw new Error('DeepSeek API stream ended without a terminating finish_reason');
-  }
+    const toolCalls: ToolCall[] = [...streamedToolCalls]
+      // index 是协议给出的调用顺序，显式排序后 Agent Loop 才能按同一顺序执行 Tool。
+      .sort(([left], [right]) => left - right)
+      .map(([, toolCall]): ToolCall => {
+        const id = requireToolCallField(toolCall.id, 'id');
+        const name = requireToolCallField(toolCall.name, 'name');
+        return {
+          id: id as ToolCallId,
+          name,
+          input: mapToolArguments(name, toolCall.argsJson),
+        };
+      });
 
-  const toolCalls: ToolCall[] = [...streamedToolCalls]
-    // index 是协议给出的调用顺序，显式排序后 Agent Loop 才能按同一顺序执行 Tool。
-    .sort(([left], [right]) => left - right)
-    .map(([, toolCall]): ToolCall => {
-      const id = requireToolCallField(toolCall.id, 'id');
-      const name = requireToolCallField(toolCall.name, 'name');
-      return {
-        id: id as ToolCallId,
-        name,
-        input: mapToolArguments(name, toolCall.argsJson),
-      };
-    });
-
-  // exactOptionalPropertyTypes 要求无文本时省略 text，而不是写入 text: undefined。
-  return { ...(text.length === 0 ? {} : { text }), toolCalls, ...(usage === undefined ? {} : { usage }) };
+    // exactOptionalPropertyTypes 要求无文本时省略 text，而不是写入 text: undefined。
+    return { ...(text.length === 0 ? {} : { text }), toolCalls, ...(usage === undefined ? {} : { usage }) };
+  } finally {
+    // DONE 或解析失败都可能先于服务端 EOF，主动取消 body 并释放读取锁。
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 /**
- * DeepSeekModel 是 Core Model 接口到 DeepSeek HTTP 协议的适配器。
- * Agent Loop 只调用 Model.complete，因此完全不需要知道 DeepSeek 的存在。
+ * 将 Core Model 接口映射为 Chat Completions 或 Responses 协议。
+ * 供应商配置停留在适配器，Agent Loop 只调用 Model.complete。
  */
-export class DeepSeekModel implements Model {
+export class OpenAICompatibleModel implements Model {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
-  private readonly options: DeepSeekModelOptions;
+  private readonly options: OpenAICompatibleModelOptions;
 
-  public constructor(options: DeepSeekModelOptions) {
+  public constructor(options: OpenAICompatibleModelOptions) {
     this.options = options;
     this.apiKey = options.apiKey;
-    this.model = options.model ?? DEFAULT_MODEL;
+    this.model = options.model;
     // 去掉末尾斜线，确保自定义 baseUrl 与固定 endpoint 拼接结果唯一。
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     // 摘要和正式请求各自使用本次额度；缺省时沿用实例配置，不修改后续请求的默认值。
     const maxOutputTokens = request.maxOutputTokens ?? this.options.maxOutputTokens;
     if (this.options.protocol === 'responses') return completeResponses(request, { apiKey: this.apiKey, baseUrl: this.baseUrl,
-      model: this.model, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) });
+      model: this.model, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }), ...(this.options.authorizeNetwork === undefined ? {} : { authorizeNetwork: this.options.authorizeNetwork }) });
+    await this.options.authorizeNetwork?.({ url: `${this.baseUrl}/chat/completions`, method: 'POST' }, request.signal);
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
+      redirect: 'manual',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
@@ -523,8 +531,8 @@ export class DeepSeekModel implements Model {
         model: this.model,
         messages: mapMessages(request),
         tools: request.tools.map(mapToolDefinition),
-        // 第一版关闭 thinking，保持 Tool Call 往返与 MVP 行为一致。
-        ...(this.options.disableThinking === false ? {} : { thinking: { type: 'disabled' } }),
+        // 仅真实入口明确要求时发送此协议扩展，通用供应商不继承 DeepSeek 参数。
+        ...(this.options.disableThinking === true ? { thinking: { type: 'disabled' } } : {}),
         ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
         // 始终使用 SSE 流式响应，让文本增量能在 Turn 执行期间实时展示。
         stream: true,
@@ -536,11 +544,11 @@ export class DeepSeekModel implements Model {
 
     // HTTP 状态属于 Provider 边界；直接抛出清晰错误并交给现有调用链传播。
     if (!response.ok) {
-      throw responseHttpError(response, 'DeepSeek API');
+      throw responseHttpError(response, 'Chat Completions API');
     }
     // 200 响应必须带 body；缺失说明响应不符合 HTTP 契约，直接暴露程序错误。
     if (response.body === null) {
-      throw new Error('DeepSeek API response is missing a body');
+      throw new Error('Chat Completions API response is missing a body');
     }
 
     // 取消时 reader.read() 直接抛出 AbortError；这里不做任何捕获或转换，保持取消语义。

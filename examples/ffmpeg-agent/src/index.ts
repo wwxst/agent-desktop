@@ -3,7 +3,8 @@ import { stderr } from 'node:process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { runTurn } from '@agent-desktop/agent-loop';
+import { AgentRuntime } from '@agent-desktop/agent-loop';
+import { OpenAICompatibleModel } from '@agent-desktop/model-deepseek';
 import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool, ExtractAudioTool, ExtractFullVideoFramesTool, TrimVideoTool, ConcatVideosTool,
@@ -59,17 +60,19 @@ function printDeliveryResults(events: readonly SessionEvent[], turnId: TurnId): 
   }
 }
 
-/** CLI 只负责组装依赖；所有 Model、Tool、Result 控制流继续由 runTurn 驱动。 */
+/** CLI 只负责组装依赖，所有轮次控制流由 Runtime 驱动。 */
 async function runCli(
   apiKey: string,
   whisperModelPath: string,
   whisperCommand: string | undefined,
   visionApiKey: string,
-  deepSeekBaseUrl: string | undefined,
+  modelBaseUrl: string | undefined,
   visionBaseUrl?: string,
 ): Promise<void> {
+  const endpoint = modelBaseUrl ?? 'https://api.deepseek.com';
   const agent = createVideoAgent({
-    deepSeekApiKey: apiKey,
+    model: new OpenAICompatibleModel({ apiKey, baseUrl: endpoint,
+      model: process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro', disableThinking: new URL(endpoint).hostname === 'api.deepseek.com' }),
     mediaTools: [new ProbeMediaTool(), new DecodeVideoTool(), new DetectBlackSegmentsTool(), new ExtractVideoFramesTool(),
       new ExtractVideoRangeFramesTool(), new ExtractAudioTool(), new ExtractFullVideoFramesTool(), new TrimVideoTool(),
       new ConcatVideosTool(), new AddAudioTool(), new AddSubtitlesTool(), new ResizeVideoTool(), new CropVideoTool(), new SetSpeedTool(),
@@ -78,8 +81,8 @@ async function runCli(
       apiKey: visionApiKey,
       ...(visionBaseUrl === undefined ? {} : { baseUrl: visionBaseUrl }),
     }) } : {}),
-    ...(deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl }),
   });
+  const runtime = new AgentRuntime(agent.session);
   const terminal = createInterface({ input, output });
 
   output.write('Agent Desktop FFmpeg Agent\n\n');
@@ -95,7 +98,7 @@ async function runCli(
       await mkdir('logs', { recursive: true });
       const trace = createJsonlTrace(join('logs', 'agent-trace.jsonl'));
       stderr.write(`Trace: ${trace.id}\n`);
-      const result = await runTurn(agent, userInput, { trace: trace.write });
+      const result = await runtime.submitUserMessage(agent, userInput, { trace: trace.write });
       const turnEvents = agent.session.events().slice(eventStart);
 
       printTurnEvents(turnEvents);

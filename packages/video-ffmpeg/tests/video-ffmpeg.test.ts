@@ -11,6 +11,7 @@ import {
   DecodeVideoTool,
   DetectBlackSegmentsTool,
   ExtractAudioTool,
+  ExtractVideoSegmentFramesTool,
   ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool,
   ProbeMediaTool,
@@ -303,6 +304,42 @@ describe('FFmpeg video tools', () => {
       status: 'error',
       message: 'ffprobe failed: broken input',
     });
+  });
+
+  it('extracts bounded segments into a unique output namespace', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'agent-desktop-segment-frame-test-'));
+    try {
+      const executeCommand = vi.fn<CommandExecutor>(async (command, args) => {
+        if (command === 'ffprobe') return { stdout: JSON.stringify({ frames: [0, 1, 2, 3, 4].map(timestamp => ({ best_effort_timestamp_time: String(timestamp) })) }), stderr: '' };
+        await writeFile(join(outputDir, 'segment-000000000000-000001.jpg'), 'frame 1');
+        await writeFile(join(outputDir, 'segment-000000000000-000002.jpg'), 'frame 2');
+        return { stdout: '', stderr: '' };
+      });
+      await writeFile(join(outputDir, 'segment-000000000002-000001.jpg'), 'old segment');
+      const result = await new ExtractVideoSegmentFramesTool(executeCommand).execute({ inputPath: 'input.mp4', outputDir, startFrame: 0, maxFrames: 2 }, toolContext());
+      expect(result).toEqual({ status: 'success', output: {
+        complete: true, totalFrames: 5, startFrame: 0, endFrame: 2, startTime: 0, endTime: 2,
+        frames: [0, 1].map((timestamp, index) => ({ timestamp, path: join(outputDir, `segment-000000000000-${String(index + 1).padStart(6, '0')}.jpg`) })),
+      } });
+      expect(executeCommand).toHaveBeenNthCalledWith(2, 'ffmpeg', [
+        '-n', '-hide_banner', '-loglevel', 'error', '-i', 'input.mp4', '-map', '0:v:0',
+        '-vf', 'select=between(n\\,0\\,1)', '-fps_mode', 'passthrough', '-q:v', '2',
+        join(outputDir, 'segment-000000000000-%06d.jpg'),
+      ], undefined);
+    } finally { await rm(outputDir, { recursive: true, force: true }); }
+  });
+
+  it('rejects rerunning a segment into a directory containing its prior frames', async () => {
+    const outputDir = await mkdtemp(join(tmpdir(), 'agent-desktop-segment-frame-reuse-test-'));
+    try {
+      const executeCommand = vi.fn<CommandExecutor>(async (command) => command === 'ffprobe'
+        ? { stdout: JSON.stringify({ frames: [0, 1].map(timestamp => ({ best_effort_timestamp_time: String(timestamp) })) }), stderr: '' }
+        : { stdout: '', stderr: '' });
+      await writeFile(join(outputDir, 'segment-000000000000-000001.jpg'), 'existing');
+      await expect(new ExtractVideoSegmentFramesTool(executeCommand).execute({ inputPath: 'input.mp4', outputDir, startFrame: 0 }, toolContext()))
+        .resolves.toEqual({ status: 'error', message: expect.stringContaining('输出目录已包含本段文件') });
+      expect(executeCommand).toHaveBeenCalledTimes(1);
+    } finally { await rm(outputDir, { recursive: true, force: true }); }
   });
 
   it('defines extract_video_range_frames with absolute range inputs', () => {

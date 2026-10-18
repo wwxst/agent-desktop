@@ -19,7 +19,7 @@ describe('video validation through the Desktop recovery gate', () => {
       await writeFile(source, 'candidate fixture bytes');
 
       const persistenceFailure = new SessionPersistenceError(new Error('checkpoint save failed'));
-      const declarationTool = createVideoAgent({ deepSeekApiKey: 'fixture' }).tools.get('declare_video_outputs')!;
+      const declarationTool = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) } }).tools.get('declare_video_outputs')!;
       let uncreatedWorkingDirectory = '';
       const failingContext: ToolExecutionContext = { toolCallId: 'persistence-failure' as ToolCallId,
         reportProgress: () => {}, checkpoint: () => { throw persistenceFailure; } };
@@ -40,7 +40,7 @@ describe('video validation through the Desktop recovery gate', () => {
         if (args.includes('libx264')) await copyFile(args[args.indexOf('-i') + 1]!, args[args.length - 1]!);
         return { stdout: '', stderr: '' };
       };
-      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session,
+      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session,
         mediaTools: [new TrimVideoTool(execute), new DecodeVideoTool(execute), new ProbeMediaTool(execute)] });
       let request = 0;
       let outputItemId = '';
@@ -87,7 +87,7 @@ describe('video validation through the Desktop recovery gate', () => {
 
       // 发布检查点保存失败必须向 Loop 传播，不能被应用 Tool 转成普通失败或创建目标。
       const beforePublish = new InMemorySession(prePublishEvents);
-      const publishTool = createVideoAgent({ deepSeekApiKey: 'fixture', session: beforePublish }).tools.get('publish_video_output')!;
+      const publishTool = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session: beforePublish }).tools.get('publish_video_output')!;
       await expect(publishTool.execute({ validationId: prePublishValidationId }, failingContext)).rejects.toBe(persistenceFailure);
       expect(await readFile(target, 'utf8')).toBe('candidate fixture bytes');
 

@@ -16,6 +16,7 @@ import {
 } from '../src/main/session-persistence.js';
 
 const temporaryDirectories: string[] = [];
+const artifact = (path: string) => ({ id: 'test-artifact', path, mimeType: 'text/plain', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'test' });
 
 async function temporaryStatePath(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-session-'));
@@ -758,7 +759,7 @@ describe('desktop session persistence', () => {
         result: {
           status: 'success',
           output: { filePath: 'D:/videos/剪辑清单.txt', bytes: 9 },
-          artifacts: ['D:/videos/剪辑清单.txt'],
+          artifacts: [artifact('D:/videos/剪辑清单.txt')],
         },
       },
       { type: 'turn.completed', turnId },
@@ -843,7 +844,7 @@ describe('desktop session persistence', () => {
     expect(restoredMessage).not.toHaveProperty('result.outputFiles');
   });
 
-  it('rejects a success result whose artifacts is not an array of strings', async () => {
+  it('rejects a success result whose artifacts do not contain file metadata', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     const turnId = 'turn-bad' as TurnId;

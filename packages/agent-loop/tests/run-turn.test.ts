@@ -101,7 +101,8 @@ describe('runTurn', () => {
     tools.register({
       name: 'pending', description: 'Waits until cancelled.', inputSchema: {},
       execute: async (_input, { signal }) => new Promise((_resolve, reject) => {
-        expect(signal).toBe(controller.signal);
+        // Router 为单次超时组合子信号；父 Turn 的取消仍必须到达真实工具边界。
+        expect(signal).toBeInstanceOf(AbortSignal);
         signal?.addEventListener('abort', () => {
           reject(new DOMException('The operation was aborted', 'AbortError'));
         }, { once: true });

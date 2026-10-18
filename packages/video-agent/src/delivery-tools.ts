@@ -6,7 +6,8 @@ import { pipeline } from 'node:stream/promises';
 import { candidateDigest } from './candidate-digest.js';
 import type { ToolCallId, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, type SessionEvent } from '@agent-desktop/session';
-import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
+import { ToolExecutionError, type Tool, type ToolContract, type ToolExecutionContext } from '@agent-desktop/tools';
+import { createFileArtifact } from '@agent-desktop/local-tools';
 import {
   DECLARE_VIDEO_OUTPUTS_TOOL,
   PUBLISH_VIDEO_OUTPUT_TOOL,
@@ -801,7 +802,7 @@ export class PublishVideoOutputTool implements Tool {
       return {
         status: 'success',
         output: { kind: 'video.output.published', output },
-        artifacts: [publishedPath],
+        artifacts: [await createFileArtifact(publishedPath, this.name, context.signal)],
       };
     } catch (error) {
       return errorResult(error);
@@ -826,6 +827,9 @@ export class ScopedVideoOutputTool implements Tool {
   get inputSchema(): unknown { return this.inner.inputSchema; }
   // 路径校验不增加副作用；保留实际媒体工具或插件钩子的执行边界。
   get executionBoundary() { return this.inner.executionBoundary ?? 'opaque'; }
+  get contract(): Partial<ToolContract> { return this.inner.contract ?? {}; }
+  // 没有内层投影时使用恒等函数，满足 exactOptionalPropertyTypes 且不改变调用参数。
+  get sanitizeInput(): (input: unknown) => unknown { return this.inner.sanitizeInput ?? ((input: unknown) => input); }
 
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
     // 输入不是当前契约形状时交给内层工具返回它自己的字段错误，不在这里重复校验。

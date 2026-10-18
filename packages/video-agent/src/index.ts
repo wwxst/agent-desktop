@@ -1,6 +1,8 @@
 import type { Agent } from '@agent-desktop/agent';
 import {
+  ApplyPatchTool,
   EditTextFileTool,
+  GitReadTool,
   ListDirectoryTool,
   ReadFileTool,
   RunCommandTool,
@@ -10,7 +12,7 @@ import {
   type CommandPort,
   type WorkspacePort,
 } from '@agent-desktop/local-tools';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import type { Model } from '@agent-desktop/model';
 import { InMemorySession, type Session } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
@@ -26,6 +28,8 @@ import { AskUserTool, type AskUserPort } from './ask-user.js';
 import { DelegateTasksTool, type DelegateTasksPort } from './delegate-tasks.js';
 import { TerminalTool, type TerminalPort } from './terminal-tools.js';
 import { CheckVideoSemanticsTool } from './semantic-check.js';
+export { projectVideoJob, videoJobId } from './video-job.js';
+export type { VideoJobCheckpoint, VideoJobFrame, VideoJobObservation, VideoJobSegment, VideoJobState, VideoJobTranscript } from './video-job.js';
 export type { TerminalPort } from './terminal-tools.js';
 export type { DelegateTasksPort, ReadOnlyTask, SubagentResult } from './delegate-tasks.js';
 export type { AskUserPort, UserQuestion, UserAnswer } from './ask-user.js';
@@ -53,12 +57,7 @@ export type {
 
 /** 创建正式视频 Agent 所需的最小外部配置；环境变量解析由调用入口负责。 */
 export interface VideoAgentOptions {
-  readonly deepSeekApiKey: string;
-  readonly deepSeekBaseUrl?: string;
-  readonly deepSeekModel?: string;
-  readonly modelProtocol?: 'chat-completions' | 'responses';
-  readonly modelMaxOutputTokens?: number;
-  readonly useDeepSeekThinking?: boolean;
+  readonly model: Model;
   /** 入口提供已配置、已授权的视觉工具；公开调用与语义验收复用同一实例。 */
   readonly visionTool?: Tool;
   readonly visionUnavailableReason?: string;
@@ -99,6 +98,8 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
     tools.register(new SearchTextTool(options.workspace));
     tools.register(new WriteTextFileTool(options.workspace));
     tools.register(new EditTextFileTool(options.workspace));
+    tools.register(new ApplyPatchTool(options.workspace));
+    for (const name of ['git_status', 'git_diff', 'git_log'] as const) tools.register(new GitReadTool(name, options.workspace));
     // 命令工具复用同一份目录范围和审批能力：没有工作目录就没有合法的执行起点，
     // 没有审批就没有合法的命令授权，因此两者缺一都不注册。
     if (options.command !== undefined) {
@@ -113,27 +114,16 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   tools.register(new ValidateVideoCandidateTool(readEvents));
   tools.register(new PublishVideoOutputTool(readEvents));
   tools.register(new CheckVideoSemanticsTool(readEvents, {
-    model: new DeepSeekModel(modelOptionsFor(options)),
+    // 模型不保存会话；主循环与独立语义判断各自传入明确上下文，复用同一有效配置。
+    model: options.model,
     mediaTools,
     ...(options.visionTool === undefined ? {} : { vision: options.visionTool }),
   }));
 
-  const modelOptions = modelOptionsFor(options);
-
   return {
-    model: new DeepSeekModel(modelOptions),
+    model: options.model,
     session,
     tools,
     systemPrompt: new StaticSystemPrompt(options.visionUnavailableReason === undefined ? AGENT_SYSTEM_PROMPT : `${AGENT_SYSTEM_PROMPT}\n当前视觉不可用：${options.visionUnavailableReason}`),
   };
-}
-
-/** 父模型与独立验收模型使用相同运行配置，模型会话彼此隔离。 */
-function modelOptionsFor(options: VideoAgentOptions) {
-  return { apiKey: options.deepSeekApiKey,
-    ...(options.deepSeekBaseUrl === undefined ? {} : { baseUrl: options.deepSeekBaseUrl }),
-    ...(options.deepSeekModel === undefined ? {} : { model: options.deepSeekModel }),
-    ...(options.modelProtocol === undefined ? {} : { protocol: options.modelProtocol }),
-    ...(options.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: options.modelMaxOutputTokens }),
-    ...(options.useDeepSeekThinking === undefined ? {} : { disableThinking: options.useDeepSeekThinking }) };
 }

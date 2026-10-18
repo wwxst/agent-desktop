@@ -11,6 +11,8 @@ export type { ProbeFileAccess as VisionFileAccess } from './ffmpeg-tool.js';
 export function adaptVisionTool(tool: Tool, access: ProbeFileAccess | undefined): Tool {
   return { name: 'analyze_images', description: tool.description, inputSchema: tool.inputSchema,
     executionBoundary: tool.executionBoundary ?? 'opaque',
+    contract: { capability: 'vision', riskLevel: 'external', parallelSafety: 'serial', timeoutMs: 120_000,
+      cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
     async execute(input, context) {
       let invoked = false;
       try {

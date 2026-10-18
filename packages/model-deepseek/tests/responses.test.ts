@@ -1,6 +1,8 @@
 import { createServer, type ServerResponse } from 'node:http';
-import { afterEach, expect, it } from 'vitest';
-import { DeepSeekModel } from '../src/index.js';
+import { afterEach, expect, it, vi } from 'vitest';
+import { OpenAICompatibleModel } from '../src/index.js';
+
+const modelOptions = { model: 'fixture-model', baseUrl: 'https://example.test/v1' };
 import type { ModelRequest, ToolCallId } from '@agent-desktop/model';
 
 const request: ModelRequest = { systemPrompt: '检查文件', messages: [{ role: 'user', content: '检查 notes.txt' }], tools: [{ name: 'read_file', description: '读取文件', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }] };
@@ -31,13 +33,22 @@ it('streams text and round trips function calls through real Responses HTTP', as
     }
     res.end();
   });
-  const model = new DeepSeekModel({ apiKey: 'local-key', baseUrl, model: 'configured-model', protocol: 'responses', maxOutputTokens: 1024 });
+  const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, model: 'configured-model', protocol: 'responses', maxOutputTokens: 1024 });
   const first = await model.complete(request);
   expect(first.toolCalls).toEqual([{ id: 'call-1', name: 'read_file', input: { path: 'notes.txt' } }]);
   const chunks: string[] = [];
   expect(await model.complete({ ...request, messages: [...request.messages, { role: 'assistant', toolCalls: first.toolCalls }, { role: 'tool', toolCallId: 'call-1' as ToolCallId, content: '文件内容' }], onTextDelta: delta => chunks.push(delta) })).toEqual({ text: '检查完成', toolCalls: [], usage: { inputTokens: 73, outputTokens: 12 } });
   expect(chunks).toEqual(['检查', '完成']);
   expect(received[1]).toMatchObject({ model: 'configured-model', max_output_tokens: 1024, store: false, instructions: '检查文件', input: [{ role: 'user', content: '检查 notes.txt' }, { type: 'function_call', call_id: 'call-1', name: 'read_file', arguments: '{"path":"notes.txt"}' }, { type: 'function_call_output', call_id: 'call-1', output: '文件内容' }] });
+});
+it('authorizes Responses requests before opening the HTTP stream', async () => {
+  const baseUrl = await host((_body, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    event(res, { type: 'response.completed', response: { status: 'completed', output: [] } }); res.end();
+  });
+  const authorizeNetwork = vi.fn(async (_request: { readonly url: string; readonly method?: string }, _signal?: AbortSignal) => {});
+  await new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses', authorizeNetwork }).complete(request);
+  expect(authorizeNetwork).toHaveBeenCalledWith({ url: `${baseUrl}/responses`, method: 'POST' }, undefined);
 });
 it('uses configured Chat model and output limit without DeepSeek-only fields for other suppliers', async () => {
   let body!: Record<string, unknown>;
@@ -47,7 +58,7 @@ it('uses configured Chat model and output limit without DeepSeek-only fields for
     event(res, { choices: [{ delta: { content: '完成' }, finish_reason: 'stop' }] });
     res.end('data: [DONE]\n\n');
   });
-  expect(await new DeepSeekModel({ apiKey: 'local-key', baseUrl, model: 'chat-model', maxOutputTokens: 512, disableThinking: false }).complete(request)).toMatchObject({ text: '完成' });
+  expect(await new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, model: 'chat-model', maxOutputTokens: 512 }).complete(request)).toMatchObject({ text: '完成' });
   expect(body).toMatchObject({ model: 'chat-model', max_tokens: 512 });
   expect(body).not.toHaveProperty('thinking');
 });
@@ -61,7 +72,7 @@ it.each(['chat-completions', 'responses'] as const)('uses separate summary and n
     else event(res, { choices: [{ delta: { content: '完成' }, finish_reason: 'stop' }] });
     res.end(protocol === 'responses' ? '' : 'data: [DONE]\n\n');
   });
-  const model = new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol, maxOutputTokens: 4096 });
+  const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol, maxOutputTokens: 4096 });
   await model.complete({ ...request, tools: [], maxOutputTokens: 192 });
   await model.complete({ ...request, maxOutputTokens: 768 });
   await model.complete(request);
@@ -80,7 +91,7 @@ it.each(['chat-completions', 'responses'] as const)('uses request-only output ca
     else event(res, { choices: [{ delta: {}, finish_reason: 'stop' }] });
     res.end(protocol === 'responses' ? '' : 'data: [DONE]\n\n');
   });
-  const model = new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol });
+  const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol });
   await model.complete({ ...request, maxOutputTokens: 128 });
   await model.complete(request);
   const field = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
@@ -94,20 +105,20 @@ it.each(['truncated', 'incomplete', 'failed'])('rejects an unfinished Responses 
     if (status !== 'truncated') event(res, { type: `response.${status}`, response: { status } });
     res.end();
   });
-  await expect(new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete(request)).rejects.toThrow(/完成事件|执行失败/);
+  await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete(request)).rejects.toThrow(/完成事件|执行失败/);
 });
 it('cancels an active Responses request with the same turn signal', async () => {
   let started!: () => void;
   const active = new Promise<void>(resolve => { started = resolve; });
   const baseUrl = await host((_body, res) => { res.setHeader('Content-Type', 'text/event-stream'); event(res, { type: 'response.created' }); started(); });
   const controller = new AbortController();
-  const pending = new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete({ ...request, signal: controller.signal });
+  const pending = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete({ ...request, signal: controller.signal });
   await active; controller.abort();
   await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
 });
 it.each([429, 503, 401, 400])('keeps existing retry and authentication classification for Responses HTTP %s', async status => {
   const baseUrl = await host((_body, res) => { res.writeHead(status, { 'Retry-After': '2' }); res.end(); });
-  await expect(new DeepSeekModel({ apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete(request)).rejects.toMatchObject({
+  await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete(request)).rejects.toMatchObject({
     kind: [429, 503].includes(status) ? 'transient-service' : status === 401 ? 'authentication' : 'invalid-request', statusCode: status, retryAfterMs: 2000,
   });
 });

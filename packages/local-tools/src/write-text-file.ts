@@ -1,15 +1,17 @@
 import type { ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
-import { stat, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { resolveCreatablePath } from './path-scope.js';
 import type { WorkspacePort } from './workspace.js';
+import { createFileArtifact } from './artifact.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function errorResult(message: string, failureKind: 'permanent' | 'denied' = 'permanent'): ToolResult {
+function errorResult(message: string, failureKind: 'permanent' | 'denied' | 'unknown-outcome' = 'permanent'): ToolResult {
   return { status: 'error', message, failureKind };
 }
 
@@ -37,7 +39,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
  *
  * 三条边界：
  * - 范围：目标路径的**父目录**必须符合宿主文件授权（目标还不存在，不能对它做 realpath）。
- * - 不覆盖：已有文件一律拒绝，`wx` 是真正的写入边界兜底（先 stat 避免为注定失败的操作请求审批）。
+ * - 不覆盖：已有文件一律拒绝，硬链接排他发布完整暂存文件（先 stat 避免为注定失败的操作请求审批）。
  * - 审批：写入前必须拿到宿主对**这一次创建**的批准，拒绝和取消都不产生任何写入。
  *
  * 只有真正写入成功才报告 `artifacts`：产物事实来自成功结果，不从回复文本或磁盘扫描推断。
@@ -87,16 +89,28 @@ export class WriteTextFileTool implements Tool {
     if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
     if (!approved) return errorResult(`用户拒绝创建该文件，未做任何写入：${scoped.path}`, 'denied');
 
+    // 持久化失败原样传播，不能转成普通文件错误。
+    context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: null,
+      expectedAfterSha256: createHash('sha256').update(content, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(content, 'utf8') });
+    let temporary: string | undefined;
+    let committed = false;
     try {
-      context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: null,
-        expectedAfterSha256: createHash('sha256').update(content, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(content, 'utf8') });
-      // wx：目标已存在时直接失败。它和上面的存在性检查一起覆盖「检查后目标才出现」的情况。
-      await writeFile(scoped.path, content, { encoding: 'utf8', flag: 'wx' });
+      try {
+        temporary = await mkdtemp(join(dirname(scoped.path), '.agent-create-'));
+        const staged = join(temporary, 'content');
+        await writeFile(staged, content, { encoding: 'utf8', flag: 'wx' });
+        if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
+        // 同文件系统硬链接一次发布完整文件；已有目标直接 EEXIST，不覆盖且不暴露部分内容。
+        await link(staged, scoped.path);
+        committed = true;
+      } finally {
+        if (temporary !== undefined) await rm(temporary, { recursive: true, force: true });
+      }
     } catch (error) {
-      if (!(error instanceof Error)) throw error;
+      if (!(error instanceof Error) || error.name === 'AbortError') throw error;
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'EEXIST') return errorResult(`文件已存在，不会覆盖：${scoped.path}`);
-      return errorResult(`无法写入该文件（${code ?? error.message}）：${scoped.path}`);
+      return errorResult(`无法写入该文件（${code ?? error.message}）：${scoped.path}`, committed ? 'unknown-outcome' : 'permanent');
     }
 
     return {
@@ -105,7 +119,7 @@ export class WriteTextFileTool implements Tool {
         filePath: scoped.path,
         bytes: Buffer.byteLength(content, 'utf8'),
       },
-      artifacts: [scoped.path],
+      artifacts: [await createFileArtifact(scoped.path, this.name, signal)],
     };
   }
 }

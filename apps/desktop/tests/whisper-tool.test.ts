@@ -61,7 +61,7 @@ describe('Whisper host adapter', () => {
     const root = await mkdtemp(join(tmpdir(), 'whisper-derived-')); roots.push(root);
     const outside = join(root, 'attachments'); const workspace = join(root, 'workspace'); await mkdir(outside); await mkdir(workspace);
     const video = join(outside, 'source.mp4'); await writeFile(video, 'source');
-    const session = new InMemorySession(); const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+    const session = new InMemorySession(); const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
     const result = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [video], target: { kind: 'automatic' } }] }, context);
     session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} });
     session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, result });

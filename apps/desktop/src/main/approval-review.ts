@@ -1,8 +1,7 @@
-import type { ApprovalTarget } from '@agent-desktop/local-tools';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import { OpenAICompatibleModel } from '@agent-desktop/model-deepseek';
 import type { SessionEvent } from '@agent-desktop/session';
 import type { RuntimeConfiguration } from './runtime-settings.js';
-import type { AutomaticApprovalResult, PluginApproval } from './tool-approval.js';
+import type { AutomaticApprovalResult, ToolApprovalTarget } from './tool-approval.js';
 
 /** 审查模型没有工具、写入端口或执行权限，只判断当前这一项确切操作。 */
 const REVIEW_POLICY = `你是独立的操作审批审查员，只判断待审批操作是否可以执行，不执行用户任务。
@@ -12,26 +11,22 @@ const REVIEW_POLICY = `你是独立的操作审批审查员，只判断待审批
 只返回一个 JSON 对象，不含代码围栏：{"decision":"approve或deny","risk":"low或medium或high或critical","authorization":"explicit或implied或none","reason":"一句中文可公开的具体原因"}。reason 只给结论依据，不输出内部推理。`;
 
 /** 复用本轮所选供应商与协议，独立请求不共享主模型状态，也不重放工具。 */
-export async function reviewApproval(target: ApprovalTarget | PluginApproval, settings: RuntimeConfiguration,
-  events: readonly SessionEvent[], signal?: AbortSignal): Promise<AutomaticApprovalResult> {
-  if (settings.deepSeekApiKey === undefined) throw new Error('自动审批需要已配置的对话模型。');
-  const model = new DeepSeekModel({ apiKey: settings.deepSeekApiKey,
-    ...(settings.deepSeekBaseUrl === undefined ? {} : { baseUrl: settings.deepSeekBaseUrl }),
-    ...(settings.deepSeekModel === undefined ? {} : { model: settings.deepSeekModel }),
-    ...(settings.modelProtocol === undefined ? {} : { protocol: settings.modelProtocol }),
-    ...(settings.useDeepSeekThinking === undefined ? {} : { disableThinking: settings.useDeepSeekThinking }) });
-  // 历史只取有来源的公开事实；当前工具输入单独完整附带，避免截断命令或插件参数。
-  const transcript = events.filter(event => ['user.message', 'assistant.message', 'tool.called', 'tool.result'].includes(event.type))
-    .slice(-24).map(event => JSON.stringify(event).slice(0, 4000));
+export async function reviewApproval(target: ToolApprovalTarget, settings: RuntimeConfiguration,
+  events: readonly SessionEvent[], signal?: AbortSignal,
+  authorizeNetwork?: (request: { readonly url: string; readonly method?: string }, signal?: AbortSignal) => Promise<void>): Promise<AutomaticApprovalResult> {
+  if (settings.modelApiKey === undefined) throw new Error('自动审批需要已配置的对话模型。');
+  const model = new OpenAICompatibleModel({ apiKey: settings.modelApiKey,
+    baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
+    ...(authorizeNetwork === undefined ? {} : { authorizeNetwork }),
+    ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }) });
+  // 审批只需用户意图和确切操作；历史 Tool 输出可能含私有文件内容或凭据，不能转发给外部模型。
   const taskRequest = events.findLast(event => event.type === 'user.message');
-  const turnStart = events.findLastIndex(event => event.type === 'turn.started');
-  const currentCall = events.slice(turnStart < 0 ? 0 : turnStart).findLast(event => event.type === 'tool.called');
   const timeout = AbortSignal.timeout(30_000);
   const reviewSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
   let response;
   try {
     response = await model.complete({ systemPrompt: REVIEW_POLICY,
-      messages: [{ role: 'user', content: JSON.stringify({ taskRequest, transcript, currentCall, operation: target }) }], tools: [],
+      messages: [{ role: 'user', content: JSON.stringify({ userRequest: taskRequest?.content, operation: target }) }], tools: [],
       maxOutputTokens: 1024, signal: reviewSignal });
   } catch (error) {
     signal?.throwIfAborted();

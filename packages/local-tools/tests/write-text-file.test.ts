@@ -90,7 +90,7 @@ describe('write_text_file', () => {
       bytes: Buffer.byteLength('第一段\n第二段\n', 'utf8'),
     });
     // 产物事实来自成功结果，路径是真实路径。
-    expect(result.status === 'success' && result.artifacts).toEqual([target]);
+    expect(result.status === 'success' && result.artifacts).toMatchObject([expect.objectContaining({ path: target })]);
     // 审批的是「创建这个文件」这一确切操作。
     expect(requested).toEqual([{ kind: 'create-file', path: target }]);
     await expect(readFile(target, 'utf8')).resolves.toBe('第一段\n第二段\n');

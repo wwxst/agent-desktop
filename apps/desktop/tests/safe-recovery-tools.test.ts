@@ -35,7 +35,7 @@ describe('Desktop safe recovery tools', () => {
       const tools = new InMemoryToolRegistry();
       [new ListDirectoryTool(workspace), new ReadFileTool(workspace), new SearchTextTool(workspace),
         new UpdatePlanTool(session, qualifyTaskToolEvidence)].forEach(tool => tools.register(tool));
-      const videoAgent = createVideoAgent({ deepSeekApiKey: 'test-key', session, terminal: {
+      const videoAgent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, terminal: {
           open: async () => ({}), read: async id => ({ terminalId: id, output: 'saved history' }),
           write: async () => ({}), close: async () => ({}),
         } satisfies TerminalPort });

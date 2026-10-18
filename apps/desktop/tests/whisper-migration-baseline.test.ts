@@ -4,13 +4,13 @@ import { createVideoAgent } from '@agent-desktop/video-agent';
 describe('Whisper migration baseline', () => {
   it('does not create a built-in transcription tool without host injection', () => {
     const agent = createVideoAgent({
-      deepSeekApiKey: 'fixture',
+      model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) },
     });
     const tool = agent.tools.list().find((entry) => entry.name === 'transcribe_audio');
 
     expect(tool).toBeUndefined();
     const injected = createVideoAgent({
-      deepSeekApiKey: 'fixture',
+      model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) },
       mediaTools: [{ name: 'transcribe_audio', description: 'WAV', inputSchema: {
         type: 'object', properties: { audioPath: { type: 'string' } }, required: ['audioPath'], additionalProperties: false,
       }, execute: async () => ({ status: 'success' as const, output: { text: '', segments: [] } }) }],

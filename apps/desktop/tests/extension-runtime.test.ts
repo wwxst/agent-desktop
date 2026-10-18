@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -14,6 +15,7 @@ import { adaptVisionTool } from '../src/main/vision-tool.js';
 import { readPlugin, readSkill, type PluginFiles } from '../src/main/extensions.js';
 import { taskToolGate } from '../src/main/agent-task-state.js';
 import { ToolApprovalGate } from '../src/main/tool-approval.js';
+import { WindowsExecutionBoundary } from '../src/main/execution-policy.js';
 
 // 本套使用真实 MCP；只替换未消费的 Electron 下载入口，避免 Node 测试加载桌面二进制。
 vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extension runtime test'); } } }));
@@ -30,6 +32,77 @@ async function plugin(): Promise<PluginFiles> {
 }
 
 describe('actual extension runtime tool chain', () => {
+  it('fails closed before launching third-party stdio and hook processes when network is restricted', async () => {
+    const files = await plugin();
+    const boundary = new WindowsExecutionBoundary();
+    const restricted = await prepareExtensions({ plugins: [files], skills: [] }, async () => true, undefined, undefined,
+      { executionBoundary: boundary, allowUnrestrictedProcess: () => false });
+    expect(restricted.tools).toHaveLength(0);
+    expect(restricted.instructions).toContain('无法为 stdio 服务建立网络隔离');
+    await restricted.close();
+
+    const hookMarker = join(files.directory, 'hook-started');
+    const hook = await prepareExtensions({ plugins: [{ ...files, servers: [], hooks: [{ event: 'Stop', command: `node -e "require('node:fs').writeFileSync(${JSON.stringify(hookMarker)}, 'started')"`, timeoutMs: 2_000 }] }], skills: [] }, async () => true, undefined, undefined,
+      { executionBoundary: boundary, allowUnrestrictedProcess: () => false });
+    try {
+      await expect(hook.runHooks('Stop', {})).resolves.toBeUndefined();
+      await expect(readFile(hookMarker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await hook.close(); }
+  });
+
+  it.each(['http', 'sse'] as const)('requires network authorization for remote %s MCP requests', async type => {
+    const files = await plugin();
+    let requests = 0;
+    const server = createServer((_request, response) => { requests += 1; response.writeHead(204).end(); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server port');
+    const remote = { ...files, servers: [{ ...files.servers[0]!, type, url: `http://127.0.0.1:${address.port}/mcp` }] };
+    const authorizeNetwork = vi.fn(async (_request: { readonly url: string; readonly method: string; readonly resourceType: string }, _signal?: AbortSignal) => false);
+    try {
+      await expect(prepareExtensions({ plugins: [remote], skills: [] }, async () => true, undefined, undefined, { authorizeNetwork }))
+        .rejects.toThrow('网络策略拒绝访问');
+      expect(authorizeNetwork).toHaveBeenCalledOnce();
+      expect(authorizeNetwork.mock.calls[0]?.[0]).toMatchObject({ url: `http://127.0.0.1:${address.port}/mcp`, resourceType: 'mcp' });
+      expect(requests).toBe(0);
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
+
+  it.each(['http', 'sse'] as const)('does not follow a redirect from remote %s MCP', async type => {
+    const files = await plugin();
+    let requests = 0;
+    let redirectedRequests = 0;
+    const destination = createServer((_request, response) => { redirectedRequests += 1; response.writeHead(204).end(); });
+    await new Promise<void>(resolve => destination.listen(0, '127.0.0.1', resolve));
+    const target = destination.address(); if (!target || typeof target === 'string') throw new Error('Missing redirect port');
+    const source = createServer((_request, response) => { requests += 1; response.writeHead(302, { Location: `http://127.0.0.1:${target.port}/redirected` }).end(); });
+    await new Promise<void>(resolve => source.listen(0, '127.0.0.1', resolve));
+    const address = source.address(); if (!address || typeof address === 'string') throw new Error('Missing server port');
+    const remote = { ...files, servers: [{ ...files.servers[0]!, type, url: `http://127.0.0.1:${address.port}/mcp` }] };
+    const authorizeNetwork = vi.fn(async () => true);
+    try {
+      await expect(prepareExtensions({ plugins: [remote], skills: [] }, async () => true, undefined, undefined, { authorizeNetwork })).rejects.toThrow();
+      expect(authorizeNetwork).toHaveBeenCalledOnce();
+      expect(requests).toBe(1);
+      expect(redirectedRequests).toBe(0);
+    } finally {
+      await Promise.all([source, destination].map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
+    }
+  });
+
+  it.each(['stdio', 'http', 'sse'] as const)('skips %s MCP startup while preparing a recovery capability snapshot', async type => {
+    const files = await plugin();
+    const approve = vi.fn(async () => true);
+    const authorizeNetwork = vi.fn(async () => true);
+    const server = type === 'stdio' ? files.servers[0]! : { ...files.servers[0]!, type, url: 'https://mcp.example/server' };
+    const runtime = await prepareExtensions({ plugins: [{ ...files, servers: [server] }], skills: [] }, approve, undefined, undefined,
+      { authorizeNetwork, skipRemoteServers: true });
+    try {
+      expect(runtime.tools).toHaveLength(0);
+      expect(approve).not.toHaveBeenCalled();
+      expect(authorizeNetwork).not.toHaveBeenCalled();
+    } finally { await runtime.close(); }
+  });
+
   it('blocks legacy bundled servers and reports dependencies whose startup was denied', async () => {
     const bundled = await readPlugin(resolve('apps/desktop/resources/plugins/video-editing'), 'plugin:video-editing', 'builtin');
     const fixture = await plugin();
@@ -141,6 +214,42 @@ describe('actual extension runtime tool chain', () => {
       expect(approve.mock.calls[1]?.[0]).toMatchObject({ kind: 'plugin-tool', toolName: 'echo', arguments: '{"text":"hello"}' });
     } finally { await runtime.close(); }
     expect(() => process.kill(pid!, 0)).toThrow();
+  });
+
+  it.each([false, true])('redacts configured MCP environment credentials before persisting tool results (error=%s)', async fail => {
+    const directory = await temp(); const secret = 'mcp-env-secret-fixture'; const script = join(directory, 'server.mjs');
+    const fixture = `import {Server} from '@modelcontextprotocol/sdk/server/index.js';
+      import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
+      import {CallToolRequestSchema,ListToolsRequestSchema} from '@modelcontextprotocol/sdk/types.js';
+      const server=new Server({name:'secret-test',version:'1'},{capabilities:{tools:{}}});
+      server.setRequestHandler(ListToolsRequestSchema,async()=>({tools:[{name:'echo',inputSchema:{type:'object'}}]}));
+      server.setRequestHandler(CallToolRequestSchema,async request=>request.params.arguments?.fail
+        ? {isError:true,content:[{type:'text',text:'failed with '+process.env.MCP_SECRET}]}
+        : {structuredContent:{credential:process.env.MCP_SECRET},content:[{type:'text',text:'credential='+process.env.MCP_SECRET}]});
+      await server.connect(new StdioServerTransport());`;
+    await build({ stdin: { contents: fixture, resolveDir: resolve('apps/desktop'), sourcefile: 'fixture.mjs' }, outfile: script, bundle: true, platform: 'node', format: 'esm' });
+    const server: PluginFiles = { name: 'secret-test', directory, skills: [], servers: [{ name: 'secret', command: 'node', args: [script], env: { MCP_SECRET: secret } }],
+      item: { id: 'plugin:secret-test', kind: 'plugin', name: 'secret-test', description: '', source: 'local', enabled: true, installed: true } };
+    const approvals = vi.fn(async () => true);
+    const runtime = await prepareExtensions({ plugins: [server], skills: [] }, approvals);
+    const session = new InMemorySession(); const tools = new InMemoryToolRegistry(); runtime.tools.forEach(tool => tools.register(tool));
+    const model: Model = { complete: async () => session.events().some(event => event.type === 'tool.result')
+      ? { text: '已读取结果。', toolCalls: [] }
+      : { toolCalls: [
+          { id: 'echo-secret' as never, name: runtime.tools[0]!.name, input: { fail, credential: secret } },
+          { id: 'echo-secret-repeat' as never, name: runtime.tools[0]!.name, input: { fail, credential: secret } },
+        ] } };
+    try {
+      await runTurn({ model, tools, session, systemPrompt: { build: () => '检查 MCP 结果。' } }, '读取服务结果', {
+        beforeToolCall: input => taskToolGate(session.events(), input),
+      });
+      const persisted = JSON.stringify(session.events());
+      expect(persisted).not.toContain(secret);
+      expect(persisted).toContain('[REDACTED]');
+      expect(JSON.stringify(approvals.mock.calls)).not.toContain(secret);
+      expect(session.events().filter(event => event.type === 'tool.called' && event.toolCallId.startsWith('echo-secret')))
+        .toMatchObject([{ input: { credential: '[REDACTED]' } }, { boundary: 'not-executed', input: { credential: '[REDACTED]' } }]);
+    } finally { await runtime.close(); }
   });
 
   it('runs an enabled standalone server through real SDK approvals and excludes disabled servers', async () => {

@@ -4,17 +4,28 @@ export type ToolCallId = string & { readonly __brand: 'ToolCallId' };
 /** 工具在真实执行边界给出的失败分类；缺少分类不表示可重试，也不证明副作用没有发生。 */
 export type ToolFailureKind = 'transient' | 'permanent' | 'denied' | 'cancelled' | 'unknown-outcome';
 
+/** 已真实写出的文件产物；Core 只保存事实值，不读取磁盘或计算摘要。 */
+export interface FileArtifact {
+  readonly id: string;
+  readonly path: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly createdAt: string;
+  readonly sourceTool: string;
+}
+
 // Tool Result 是模型上下文和 Session 共同使用的供应商无关结果，不归 Tools 或 Session 单独重复定义。
 export type ToolResult =
   | {
     readonly status: 'success';
     readonly output: unknown;
     /**
-     * 这次调用真实创建的交付文件（只承载真实路径，展示用的文件名由路径生成）。
+     * 这次调用真实创建的交付文件及其元数据，展示文件名由 path 生成。
      * 它是产物事实的唯一权威来源：宿主只从这里登记产物，不从回复文本、退出码或磁盘扫描推断。
      * 只有写出型工具报告它；读取、搜索和中间产物（抽帧目录、语音 WAV）不报告。
      */
-    readonly artifacts?: readonly string[];
+    readonly artifacts?: readonly FileArtifact[];
   }
   | {
     readonly status: 'error';

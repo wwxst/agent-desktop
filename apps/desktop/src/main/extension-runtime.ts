@@ -19,8 +19,19 @@ import type { RuntimeConfiguration } from './runtime-settings.js';
 import { ffmpegTools } from '../plugins/ffmpeg-tools.js';
 import { TranscribeAudioTool } from '@agent-desktop/speech-whisper-cpp';
 import { AnalyzeImagesTool } from '@agent-desktop/vision-openai';
+import type { WindowsExecutionBoundary } from './execution-policy.js';
 
 type Approve = (request: PluginApproval, signal?: AbortSignal) => Promise<boolean>;
+
+/** MCP 服务可能把自身收到的凭据原样回显；结果进入 Session 前统一替换已知秘密。 */
+function redactMcpValue(value: unknown, secrets: ReadonlySet<string>): unknown {
+  if (typeof value === 'string') {
+    return [...secrets].filter(secret => secret.length > 0).reduce((text, secret) => text.replaceAll(secret, '[REDACTED]'), value);
+  }
+  if (Array.isArray(value)) return value.map(item => redactMcpValue(item, secrets));
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [redactMcpValue(key, secrets), redactMcpValue(item, secrets)]));
+}
 
 /** 使用元数据名称匹配显式调用；名称是文字，先转义后才能进入正则表达式。 */
 function explicitlyMentionsSkill(name: string, prompt = ''): boolean {
@@ -73,14 +84,28 @@ export async function prepareExtensions(
   approve: Approve,
   signal?: AbortSignal,
   prompt?: string,
-  options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider; readonly probeAccess?: ProbeFileAccess; readonly whisperAccess?: WhisperFileAccess; readonly visionAccess?: ProbeFileAccess;
+  options?: { readonly authProvider?: (plugin: PluginFiles, server: McpServerFile) => OAuthClientProvider; readonly authorizeNetwork?: (request: { readonly url: string; readonly method: string; readonly resourceType: string }, signal?: AbortSignal) => Promise<boolean>; readonly probeAccess?: ProbeFileAccess; readonly whisperAccess?: WhisperFileAccess; readonly visionAccess?: ProbeFileAccess;
+    /** 没有 OS 级网络隔离时，第三方进程在受限网络策略下必须拒绝启动。 */
+    readonly executionBoundary?: WindowsExecutionBoundary;
+    readonly allowUnrestrictedProcess?: () => boolean;
+    /** 恢复轮次先在本地比较能力快照；任何 MCP 服务都不能在比较前建立连接。 */
+    readonly skipRemoteServers?: boolean;
     readonly whisperEnvironment?: { readonly WHISPER_MODEL_PATH: string; readonly WHISPER_CLI_PATH: string };
     readonly visionConfiguration?: Pick<RuntimeConfiguration, 'visionApiKey' | 'visionBaseUrl' | 'visionModel' | 'visionProtocol' | 'visionMaxOutputTokens'> },
 ): Promise<{ tools: Tool[]; instructions: string; hookEvents: ReadonlySet<string>; runHooks(event: string, input: Readonly<Record<string, unknown>>): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
   const tools: Tool[] = [];
   const clients: Client[] = [];
+  const mcpSecrets = new Set<string>();
+  const rememberSecrets = (values: Iterable<string | undefined>): void => {
+    for (const value of values) if (value !== undefined && value !== '') mcpSecrets.add(value);
+  };
   const availableServers = new Set<string>();
   const unavailableServices: string[] = [];
+  const assertProcessLaunch = (target: string, trustedLocal = false): void => {
+    options?.executionBoundary?.assertProcessLaunch({ target, trustedLocal,
+      // 提供了边界却没有提供当前策略时必须按受限处理，避免忘记注入策略后静默放行。
+      networkAllowed: options.allowUnrestrictedProcess?.() ?? false });
+  };
   const selectedSkills = selectSkills(files.skills.filter(skill => skill.item.enabled
     && (skill.item.allowImplicitInvocation !== false || explicitlyMentionsSkill(skill.item.name, prompt))), prompt);
   const catalog = skillCatalog(selectedSkills);
@@ -107,6 +132,13 @@ export async function prepareExtensions(
       const command = hook.command.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory);
       if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: `事件钩子 · ${event}`, command, workingDirectory: plugin.directory }, signal)) continue;
       signal?.throwIfAborted();
+      // Hook 是任意命令，不能借宿主的 HTTP fetch 包装绕过网络策略。
+      // 先完成原有启动审批，再在真正 spawn 前 fail closed，避免未授权进程被创建。
+      try { assertProcessLaunch(`插件 ${plugin.item.name} 的事件钩子`); }
+      catch (error) {
+        if (error instanceof ToolExecutionError && error.failureKind === 'denied') continue;
+        throw error;
+      }
       await new Promise<void>((resolve, reject) => {
         // 不能使用 spawn 的 signal/timeout：它们只杀 shell，钩子的后代进程仍可能继续执行。
         const child = spawn(command, { cwd: plugin.directory, shell: true, windowsHide: true, detached: process.platform !== 'win32', env: { ...getDefaultEnvironment(), PLUGIN_ROOT: plugin.directory, CODEX_PLUGIN_ROOT: plugin.directory }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -137,7 +169,11 @@ export async function prepareExtensions(
     }
   };
   const wrapTool = (tool: Tool): Tool => hookEvents.size === 0 ? tool : ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
-    async execute(input, context) { await runHooks('PreToolUse', { tool_name: tool.name, tool_input: input }); const result = await tool.execute(input, context); await runHooks('PostToolUse', { tool_name: tool.name, tool_input: input, tool_response: result }); return result; },
+    ...(tool.contract === undefined ? {} : { contract: tool.contract }),
+    // 进程钩子的副作用由宿主外部执行，包装后不能继续声称内层边界可证明。
+    executionBoundary: 'opaque',
+    ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),
+    async execute(input, context) { const visibleInput = tool.sanitizeInput?.(input) ?? input; await runHooks('PreToolUse', { tool_name: tool.name, tool_input: visibleInput }); const result = await tool.execute(input, context); await runHooks('PostToolUse', { tool_name: tool.name, tool_input: visibleInput, tool_response: result }); return result; },
   });
   // 取消回调与 finally 可能同时关闭；两者等待同一个关闭操作，避免第二次调用提前返回。
   let closing: Promise<void> | undefined;
@@ -150,6 +186,7 @@ export async function prepareExtensions(
     if (skills.length > 0) tools.push(new LoadSkillTool(skills));
     for (const plugin of plugins) {
       for (const server of plugin.servers) {
+        if (options?.skipRemoteServers === true) continue;
         // 旧版技能包的内含服务不能绕过独立插件的禁用、卸载和宿主授权。
         if (plugin.item.source === 'builtin' && plugin.item.id === 'plugin:video-editing' && server.name === 'ffmpeg-probe') continue;
         const isWhisper = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper' && server.name === 'whisper';
@@ -170,24 +207,55 @@ export async function prepareExtensions(
         const deferredDefinitions = isFFmpeg ? ffmpegTools()
           : isWhisper ? [new TranscribeAudioTool({ modelPath: options!.whisperEnvironment!.WHISPER_MODEL_PATH })]
           : isVision ? [new AnalyzeImagesTool({ apiKey: vision!.visionApiKey!, protocol: vision!.visionProtocol ?? 'responses' })] : undefined;
+        const substitute = (value: string) => {
+          const resolved = value.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory)
+            .replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_match, name: string) => (isWhisper ? options?.whisperEnvironment?.[name as keyof NonNullable<NonNullable<typeof options>['whisperEnvironment']>] : undefined)
+              ?? (() => { throw new Error(`请先在 ${plugin.item.name} 的连接配置中填写 ${name}。`); })());
+          return resolved;
+        };
+        // 参数投影在工具调用前执行，因此必须在暴露工具给模型前登记配置中已知的凭据。
+        rememberSecrets([
+          ...Object.values(server.headers ?? {}).map(substitute),
+          ...Object.values(server.env ?? {}).map(substitute),
+          ...(vision === undefined ? [] : [vision.visionApiKey]),
+        ]);
         const connect = async (): Promise<Client | undefined> => {
-          const substitute = (value: string) => {
-            const resolved = value.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory)
-              .replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_match, name: string) => (isWhisper ? options?.whisperEnvironment?.[name as keyof NonNullable<NonNullable<typeof options>['whisperEnvironment']>] : undefined)
-                ?? (() => { throw new Error(`请先在 ${plugin.item.name} 的连接配置中填写 ${name}。`); })());
-            return resolved;
-          };
           const configuredCommand = substitute(server.command);
           // Electron 自带 Node 运行时供本地 Node 插件使用，避免用户额外安装 Node。
           const command = configuredCommand === 'node' ? process.execPath : configuredCommand.startsWith('.') ? resolve(plugin.directory, configuredCommand) : configuredCommand;
           const args = server.args.map(substitute);
           if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: server.name,
-            command: server.url ?? JSON.stringify([command, ...args]), workingDirectory: plugin.directory }, signal)) return undefined;
+            command: server.url ?? JSON.stringify([server.command, ...server.args]), workingDirectory: plugin.directory }, signal)) return undefined;
           signal?.throwIfAborted();
+          // 只有随包、固定用途的本地服务可以在受限网络策略下运行；
+          // 第三方 stdio MCP 无法被宿主逐请求拦截，必须拒绝启动。
+          const trustedLocal = isFFmpeg || isWhisper || isVision;
+          if (server.url === undefined) assertProcessLaunch(`插件 ${plugin.item.name} 的 stdio MCP 服务 ${server.name}`, trustedLocal);
           const client = new Client({ name: 'agent-desktop', version: '0.0.2' });
           clients.push(client);
           const provider = server.url === undefined ? undefined : options?.authProvider?.(plugin, server);
-          const remoteOptions = { ...(server.headers === undefined ? {} : { requestInit: { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) } }), ...(provider === undefined ? {} : { authProvider: provider }) };
+          if (provider !== undefined) {
+            try {
+              const tokens = await provider.tokens();
+              rememberSecrets([tokens?.access_token, tokens?.refresh_token]);
+            } catch (error) {
+              if (!(error instanceof Error)) throw error;
+              throw new Error(redactMcpValue(error.message, mcpSecrets) as string, { cause: error });
+            }
+          }
+          const authorizeNetwork = options?.authorizeNetwork;
+          const networkFetch: typeof fetch = async (input, init) => {
+            const request = input instanceof Request ? input : undefined;
+            const url = request?.url ?? input.toString();
+            const method = init?.method ?? request?.method ?? 'GET';
+            const approved = await authorizeNetwork?.({ url, method, resourceType: 'mcp' }, init?.signal ?? request?.signal);
+            if (!approved) throw new ToolExecutionError(`网络策略拒绝访问：${new URL(url).origin}`, 'denied');
+            // 每次 SDK 请求都重新授权；重定向必须作为独立目标重新经过宿主策略。
+            return fetch(input, { ...init, redirect: 'manual' });
+          };
+          const remoteOptions = { fetch: networkFetch,
+            ...(server.headers === undefined ? {} : { requestInit: { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, substitute(value)])) } }),
+            ...(provider === undefined ? {} : { authProvider: provider }) };
           const transport = server.url !== undefined
             ? server.type === 'sse' ? new SSEClientTransport(new URL(server.url), remoteOptions) : new StreamableHTTPClientTransport(new URL(server.url), remoteOptions)
             : new StdioClientTransport({ command, args, cwd: plugin.directory,
@@ -202,6 +270,10 @@ export async function prepareExtensions(
           try { await client.connect(transport as Parameters<Client['connect']>[0]); }
           catch (error) { await client.close(); throw error; }
           signal?.throwIfAborted();
+          if (provider !== undefined) {
+            const tokens = await provider.tokens();
+            rememberSecrets([tokens?.access_token, tokens?.refresh_token]);
+          }
           return client;
         };
         let connecting: Promise<Client | undefined> | undefined;
@@ -209,7 +281,17 @@ export async function prepareExtensions(
         const definitions: { name: string; description?: string | undefined; inputSchema: unknown }[] = [];
         if (deferredDefinitions !== undefined) definitions.push(...deferredDefinitions);
         else {
-          const client = await getClient();
+          let client: Client | undefined;
+          try { client = await getClient(); }
+          catch (error) {
+            // 受限网络策略下第三方 stdio 无法安全建立 OS 隔离；跳过该服务，
+            // 让其它本地工具和不依赖它的普通任务继续运行。
+            if (error instanceof ToolExecutionError && error.failureKind === 'denied' && server.url === undefined) {
+              unavailableServices.push(`${plugin.item.name} / ${server.name} 已跳过：当前 Windows 无法为 stdio 服务建立网络隔离。`);
+              continue;
+            }
+            throw error;
+          }
           if (client === undefined) continue;
           let cursor: string | undefined;
           do {
@@ -225,6 +307,9 @@ export async function prepareExtensions(
           const name = qualified.length <= 64 && qualified === original ? qualified : `${qualified.slice(0, 47)}_${createHash('sha256').update(original).digest('hex').slice(0, 16)}`;
           const tool: Tool = { name, description: `[${plugin.item.name} / ${server.name}] ${definition.description ?? definition.name}`,
             inputSchema: definition.inputSchema, executionBoundary: 'checkpointed',
+            contract: { capability: 'mcp', riskLevel: 'external', parallelSafety: 'serial', timeoutMs: 120_000,
+              cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
+            sanitizeInput: input => redactMcpValue(input, mcpSecrets),
             async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
               context.signal?.throwIfAborted();
               if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', failureKind: 'permanent', message: '插件工具参数必须是对象。' };
@@ -235,12 +320,12 @@ export async function prepareExtensions(
                 context.signal?.throwIfAborted();
                 if (!(error instanceof Error) || error instanceof TypeError) throw error;
                 // 握手失败尚未调用媒体工具；保留本轮失败，不自动重连或影响其它服务。
-                return { status: 'error', failureKind: 'permanent', message: `${plugin.item.name} 连接失败：${error.message}` };
+                return { status: 'error', failureKind: 'permanent', message: `${plugin.item.name} 连接失败：${redactMcpValue(error.message, mcpSecrets) as string}` };
               }
               if (client === undefined) return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' };
               // 图片上传审批显示目标服务，路径由视觉适配器先解析授权；密钥不进入审批。
               const approved = await approve({ kind: 'plugin-tool', pluginName: vision === undefined ? plugin.item.name : `${plugin.item.name} 图片上传 → ${new URL(vision.visionBaseUrl!).origin}`, serverName: server.name,
-                toolName: definition.name, arguments: JSON.stringify(input) }, context.signal).catch((error: unknown) => {
+                toolName: definition.name, arguments: JSON.stringify(redactMcpValue(input, mcpSecrets)) }, context.signal).catch((error: unknown) => {
                 if (error instanceof SessionPersistenceError) throw error;
                 // 审批门禁以 AbortError 结束等待，原取消/保存错误仍以 signal.reason 为准。
                 context.signal?.throwIfAborted();
@@ -249,6 +334,13 @@ export async function prepareExtensions(
               context.signal?.throwIfAborted();
               if (!approved) {
                 return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' };
+              }
+              // Vision 的真实外发发生在隔离子进程内；宿主须在已批准工具调用后核准固定供应商端点。
+              if (isVision && vision !== undefined && options?.authorizeNetwork !== undefined) {
+                const endpoint = `${vision.visionBaseUrl!.replace(/\/+$/, '')}/${vision.visionProtocol === 'chat-completions' ? 'chat/completions' : 'responses'}`;
+                if (!await options.authorizeNetwork({ url: endpoint, method: 'POST', resourceType: 'vision' }, context.signal)) {
+                  return { status: 'error', failureKind: 'denied', message: '网络策略拒绝访问视觉模型端点。' };
+                }
               }
               // 宿主批准后才跨过外部请求边界；保存失败在请求 try/catch 外原样传播。
               context.checkpoint?.({ kind: 'mcp', pluginId: plugin.item.id, serverName: server.name, toolName: definition.name });
@@ -260,11 +352,12 @@ export async function prepareExtensions(
                 if (error instanceof SessionPersistenceError) throw error;
                 context.signal?.throwIfAborted();
                 if (!(error instanceof Error) || error instanceof ToolExecutionError) throw error;
-                throw new ToolExecutionError(error.message, 'unknown-outcome', { cause: error });
+                throw new ToolExecutionError(redactMcpValue(error.message, mcpSecrets) as string, 'unknown-outcome', { cause: error });
               }
               context.signal?.throwIfAborted();
               // 服务端失败只说明返回了错误，不能证明它没有执行部分外部写入。
-              return result.isError === true ? { status: 'error', failureKind: 'unknown-outcome', message: '插件工具返回失败。', output: result } : { status: 'success', output: result };
+              const sanitized = redactMcpValue(result, mcpSecrets);
+              return result.isError === true ? { status: 'error', failureKind: 'unknown-outcome', message: '插件工具返回失败。', output: sanitized } : { status: 'success', output: sanitized };
             },
           };
           // 仅随包安装的已知服务可占用既有公开名；同名第三方插件仍使用限定名称。
@@ -293,6 +386,8 @@ export async function prepareExtensions(
     await close();
     if (error instanceof SessionPersistenceError) throw error;
     signal?.throwIfAborted();
+    if (error instanceof ToolExecutionError) throw new ToolExecutionError(redactMcpValue(error.message, mcpSecrets) as string, error.failureKind, { cause: error });
+    if (error instanceof Error) throw new Error(redactMcpValue(error.message, mcpSecrets) as string, { cause: error });
     throw error;
   }
 }

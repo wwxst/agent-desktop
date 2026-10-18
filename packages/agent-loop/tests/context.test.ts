@@ -6,6 +6,7 @@ import { ContextBudgetError, createContextSourceDigest, estimateContextTokens, p
 const root = 'original' as TurnId;
 const current = 'current' as TurnId;
 const systemPrompt = '保持用户约束，只依据实际工具事实继续任务。';
+const artifact = (path: string) => ({ id: `test-${path}`, path, mimeType: 'text/plain', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'write' });
 const tools: readonly ModelToolDefinition[] = [{ name: 'read', description: 'read real data', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }];
 
 function history(count = 5, outputSize = 1400): { session: InMemorySession; ends: number[] } {
@@ -76,7 +77,7 @@ describe('model context projection', () => {
       { type: 'step.started', turnId: root, stepId },
       { type: 'assistant.message', turnId: root, stepId, toolCalls: [{ id: written, name: 'write', input: {} }, { id: missing, name: 'external', input: {} }] },
       { type: 'tool.called', turnId: root, stepId, toolCallId: written, name: 'write', input: { path: 'actual.txt' }, boundary: 'checkpointed' },
-      { type: 'tool.result', turnId: root, stepId, toolCallId: written, result: { status: 'success', output: 'critical-written-fact', artifacts: ['actual.txt'] } },
+      { type: 'tool.result', turnId: root, stepId, toolCallId: written, result: { status: 'success', output: 'critical-written-fact', artifacts: [artifact('actual.txt')] } },
       { type: 'tool.called', turnId: root, stepId, toolCallId: missing, name: 'external', input: { target: 'remote' }, boundary: 'checkpointed' },
       { type: 'tool.effect.prepared', turnId: root, sourceEventIndex: 6, data: { intent: 'real prepared effect' } },
       { type: 'plan.updated', turnId: root, revision: 1, explanation: 'model intent only', steps: [{ id: 'a', description: 'finish remaining work', requestedStatus: 'completed', completionKind: 'tool', evidenceEventIndexes: [5] }] },
@@ -174,7 +175,7 @@ describe('model context projection', () => {
       { type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: 'continue' },
       { type: 'assistant.message', turnId: current, stepId, toolCalls: [{ id, name: 'write', input: { text: 'body'.repeat(900) } }] },
       { type: 'tool.called', turnId: current, stepId, toolCallId: id, name: 'write', input: { text: 'body'.repeat(900) }, boundary: 'checkpointed' },
-      { type: 'tool.result', turnId: current, stepId, toolCallId: id, result: { status: 'success', output: 'actual write complete', artifacts: ['file.txt'] } },
+      { type: 'tool.result', turnId: current, stepId, toolCallId: id, result: { status: 'success', output: 'actual write complete', artifacts: [artifact('file.txt')] } },
       { type: 'step.completed', turnId: current, stepId },
     ];
     const messages = await context(new InMemorySession(events), { complete: vi.fn<Model['complete']>() }, { contextWindow: 10000, maxOutputTokens: 800 });

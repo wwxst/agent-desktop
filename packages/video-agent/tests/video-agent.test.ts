@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import type { Model } from '@agent-desktop/model';
 import { InMemorySession, type Session } from '@agent-desktop/session';
 import { ProbeMediaTool, DecodeVideoTool, DetectBlackSegmentsTool, ExtractVideoFramesTool,
   ExtractVideoRangeFramesTool, ExtractAudioTool, ExtractFullVideoFramesTool, TrimVideoTool, ConcatVideosTool,
   AddAudioTool, AddSubtitlesTool, ResizeVideoTool, CropVideoTool, SetSpeedTool } from '@agent-desktop/video-ffmpeg';
 import { createVideoAgent } from '../src/index.js';
 
+const model: Model = { complete: async () => ({ text: 'fixture', toolCalls: [] }) };
+
 describe('createVideoAgent', () => {
   it('registers injected media capabilities and keeps delivery rules when media tools are absent', () => {
     const probe = { name: 'probe_media', description: '', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: {} }) };
-    expect(createVideoAgent({ deepSeekApiKey: 'fixture', mediaTools: [probe] }).tools.list().find(tool => tool.name === 'probe_media')).toBe(probe);
-    const names = createVideoAgent({ deepSeekApiKey: 'fixture' }).tools.list().map(tool => tool.name);
+    expect(createVideoAgent({ model, mediaTools: [probe] }).tools.list().find(tool => tool.name === 'probe_media')).toBe(probe);
+    const names = createVideoAgent({ model }).tools.list().map(tool => tool.name);
     expect(names).not.toContain('probe_media');
     for (const name of ['trim_video', 'concat_videos', 'add_audio', 'add_subtitles', 'resize_video', 'crop_video', 'set_speed', 'decode_video', 'detect_black_segments', 'extract_audio', 'extract_video_frames', 'extract_video_range_frames', 'extract_full_video_frames']) expect(names).not.toContain(name);
     for (const name of ['validate_video_candidate', 'publish_video_output', 'check_video_semantics']) expect(names).toContain(name);
@@ -19,15 +21,14 @@ describe('createVideoAgent', () => {
     const speech = { name: 'transcribe_audio', description: 'WAV', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: { text: '', segments: [] } }) };
     const vision = { name: 'analyze_images', description: 'JPG', inputSchema: {}, execute: async () => ({ status: 'success' as const, output: { frames: [] } }) };
     const agent = createVideoAgent({
-      deepSeekApiKey: 'test-deepseek-key',
+      model,
       mediaTools: [new ProbeMediaTool(), new DecodeVideoTool(), new DetectBlackSegmentsTool(), new ExtractVideoFramesTool(),
         new ExtractVideoRangeFramesTool(), new ExtractAudioTool(), new ExtractFullVideoFramesTool(), new TrimVideoTool(), new ConcatVideosTool(),
         new AddAudioTool(), new AddSubtitlesTool(), new ResizeVideoTool(), new CropVideoTool(), new SetSpeedTool(), speech],
-      deepSeekBaseUrl: 'https://deepseek.test',
       visionTool: vision,
     });
 
-    expect(agent.model).toBeInstanceOf(DeepSeekModel);
+    expect(agent.model).toBe(model);
     expect(agent.session).toBeInstanceOf(InMemorySession);
     expect(agent.tools.get('analyze_images')).toBe(vision);
     expect(agent.tools.list().map((tool) => tool.name)).toEqual([
@@ -78,7 +79,7 @@ describe('createVideoAgent', () => {
   });
 
   it('scopes the write rules to tasks that actually ask for a file', () => {
-    const agent = createVideoAgent({ deepSeekApiKey: 'test-deepseek-key' });
+    const agent = createVideoAgent({ model });
     const systemPrompt = agent.systemPrompt.build();
 
     // 写文件规则只在用户确实要求产出文件时成立；
@@ -89,7 +90,7 @@ describe('createVideoAgent', () => {
 
   it('can assemble a text-only Agent without registering media transcription', () => {
     const agent = createVideoAgent({
-      deepSeekApiKey: 'test-deepseek-key',
+      model,
     });
 
     expect(agent.tools.list().map((tool) => tool.name)).not.toContain('transcribe_audio');
@@ -105,14 +106,14 @@ describe('createVideoAgent', () => {
       'write_text_file',
       'edit_text_file',
     ];
-    const withoutWorkspace = createVideoAgent({ deepSeekApiKey: 'test-deepseek-key' });
+    const withoutWorkspace = createVideoAgent({ model });
     // 没有宿主目录确认能力时不能注册这些工具：目录工具没有合法的范围来源，也没有审批消费者。
     for (const name of localTools) {
       expect(withoutWorkspace.tools.list().map((tool) => tool.name)).not.toContain(name);
     }
 
     const withWorkspace = createVideoAgent({
-      deepSeekApiKey: 'test-deepseek-key',
+      model,
       workspace: {
         confirmedDirectory: () => undefined,
         requestApproval: async () => true,
@@ -124,30 +125,6 @@ describe('createVideoAgent', () => {
     }
   });
 
-  it('passes the configured model override to DeepSeek', async () => {
-    const requests: unknown[] = [];
-    const previousFetch = globalThis.fetch;
-    globalThis.fetch = async (_input, init) => {
-      requests.push(JSON.parse(init?.body as string) as unknown);
-      // DeepSeek Provider 始终请求 SSE 流；这里返回最小合法流（含终止 finish_reason）以读取模型覆盖配置。
-      return new Response(
-        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
-        + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
-        + 'data: [DONE]\n\n',
-      );
-    };
-    try {
-      const agent = createVideoAgent({
-        deepSeekApiKey: 'test-key',
-        deepSeekModel: 'runtime-model',
-      });
-      await agent.model.complete({ systemPrompt: 'test', messages: [], tools: [] });
-      expect(requests).toEqual([expect.objectContaining({ model: 'runtime-model' })]);
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
-  });
-
   it('uses an injected Session and keeps the default InMemorySession behavior', () => {
     const injectedSession: Session = {
       append: () => undefined,
@@ -155,11 +132,11 @@ describe('createVideoAgent', () => {
       events: () => [],
     };
     const restoredAgent = createVideoAgent({
-      deepSeekApiKey: 'test-deepseek-key',
+      model,
       session: injectedSession,
     });
     const newAgent = createVideoAgent({
-      deepSeekApiKey: 'test-deepseek-key',
+      model,
     });
 
     expect(restoredAgent.session).toBe(injectedSession);

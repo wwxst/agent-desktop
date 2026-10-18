@@ -8,7 +8,7 @@
   "include": ["src"],
   "references": [
     { "path": "../agent" },
-    { "path": "../model-deepseek" },
+    { "path": "../model" },
     { "path": "../session" },
     { "path": "../system-prompt" },
     { "path": "../tools" }

@@ -4,13 +4,14 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DesktopTaskOptions } from '../src/main/agent-task.js';
 import type { Tool } from '@agent-desktop/tools';
-import { projectRecoveryFacts } from '@agent-desktop/session';
+import { projectRecoveryFacts, projectTurnState } from '@agent-desktop/session';
 import { DesktopExtensions, type PluginFiles } from '../src/main/extensions.js';
 import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
 import type { AgentTaskStartRequest, Attachment, ClientConversation } from '@agent-desktop/client';
 import type { DesktopPersistentSession, PersistedDesktopState } from '../src/main/session-persistence.js';
 
 type IpcHandler = (...args: unknown[]) => unknown;
+const artifact = (path: string) => ({ id: `test-${path}`, path, mimeType: 'video/mp4', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'test' });
 
 const mainMocks = vi.hoisted(() => {
   const handlers = new Map<string, IpcHandler>();
@@ -226,7 +227,15 @@ vi.mock('@agent-desktop/execution-trace', () => ({
 vi.mock('../src/main/agent-task.js', async (importOriginal) => ({
   // 产物识别与逐项交付投影是纯函数，直接用真实实现，避免替身与生产规则漂移。
   ...(await importOriginal<typeof import('../src/main/agent-task.js')>()),
-  runDesktopAgentTask: mainMocks.runDesktopAgentTask,
+  runDesktopAgentTask: async (...args: Parameters<typeof import('../src/main/agent-task.js').runDesktopAgentTask>) => {
+    const result = await mainMocks.runDesktopAgentTask(...args);
+    const [agent, , , options] = args;
+    // 夹具替换了整个执行阶段，也必须结清宿主提交的真实轮次，不能留下伪成功的起点。
+    if (options.turnId !== undefined && projectTurnState(agent.session.events(), options.turnId) === 'started') {
+      agent.session.append({ type: 'turn.completed', turnId: options.turnId });
+    }
+    return result;
+  },
 }));
 
 vi.mock('../src/main/extension-runtime.js', async (importOriginal) => {
@@ -244,8 +253,8 @@ vi.mock('../src/main/extension-runtime.js', async (importOriginal) => {
 /** 真实客户端形状：使用宿主当前会话与消息身份，不再用旧纯字符串 IPC。 */
 function taskRequest(prompt: string, recovery = false): AgentTaskStartRequest {
   const sessionId = mainMocks.handlers.get('desktop:get-active-session-id')!({}) as string;
-  mainMocks.clientSessionIds.add(sessionId);
   const saved = mainMocks.handlers.get('desktop:load-client-state')!({}) as PersistedDesktopState['clientState'] | null;
+  mainMocks.clientSessionIds.add(sessionId);
   const conversations = saved?.conversations.filter(item => mainMocks.clientSessionIds.has(item.id)) ?? [];
   const drafts = saved?.drafts?.filter(item => mainMocks.clientSessionIds.has(item.id)) ?? [];
   const conversation = [...conversations, ...drafts].find(item => item.id === sessionId)
@@ -265,6 +274,25 @@ function taskRequest(prompt: string, recovery = false): AgentTaskStartRequest {
       drafts: [...drafts.filter(item => item.id !== sessionId),
         ...[...mainMocks.clientSessionIds].filter(id => id !== sessionId && ![...conversations, ...drafts].some(item => item.id === id))
           .map(id => ({ id, title: '', titleManuallyRenamed: false, messages: [], prompt: '', attachments: [] }))] } };
+}
+
+/** Runtime 已拥有取消信号；夹具通过真实 runPreparedTurn 进入 Loop，避免读取已移除的 options.signal。 */
+function executePreparedTurn(agent: unknown, options: DesktopTaskOptions) {
+  const runPreparedTurn = options.runPreparedTurn;
+  if (runPreparedTurn === undefined) throw new Error('测试任务缺少 Runtime 执行端口。');
+  const { runPreparedTurn: _run, turnId: _turnId, signal: _signal, ...loopOptions } = options;
+  return runPreparedTurn(agent as Parameters<typeof runPreparedTurn>[0], loopOptions).then((result) => ({
+    responseText: result.response.text ?? '', turnId: result.turnId, artifacts: [],
+  }));
+}
+
+function resolveModelWhenCancelled(agent: unknown, responseText: string, onAbort?: () => void): void {
+  const model = (agent as { model: { complete: (request: { signal?: AbortSignal }) => Promise<unknown> } }).model;
+  model.complete = async ({ signal }) => await new Promise((_resolve, reject) => {
+    const cancel = () => { onAbort?.(); reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError')); };
+    if (signal?.aborted === true) cancel();
+    else signal?.addEventListener('abort', cancel, { once: true });
+  });
 }
 
 describe('desktop main session lifecycle', () => {
@@ -540,7 +568,7 @@ describe('desktop main session lifecycle', () => {
             kind: 'video.output.published',
             output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:/videos/a-result.mp4' },
           },
-          artifacts: ['D:/videos/a-result.mp4'],
+          artifacts: [artifact('D:/videos/a-result.mp4')],
         },
       });
       return {
@@ -773,31 +801,25 @@ describe('desktop main session lifecycle', () => {
   });
 
   it('cancels only the active task and clears the controller for the next task', async () => {
-    const newSession = mainMocks.handlers.get('desktop:new-session');
     const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
     const cancelTask = mainMocks.handlers.get('desktop:cancel-task');
     expect(cancelTask).toBeTypeOf('function');
-    await newSession!({});
 
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
-      _agent: unknown,
+      agent: unknown,
       _prompt: unknown,
       _attachments: unknown,
       options: DesktopTaskOptions,
-    ) => new Promise((resolve) => {
-      options.signal?.addEventListener('abort', () => resolve({
-        responseText: '停止', turnId: 'turn-cancelled', artifacts: [],
-      }), { once: true });
-    }));
+    ) => {
+      resolveModelWhenCancelled(agent, '停止');
+      return executePreparedTurn(agent, options);
+    });
 
     const priorCalls = mainMocks.runDesktopAgentTask.mock.calls.length;
     const running = runAgentTask!({}, taskRequest('长任务'));
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorCalls + 1));
     expect(cancelTask!({})).toBeUndefined();
-    await expect(running).resolves.toMatchObject({
-      status: 'success',
-      result: { responseText: '停止' },
-    });
+    await expect(running).resolves.toMatchObject({ status: 'error', errorName: 'AbortError' });
     expect(() => cancelTask!({})).toThrow('当前没有正在执行的任务');
     const cancelledAgent = mainMocks.agents.at(-1)!;
 
@@ -839,25 +861,21 @@ describe('desktop main session lifecycle', () => {
   });
 
   it('cancels the running turn and submits the client state before closing the window', async () => {
-    const newSession = mainMocks.handlers.get('desktop:new-session');
     const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
     const closeReady = mainMocks.handlers.get('desktop:close-ready');
     expect(closeReady).toBeTypeOf('function');
     closeReady!({});
-    await newSession!({});
 
     let aborted = false;
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
-      _agent: unknown,
+      agent: unknown,
       _prompt: unknown,
       _videos: unknown,
       options: DesktopTaskOptions,
-    ) => new Promise((resolve) => {
-      options.signal?.addEventListener('abort', () => {
-        aborted = true;
-        resolve({ responseText: '已取消', turnId: 'turn-close', artifacts: [] });
-      }, { once: true });
-    }));
+    ) => {
+      resolveModelWhenCancelled(agent, '已取消', () => { aborted = true; });
+      return executePreparedTurn(agent, options);
+    });
 
     mainMocks.webContentsSend.mockClear();
     mainMocks.windowDestroy.mockClear();
@@ -877,32 +895,25 @@ describe('desktop main session lifecycle', () => {
     expect(mainMocks.onceHandlers.has('desktop:close-prepared')).toBe(true);
     mainMocks.onceHandlers.get('desktop:close-prepared')!({}, null);
     await vi.waitFor(() => expect(mainMocks.windowDestroy).toHaveBeenCalledOnce());
-    await expect(running).resolves.toMatchObject({
-      status: 'success',
-      result: { responseText: '已取消' },
-    });
+    await expect(running).resolves.toMatchObject({ status: 'error', errorName: 'AbortError' });
   });
 
   it('keeps blocking repeated close requests while the closing finalization is still running', async () => {
-    const newSession = mainMocks.handlers.get('desktop:new-session');
     const runAgentTask = mainMocks.handlers.get('desktop:run-agent-task');
     const closeReady = mainMocks.handlers.get('desktop:close-ready');
     expect(closeReady).toBeTypeOf('function');
     closeReady!({});
-    await newSession!({});
 
     let aborted = false;
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
-      _agent: unknown,
+      agent: unknown,
       _prompt: unknown,
       _videos: unknown,
       options: DesktopTaskOptions,
-    ) => new Promise((resolve) => {
-      options.signal?.addEventListener('abort', () => {
-        aborted = true;
-        resolve({ responseText: '已取消', turnId: 'turn-close-repeat', artifacts: [] });
-      }, { once: true });
-    }));
+    ) => {
+      resolveModelWhenCancelled(agent, '已取消', () => { aborted = true; });
+      return executePreparedTurn(agent, options);
+    });
 
     mainMocks.webContentsSend.mockClear();
     mainMocks.windowDestroy.mockClear();
@@ -930,10 +941,7 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.onceHandlers.get('desktop:close-prepared')!({}, null);
     await vi.waitFor(() => expect(mainMocks.windowDestroy).toHaveBeenCalledOnce());
-    await expect(running).resolves.toMatchObject({
-      status: 'success',
-      result: { responseText: '已取消' },
-    });
+    await expect(running).resolves.toMatchObject({ status: 'error', errorName: 'AbortError' });
   });
 
   it('reports files that already succeeded when the Turn later fails', async () => {
@@ -968,7 +976,7 @@ describe('desktop main session lifecycle', () => {
         result: {
           status: 'success',
           output: 'Video created: D:/videos/done.mp4',
-          artifacts: ['D:/videos/done.mp4'],
+          artifacts: [artifact('D:/videos/done.mp4')],
         },
       });
       throw new Error('第二个工具执行失败。');
@@ -1008,7 +1016,7 @@ describe('desktop main session lifecycle', () => {
         result: {
           status: 'success',
           output: 'Video created: D:/videos/earlier.mp4',
-          artifacts: ['D:/videos/earlier.mp4'],
+          artifacts: [artifact('D:/videos/earlier.mp4')],
         },
       });
       return {
@@ -1064,7 +1072,7 @@ describe('desktop main session lifecycle', () => {
         result: {
           status: 'success',
           output: 'Video created: D:/videos/cancelled-done.mp4',
-          artifacts: ['D:/videos/cancelled-done.mp4'],
+          artifacts: [artifact('D:/videos/cancelled-done.mp4')],
         },
       });
       // 取消发生在下一个工具执行中：只有 tool.called，没有结果。
@@ -1517,6 +1525,8 @@ describe('desktop main session lifecycle', () => {
     const agent = mainMocks.createVideoAgent.mock.results.at(-1)!.value;
     const session = agent.session as DesktopPersistentSession;
     const beforeEvents = [...session.events()];
+    const latestTurnId = beforeEvents.findLast(event => event.type === 'turn.started')!.turnId;
+    expect(beforeEvents).toContainEqual(expect.objectContaining({ type: 'turn.configuration', turnId: latestTurnId }));
     const beforeBindings = [...session.turnMessageBindings()];
     const beforeDocument = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state');
     const request = taskRequest('保存起点前失败');

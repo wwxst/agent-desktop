@@ -1,8 +1,8 @@
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import type { Agent } from '@agent-desktop/agent';
-import { runTurn } from '@agent-desktop/agent-loop';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import { AgentRuntime } from '@agent-desktop/agent-loop';
+import { OpenAICompatibleModel } from '@agent-desktop/model-deepseek';
 import type { ToolResult } from '@agent-desktop/model';
 import { InMemorySession, type SessionEvent, type ToolResultEvent } from '@agent-desktop/session';
 import { StaticSystemPrompt } from '@agent-desktop/system-prompt';
@@ -63,15 +63,18 @@ function printTurnEvents(events: readonly SessionEvent[]): void {
 async function runCli(apiKey: string): Promise<void> {
   const tools = new InMemoryToolRegistry();
   tools.register(new EchoTool());
+  const modelBaseUrl = process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com';
 
   const agent: Agent = {
-    model: new DeepSeekModel({ apiKey }),
+    model: new OpenAICompatibleModel({ apiKey, baseUrl: modelBaseUrl,
+      model: process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro', disableThinking: new URL(modelBaseUrl).hostname === 'api.deepseek.com' }),
     session: new InMemorySession(),
     tools,
     systemPrompt: new StaticSystemPrompt(
       'You are the Agent Desktop DeepSeek Agent. Use the echo tool when the user asks you to echo text.',
     ),
   };
+  const runtime = new AgentRuntime(agent.session);
   const terminal = createInterface({ input, output });
 
   output.write('Agent Desktop DeepSeek Agent\n\n');
@@ -83,9 +86,9 @@ async function runCli(apiKey: string): Promise<void> {
     for await (const userInput of terminal) {
       if (userInput === '/exit') break;
 
-      // runTurn 正式驱动 Model、Tool、Result、Model，不在 CLI 中复制 Runtime 算法。
+      // CLI 与桌面共用 Runtime 的轮次控制面，不在入口复制执行算法。
       const eventStart = agent.session.events().length;
-      const result = await runTurn(agent, userInput);
+      const result = await runtime.submitUserMessage(agent, userInput);
       const turnEvents = agent.session.events().slice(eventStart);
 
       printTurnEvents(turnEvents);

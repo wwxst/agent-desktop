@@ -63,6 +63,8 @@ export interface TurnFailedEvent { readonly type: 'turn.failed'; readonly turnId
 export interface TurnCancelledEvent { readonly type: 'turn.cancelled'; readonly turnId: TurnId; readonly reason: TurnCancellationReason; }
 export interface TurnInterruptedEvent { readonly type: 'turn.interrupted'; readonly turnId: TurnId; readonly reason: 'process-exit' | 'legacy-unknown'; }
 export interface TurnRecoveryStartedEvent { readonly type: 'turn.recovery.started'; readonly turnId: TurnId; readonly sourceTurnId: TurnId; readonly mode: RecoveryMode; }
+/** 有效配置由宿主解释并脱敏保存，Core 不解析供应商协议或操作系统策略。 */
+export interface TurnConfigurationEvent { readonly type: 'turn.configuration'; readonly turnId: TurnId; readonly data: unknown; }
 
 /** 摘要只覆盖明确完成的模型步骤；原始事件继续保留。 */
 export interface ContextCompactedEvent {
@@ -108,6 +110,7 @@ export type SessionEvent =
   | TurnCancelledEvent
   | TurnInterruptedEvent
   | TurnRecoveryStartedEvent
+  | TurnConfigurationEvent
   | ContextCompactedEvent
   | PlanUpdatedEvent
   | ToolEffectPreparedEvent

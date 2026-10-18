@@ -35,7 +35,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'ffmpeg.cjs')] }] };
       const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async request => request.kind === 'plugin-start');
       runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
-      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools });
       let request = 0;
       await runTurn({ ...agent, model: { complete: async () => {
         request += 1;
@@ -60,7 +60,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
     const directory = await mkdtemp(join(tmpdir(), 'ffmpeg-envelope-'));
     try {
       const source = join(directory, 'source.mp4'); await writeFile(source, 'input');
-      const session = new InMemorySession(); const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+      const session = new InMemorySession(); const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
       const result = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
       session.append({ type: 'tool.called', toolCallId: 'declare' as never, turnId: 't' as never, stepId: 's' as never, name: 'declare_video_outputs', input: {} });
       session.append({ type: 'tool.result', toolCallId: 'declare' as never, turnId: 't' as never, stepId: 's' as never, result });
@@ -91,7 +91,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
       const plugin: PluginFiles = { name: 'ffmpeg', directory, skills: [], item: { id: 'plugin:ffmpeg', kind: 'plugin', name: 'ffmpeg', description: '', source: 'builtin', enabled: true, installed: true },
         servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'ffmpeg.cjs')], env: { FFMPEG_PATH: executable, FFPROBE_PATH: executable } }] };
       runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, controller.signal, undefined, { probeAccess: access });
-      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools });
       let outputPath = '';
       const running = runTurn({ ...agent, model: { complete: async () => {
         const item = readVideoDeliveryFacts(session.events()).items[0];
@@ -126,7 +126,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'ffmpeg.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
       const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
       runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
-      const original = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      const original = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools });
       const tools = new InMemoryToolRegistry();
       for (const tool of original.tools.list()) tools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, access) : tool);
       const names = [...VIDEO_WRITE_TOOL_NAMES]; let step = 0;

@@ -23,6 +23,8 @@ import { isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTurnState, typ
 import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
 import { projectAgentTaskState } from './agent-task-state.js';
 import type { SubagentRecord } from './subagent.js';
+import { parseTurnConfiguration } from './turn-configuration.js';
+import type { FileArtifact } from '@agent-desktop/model';
 
 export interface PersistedDesktopSession {
   readonly turnMessageBindings?: readonly TurnMessageBinding[];
@@ -187,10 +189,23 @@ function readPlanSteps(value: unknown, field: string): readonly TaskPlanStep[] {
   return steps;
 }
 
-/** 成功结果里的产物路径；字段缺失表示这次调用没有创建交付文件。 */
-function readArtifacts(value: unknown, field: string): { readonly artifacts?: readonly string[] } {
+/** 成功结果里的文件产物事实；字段缺失表示这次调用没有创建交付文件。 */
+function readArtifacts(value: unknown, field: string): { readonly artifacts?: readonly FileArtifact[] } {
   if (value === undefined) return {};
-  const artifacts = readStringArray(value, field);
+  if (!Array.isArray(value)) invalid(field);
+  const artifacts = value.map((item, index): FileArtifact => {
+    const itemField = `${field}[${index}]`;
+    if (!isRecord(item)) invalid(itemField);
+    return {
+      id: readString(item.id, `${itemField}.id`),
+      path: readString(item.path, `${itemField}.path`),
+      mimeType: readString(item.mimeType, `${itemField}.mimeType`),
+      size: readNonNegativeInteger(item.size, `${itemField}.size`),
+      sha256: readString(item.sha256, `${itemField}.sha256`),
+      createdAt: readString(item.createdAt, `${itemField}.createdAt`),
+      sourceTool: readString(item.sourceTool, `${itemField}.sourceTool`),
+    };
+  });
   return artifacts.length === 0 ? {} : { artifacts };
 }
 
@@ -208,6 +223,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
   const turnId = readString(value.turnId, `${field}.turnId`);
 
   switch (type) {
+    case 'turn.configuration':
+      return { type, turnId, data: parseTurnConfiguration(value.data) } as SessionEvent;
     case 'turn.started':
     case 'turn.completed':
       return { type, turnId } as SessionEvent;

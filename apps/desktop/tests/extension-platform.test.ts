@@ -206,7 +206,8 @@ describe('Desktop plugin platform boundaries', () => {
     const plugin = { name: 'remote', directory: root, skills: [], servers: [{ name: 'service', type: protocol, url: `${base}/${protocol === 'sse' ? 'sse' : 'mcp'}`, command: '', args: [] }], item: { id: 'plugin:remote', name: 'remote', description: 'test', kind: 'plugin' as const, source: 'local' as const, enabled: true, installed: true } };
     const approvals = vi.fn(async () => true); let runtime: Awaited<ReturnType<typeof prepareExtensions>> | undefined;
     try {
-      runtime = await prepareExtensions({ plugins: source === 'plugin' ? [plugin] : [], skills: [], mcpServers: source === 'standalone' ? [{ id: 'mcp:remote', enabled: true, directory: root, server: plugin.servers[0]! }] : [] }, approvals);
+      runtime = await prepareExtensions({ plugins: source === 'plugin' ? [plugin] : [], skills: [], mcpServers: source === 'standalone' ? [{ id: 'mcp:remote', enabled: true, directory: root, server: plugin.servers[0]! }] : [] }, approvals,
+        undefined, undefined, { authorizeNetwork: async () => true });
       const result = await runtime.tools[0]!.execute({}, { toolCallId: 'remote' as never, reportProgress: () => undefined });
       expect(JSON.stringify(result)).toContain('real-remote-result');
       expect(approvals.mock.calls).toHaveLength(2);
@@ -268,7 +269,7 @@ describe('Desktop plugin platform boundaries', () => {
       const url = new URL(authorization); challenge = url.searchParams.get('code_challenge')!;
       const callback = new URL(url.searchParams.get('redirect_uri')!); callback.searchParams.set('code', 'test-code'); callback.searchParams.set('state', url.searchParams.get('state')!);
       expect((await fetch(callback)).ok).toBe(true);
-    });
+    }, async () => true);
     try {
       await connections.authorize('plugin:test', 'service', `${base}/mcp`);
       expect(exchanged).toBe(true); expect(connections.connected('plugin:test', 'service', `${base}/mcp`)).toBe(true);
@@ -280,7 +281,7 @@ describe('Desktop plugin platform boundaries', () => {
       const waiting = new ExtensionConnections(database, secureStorage, async authorization => {
         callbackUrl = new URL(authorization).searchParams.get('redirect_uri')!;
         waiting.cancel('plugin:waiting', 'service');
-      });
+      }, async () => true);
       await expect(waiting.authorize('plugin:waiting', 'service', `${base}/mcp`)).rejects.toThrow('账户授权已取消');
       expect(waiting.connected('plugin:waiting', 'service', `${base}/mcp`)).toBe(false);
       // 取消后回调端口真实关闭，不留下等待中的本地服务器。

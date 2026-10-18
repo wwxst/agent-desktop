@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ModelRequestError, type ModelRequest, type ToolCallId } from '@agent-desktop/model';
-import { DeepSeekModel } from '../src/index.js';
+import { OpenAICompatibleModel } from '../src/index.js';
+
+const modelOptions = { model: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com', disableThinking: true };
 
 const baseRequest: ModelRequest = {
   systemPrompt: 'Base system prompt.',
@@ -36,12 +38,13 @@ function streamResponse(chunks: readonly (string | Uint8Array)[], init?: Respons
  * 故意不关闭的响应体：用于验证 [DONE] 到达后立即结束，而不是等待 HTTP body EOF。
  * 若实现等待 body 关闭，该测试会因超时而失败。
  */
-function openResponse(body: string): Response {
+function openResponse(body: string, cancel?: () => void): Response {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(encoder.encode(body));
     },
+    ...(cancel === undefined ? {} : { cancel }),
   });
   return new Response(stream, { status: 200 });
 }
@@ -71,10 +74,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('DeepSeekModel', () => {
+describe('OpenAICompatibleModel', () => {
+  it('authorizes the provider endpoint before sending and never fetches after denial', async () => {
+    const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'ok' }), choiceEvent({}, 'stop'), '[DONE]'])]));
+    const authorizeNetwork = vi.fn(async (_request: { readonly url: string; readonly method?: string }, _signal?: AbortSignal) => {});
+    await new OpenAICompatibleModel({ ...modelOptions, apiKey: 'fixture', authorizeNetwork }).complete(baseRequest);
+    expect(authorizeNetwork).toHaveBeenCalledOnce();
+    expect(authorizeNetwork.mock.calls[0]?.[0]).toEqual({ url: 'https://api.deepseek.com/chat/completions', method: 'POST' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    vi.stubGlobal('fetch', vi.fn());
+    const denied = vi.fn(async (_request: { readonly url: string; readonly method?: string }, _signal?: AbortSignal) => { throw new Error('network denied'); });
+    await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'fixture', authorizeNetwork: denied }).complete(baseRequest)).rejects.toThrow('network denied');
+    expect(denied).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([429, 502, 503, 504, 401, 400])('classifies HTTP %s at the provider boundary', async (status) => {
     stubResponse(new Response('', { status, headers: { 'Retry-After': '2' } }));
-    await expect(new DeepSeekModel({ apiKey: 'fixture' }).complete(baseRequest)).rejects.toMatchObject({
+    await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'fixture' }).complete(baseRequest)).rejects.toMatchObject({
       kind: [429, 502, 503, 504].includes(status) ? 'transient-service' : status === 401 ? 'authentication' : 'invalid-request',
       statusCode: status, retryAfterMs: 2000,
     });
@@ -88,14 +106,14 @@ describe('DeepSeekModel', () => {
       else controller.error(failure);
     } });
     stubResponse(new Response(body));
-    const result = new DeepSeekModel({ apiKey: 'fixture' }).complete(baseRequest);
+    const result = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'fixture' }).complete(baseRequest);
     if (partial) await expect(result).rejects.toBe(failure);
     else await expect(result).rejects.toBeInstanceOf(ModelRequestError);
   });
   it('passes the Turn AbortSignal to fetch', async () => {
     const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'ok' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const controller = new AbortController();
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await model.complete({ systemPrompt: 'test', messages: [], tools: [], signal: controller.signal });
 
@@ -107,7 +125,7 @@ describe('DeepSeekModel', () => {
       sseBody([choiceEvent({ role: 'assistant', content: 'Hello from DeepSeek.' }), choiceEvent({}, 'stop'),
         JSON.stringify({ choices: [], usage: { prompt_tokens: 52, completion_tokens: 8 } }), '[DONE]']),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete(baseRequest);
 
@@ -147,7 +165,7 @@ describe('DeepSeekModel', () => {
       ]),
     ]));
     const deltas: string[] = [];
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete({
       ...baseRequest,
@@ -162,7 +180,7 @@ describe('DeepSeekModel', () => {
   it('omits text when the stream only carries empty content deltas', async () => {
     stubResponse(streamResponse([sseBody([choiceEvent({ content: '' }), choiceEvent({}, 'stop'), '[DONE]'])]));
     const deltas: string[] = [];
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete({ ...baseRequest, onTextDelta: (delta) => deltas.push(delta) });
 
@@ -174,7 +192,7 @@ describe('DeepSeekModel', () => {
     stubResponse(streamResponse([
       `data: ${choiceEvent({ content: 'crlf' })}\r\n\r\ndata: ${choiceEvent({}, 'stop')}\r\n\r\ndata: [DONE]\r\n\r\n`,
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).resolves.toEqual({ text: 'crlf', toolCalls: [] });
   });
@@ -188,7 +206,7 @@ describe('DeepSeekModel', () => {
 
     stubResponse(byteResponse([bytes.slice(0, splitAt), bytes.slice(splitAt)]));
     const deltas: string[] = [];
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete({ ...baseRequest, onTextDelta: (delta) => deltas.push(delta) });
 
@@ -197,27 +215,31 @@ describe('DeepSeekModel', () => {
   });
 
   it('finishes as soon as [DONE] arrives without waiting for the body to close', async () => {
-    stubResponse(openResponse(sseBody([choiceEvent({ content: 'done early' }), choiceEvent({}, 'stop'), '[DONE]'])));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const cancel = vi.fn();
+    const response = openResponse(sseBody([choiceEvent({ content: 'done early' }), choiceEvent({}, 'stop'), '[DONE]']), cancel);
+    stubResponse(response);
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).resolves.toEqual({ text: 'done early', toolCalls: [] });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(response.body!.locked).toBe(false);
   });
 
   it('fails when the stream ends before [DONE]', async () => {
     stubResponse(streamResponse([sseBody([choiceEvent({ content: 'truncated' })])]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API stream ended before [DONE]',
+      'Chat Completions API stream ended before [DONE]',
     );
   });
 
   it('fails when the stream ends without any choices chunk', async () => {
     stubResponse(streamResponse([sseBody(['[DONE]'])]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API stream ended without a choices chunk',
+      'Chat Completions API stream ended without a choices chunk',
     );
   });
 
@@ -225,7 +247,7 @@ describe('DeepSeekModel', () => {
     stubResponse(streamResponse([
       sseBody([choiceEvent({ content: '完整回复' }), choiceEvent({}, 'stop'), '[DONE]']),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).resolves.toEqual({ text: '完整回复', toolCalls: [] });
   });
@@ -234,10 +256,10 @@ describe('DeepSeekModel', () => {
     stubResponse(streamResponse([
       sseBody([choiceEvent({ content: '没有终止原因' }), '[DONE]']),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API stream ended without a terminating finish_reason',
+      'Chat Completions API stream ended without a terminating finish_reason',
     );
   });
 
@@ -246,10 +268,10 @@ describe('DeepSeekModel', () => {
       // 旧实现把 finish_reason 当成 delta 的字段读取；协议要求它与 delta 同级。
       sseBody([choiceEvent({ content: '嵌套终止原因', finish_reason: 'stop' }), '[DONE]']),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API stream ended without a terminating finish_reason',
+      'Chat Completions API stream ended without a terminating finish_reason',
     );
   });
 
@@ -259,12 +281,12 @@ describe('DeepSeekModel', () => {
       stubResponse(streamResponse([
         sseBody([choiceEvent({ content: '部分文本' }), choiceEvent({}, finishReason), '[DONE]']),
       ]));
-      const model = new DeepSeekModel({ apiKey: 'test-key' });
+      const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
       const deltas: string[] = [];
 
       // 增量已经上报给展示层，但 Provider 必须拒绝，不能把部分文本当成完整 Model Response 返回。
       await expect(model.complete({ ...baseRequest, onTextDelta: (delta) => deltas.push(delta) }))
-        .rejects.toThrow(`DeepSeek API stream terminated with finish_reason ${finishReason}`);
+        .rejects.toThrow(`Chat Completions API stream terminated with finish_reason ${finishReason}`);
       expect(deltas).toEqual(['部分文本']);
     },
   );
@@ -273,12 +295,12 @@ describe('DeepSeekModel', () => {
     stubResponse(streamResponse([
       sseBody([choiceEvent({ content: '部分文本' }), choiceEvent({}, 'aborted'), '[DONE]']),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     // 服务端 finish_reason=aborted 属于协议级失败，不是客户端取消，必须用普通 Error 与 AbortError 区分。
     await expect(model.complete(baseRequest)).rejects.toMatchObject({
       name: 'Error',
-      message: 'DeepSeek API stream terminated with finish_reason aborted',
+      message: 'Chat Completions API stream terminated with finish_reason aborted',
     });
   });
 
@@ -293,11 +315,11 @@ describe('DeepSeekModel', () => {
           '[DONE]',
         ]),
       ]));
-      const model = new DeepSeekModel({ apiKey: 'test-key' });
+      const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
       // 先出现的失败终止原因不能被后面的 stop 覆盖，否则截断会被当成部分成功返回。
       await expect(model.complete(baseRequest)).rejects.toThrow(
-        `DeepSeek API stream terminated with finish_reason ${finishReason}`,
+        `Chat Completions API stream terminated with finish_reason ${finishReason}`,
       );
     },
   );
@@ -318,7 +340,7 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete(baseRequest);
 
@@ -350,7 +372,7 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete(baseRequest);
 
@@ -375,7 +397,7 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     const response = await model.complete(baseRequest);
 
@@ -393,10 +415,10 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API streamed Tool Call is missing a valid index',
+      'Chat Completions API streamed Tool Call is missing a valid index',
     );
   });
 
@@ -409,10 +431,10 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API streamed Tool Call is missing a valid index',
+      'Chat Completions API streamed Tool Call is missing a valid index',
     );
   });
 
@@ -425,10 +447,10 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API streamed Tool Call is missing id',
+      'Chat Completions API streamed Tool Call is missing id',
     );
   });
 
@@ -440,10 +462,10 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API streamed Tool Call is missing name',
+      'Chat Completions API streamed Tool Call is missing name',
     );
   });
 
@@ -461,10 +483,10 @@ describe('DeepSeekModel', () => {
         '[DONE]',
       ]),
     ]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API returned invalid tool arguments JSON for echo',
+      'Chat Completions API returned invalid tool arguments JSON for echo',
     );
   });
 
@@ -474,7 +496,7 @@ describe('DeepSeekModel', () => {
       pull() { throw abortError; },
     });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, { status: 200 })));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toBe(abortError);
   });
@@ -484,7 +506,7 @@ describe('DeepSeekModel', () => {
       sseBody([choiceEvent({ content: 'partial' }), choiceEvent({}, 'stop'), '[DONE]']),
     ]));
     const controller = new AbortController();
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete({
       ...baseRequest,
@@ -498,7 +520,7 @@ describe('DeepSeekModel', () => {
     const fetchMock = stubResponse(streamResponse([
       sseBody([choiceEvent({ content: 'done' }), choiceEvent({}, 'stop'), '[DONE]']),
     ]));
-    const model = new DeepSeekModel({
+    const model = new OpenAICompatibleModel({ ...modelOptions,
       apiKey: 'test-key',
       model: 'deepseek-v4-flash',
       baseUrl: 'https://deepseek.example/v1/',
@@ -527,9 +549,9 @@ describe('DeepSeekModel', () => {
     });
   });
 
-  it('maps assistant Tool Call history to DeepSeek messages', async () => {
+  it('maps assistant Tool Call history to Chat Completions messages', async () => {
     const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'done' }), choiceEvent({}, 'stop'), '[DONE]'])]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await model.complete({
       ...baseRequest,
@@ -558,9 +580,9 @@ describe('DeepSeekModel', () => {
     ]);
   });
 
-  it('maps Core Tool Result history to a DeepSeek tool message', async () => {
+  it('maps Core Tool Result history to a Chat Completions tool message', async () => {
     const fetchMock = stubResponse(streamResponse([sseBody([choiceEvent({ content: 'done' }), choiceEvent({}, 'stop'), '[DONE]'])]));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await model.complete({
       ...baseRequest,
@@ -579,19 +601,23 @@ describe('DeepSeekModel', () => {
 
   it('throws a clear error for an HTTP failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('Unauthorized', { status: 401 })));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API request failed: 401',
+      'Chat Completions API request failed: 401',
     );
   });
 
   it('throws a clear error for an invalid SSE data payload', async () => {
-    stubResponse(streamResponse(['data: {not json\n\n', 'data: [DONE]\n\n']));
-    const model = new DeepSeekModel({ apiKey: 'test-key' });
+    const cancel = vi.fn();
+    const response = openResponse('data: {not json\n\n', cancel);
+    stubResponse(response);
+    const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'test-key' });
 
     await expect(model.complete(baseRequest)).rejects.toThrow(
-      'DeepSeek API stream returned an invalid SSE data payload',
+      'Chat Completions API stream returned an invalid SSE data payload',
     );
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(response.body!.locked).toBe(false);
   });
 });

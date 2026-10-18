@@ -6,7 +6,6 @@ import type { Model } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { InMemorySession, projectRecoveryFacts, SessionPersistenceError } from '@agent-desktop/session';
 import { ToolExecutionError } from '@agent-desktop/tools';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
 import { DeclareVideoOutputsTool } from '../src/delivery-tools.js';
 import { readVideoDeliveryFacts } from '../src/delivery.js';
 import { CheckVideoSemanticsTool } from '../src/semantic-check.js';
@@ -26,6 +25,7 @@ let requirementId: string;
 let model: Model;
 let probe: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let fullFrames: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
+let segmentFrames: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let audio: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let speech: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
 let vision: Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> };
@@ -43,6 +43,12 @@ beforeEach(async () => {
   requirementId = item.requirements.find((requirement) => requirement.kind === 'semantic')!.id;
   await writeFile(input.candidatePath, 'actual candidate bytes');
   fullFrames = { name: 'extract_full_video_frames', executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { complete: true, frames } })) };
+  segmentFrames = { name: 'extract_video_segment_frames', executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async input => {
+    const value = input as { startFrame: number; maxFrames: number };
+    const endFrame = Math.min(1201, value.startFrame + value.maxFrames);
+    return { status: 'success', output: { complete: true, totalFrames: 1201, startFrame: value.startFrame, endFrame,
+      frames: Array.from({ length: endFrame - value.startFrame }, (_, index) => ({ path: `frame-${value.startFrame + index}.jpg`, timestamp: (value.startFrame + index) / 30 })) } };
+  }) };
   audio = { name: 'extract_audio', executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'audio' })) };
   probe = { name: 'probe_media', executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { audioCodec: null, duration: 0.2 } })) };
   speech = { name: 'transcribe_audio', executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 0.2 }] } })) };
@@ -51,7 +57,7 @@ beforeEach(async () => {
     input: { checks: [{ requirementId, outcome: 'passed', detail: '0 至 0.2 秒为红色矩形' }] } }] })) };
 });
 afterEach(async () => { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); });
-const tool = (includeVision = true) => new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], ...(includeVision ? { vision } : {}) });
+const tool = (includeVision = true) => new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, segmentFrames, audio, speech], ...(includeVision ? { vision } : {}) });
 
 describe('semantic evidence completeness', () => {
   it('preserves all observations and binds the independent verdict to candidate bytes', async () => {
@@ -65,6 +71,40 @@ describe('semantic evidence completeness', () => {
     fullFrames.execute.mockResolvedValue({ status: 'success', output: { complete: false, reason: '超过 600 帧预算' } });
     expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: '超过 600 帧预算' }] } });
     expect(model.complete).not.toHaveBeenCalled();
+  });
+  it('observes every frame in ordered 600-frame segments for a long candidate', async () => {
+    fullFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: false, frameCount: 1201, reason: '需要逐段检查' } });
+    vision.execute.mockImplementation(async value => {
+      const images = (value as { images: typeof frames }).images;
+      return { status: 'success', output: { frames: images.map(frame => ({ timestamp: frame.timestamp, description: `画面 ${frame.timestamp}` })) } };
+    });
+
+    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: {
+      coverage: 'all-frames-and-transcript', frameCount: 1201, checks: [{ outcome: 'passed' }],
+    } });
+    expect(segmentFrames.execute.mock.calls.map(([value]) => (value as { startFrame: number; maxFrames: number })))
+      .toEqual([{ inputPath: input.candidatePath, outputDir: expect.stringContaining('segment-0'), startFrame: 0, maxFrames: 600 },
+        { inputPath: input.candidatePath, outputDir: expect.stringContaining('segment-600'), startFrame: 600, maxFrames: 600 },
+        { inputPath: input.candidatePath, outputDir: expect.stringContaining('segment-1200'), startFrame: 1200, maxFrames: 1 }]);
+    expect(vision.execute).toHaveBeenCalledTimes(201);
+    expect(model.complete).toHaveBeenCalledOnce();
+  });
+  it('resumes a persisted segment when the candidate and its frame files are unchanged', async () => {
+    fullFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: false, frameCount: 2, reason: '需要分段' } });
+    segmentFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: true, totalFrames: 2, startFrame: 0, endFrame: 2,
+      frames: [{ path: input.candidatePath, timestamp: 0 }, { path: input.candidatePath, timestamp: 0.1 }] } });
+    const execution = { ...context, checkpoint: (data: unknown) => session.append({ type: 'tool.effect.prepared', turnId: 't' as never, sourceEventIndex: 0, data }) };
+    expect((await tool().execute(input, execution)).status).toBe('success');
+    expect(segmentFrames.execute).toHaveBeenCalledOnce();
+    fullFrames.execute.mockClear();
+    segmentFrames.execute.mockClear();
+    vision.execute.mockClear();
+    vi.mocked(model.complete).mockClear();
+    expect((await tool().execute(input, execution)).status).toBe('success');
+    expect(fullFrames.execute).not.toHaveBeenCalled();
+    expect(segmentFrames.execute).not.toHaveBeenCalled();
+    expect(vision.execute).not.toHaveBeenCalled();
+    expect(model.complete).toHaveBeenCalledOnce();
   });
   it('rejects omitted frame observations and audio without transcription capability', async () => {
     vision.execute.mockResolvedValueOnce({ status: 'success', output: { frames: [{ timestamp: 0, description: 'red' }] } });
@@ -100,8 +140,7 @@ describe('semantic evidence completeness', () => {
     await expect(tool().execute(input, execution)).rejects.toMatchObject({ name: 'AbortError' });
   });
   it('uses the injected Vision context and preserves approval rejection and cancellation', async () => {
-    vi.spyOn(DeepSeekModel.prototype, 'complete').mockImplementation(model.complete);
-    const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: [probe, fullFrames, audio, speech], visionTool: vision });
+    const agent = createVideoAgent({ model, session, mediaTools: [probe, fullFrames, audio, speech], visionTool: vision });
     const check = agent.tools.get('check_video_semantics')!;
     const execution = { ...context, signal: new AbortController().signal };
     expect(agent.tools.get('analyze_images')).toBe(vision);
@@ -122,8 +161,7 @@ describe('semantic evidence completeness', () => {
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('uses the same injected Speech instance and context for public and semantic calls', async () => {
-    vi.spyOn(DeepSeekModel.prototype, 'complete').mockImplementation(model.complete);
-    const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: [probe, fullFrames, audio, speech], visionTool: vision });
+    const agent = createVideoAgent({ model, session, mediaTools: [probe, fullFrames, audio, speech], visionTool: vision });
     const check = agent.tools.get('check_video_semantics')!;
     const execution = { ...context, signal: new AbortController().signal };
     probe.execute.mockResolvedValue({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });

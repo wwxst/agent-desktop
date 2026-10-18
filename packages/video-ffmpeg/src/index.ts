@@ -67,7 +67,7 @@ export const executeFileCommand: CommandExecutor = (command, args, signal) => (
 /** probe_media 返回给模型的稳定结构，不把完整 ffprobe JSON 暴露给 Session。 */
 /** 逐帧语义检查使用全片帧时间轴，超过预算受阻而不降为采样。 */
 export async function extractFullVideoFrames(inputPath: string, outputDir: string, signal?: AbortSignal, executeCommand: CommandExecutor = executeFileCommand): Promise<
-  { readonly complete: false; readonly reason: string } |
+  { readonly complete: false; readonly reason: string; readonly frameCount: number } |
   { readonly complete: true; readonly frames: readonly { readonly path: string; readonly timestamp: number }[] }
 > {
   const { stdout } = await executeCommand('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_frames',
@@ -76,7 +76,7 @@ export async function extractFullVideoFrames(inputPath: string, outputDir: strin
   if (!isRecord(payload) || !Array.isArray(payload.frames)) throw new Error('ffprobe 未返回帧时间轴。');
   const raw = payload.frames as Array<{ best_effort_timestamp_time?: unknown }>;
   if (raw.length === 0) throw new Error('候选没有视频帧。');
-  if (raw.length > 600) return { complete: false, reason: `候选包含 ${raw.length} 帧，超过首期逐帧语义验收的 600 帧预算；没有降为采样检查。` };
+  if (raw.length > 600) return { complete: false, frameCount: raw.length, reason: `候选包含 ${raw.length} 帧，需要分段逐帧语义验收；单段最多 600 帧，没有降为采样检查。` };
   const timestamps = raw.map((frame) => {
     const value = Number(frame.best_effort_timestamp_time);
     if (!Number.isFinite(value) || value < 0) throw new Error('ffprobe 帧时间戳无效。');
@@ -103,6 +103,53 @@ export class ExtractFullVideoFramesTool implements Tool {
     }
     try { return { status: 'success', output: await extractFullVideoFrames(input.inputPath, input.outputDir, signal, this.executeCommand) }; }
     catch (error) { return errorResult(error); }
+  }
+}
+
+/** 分段按解码序号选择每一帧，时间戳仍来自原视频；不能用 fps 采样替代完整覆盖。 */
+export class ExtractVideoSegmentFramesTool implements Tool {
+  readonly name = 'extract_video_segment_frames';
+  readonly description = '按从零开始的 startFrame 提取最多 600 个连续解码帧，返回原始时间戳和完整覆盖范围，用于长视频分段验收。';
+  readonly inputSchema = { type: 'object', properties: { inputPath: { type: 'string' }, outputDir: { type: 'string' },
+    startFrame: { type: 'integer', minimum: 0 }, maxFrames: { type: 'integer', minimum: 1, maximum: 600 } },
+  required: ['inputPath', 'outputDir', 'startFrame'], additionalProperties: false };
+  constructor(private readonly executeCommand: CommandExecutor = executeFileCommand) {}
+  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+    if (!isRecord(input) || typeof input.inputPath !== 'string' || typeof input.outputDir !== 'string'
+      || typeof input.startFrame !== 'number' || !Number.isSafeInteger(input.startFrame) || input.startFrame < 0
+      || input.maxFrames !== undefined && (typeof input.maxFrames !== 'number' || !Number.isInteger(input.maxFrames) || input.maxFrames < 1 || input.maxFrames > 600)) {
+      return { status: 'error', message: '分段抽帧需要本地路径、非负 startFrame 和 1 至 600 的 maxFrames。' };
+    }
+    try {
+      signal?.throwIfAborted();
+      const { stdout } = await this.executeCommand('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_frames',
+        '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', input.inputPath], signal);
+      const payload: unknown = JSON.parse(stdout);
+      if (!isRecord(payload) || !Array.isArray(payload.frames) || payload.frames.length === 0) throw new Error('ffprobe 未返回有效帧时间轴。');
+      const timestamps = payload.frames.map((frame: unknown) => {
+        if (!isRecord(frame) || typeof frame.best_effort_timestamp_time !== 'string' && typeof frame.best_effort_timestamp_time !== 'number') throw new Error('ffprobe 帧缺少原始时间戳。');
+        const timestamp = Number(frame.best_effort_timestamp_time);
+        if (!Number.isFinite(timestamp) || timestamp < 0) throw new Error('ffprobe 帧时间戳无效。');
+        return timestamp;
+      });
+      if (input.startFrame >= timestamps.length) throw new Error('startFrame 超出候选实际帧数。');
+      const endFrame = Math.min(timestamps.length, input.startFrame + (input.maxFrames as number | undefined ?? 600));
+      await mkdir(input.outputDir, { recursive: true });
+      // 每个分段使用独立前缀，避免共用目录时把上一段的 frame-000001.jpg 混入当前结果。
+      // FFmpeg 的 -n 在部分版本遇到冲突时仍返回 0，所以启动前显式拒绝本段旧文件。
+      const framePrefix = `segment-${String(input.startFrame).padStart(12, '0')}-`;
+      const framePattern = new RegExp(`^${framePrefix}\\d{6}\\.jpg$`);
+      const existingSegmentFiles = (await readdir(input.outputDir)).filter(file => framePattern.test(file));
+      if (existingSegmentFiles.length > 0) throw new Error(`分段抽帧输出目录已包含本段文件：${existingSegmentFiles[0]}`);
+      await this.executeCommand('ffmpeg', ['-n', '-hide_banner', '-loglevel', 'error', '-i', input.inputPath,
+        '-map', '0:v:0', '-vf', `select=between(n\\,${input.startFrame}\\,${endFrame - 1})`, '-fps_mode', 'passthrough',
+        '-q:v', '2', join(input.outputDir, `${framePrefix}%06d.jpg`)], signal);
+      const files = (await readdir(input.outputDir)).filter(file => framePattern.test(file)).sort();
+      if (files.length !== endFrame - input.startFrame) throw new Error('分段实际抽帧数量与解码帧范围不一致。');
+      return { status: 'success', output: { complete: true, totalFrames: timestamps.length, startFrame: input.startFrame, endFrame,
+        startTime: timestamps[input.startFrame], endTime: timestamps[endFrame] ?? null,
+        frames: files.map((file, index) => ({ path: join(input.outputDir as string, file), timestamp: timestamps[input.startFrame as number + index]! })) } };
+    } catch (error) { return errorResult(error); }
   }
 }
 

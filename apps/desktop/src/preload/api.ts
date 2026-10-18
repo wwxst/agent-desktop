@@ -145,8 +145,9 @@ export function createDesktopApi(ipc: IpcRendererPort): DesktopApi {
       return result as import('@agent-desktop/client').AgentTaskState;
     },
     cancelTask: async () => { await ipc.invoke(DESKTOP_CHANNELS.cancelTask); },
-    decideApproval: async (requestId, approved) => {
-      await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);
+    decideApproval: async (requestId, approved, scope) => {
+      if (scope === undefined) await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved);
+      else await ipc.invoke(DESKTOP_CHANNELS.decideApproval, requestId, approved, scope);
     },
     setPermissionMode: mode => invokeExtension(DESKTOP_CHANNELS.setPermissionMode, mode) as ReturnType<DesktopApi['setPermissionMode']>,
     answerQuestion: async (requestId, answer) => {

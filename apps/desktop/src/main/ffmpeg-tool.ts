@@ -8,7 +8,7 @@ import { isInsideDirectory, producedVideoItem, readVideoDeliveryFacts, resolveTh
 
 /** 宿主固定公开名称映射，只授予随包受控服务，不授予第三方同名工具。 */
 export const FFMPEG_READ_TOOLS = new Set(['probe_media', 'decode_video', 'detect_black_segments', 'extract_video_frames',
-  'extract_video_range_frames', 'extract_audio', 'extract_full_video_frames']);
+  'extract_video_range_frames', 'extract_audio', 'extract_full_video_frames', 'extract_video_segment_frames']);
 export const FFMPEG_TOOLS = new Set([...FFMPEG_READ_TOOLS, ...VIDEO_WRITE_TOOL_NAMES]);
 
 /** 授权只取宿主文件范围、目录和附件事实；模型声明的目标及 MCP 审批不自行扩大范围。 */
@@ -95,6 +95,8 @@ function convert(result: ToolResult, inputPath: string): ToolResult {
 export function adaptProbeMediaTool(tool: Tool, access: ProbeFileAccess | undefined): Tool {
   return { name: 'probe_media', description: tool.description, inputSchema: tool.inputSchema,
     executionBoundary: 'read-only',
+    contract: { capability: 'media', riskLevel: 'read', parallelSafety: 'serial', timeoutMs: 120_000,
+      cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
     async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
       try {
         context.signal?.throwIfAborted();
@@ -148,6 +150,8 @@ export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined,
   return { name, description: tool.description, inputSchema: tool.inputSchema,
     // 抽帧和音频提取会写磁盘，保留原 MCP 工具的检查点边界；只有纯检查声明只读。
     executionBoundary: readOnly ? 'read-only' : tool.executionBoundary ?? 'opaque',
+    contract: { capability: 'media', riskLevel: readOnly ? 'read' : 'write', parallelSafety: 'serial', timeoutMs: 120_000,
+      cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
     async execute(input, context) {
       let invoked = false;
       try {

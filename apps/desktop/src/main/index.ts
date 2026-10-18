@@ -7,6 +7,7 @@ import { createJsonlTrace } from '@agent-desktop/execution-trace';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
 import { SessionPersistenceError, TurnCancellationError, projectRecoveryAncestry, projectRecoveryFacts, projectTurnState, type SessionEvent, type TurnId } from '@agent-desktop/session';
 import { createVideoAgent } from '@agent-desktop/video-agent';
+import { OpenAICompatibleModel } from '@agent-desktop/model-deepseek';
 import { generateConversationTitle } from './conversation-title.js';
 import {
   findLatestTurnId,
@@ -16,7 +17,7 @@ import {
   runDesktopAgentTask,
   type TurnArtifact,
 } from './agent-task.js';
-import { prepareTurnStart } from '@agent-desktop/agent-loop';
+import { AgentRuntime, prepareTurnStart } from '@agent-desktop/agent-loop';
 import {
   assertRevealableFile,
   findCommandText,
@@ -64,7 +65,9 @@ import {
   saveRuntimeSettings,
   listProviderModels,
   parseProviderQuery,
+  snapshotRuntimeSettings,
 } from './runtime-settings.js';
+import { assertTurnToolNames, readTurnConfiguration, type TurnConfiguration } from './turn-configuration.js';
 import { DESKTOP_DATABASE_FILE_NAME } from './desktop-database.js';
 import { deleteMemories, loadMemories } from './memory.js';
 import { SaveMemoryTool } from './memory-tool.js';
@@ -76,6 +79,11 @@ import { InMemoryToolRegistry, UpdatePlanTool } from '@agent-desktop/tools';
 import { projectAgentTaskState, qualifyTaskToolEvidence, taskToolGate } from './agent-task-state.js';
 import { DesktopUpdater } from './app-updater.js';
 import { VerifyToolOutcomeTool } from './verify-tool.js';
+import { collectToolCapabilities } from './tool-capabilities.js';
+import { SessionBrowser, type BrowserApproval, type BrowserNetworkRequest } from './browser-host.js';
+import { SessionComputer, type ComputerApproval } from './computer-host.js';
+import { DocumentTool, type DocumentToolName } from './document-host.js';
+import { NetworkAccessPolicy, WindowsExecutionBoundary } from './execution-policy.js';
 
 let mainWindow: BrowserWindow | null = null;
 let isTaskRunning = false;
@@ -95,7 +103,8 @@ async function changeExtensions<T>(operation: () => Promise<T>): Promise<T> {
 }
 let activeTask: {
   readonly sessionId: string;
-  readonly controller: AbortController;
+  readonly runtime: AgentRuntime;
+  readonly permissionMode: PermissionMode;
   /** 关闭收尾必须等这一轮真正结束，才能提交完成或取消后的终态。 */
   readonly finished: Promise<void>;
   terminalTouched: boolean;
@@ -106,6 +115,11 @@ let clientState: ClientStateSnapshot | null = null;
 let isClientCloseReady = false;
 
 interface DesktopSessionState {
+  readonly runtime: AgentRuntime;
+  /** 所有外部网络请求共用的宿主策略；Provider 与 MCP 不绕过 Browser 的准入边界。 */
+  readonly network: NetworkAccessPolicy;
+  /** 第三方进程在受限网络策略下必须先通过 OS 隔离能力；当前 Windows 首期会 fail closed。 */
+  readonly executionBoundary: WindowsExecutionBoundary;
   /** 启动事件只在本次宿主创建或恢复会话后消费一次，不随每轮重复执行。 */
   pendingSessionStart?: 'startup' | 'resume';
   terminal?: SessionTerminal;
@@ -121,6 +135,10 @@ interface DesktopSessionState {
   workingDirectory?: string;
   /** 当前聊天的审批策略；未选择时采用请求批准模式。 */
   permissionMode?: PermissionMode;
+  /** Browser Context 只驻留当前进程；重启后由新实例开始。 */
+  browser?: SessionBrowser;
+  /** Browser Context 跨 Turn 保留；当前 Turn 才提供文件范围。 */
+  browserWorkspace?: WorkspacePort | undefined;
 }
 
 /** 宿主侧的附件：路径是身份，角色决定用途。 */
@@ -156,8 +174,40 @@ function createDesktopSession(
     pendingSessionStart: initialEvents === undefined ? 'startup' : 'resume',
     attachments: [],
     subagentHistory: [],
-  } satisfies DesktopSessionState;
-  sessions.set(id, session);
+  } satisfies Omit<DesktopSessionState, 'runtime' | 'network' | 'executionBoundary'>;
+  const runtime = new AgentRuntime(session.session);
+  // 网络策略闭包只读取当前会话状态；状态在创建后立即完成绑定，调用前不会观察到未初始化值。
+  let state: DesktopSessionState;
+  const network = new NetworkAccessPolicy(
+    () => activeTask?.sessionId !== id || state.browserWorkspace === undefined ? { mode: 'disabled' }
+      : activeTask.permissionMode === 'full-access' ? { mode: 'allowed' } : { mode: 'approval-required' },
+    (target, signal) => activeTask?.sessionId === id
+      ? runtime.withWaiting('waiting_for_approval', () => approvalGate.request(target, signal)) : Promise.resolve(false),
+  );
+  state = { ...session, runtime, network, executionBoundary: new WindowsExecutionBoundary() } as DesktopSessionState;
+  sessions.set(id, state);
+  // Runtime 订阅是 Desktop 的控制面消费；Session 事件仍由唯一投影生成任务状态，避免 Renderer 自行推断终态。
+  runtime.subscribe(event => {
+    if (event.type === 'runtime.state' || event.type === 'session.events') sendTaskState(id);
+  });
+  // Browser Context 绑定会话；操作只在该会话的活动 Turn 内可发起。
+  const browserWorkspace = {
+    confirmedDirectory: () => state.browserWorkspace?.confirmedDirectory(),
+    requestApproval: (target: Parameters<WorkspacePort['requestApproval']>[0], signal?: AbortSignal) => state.browserWorkspace?.requestApproval(target, signal) ?? Promise.resolve(false),
+    confirmDirectory: (directory: string) => {
+      if (state.browserWorkspace === undefined) throw new Error('当前会话没有活动的浏览器工作目录。');
+      state.browserWorkspace.confirmDirectory(directory);
+    },
+  } satisfies WorkspacePort;
+  Object.defineProperty(browserWorkspace, 'fileAccess', { enumerable: true, get: () => state.browserWorkspace?.fileAccess });
+  state.browser = new SessionBrowser({
+    networkAccess: (request: BrowserNetworkRequest, signal) => network.authorize(request, signal),
+    approve: (action: BrowserApproval, signal) => activeTask?.sessionId === id
+      ? runtime.withWaiting('waiting_for_approval', () => approvalGate.request({ kind: 'tool-action', capability: 'browser',
+        action: action.action, arguments: JSON.stringify(action) }, signal)) : Promise.resolve(false),
+    workspace: browserWorkspace,
+    outputDirectory: () => state.browserWorkspace?.confirmedDirectory(),
+  });
   activeSessionId = id;
   return id;
 }
@@ -245,7 +295,10 @@ function terminalRestartFacts(session: DesktopSessionState): readonly SessionEve
 
 let desktopExtensions: DesktopExtensions | undefined;
 let pluginConnections: ExtensionConnections | undefined;
-function connectionStore(): ExtensionConnections { return pluginConnections ??= new ExtensionConnections(persistenceFilePath(), safeStorage, url => shell.openExternal(url)); }
+function connectionStore(): ExtensionConnections {
+  return pluginConnections ??= new ExtensionConnections(persistenceFilePath(), safeStorage, url => shell.openExternal(url),
+    (request, signal) => activeSession().network.authorizeUserInitiated(request));
+}
 function extensionStore(): DesktopExtensions {
   return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore(), () => mainWindow?.webContents.send(DESKTOP_CHANNELS.extensionsChanged));
 }
@@ -276,6 +329,13 @@ function currentPersistedState(snapshot: ClientStateSnapshot, replacement?: { re
     })),
     clientState: snapshot,
   };
+}
+
+/** Renderer 快照可能落后于 Main 新建会话；补齐缺失的展示占位，Session 事实仍只取 Main。 */
+function completeClientSessionSnapshot(snapshot: ClientStateSnapshot): ClientStateSnapshot {
+  const known = new Set([...snapshot.conversations, ...(snapshot.drafts ?? [])].map(item => item.id));
+  const missing = [...sessions.keys()].filter(id => !known.has(id)).map(id => ({ id, title: '', titleManuallyRenamed: false, messages: [], prompt: '', attachments: [] }));
+  return missing.length === 0 ? snapshot : { ...snapshot, conversations: [...snapshot.conversations, ...missing] };
 }
 
 /** Renderer 可能在收到最终 IPC 前崩溃；用已有 Session 终态补回缺失的 Assistant 结果，不重新执行任务。 */
@@ -421,7 +481,7 @@ function persistSessionResourceState(sessionId: string): void {
   catch (error) {
     const failure = error instanceof SessionPersistenceError ? error : new SessionPersistenceError(error);
     persistenceFailure ??= failure;
-    if (activeTask?.sessionId === sessionId) activeTask.controller.abort(failure);
+    if (activeTask?.sessionId === sessionId) activeTask.runtime.cancelTurn(failure);
   }
 }
 
@@ -509,16 +569,18 @@ const commandOutput = new CommandOutputProjection((activityId, detail) => {
  * 会话工作目录端口：目录事实存在会话状态里，工具只通过它读写。
  * 工具自己不做权限判断，也不缓存目录——它每次调用都读同一份会话状态。
  */
-function workspacePortFor(sessionId: string): WorkspacePort {
+function workspacePortFor(sessionId: string, scope?: TurnConfiguration): WorkspacePort {
+  let turnDirectory = scope?.workingDirectory;
   return {
-    ...(sessions.get(sessionId)?.permissionMode === 'full-access' ? { fileAccess: 'all' as const } : {}),
-    confirmedDirectory: () => sessions.get(sessionId)?.workingDirectory,
-    requestApproval: (target, signal) => approvalGate.request(target, signal),
+    ...((scope?.permissionMode ?? sessions.get(sessionId)?.permissionMode) === 'full-access' ? { fileAccess: 'all' as const } : {}),
+    confirmedDirectory: () => scope === undefined ? sessions.get(sessionId)?.workingDirectory : turnDirectory,
+    requestApproval: (target, signal) => sessions.get(sessionId)!.runtime.withWaiting('waiting_for_approval', () => approvalGate.request(target, signal)),
     confirmDirectory: (directory) => {
       const session = sessions.get(sessionId);
       // 会话在任务执行期间不能被删除，因此这里一定拿得到同一个会话。
       if (session === undefined) throw new Error('会话已不存在，无法记录工作目录。');
       session.workingDirectory = directory;
+      turnDirectory = directory;
       // 目录事实在**确认之后**才发布：界面不在提交审批决定时提前写入，
       // 否则一个已经失效的审批会在界面上留下一个从未被确认的目录。
       sendAgentEvent({ type: 'workspace.confirmed', workingDirectory: directory });
@@ -719,7 +781,8 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.loadRuntimeSettings, () => loadRuntimeSettings(persistenceFilePath()));
-  ipcMain.handle(DESKTOP_CHANNELS.listProviderModels, (_event, query: unknown) => listProviderModels(persistenceFilePath(), parseProviderQuery(query), safeStorage));
+  ipcMain.handle(DESKTOP_CHANNELS.listProviderModels, (_event, query: unknown) => listProviderModels(persistenceFilePath(), parseProviderQuery(query), safeStorage,
+    request => activeSession().network.authorizeUserInitiated({ ...request, resourceType: 'model-catalog' })));
   ipcMain.handle(DESKTOP_CHANNELS.openModelConfig, async () => {
     const settings = await loadRuntimeSettings(persistenceFilePath());
     const path = join(app.getPath('temp'), 'agent-desktop-model-config.json');
@@ -875,7 +938,9 @@ function registerIpcHandlers(): void {
     }
 
     const wasActive = sessionId === activeSessionId;
-    await sessions.get(sessionId)!.terminal?.close();
+    const deleted = sessions.get(sessionId)!;
+    await Promise.all([deleted.terminal?.close(), deleted.browser?.close()]);
+    approvalGate.forgetSession(sessionId);
     sessions.delete(sessionId);
     if (sessions.size === 0) {
       // 最后一个运行态删除后创建输入草稿；Client 不把它补成历史聊天。
@@ -919,11 +984,20 @@ function registerIpcHandlers(): void {
     const sessionId = activeSessionId;
     const session = activeSession();
     const start = prepareTurnStart(buildAgentPrompt(prompt, session.attachments), recovery);
+    const restored = recovery === undefined ? undefined : readTurnConfiguration(session.session.events(), recovery.sourceTurnId);
+    const directory = restored === undefined ? session.workingDirectory : restored.workingDirectory;
+    const configuration: TurnConfiguration = { settings: restored?.settings ?? snapshotRuntimeSettings(persistenceFilePath()),
+      permissionMode: restored?.permissionMode ?? session.permissionMode ?? 'ask', executionBoundary: 'host-policy',
+      ...(directory === undefined ? {} : { workingDirectory: directory }),
+      ...(restored?.toolNames === undefined ? {} : { toolNames: restored.toolNames }) };
+    // 配置与 turn.started 必须同一事务提交，否则进程在两次写入之间退出会留下无法恢复的轮次。
+    const committedStart = { ...start, events: [...start.events,
+      { type: 'turn.configuration' as const, turnId: start.turnId, data: configuration }] };
     const binding: TurnMessageBinding = { executionVersion: 1, turnId: start.turnId,
       userMessageId: request.userMessageId as number, assistantMessageId: request.assistantMessageId as number };
     // IPC 是真实边界：同时解析新事件、消息绑定和展示快照；旧事件只取宿主权威数据。
-    const startedState = parseDesktopState(currentPersistedState(request.clientState as ClientStateSnapshot,
-      { id: sessionId, events: [...session.session.events(), ...start.events], bindings: [...session.session.turnMessageBindings(), binding] }));
+    const startedState = parseDesktopState(currentPersistedState(completeClientSessionSnapshot(request.clientState as ClientStateSnapshot),
+      { id: sessionId, events: [...session.session.events(), ...committedStart.events], bindings: [...session.session.turnMessageBindings(), binding] }));
     const startedConversation = startedState.clientState.conversations.find(item => item.id === sessionId)!;
     const oldConversation = [...clientState?.conversations ?? [], ...clientState?.drafts ?? []].find(item => item.id === sessionId);
     const previousMessages = oldConversation?.messages ?? [];
@@ -941,10 +1015,7 @@ function registerIpcHandlers(): void {
       || startedConversation.attachments.some((attachment, index) => attachment.path !== session.attachments[index]?.path || attachment.role !== session.attachments[index]?.role)) {
       throw new Error('任务起点与当前会话、消息或附件不一致。');
     }
-    const controller = new AbortController();
-    let markFinished: () => void = () => {};
-    const finished = new Promise<void>((resolve) => { markFinished = resolve; });
-    activeTask = { sessionId, controller, finished, terminalTouched: false };
+    const runtime = session.runtime;
     isTaskRunning = true;
     // 在 try 之外持有会话：失败与取消路径也要按它的事件统计已成功的产物。
     const firstTaskEventIndex = session.session.events().length;
@@ -953,27 +1024,30 @@ function registerIpcHandlers(): void {
     let closeExtensions: (() => Promise<void>) | undefined;
     let closeExtensionsSafely: () => Promise<void> = async () => {};
     try {
+      return await runtime.startPreparedTurn(committedStart, async (turn) => {
+      // Runtime 在提交起点前占有轮次；准备、执行与收尾始终使用它拥有的取消信号。
+      const signal = turn.signal;
+      activeTask = { sessionId, runtime, permissionMode: configuration.permissionMode, finished: runtime.finished, terminalTouched: false };
+      let computer: SessionComputer | undefined;
+    try {
       // 前轮终态也来自 Session，不能在新起点的整份快照中退回旧 processing 占位。
-      const startedClientState = reconcileRecoveredClientState(startedState.clientState);
-      session.session.commitStart(start, startedClientState, binding);
-      clientState = startedClientState;
-      preparedStart = start;
-      const settings = await loadRuntimeConfiguration(
-        persistenceFilePath(),
-        safeStorage,
-      );
+      preparedStart = committedStart;
+      const settings = await loadRuntimeConfiguration(persistenceFilePath(), safeStorage, process.env, configuration.settings);
+      const workspace = workspacePortFor(sessionId, configuration);
+      session.browserWorkspace = workspace;
       // 权限属于当前聊天，本轮固定模式；自动审查使用独立请求和同一个取消信号。
-      const permissionMode = session.permissionMode ?? 'ask';
-      approvalGate.configure({ mode: permissionMode,
-        review: (target, signal) => reviewApproval(target, settings, session.session.events(), signal) });
-      if (settings.deepSeekApiKey === undefined) {
+      const permissionMode = configuration.permissionMode;
+      approvalGate.configure({ mode: permissionMode, sessionId,
+        review: (target, signal) => reviewApproval(target, settings, session.session.events(), signal,
+          (request, requestSignal) => session.network.requireProvider(request, requestSignal)) });
+      if (settings.modelApiKey === undefined) {
         throw new Error('请先在设置中配置当前对话模型的 API 密钥。');
       }
       let terminalRunningPersisted = false;
       const safeRecovery = projectRecoveryFacts(session.session.events()).unknownEffects.length > 0;
       // 先准备插件再组装 Agent；公开 Probe 与语义验收必须持有同一个已授权适配器。
       // 未知外部效果只允许核验，不连接插件或触发其钩子。
-      const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(session.workingDirectory);
+      const extensionFiles = safeRecovery ? { plugins: [], skills: [], mcpServers: [] } : await extensionStore().files(workspace.confirmedDirectory());
       const whisper = extensionFiles.plugins.find(plugin => plugin.item.id === 'plugin:whisper' && plugin.item.source === 'builtin' && plugin.item.enabled);
       let whisperModelPath: string | undefined;
       let whisperExecutable: string | undefined;
@@ -989,11 +1063,15 @@ function registerIpcHandlers(): void {
       }
       // 缺少模型或运行资源只移除这个服务，不能阻止普通任务或其它插件。
       const availableExtensions = { ...extensionFiles, plugins: extensionFiles.plugins.filter(plugin => plugin !== whisper || whisperUnavailable === undefined) };
-      const mediaAccess = { workspace: workspacePortFor(sessionId), attachments: () => session.attachments.map(attachment => attachment.path),
+      const mediaAccess = { workspace: workspace, attachments: () => session.attachments.map(attachment => attachment.path),
         events: () => session.session.events() };
       const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
-        () => prepareExtensions(availableExtensions, (request, signal) => approvalGate.request(request, signal), controller.signal, prompt.trim(),
+        () => prepareExtensions(availableExtensions, (request, signal) => runtime.withWaiting('waiting_for_approval', () => approvalGate.request(request, signal)), signal, prompt.trim(),
           { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
+            authorizeNetwork: (request, requestSignal) => session.network.authorize(request, requestSignal),
+            executionBoundary: session.executionBoundary,
+            allowUnrestrictedProcess: () => session.network.allowsUnrestrictedProcess(),
+            ...(recovery === undefined ? {} : { skipRemoteServers: true }),
             probeAccess: mediaAccess, whisperAccess: mediaAccess, visionAccess: mediaAccess,
             visionConfiguration: {
               ...(settings.visionApiKey === undefined ? {} : { visionApiKey: settings.visionApiKey }),
@@ -1021,39 +1099,44 @@ function registerIpcHandlers(): void {
       };
       const mediaTools = extensions.tools.filter(tool => FFMPEG_TOOLS.has(tool.name) || WHISPER_TOOLS.has(tool.name)).map(extensions.wrapTool);
       const visionTool = extensions.tools.find(tool => tool.name === 'analyze_images');
+      computer = new SessionComputer({
+        approve: (action: ComputerApproval, signal) => runtime.withWaiting('waiting_for_approval', () => approvalGate.request({
+          kind: 'tool-action', capability: 'computer', action: action.action, arguments: JSON.stringify(action),
+        }, signal)),
+        outputDirectory: () => workspace.confirmedDirectory(),
+      });
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
-        deepSeekApiKey: settings.deepSeekApiKey,
+        model: new OpenAICompatibleModel({ apiKey: settings.modelApiKey,
+          baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
+          authorizeNetwork: (request, requestSignal) => session.network.requireProvider(request, requestSignal),
+          ...(settings.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: settings.modelMaxOutputTokens }),
+          ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }) }),
         mediaTools,
-        ...(settings.deepSeekBaseUrl === undefined ? {} : { deepSeekBaseUrl: settings.deepSeekBaseUrl }),
-        ...(settings.deepSeekModel === undefined ? {} : { deepSeekModel: settings.deepSeekModel }),
-        ...(settings.modelProtocol === undefined ? {} : { modelProtocol: settings.modelProtocol }),
-        ...(settings.modelMaxOutputTokens === undefined ? {} : { modelMaxOutputTokens: settings.modelMaxOutputTokens }),
-        ...(settings.useDeepSeekThinking === undefined ? {} : { useDeepSeekThinking: settings.useDeepSeekThinking }),
         ...(settings.visionUnavailableReason === undefined ? {} : { visionUnavailableReason: settings.visionUnavailableReason }),
         ...(visionTool === undefined ? {} : { visionTool: extensions.wrapTool(visionTool) }),
         session: session.session,
-        workspace: workspacePortFor(sessionId),
+        workspace: workspace,
         // 命令能力由宿主提供解释器绝对路径和受限子进程环境；工具自己不做这些选择。
         command: createCommandPort(),
-        terminal: terminalPortFor(session, workspacePortFor(sessionId), (terminal) => {
+        terminal: terminalPortFor(session, workspace, (terminal) => {
           sendAgentEvent({ type: 'terminal.updated', sessionId, terminal });
           // 只在宿主终态转换时保存终端事实，逐块输出仍按现有有界内存通知。
           if (terminal.status !== 'running' || !terminalRunningPersisted) {
             persistSessionResourceState(sessionId);
             if (terminal.status === 'running') terminalRunningPersisted = true;
           }
-        }, () => { if (activeTask?.controller === controller) activeTask.terminalTouched = true; }),
+        }, () => { if (activeTask?.runtime === runtime) activeTask.terminalTouched = true; }),
         askUser: (question, context) => {
           const called = session.session.events().findLast((event) => event.type === 'tool.called' && event.toolCallId === context.toolCallId);
           if (called?.type !== 'tool.called') throw new Error('提问缺少当前工具调用事实。');
-          return questionGate.request(question, sessionId, called.turnId, context.signal, (requestId, reason) => {
+          return runtime.withWaiting('waiting_for_input', () => questionGate.request(question, sessionId, called.turnId, context.signal, (requestId, reason) => {
             session.session.append({ type: 'tool.interaction.closed', turnId: called.turnId, stepId: called.stepId,
               toolCallId: called.toolCallId, requestId, reason });
             sendAgentEvent({ type: 'activity.detail', activityId: called.toolCallId,
               detail: { kind: 'error', message: reason === 'window-closed' ? '问题未回答，窗口已关闭。' : '问题未回答，任务已停止。' } });
             sendAgentEvent({ type: 'question.closed', requestId });
-          });
+          }));
         },
         delegateTasks: (() => {
           const childrenByCall = new Map<string, Map<string, { taskId: string; title: string; status: string; summary: string }>>();
@@ -1061,7 +1144,8 @@ function registerIpcHandlers(): void {
             let children = childrenByCall.get(context.toolCallId);
             if (children === undefined) { children = new Map(); childrenByCall.set(context.toolCallId, children); }
             const currentChildren = children;
-            return runReadOnlySubagent(task, context, session.workingDirectory, settings, (event) => {
+            return runReadOnlySubagent(task, context, workspace.confirmedDirectory(), settings,
+              (request, requestSignal) => session.network.requireProvider(request, requestSignal), (event) => {
               currentChildren.set(event.taskId, { taskId: event.taskId, title: event.title,
                 status: event.status, summary: event.toolName ?? currentChildren.get(event.taskId)?.summary ?? '' });
               sendAgentEvent({ type: 'activity.detail', activityId: context.toolCallId, detail: { kind: 'subagents', tasks: [...currentChildren.values()] } });
@@ -1070,10 +1154,15 @@ function registerIpcHandlers(): void {
               // 子任务完成记录与父 Session 同一快照落盘；保存失败会终止当前轮次，不能只留在内存。
               persistSessionResourceState(sessionId);
               currentChildren.set(record.result.taskId, record.result);
-            }, workspacePortFor(sessionId).fileAccess);
+            }, workspace.fileAccess);
           };
         })(),
       });
+      for (const name of ['read_pdf', 'render_pdf_page', 'read_docx', 'read_xlsx', 'read_csv'] as const) {
+        agent.tools.register(new DocumentTool(name as DocumentToolName, workspace));
+      }
+      for (const tool of session.browser!.tools()) agent.tools.register(tool);
+      for (const tool of computer.tools()) agent.tools.register(tool);
       // 媒体工具已注入且已包装钩子，只追加其他扩展工具。
       for (const tool of extensions.tools) if (!WHISPER_TOOLS.has(tool.name) && !FFMPEG_TOOLS.has(tool.name) && tool !== visionTool) agent.tools.register(tool);
       const authorizedTools = new InMemoryToolRegistry();
@@ -1082,7 +1171,7 @@ function registerIpcHandlers(): void {
       if (safeRecovery) {
         const safeTools = new InMemoryToolRegistry();
         for (const tool of agent.tools.list()) {
-          if (['list_directory', 'read_file', 'search_text', 'read_terminal', 'update_plan', 'verify_tool_outcome'].includes(tool.name)) safeTools.register(tool);
+          if (['list_directory', 'read_file', 'search_text', 'read_terminal', 'read_pdf', 'read_docx', 'read_xlsx', 'read_csv', 'update_plan', 'verify_tool_outcome'].includes(tool.name)) safeTools.register(tool);
         }
         agent = { ...agent, tools: safeTools };
       }
@@ -1097,7 +1186,14 @@ function registerIpcHandlers(): void {
       }
       // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
       agent.tools.register(new UpdatePlanTool(session.session, qualifyTaskToolEvidence));
-      agent.tools.register(new VerifyToolOutcomeTool(session.session, workspacePortFor(sessionId)));
+      agent.tools.register(new VerifyToolOutcomeTool(session.session, workspace));
+      const toolNames = agent.tools.list().map(tool => tool.name);
+      // 恢复时使用原轮次实际暴露的集合；未知效果安全模式只能收紧到安全子集，
+      // 普通恢复要求集合完全一致，避免插件/技能漂移后让模型继续使用不同能力。
+      if (recovery !== undefined) assertTurnToolNames(configuration, toolNames, safeRecovery);
+      // 初始起点先原子保存消息与配置；工具需等扩展准备完成后才能得到，
+      // 因此再追加一条同轮配置事件作为最终能力快照，readTurnConfiguration 取最后一条。
+      session.session.append({ type: 'turn.configuration', turnId: preparedStart.turnId, data: { ...configuration, toolNames } });
       if (recovery === undefined && session.pendingSessionStart !== undefined) {
         const source = session.pendingSessionStart;
         // 在执行前消费；失败或取消后的继续任务不会重放已触发的启动命令。
@@ -1145,10 +1241,13 @@ function registerIpcHandlers(): void {
             sendActivity(traceEvent, session.session.events());
             sendTaskState(sessionId);
           },
-          signal: controller.signal,
+          signal,
+          runPreparedTurn: (agent, options) => turn.run(agent, options),
           turnId: preparedStart.turnId,
           qualifyToolEvidence: qualifyTaskToolEvidence,
           beforeToolCall: input => taskToolGate(session.session.events(), input),
+          // 能力集合来自安全恢复过滤后的最终注册表；未知能力保留，视觉按本轮路由和实际注册状态筛选。
+          toolCapabilities: collectToolCapabilities(agent.tools.list(), visionTool, settings.visionUnavailableReason),
           ...(recovery === undefined ? {} : { maxSteps: 24, maxToolCalls: 48 }),
           // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
           ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
@@ -1186,7 +1285,7 @@ function registerIpcHandlers(): void {
       let conversationTitle: string | undefined;
       let conversationTitleError: string | undefined;
       if (firstTaskEventIndex === 0) {
-        try { conversationTitle = await generateConversationTitle(agent.model, prompt, controller.signal); }
+        try { conversationTitle = await generateConversationTitle(agent.model, prompt, signal); }
         catch (error) {
           if (!(error instanceof Error)) throw error;
           // 任务已经完成，标题请求的真实失败单独展示，不把成功产物改成失败。
@@ -1215,7 +1314,7 @@ function registerIpcHandlers(): void {
           // 前置宿主阶段收到取消时仍保留取消来源；只有真实业务错误才进入 failed。
           if (error.name === 'AbortError') {
             session.session.append({ type: 'turn.cancelled', turnId: preparedStart.turnId,
-              reason: controller.signal.reason instanceof TurnCancellationError ? controller.signal.reason.reason
+              reason: signal.reason instanceof TurnCancellationError ? signal.reason.reason
                 : error instanceof TurnCancellationError ? error.reason : 'external' });
           } else {
             session.session.append({ type: 'turn.failed', turnId: preparedStart.turnId, errorName: error.name, errorMessage: error.message });
@@ -1242,7 +1341,8 @@ function registerIpcHandlers(): void {
         try {
           await closeExtensionsSafely();
         } finally {
-          if (controller.signal.aborted && activeTask?.terminalTouched) {
+          await computer?.close();
+          if (signal.aborted && activeTask?.terminalTouched) {
             try {
               if (preparedStart !== undefined && session.terminal !== undefined) {
                 if (persistenceFailure !== undefined) await session.terminal.close();
@@ -1254,12 +1354,20 @@ function registerIpcHandlers(): void {
           }
         }
       } finally {
+        session.browserWorkspace = undefined;
         commandOutput.flush();
         sendTaskState(sessionId);
-        isTaskRunning = false;
-        if (activeTask?.controller === controller) activeTask = undefined;
-        markFinished();
       }
+    }
+      }, () => {
+        // 持久化仍归宿主：同一事务保存消息绑定和任务起点，成功后才允许任何外部准备。
+        const startedClientState = reconcileRecoveredClientState(startedState.clientState);
+        session.session.commitStart(committedStart, startedClientState, binding);
+        clientState = startedClientState;
+      });
+    } finally {
+      isTaskRunning = false;
+      activeTask = undefined;
     }
   };
   ipcMain.handle(DESKTOP_CHANNELS.runAgentTask, runAgentTaskHandler);
@@ -1298,15 +1406,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(DESKTOP_CHANNELS.cancelTask, () => {
     if (activeTask === undefined) throw new Error('当前没有正在执行的任务。');
-    activeTask.controller.abort(new TurnCancellationError('user'));
+    activeTask.runtime.cancelTurn('user');
   });
 
-  ipcMain.handle(DESKTOP_CHANNELS.decideApproval, (_event, requestId: unknown, approved: unknown) => {
+  ipcMain.handle(DESKTOP_CHANNELS.decideApproval, (_event, requestId: unknown, approved: unknown, scope: unknown = 'once') => {
     // 边界只接受当前请求的标识和一个布尔决定：待执行的操作参数不经过这里，客户端无法改写它。
-    if (typeof requestId !== 'string' || typeof approved !== 'boolean') {
+    if (typeof requestId !== 'string' || typeof approved !== 'boolean' || (scope !== 'once' && scope !== 'session')) {
       throw new Error('无效的审批决定。');
     }
-    approvalGate.decide(requestId, approved);
+    approvalGate.decide(requestId, approved, scope);
   });
 
   ipcMain.handle(DESKTOP_CHANNELS.revealFile, (_event, filePath: unknown) => {
@@ -1349,11 +1457,11 @@ async function prepareWindowClose(window: BrowserWindow): Promise<string | null>
   pluginConnections?.cancelAll();
   const running = activeTask;
   if (running !== undefined) {
-    running.controller.abort(new TurnCancellationError('window-closed'));
+    running.runtime.cancelTurn('window-closed');
     await running.finished;
   }
 
-  await Promise.all([...sessions.values()].map((session) => session.terminal?.close()));
+  await Promise.all([...sessions.values()].map(session => Promise.all([session.terminal?.close(), session.browser?.close()])));
 
   return requestClientStateFlush(window);
 }

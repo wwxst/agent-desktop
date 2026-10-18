@@ -9,6 +9,12 @@ directories:
   output: dist/installer
 files:
   - dist/main/**/*
+  - node_modules/playwright/**/*
+  - node_modules/playwright-core/**/*
+  - node_modules/pdfjs-dist/**/*
+  - node_modules/@napi-rs/canvas/**/*
+  - node_modules/@napi-rs/canvas-win32-x64-msvc/**/*
+  - node_modules/chromium-bidi/**/*
   - dist/preload/**/*
   - dist/renderer/**/*
   - resources/**/*

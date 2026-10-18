@@ -33,6 +33,8 @@ function convert(result: ToolResult): ToolResult {
 export function adaptWhisperTool(tool: Tool, access: ProbeFileAccess | undefined): Tool {
   return { name: 'transcribe_audio', description: tool.description, inputSchema: tool.inputSchema,
     executionBoundary: tool.executionBoundary ?? 'opaque',
+    contract: { capability: 'media', riskLevel: 'external', parallelSafety: 'serial', timeoutMs: 120_000,
+      cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
     async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
       let invoked = false;
       try {

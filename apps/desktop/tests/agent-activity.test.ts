@@ -18,6 +18,7 @@ import {
 const turnId = 'turn-1' as TurnId;
 const stepId = 'step-1' as StepId;
 const toolCallId = 'call-1' as ToolCallId;
+const artifact = (path: string) => ({ id: 'test-artifact', path, mimeType: 'text/plain', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'test' });
 
 /** 只保留测试需要的字段，让每个用例只表达它真正关心的事实。 */
 function toolCalled(input: unknown): SessionEvent {
@@ -113,7 +114,7 @@ describe('readActivityFiles', () => {
         result: {
           status: 'success',
           output: { filePath: 'D:/videos/剪辑清单.txt' },
-          artifacts: ['D:/videos/剪辑清单.txt'],
+          artifacts: [artifact('D:/videos/剪辑清单.txt')],
         },
       },
     ];

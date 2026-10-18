@@ -31,19 +31,19 @@ describe('desktop SQLite storage', () => {
   it('rolls back settings and encrypted secrets together when the second write fails', async () => {
     const { databasePath } = await fixture();
     writeDesktopDocuments(databasePath, [
-      { name: 'runtime-settings', value: { deepSeekModel: 'old-model' } },
-      { name: 'runtime-secrets', value: { deepSeekApiKey: 'old-ciphertext' } },
+      { name: 'runtime-settings', value: { modelId: 'old-model' } },
+      { name: 'runtime-secrets', value: { modelApiKey: 'old-ciphertext' } },
     ]);
     const database = new DatabaseSync(databasePath);
     database.exec("CREATE TRIGGER reject_secrets BEFORE INSERT ON desktop_documents WHEN NEW.name = 'runtime-secrets' BEGIN SELECT RAISE(ABORT, 'write blocked'); END");
     database.close();
 
     expect(() => writeDesktopDocuments(databasePath, [
-      { name: 'runtime-settings', value: { deepSeekModel: 'new-model' } },
-      { name: 'runtime-secrets', value: { deepSeekApiKey: 'new-ciphertext' } },
+      { name: 'runtime-settings', value: { modelId: 'new-model' } },
+      { name: 'runtime-secrets', value: { modelApiKey: 'new-ciphertext' } },
     ])).toThrow('write blocked');
-    expect(readDesktopDocument(databasePath, 'runtime-settings')).toEqual({ deepSeekModel: 'old-model' });
-    expect(readDesktopDocument(databasePath, 'runtime-secrets')).toEqual({ deepSeekApiKey: 'old-ciphertext' });
+    expect(readDesktopDocument(databasePath, 'runtime-settings')).toEqual({ modelId: 'old-model' });
+    expect(readDesktopDocument(databasePath, 'runtime-secrets')).toEqual({ modelApiKey: 'old-ciphertext' });
   });
 
   it('imports legacy files unchanged and keeps SQLite authoritative on the next launch', async () => {
@@ -63,10 +63,10 @@ describe('desktop SQLite storage', () => {
     }
     expect(readDesktopDocument(databasePath, 'runtime-secrets')).toEqual(documents['runtime-secrets']);
 
-    writeDesktopDocuments(databasePath, [{ name: 'runtime-settings', value: { deepSeekModel: 'sqlite-model' } }]);
-    await writeFile(join(directory, 'runtime-settings.json'), JSON.stringify({ deepSeekModel: 'stale-model' }));
+    writeDesktopDocuments(databasePath, [{ name: 'runtime-settings', value: { modelId: 'sqlite-model' } }]);
+    await writeFile(join(directory, 'runtime-settings.json'), JSON.stringify({ modelId: 'stale-model' }));
     await migrateLegacyDesktopFiles(databasePath);
-    expect(readDesktopDocument(databasePath, 'runtime-settings')).toEqual({ deepSeekModel: 'sqlite-model' });
+    expect(readDesktopDocument(databasePath, 'runtime-settings')).toEqual({ modelId: 'sqlite-model' });
   });
 
   it('does not commit a partial import when a legacy file is corrupt', async () => {

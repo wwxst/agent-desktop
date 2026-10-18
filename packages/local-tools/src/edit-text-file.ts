@@ -1,146 +1,124 @@
 import type { ToolResult } from '@agent-desktop/model';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { resolveScopedPath } from './path-scope.js';
 import type { WorkspacePort } from './workspace.js';
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+export interface TextChange { readonly oldText: string; readonly newText: string }
+export interface AppliedTextChange extends TextChange { readonly oldStartLine: number; readonly newStartLine: number }
+type EditFailure = Extract<ToolResult, { status: 'error' }>;
+type TextEditResult = EditFailure | {
+  readonly status: 'success'; readonly filePath: string; readonly after: string;
+  readonly beforeSha256: string; readonly afterSha256: string; readonly changes: readonly AppliedTextChange[];
+};
 
-function errorResult(message: string, failureKind: 'permanent' | 'denied' = 'permanent'): ToolResult {
+export function textEditFailure(message: string, failureKind: 'permanent' | 'denied' | 'unknown-outcome' = 'permanent'): EditFailure {
   return { status: 'error', message, failureKind };
 }
 
-function isAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
+const digest = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
+const lineCount = (text: string) => text.split('\n').length - 1;
 
-type TextSnapshot =
-  | { readonly ok: true; readonly bytes: Buffer; readonly text: string; readonly sha256: string }
-  | { readonly ok: false; readonly message: string };
-
-/** 编辑必须保留文件的原始字节事实；审批后用同一份快照确认宿主批准的仍是当前内容。 */
-async function readTextSnapshot(filePath: string): Promise<TextSnapshot> {
-  let bytes: Buffer;
-  try {
-    bytes = await readFile(filePath);
-  } catch (error) {
+/** 两个真实编辑入口共用 SHA、精确匹配、审批及原子写入规则，避免补丁绕过原编辑边界。 */
+export async function applyTextChanges(
+  workspace: WorkspacePort, filePath: string, expectedSha256: string,
+  changes: readonly TextChange[], context: ToolExecutionContext,
+): Promise<TextEditResult> {
+  context.signal?.throwIfAborted();
+  const scoped = await resolveScopedPath(workspace.confirmedDirectory(), filePath, workspace.fileAccess === 'all');
+  if (!scoped.ok) return textEditFailure(scoped.message);
+  let original: Buffer;
+  try { original = await readFile(scoped.path); }
+  catch (error) {
     if (!(error instanceof Error)) throw error;
-    const code = (error as NodeJS.ErrnoException).code;
-    return { ok: false, message: `无法读取该文件（${code ?? error.message}）：${filePath}` };
+    return textEditFailure(`无法读取该文件（${error.message}）：${scoped.path}`);
   }
+  if (original.includes(0)) return textEditFailure(`这是二进制文件，不能用文本方式修改：${scoped.path}`);
+  const before = original.toString('utf8');
+  if (before.includes('\uFFFD')) return textEditFailure(`文件不能完整按 UTF-8 解码，不会改写：${scoped.path}`);
+  const beforeSha256 = digest(original);
+  if (beforeSha256 !== expectedSha256) return textEditFailure(`文件在读取后发生变化，请重新读取后再修改：${scoped.path}`);
 
-  if (bytes.includes(0)) {
-    return { ok: false, message: `这是二进制文件，不能用文本方式修改：${filePath}` };
+  // 所有片段都匹配原始版本；先完整验证，再一次提交，失败不能留下半份补丁。
+  const positions: Array<TextChange & { start: number }> = [];
+  for (const change of changes) {
+    const start = before.indexOf(change.oldText);
+    if (start < 0) return textEditFailure(`文件中没有找到要替换的原内容，请重新读取后再修改：${scoped.path}`);
+    if (before.indexOf(change.oldText, start + 1) !== -1) return textEditFailure(`文件中有多处匹配，无法确定唯一修改位置：${scoped.path}`);
+    positions.push({ ...change, start });
   }
-  const text = bytes.toString('utf8');
-  if (text.includes('\uFFFD')) {
-    return { ok: false, message: `文件不能完整按 UTF-8 解码，不会改写：${filePath}` };
+  positions.sort((left, right) => left.start - right.start);
+  let end = 0; let after = '';
+  const applied: AppliedTextChange[] = [];
+  for (const change of positions) {
+    if (change.start < end) return textEditFailure('补丁片段重叠，必须提供互不重叠的原始内容。');
+    after += before.slice(end, change.start);
+    applied.push({ oldText: change.oldText, newText: change.newText,
+      oldStartLine: lineCount(before.slice(0, change.start)) + 1, newStartLine: lineCount(after) + 1 });
+    after += change.newText;
+    end = change.start + change.oldText.length;
   }
-  return {
-    ok: true,
-    bytes,
-    text,
-    sha256: createHash('sha256').update(bytes).digest('hex'),
-  };
+  after += before.slice(end);
+  const afterSha256 = digest(after);
+  context.signal?.throwIfAborted();
+  // 宿主批准原文件与完整结果；多片段不能借局部展示隐去其它变更。
+  const approved = await workspace.requestApproval({ kind: 'edit-file', path: scoped.path, before, after }, context.signal);
+  context.signal?.throwIfAborted();
+  if (!approved) return textEditFailure(`用户拒绝修改该文件，未做任何写入：${scoped.path}`, 'denied');
+
+  // 保存失败必须原样向上暴露，不能被文件系统错误分支吞成普通 Tool 失败。
+  context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256,
+    expectedAfterSha256: afterSha256, expectedBytes: Buffer.byteLength(after, 'utf8') });
+  let temporary: string | undefined; let committed = false;
+  try {
+    try {
+      temporary = await mkdtemp(join(dirname(scoped.path), '.agent-patch-'));
+      const staged = join(temporary, 'content');
+      const mode = (await stat(scoped.path)).mode;
+      await writeFile(staged, after, { encoding: 'utf8', flag: 'wx', mode });
+      // 暂存完成后重读版本，审批期间发生的修改仍然不能覆盖。
+      if (!(await readFile(scoped.path)).equals(original)) return textEditFailure(`文件在审批期间发生变化，请重新读取后再修改：${scoped.path}`);
+      context.signal?.throwIfAborted();
+      // 同目录文件系统中的 rename 是唯一提交动作；写入暂存失败时原文件保持完整。
+      await rename(staged, scoped.path);
+      committed = true;
+    } finally {
+      if (temporary !== undefined) await rm(temporary, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+    return textEditFailure(`无法完成文件修改（${error.message}）：${scoped.path}`, committed ? 'unknown-outcome' : 'permanent');
+  }
+  return { status: 'success', filePath: scoped.path, after, beforeSha256, afterSha256, changes: applied };
 }
 
-/**
- * 经宿主批准后，对已有 UTF-8 文本执行一次唯一匹配的精确替换。
- *
- * `expectedSha256` 把调用绑定到先前 `read_file` 读到的完整文件版本；工具在审批前读取完整内容并
- * 计算真正要写入的结果，批准后再次读取并比较原始字节。因此审批参数与实际写入一致，
- * 从读取完成到批准执行期间的外部修改都不会被覆盖。
- */
+/** 已有精确替换入口继续消费同一份编辑实现，保持现有工具名称与结果契约。 */
 export class EditTextFileTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
+  readonly contract = { capability: 'code', riskLevel: 'write', parallelSafety: 'serial', workspaceScope: 'session' } as const;
   readonly name = 'edit_text_file';
-  readonly description = '先用 read_file 读取已有文本，再在宿主授权范围内精确替换唯一匹配内容；写入前由宿主审批';
-  readonly inputSchema = {
-    type: 'object',
-    properties: {
-      filePath: { type: 'string', description: 'read_file 返回的文件路径' },
-      expectedSha256: { type: 'string', description: 'read_file 返回的 sha256，用于确认文件仍是已读取版本' },
-      oldText: { type: 'string', description: '文件中唯一存在的原内容，不能为空' },
-      newText: { type: 'string', description: '替换后的新内容，可以为空' },
-    },
-    required: ['filePath', 'expectedSha256', 'oldText', 'newText'],
-    additionalProperties: false,
-  };
-
-  public constructor(private readonly workspace: WorkspacePort) {}
-
+  readonly description = '先用 read_file 读取已有文本，再在宿主授权范围内精确替换唯一匹配内容；完整变更经审批后原子写入';
+  readonly inputSchema = { type: 'object', properties: {
+    filePath: { type: 'string', description: 'read_file 返回的文件路径' },
+    expectedSha256: { type: 'string', description: 'read_file 返回的 sha256' },
+    oldText: { type: 'string', description: '文件中唯一存在的原内容，不能为空' },
+    newText: { type: 'string', description: '替换后的新内容，可以为空' },
+  }, required: ['filePath', 'expectedSha256', 'oldText', 'newText'], additionalProperties: false };
+  constructor(private readonly workspace: WorkspacePort) {}
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
-    const { signal } = context;
-    if (!isRecord(input)) return errorResult('edit_text_file requires an object input');
-    const { filePath, expectedSha256, oldText, newText } = input;
-    if (typeof filePath !== 'string' || filePath.length === 0) {
-      return errorResult('edit_text_file requires filePath to be a non-empty string');
+    if (typeof input !== 'object' || input === null || Array.isArray(input)) return textEditFailure('edit_text_file requires an object input');
+    const value = input as Record<string, unknown>;
+    if (typeof value.filePath !== 'string' || value.filePath.length === 0
+      || typeof value.expectedSha256 !== 'string' || value.expectedSha256.length === 0
+      || typeof value.oldText !== 'string' || value.oldText.length === 0 || typeof value.newText !== 'string') {
+      return textEditFailure('edit_text_file requires filePath, expectedSha256 from read_file, non-empty oldText and string newText');
     }
-    if (typeof expectedSha256 !== 'string' || expectedSha256.length === 0) {
-      return errorResult('edit_text_file requires expectedSha256 from read_file');
-    }
-    if (typeof oldText !== 'string' || oldText.length === 0) {
-      return errorResult('edit_text_file requires oldText to be a non-empty string');
-    }
-    if (typeof newText !== 'string') {
-      return errorResult('edit_text_file requires newText to be a string');
-    }
-
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), filePath, this.workspace.fileAccess === 'all');
-    if (!scoped.ok) return errorResult(scoped.message);
-
-    const snapshot = await readTextSnapshot(scoped.path);
-    if (!snapshot.ok) return errorResult(snapshot.message);
-    if (snapshot.sha256 !== expectedSha256) {
-      return errorResult(`文件在读取后发生变化，请重新读取后再修改：${scoped.path}`);
-    }
-
-    const match = snapshot.text.indexOf(oldText);
-    if (match === -1) {
-      return errorResult(`文件中没有找到要替换的原内容，请重新读取后再修改：${scoped.path}`);
-    }
-    if (snapshot.text.indexOf(oldText, match + 1) !== -1) {
-      return errorResult(`文件中有多处匹配，无法确定唯一修改位置：${scoped.path}`);
-    }
-    const updated = snapshot.text.slice(0, match) + newText + snapshot.text.slice(match + oldText.length);
-
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-    const approved = await this.workspace.requestApproval({
-      kind: 'edit-file',
-      path: scoped.path,
-      before: oldText,
-      after: newText,
-    }, signal);
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-    if (!approved) return errorResult(`用户拒绝修改该文件，未做任何写入：${scoped.path}`, 'denied');
-
-    const current = await readTextSnapshot(scoped.path);
-    if (!current.ok || !current.bytes.equals(snapshot.bytes)) {
-      return errorResult(`文件在审批期间发生变化，请重新读取后再修改：${scoped.path}`);
-    }
-    // 二次读盘也可能跨过取消时刻；真正写入前必须最后确认当前 Turn 仍然有效。
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-
-    try {
-      context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: snapshot.sha256,
-        expectedAfterSha256: createHash('sha256').update(updated, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(updated, 'utf8') });
-      await writeFile(scoped.path, updated, 'utf8');
-    } catch (error) {
-      if (!(error instanceof Error)) throw error;
-      const code = (error as NodeJS.ErrnoException).code;
-      return errorResult(`无法写入该文件（${code ?? error.message}）：${scoped.path}`);
-    }
-
-    return {
-      status: 'success',
-      output: {
-        filePath: scoped.path,
-        replacements: 1,
-        bytes: Buffer.byteLength(updated, 'utf8'),
-      },
-    };
+    const result = await applyTextChanges(this.workspace, value.filePath, value.expectedSha256,
+      [{ oldText: value.oldText, newText: value.newText }], context);
+    return result.status === 'error' ? result : { status: 'success', output: {
+      filePath: result.filePath, replacements: result.changes.length, bytes: Buffer.byteLength(result.after, 'utf8'),
+    } };
   }
 }

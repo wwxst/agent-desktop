@@ -2,8 +2,8 @@ import {
   runTurn,
   runStartedTurn,
   type ExecutionTrace,
-  type ToolProgressListener,
-  type ToolResultListener,
+  type RunTurnOptions,
+  type RunTurnResult,
 } from '@agent-desktop/agent-loop';
 import type { AttachmentRole } from '@agent-desktop/client';
 import type { SessionEvent, TurnId } from '@agent-desktop/session';
@@ -100,8 +100,8 @@ export function findTurnArtifacts(
     if (event.type !== 'tool.result' || event.turnId !== turnId) continue;
     if (event.result.status !== 'success') continue;
 
-    for (const path of event.result.artifacts ?? []) {
-      artifacts.push({ toolCallId: event.toolCallId, path });
+    for (const artifact of event.result.artifacts ?? []) {
+      artifacts.push({ toolCallId: event.toolCallId, path: artifact.path });
     }
   }
 
@@ -112,19 +112,10 @@ export function findTurnArtifacts(
  * 一轮任务需要的运行端口。
  * 它们全部属于宿主：诊断追踪、取消信号和展示通道都不进入 Agent Core。
  */
-export interface DesktopTaskOptions {
+export interface DesktopTaskOptions extends RunTurnOptions {
+  /** 生产宿主由 Runtime 接管已提交轮次；该端口使媒体结果投影不拥有轮次控制面。 */
+  readonly runPreparedTurn?: (agent: Parameters<typeof runTurn>[0], options: Omit<RunTurnOptions, 'signal'>) => Promise<RunTurnResult>;
   readonly trace: ExecutionTrace;
-  readonly signal?: AbortSignal;
-  readonly onTextDelta?: (delta: string) => void;
-  readonly onToolResult?: ToolResultListener;
-  readonly onToolProgress?: ToolProgressListener;
-  readonly onModelText?: NonNullable<Parameters<typeof runTurn>[2]>['onModelText'];
-  readonly onModelUsage?: NonNullable<Parameters<typeof runTurn>[2]>['onModelUsage'];
-  readonly contextBudget?: NonNullable<Parameters<typeof runTurn>[2]>['contextBudget'];
-  readonly qualifyToolEvidence?: NonNullable<Parameters<typeof runTurn>[2]>['qualifyToolEvidence'];
-  readonly beforeToolCall?: NonNullable<Parameters<typeof runTurn>[2]>['beforeToolCall'];
-  readonly maxSteps?: number;
-  readonly maxToolCalls?: number;
   readonly turnId?: TurnId;
 }
 
@@ -150,40 +141,14 @@ export async function runDesktopAgentTask(
   attachments: readonly PromptAttachment[],
   options: DesktopTaskOptions,
 ) {
-  const turnId = options.turnId;
-  const result = turnId === undefined
-    ? await runTurn(agent, buildAgentPrompt(prompt, attachments), {
-    trace: options.trace,
-    ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
-    ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
-    ...(options.beforeToolCall === undefined ? {} : { beforeToolCall: options.beforeToolCall }),
-    ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
-    ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
-    ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
-    ...(options.onModelUsage === undefined ? {} : { onModelUsage: options.onModelUsage }),
-    // exactOptionalPropertyTypes 下，没有值的端口必须省略而不是写入 undefined。
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    // 文本增量只用于实时展示，不改变 Session 事实和返回值。
-    ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
-    // 工具结果内容走独立回调，不写入只承载诊断元数据的 Execution Trace。
-    ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
-    // 实时进度同样走独立通道，不写入 Session，也不进入模型上下文。
-    ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
-      })
-    : await runStartedTurn(agent, turnId, {
-        trace: options.trace,
-        ...(options.contextBudget === undefined ? {} : { contextBudget: options.contextBudget }),
-        ...(options.qualifyToolEvidence === undefined ? {} : { qualifyToolEvidence: options.qualifyToolEvidence }),
-        ...(options.beforeToolCall === undefined ? {} : { beforeToolCall: options.beforeToolCall }),
-        ...(options.maxSteps === undefined ? {} : { maxSteps: options.maxSteps }),
-        ...(options.maxToolCalls === undefined ? {} : { maxToolCalls: options.maxToolCalls }),
-        ...(options.onModelText === undefined ? {} : { onModelText: options.onModelText }),
-        ...(options.onModelUsage === undefined ? {} : { onModelUsage: options.onModelUsage }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-        ...(options.onTextDelta === undefined ? {} : { onTextDelta: options.onTextDelta }),
-        ...(options.onToolResult === undefined ? {} : { onToolResult: options.onToolResult }),
-        ...(options.onToolProgress === undefined ? {} : { onToolProgress: options.onToolProgress }),
-      });
+  const { turnId, runPreparedTurn, ...runOptions } = options;
+  // 展示与交付投影共用同一组选项；生产入口把执行委托给 Runtime。
+  const { signal: _signal, ...runtimeOptions } = runOptions;
+  const result = runPreparedTurn !== undefined
+    ? await runPreparedTurn(agent, runtimeOptions)
+    : turnId === undefined
+      ? await runTurn(agent, buildAgentPrompt(prompt, attachments), runOptions)
+      : await runStartedTurn(agent, turnId, runOptions);
   if (result.response.text === undefined) {
     throw new Error('Agent 未返回最终文本回复。');
   }

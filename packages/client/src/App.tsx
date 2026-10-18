@@ -700,7 +700,7 @@ export function App({ api }: AppProps) {
     }
   };
 
-  const decideApproval = async (approved: boolean) => {
+  const decideApproval = async (approved: boolean, scope?: 'once' | 'session') => {
     const request = pendingApproval;
     if (request === undefined) return;
     // 先清掉待决状态：宿主只接受当前请求，重复提交会被拒绝。
@@ -708,7 +708,8 @@ export function App({ api }: AppProps) {
     try {
       // 工作目录不在这里写入：只有宿主真的执行了 confirmDirectory 才会发布目录事实，
       // 这次决定可能因为轮次已经取消而失效。
-      await api.decideApproval(request.requestId, approved);
+      if (scope === undefined) await api.decideApproval(request.requestId, approved);
+      else await api.decideApproval(request.requestId, approved, scope);
     } catch (error) {
       // 轮次恰好先结束时宿主会拒绝这次迟到的决定；界面已经回到无待决状态。
       if (error instanceof Error && error.message.includes('该审批请求已失效')) return;
@@ -760,7 +761,7 @@ export function App({ api }: AppProps) {
   ) : pendingApproval === undefined ? null : (
     <ApprovalRequestCard
       request={pendingApproval}
-      onDecide={(approved) => void decideApproval(approved)}
+      onDecide={(approved, scope) => void decideApproval(approved, scope)}
     />
   );
   const composer = (

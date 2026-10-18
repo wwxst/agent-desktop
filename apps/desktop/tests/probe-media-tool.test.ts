@@ -92,7 +92,7 @@ describe('host Probe capability boundary', () => {
       { name: 'extract_audio', input: { videoPath: inputPath, outputPath } },
     ];
     try {
-      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools });
       await runTurn({ ...agent, model: { complete: async request => request.messages.some(message => message.role === 'tool')
         ? { text: 'verified', toolCalls: [] } : { toolCalls: calls.map((call, index) => ({ ...call, id: `read-${index}` as never })) } } }, 'inspect',
         { beforeToolCall: input => taskToolGate(session.events(), input) });
@@ -153,7 +153,7 @@ describe('host Probe capability boundary', () => {
   });
   it('requires successful production from authorized sources for candidates outside the session workspace', async () => {
     const source = join(directory, 'attachment.mp4'); await writeFile(source, 'data'); selected.push(source);
-    const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+    const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
     const declared = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
     const append = (name: string, input: unknown, result: Awaited<ReturnType<Tool['execute']>>) => {
       session.append({ type: 'tool.called', toolCallId: name as never, turnId: 't' as never, stepId: 's' as never, name, input });
@@ -173,7 +173,7 @@ describe('host Probe capability boundary', () => {
   it('does not authorize an overwritten candidate through an older source-matching producer', async () => {
     const source = join(directory, 'selected.mp4'); await writeFile(source, 'selected media'); selected.push(source);
     const otherSource = join(directory, 'removed-attachment.mp4'); await writeFile(otherSource, 'other media');
-    const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session });
+    const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
     const declared = await agent.tools.get('declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
     session.append({ type: 'tool.called', toolCallId: 'declare' as never, turnId: 'first' as never, stepId: 'declare' as never, name: 'declare_video_outputs', input: {} });
     session.append({ type: 'tool.result', toolCallId: 'declare' as never, turnId: 'first' as never, stepId: 'declare' as never, result: declared });
@@ -256,7 +256,7 @@ describe('host Probe capability boundary', () => {
     const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, undefined, undefined, { probeAccess: access });
     const audioPath = join(workspace, 'after failed checks.wav');
     try {
-      const agent = createVideoAgent({ deepSeekApiKey: 'fixture', session, mediaTools: runtime.tools });
+      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools });
       let request = 0;
       await runTurn({ ...agent, model: { complete: async () => {
         request += 1;

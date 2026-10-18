@@ -102,8 +102,8 @@ describe('edit_text_file', () => {
     expect(requested).toEqual([{
       kind: 'edit-file',
       path: target,
-      before: '需要修改的台词',
-      after: '已经修改的台词',
+      before,
+      after,
     }]);
     await expect(readFile(target, 'utf8')).resolves.toBe(after);
   });

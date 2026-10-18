@@ -254,7 +254,7 @@ describe('Vision host adapter', () => {
     const root = await mkdtemp(join(tmpdir(), 'vision-semantic-')); roots.push(root);
     const source = join(root, 'source.mp4'); await writeFile(source, 'source');
     const session = new InMemorySession();
-    const declaration = await createVideoAgent({ deepSeekApiKey: 'fixture', session }).tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({
+    const declaration = await createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session }).tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({
       items: [{ sourcePaths: [source], target: { kind: 'automatic' }, requirements: [{ kind: 'semantic', description: '全部画面都是红色矩形' }] }],
     }, context);
     session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} });

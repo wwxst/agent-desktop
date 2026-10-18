@@ -3,7 +3,7 @@ import type { Agent } from '@agent-desktop/agent';
 import { ModelRequestError, type Model } from '@agent-desktop/model';
 import { InMemorySession } from '@agent-desktop/session';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
-import { runTurn, StepBudgetError } from '../src/index.js';
+import { runTurn, StepBudgetError, ToolBudgetError } from '../src/index.js';
 
 function agent(model: Model): Agent {
   return { model, session: new InMemorySession(), tools: new InMemoryToolRegistry(), systemPrompt: { build: () => 'test' } };
@@ -59,5 +59,24 @@ describe('current model request and commentary contracts', () => {
     const complete = vi.fn<Model['complete']>(async () => ({ toolCalls: [{ id: 'x' as never, name: 'unknown', input: {} }] }));
     await expect(runTurn(agent({ complete }), 'test', { maxSteps: 1 })).rejects.toBeInstanceOf(StepBudgetError);
     expect(complete).toHaveBeenCalledTimes(1);
+  });
+  it('stops an ordinary Turn at the default 64 model steps with an explicit reason', async () => {
+    const complete = vi.fn<Model['complete']>(async () => ({ toolCalls: [{ id: 'x' as never, name: 'unknown', input: {} }] }));
+    const current = agent({ complete });
+    await expect(runTurn(current, '持续工作')).rejects.toMatchObject({ name: 'StepBudgetError', message: '任务已达到模型步骤上限，尚未完成。' });
+    expect(complete).toHaveBeenCalledTimes(64);
+    expect(current.session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorName: 'StepBudgetError' });
+    expect(current.session.events().filter(event => event.type === 'step.completed')).toHaveLength(64);
+  });
+  it('counts unknown tool attempts toward the default 128 calls without replaying successes', async () => {
+    const complete = vi.fn<Model['complete']>(async () => ({ toolCalls: Array.from({ length: 129 }, (_, index) => ({
+      id: String(index) as never, name: 'unknown', input: {},
+    })) }));
+    const current = agent({ complete });
+    await expect(runTurn(current, '多个工具')).rejects.toBeInstanceOf(ToolBudgetError);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(current.session.events().filter(event => event.type === 'tool.called')).toHaveLength(128);
+    expect(current.session.events().filter(event => event.type === 'tool.result')).toHaveLength(128);
+    expect(current.session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorName: 'ToolBudgetError' });
   });
 });

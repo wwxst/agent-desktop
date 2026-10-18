@@ -19,6 +19,7 @@ const secondStep = 'second-step' as StepId;
 // 模型调用 ID 可以在不同轮次重复，真正的来源身份是会话事件索引。
 const sharedCall = 'same-model-call' as ToolCallId;
 const digest = 'a'.repeat(64);
+const artifact = (path: string) => ({ id: 'test-artifact', path, mimeType: 'text/plain', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'test' });
 const temporaryDirectories: string[] = [];
 
 function rawState(events: readonly unknown[]) {
@@ -79,7 +80,7 @@ function recoveryEvents(): readonly SessionEvent[] {
     { type: 'tool.called', turnId: continueTurn, stepId: secondStep, toolCallId: sharedCall,
       name: 'external_tool', input: { task: '新工作' }, boundary: 'opaque' }, // 20
     { type: 'tool.result', turnId: continueTurn, stepId: secondStep, toolCallId: sharedCall,
-      result: { status: 'success', output: { completed: true }, artifacts: ['D:/任务/新结果.txt'] } }, // 21
+      result: { status: 'success', output: { completed: true }, artifacts: [artifact('D:/任务/新结果.txt')] } }, // 21
     { type: 'step.completed', turnId: continueTurn, stepId: secondStep }, // 22
     { type: 'context.compacted', turnId: continueTurn, coveredStepEndEventIndexes: [22],
       previousSummaryEventIndex: 7, sourceDigest: digest, summary: JSON.stringify({ summary: '新增工作有真实成功结果。', sourceEventIndexes: [2, 5, 19, 21] }),

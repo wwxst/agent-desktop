@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { runTurn, StepBudgetError } from '@agent-desktop/agent-loop';
+import { AgentRuntime, StepBudgetError } from '@agent-desktop/agent-loop';
 import { ListDirectoryTool, ReadFileTool, SearchTextTool, type WorkspacePort } from '@agent-desktop/local-tools';
-import { DeepSeekModel } from '@agent-desktop/model-deepseek';
+import { OpenAICompatibleModel } from '@agent-desktop/model-deepseek';
 import { InMemorySession, type SessionEvent } from '@agent-desktop/session';
 import { InMemoryToolRegistry, type ToolExecutionContext } from '@agent-desktop/tools';
 import type { ReadOnlyTask, SubagentResult } from '@agent-desktop/video-agent';
@@ -17,6 +17,7 @@ export interface SubagentActivity {
 /** 宿主组装独立只读会话，密钥不经过委派工具，也不复制父模型历史。 */
 export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecutionContext,
   directory: string | undefined, settings: RuntimeConfiguration,
+  authorizeNetwork: (request: { readonly url: string; readonly method?: string }, signal?: AbortSignal) => Promise<void>,
   publish: (activity: SubagentActivity) => void, save: (record: SubagentRecord) => void,
   fileAccess?: 'all'): Promise<SubagentResult> {
   const taskId = randomUUID();
@@ -31,7 +32,7 @@ export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecu
   let result: SubagentResult;
   try {
     if (directory === undefined && fileAccess !== 'all') throw new Error('只读子任务需要已经确认的会话工作目录。');
-    if (settings.deepSeekApiKey === undefined) throw new Error('对话模型未配置 API 密钥。');
+    if (settings.modelApiKey === undefined) throw new Error('对话模型未配置 API 密钥。');
     const workspace: WorkspacePort = {
       ...(fileAccess === undefined ? {} : { fileAccess }),
       confirmedDirectory: () => directory,
@@ -43,14 +44,13 @@ export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecu
     tools.register(new ReadFileTool(workspace));
     tools.register(new SearchTextTool(workspace));
     publish({ taskId, title: task.title, status: 'running' });
-    const completed = await runTurn({
+    const completed = await new AgentRuntime(session).submitUserMessage({
       session, tools,
-      model: new DeepSeekModel({ apiKey: settings.deepSeekApiKey,
-        ...(settings.deepSeekBaseUrl === undefined ? {} : { baseUrl: settings.deepSeekBaseUrl }),
-        ...(settings.deepSeekModel === undefined ? {} : { model: settings.deepSeekModel }),
-        ...(settings.modelProtocol === undefined ? {} : { protocol: settings.modelProtocol }),
+      model: new OpenAICompatibleModel({ apiKey: settings.modelApiKey,
+        baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
+        authorizeNetwork,
         ...(settings.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: settings.modelMaxOutputTokens }),
-        ...(settings.useDeepSeekThinking === undefined ? {} : { disableThinking: settings.useDeepSeekThinking }) }),
+        ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }) }),
       systemPrompt: { build: () => `你是只读文件检查子智能体。只执行明确委派，不修改文件，不执行命令，不继续委派。${directory === undefined ? '尚未设置工作目录，读取时需要绝对路径。' : `工作目录：${directory}。`}${fileAccess === 'all' ? '宿主已授予全部本地文件的读取范围。' : '只读取已确认工作目录内的文件。'}返回有依据的简短结论和文件位置，不能把工具失败当作完成。` },
     }, task.instruction, {
       signal: controller.signal, maxSteps: 8,

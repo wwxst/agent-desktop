@@ -9,6 +9,7 @@
   "include": ["src"],
   "references": [
     { "path": "../../packages/session" },
+    { "path": "../../packages/model-deepseek" },
     { "path": "../../packages/agent-loop" },
     { "path": "../../packages/execution-trace" },
     { "path": "../../packages/video-agent" },

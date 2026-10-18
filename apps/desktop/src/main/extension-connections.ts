@@ -6,11 +6,13 @@ import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.j
 import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 
 interface Credentials { readonly values?: Readonly<Record<string, string>>; readonly client?: OAuthClientInformationMixed; readonly tokens?: OAuthTokens }
+type NetworkAuthorization = (request: { readonly url: string; readonly method: string; readonly resourceType: string }, signal?: AbortSignal) => Promise<boolean>;
 
 /** 凭据只存在主进程和操作系统加密存储中；Renderer 只收到配置/连接状态。 */
 export class ExtensionConnections {
   private readonly pending = new Map<string, AbortController>();
-  constructor(private readonly database: string, private readonly storage: SafeStoragePort, private readonly openUrl: (url: string) => Promise<unknown>) {}
+  constructor(private readonly database: string, private readonly storage: SafeStoragePort, private readonly openUrl: (url: string) => Promise<unknown>,
+    private readonly authorizeNetwork?: NetworkAuthorization) {}
   private read(key: string): Credentials {
     const data = readDesktopDocument(this.database, `extension-secret:${key}`);
     if (data === null) return {};
@@ -59,7 +61,15 @@ export class ExtensionConnections {
     const controller = new AbortController(); const key = `${id}/${service}`;
     this.pending.set(key, controller);
     // 发现、注册、令牌交换和等待回调都受同一次取消约束。
-    const fetchFn: typeof fetch = (input, init) => fetch(input, { ...init, signal: controller.signal });
+    const fetchFn: typeof fetch = async (input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      const url = request?.url ?? input.toString();
+      const method = init?.method ?? request?.method ?? 'GET';
+      const approved = await this.authorizeNetwork?.({ url, method, resourceType: 'mcp-oauth' }, init?.signal ?? request?.signal);
+      if (!approved) throw new Error(`网络策略拒绝访问：${new URL(url).origin}`);
+      // OAuth discovery、注册和令牌交换都禁止自动跟随重定向，避免凭据跨来源发送。
+      return fetch(input, { ...init, signal: controller.signal, redirect: 'manual' });
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let rejectCode: ((error: Error) => void) | undefined;
     let expectedState: string | null = null;

@@ -6,6 +6,8 @@ import type { PermissionMode } from '@agent-desktop/client';
 
 export type PluginApproval = Omit<Extract<ApprovalRequest, { kind: 'plugin-start' }>, 'requestId'>
   | Omit<Extract<ApprovalRequest, { kind: 'plugin-tool' }>, 'requestId'>;
+export type CapabilityApproval = Omit<Extract<ApprovalRequest, { kind: 'tool-action' }>, 'requestId'> & { readonly sessionScopeKey?: string };
+export type ToolApprovalTarget = ApprovalTarget | PluginApproval | CapabilityApproval;
 
 export interface AutomaticApprovalResult {
   readonly decision: 'approve' | 'deny';
@@ -15,13 +17,15 @@ export interface AutomaticApprovalResult {
 
 /** 一轮开始时固定模式；路径准入继续由真实工具边界负责。 */
 interface ApprovalPolicy {
+  readonly sessionId?: string;
   readonly mode: PermissionMode;
-  readonly review: (target: ApprovalTarget | PluginApproval, signal?: AbortSignal) => Promise<AutomaticApprovalResult>;
+  readonly review: (target: ToolApprovalTarget, signal?: AbortSignal) => Promise<AutomaticApprovalResult>;
 }
 
 interface PendingApproval {
   readonly requestId: string;
-  settle(approved: boolean): void;
+  readonly sessionScopeKey?: string;
+  settle(approved: boolean, scope: 'once' | 'session'): void;
 }
 
 /**
@@ -37,6 +41,8 @@ interface PendingApproval {
 export class ToolApprovalGate {
   private pending: PendingApproval | undefined;
   private policy: ApprovalPolicy | undefined;
+  private readonly sessionGrants = new Set<string>();
+  private approvalTail: Promise<boolean> | undefined;
 
   /** publish 由宿主注入，用来把待决请求推给客户端；它不参与审批决定。 */
   public constructor(private readonly publish: (request: ApprovalRequest) => void) {}
@@ -45,8 +51,16 @@ export class ToolApprovalGate {
     this.policy = policy;
   }
 
+  forgetSession(sessionId: string): void {
+    for (const key of this.sessionGrants) if ((JSON.parse(key) as [string, string])[0] === sessionId) this.sessionGrants.delete(key);
+  }
+
   /** 审批展示与执行使用同一份确切参数；自动审查也不把操作交给客户端改写。 */
-  private requestData(target: ApprovalTarget | PluginApproval, requestId: string): ApprovalRequest {
+  private requestData(target: ToolApprovalTarget, requestId: string): ApprovalRequest {
+    if (target.kind === 'tool-action') {
+      const { sessionScopeKey: _key, ...data } = target;
+      return { requestId, ...data };
+    }
     if (target.kind === 'plugin-start' || target.kind === 'plugin-tool'
       || target.kind === 'terminal-start' || target.kind === 'terminal-input') return { requestId, ...target };
     if (target.kind === 'edit-file') return { requestId, kind: target.kind, target: target.path, before: target.before, after: target.after };
@@ -60,9 +74,22 @@ export class ToolApprovalGate {
    * 取消、关闭或请求失效都必须结束等待：取消继续走既有 AbortSignal，以 AbortError 结束，
    * 不能伪装成普通工具失败，否则模型会把一次取消当成一次失败的工具调用继续推理。
    */
-  async request(target: ApprovalTarget | PluginApproval, signal?: AbortSignal): Promise<boolean> {
+  request(target: ToolApprovalTarget, signal?: AbortSignal): Promise<boolean> {
+    // 浏览器子资源会同时请求授权；逐项展示，不能覆盖尚未答复的请求。
+    const run = () => this.requestOne(target, signal);
+    const task = this.approvalTail === undefined ? run() : this.approvalTail.then(run, run);
+    // 收尾先释放活动槽；原请求的拒绝仍传给调用者，后续请求不重试前一项操作。
+    const completed = task.finally(() => { if (this.approvalTail === completed) this.approvalTail = undefined; });
+    this.approvalTail = completed;
+    return completed;
+  }
+
+  private async requestOne(target: ToolApprovalTarget, signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted();
     const policy = this.policy;
+    const sessionScopeKey = target.kind === 'tool-action' && target.sessionScopeKey !== undefined && policy?.sessionId !== undefined
+      ? JSON.stringify([policy.sessionId, target.sessionScopeKey]) : undefined;
+    if (sessionScopeKey !== undefined && this.sessionGrants.has(sessionScopeKey)) return true;
     if (policy?.mode === 'full-access') return true;
     // 本地文本工具已检查真实路径与写入版本；工作区内常规编辑不需要升级权限。
     if (policy !== undefined && (target.kind === 'create-file' || target.kind === 'edit-file')) {
@@ -106,9 +133,11 @@ export class ToolApprovalGate {
 
       this.pending = {
         requestId,
-        settle: (approved) => {
+        ...(sessionScopeKey === undefined ? {} : { sessionScopeKey }),
+        settle: (approved, scope) => {
           signal?.removeEventListener('abort', abort);
           this.pending = undefined;
+          if (approved && scope === 'session' && sessionScopeKey !== undefined) this.sessionGrants.add(sessionScopeKey);
           resolve(approved);
         },
       };
@@ -122,11 +151,12 @@ export class ToolApprovalGate {
    * 只接受当前待决请求的标识：已经失效、重复提交或伪造的标识一律拒绝，
    * 客户端不能用一次迟到的批准重新启动操作。
    */
-  decide(requestId: string, approved: boolean): void {
+  decide(requestId: string, approved: boolean, scope: 'once' | 'session' = 'once'): void {
     const pending = this.pending;
     if (pending === undefined || pending.requestId !== requestId) {
       throw new Error('该审批请求已失效。');
     }
-    pending.settle(approved);
+    if (scope === 'session' && pending.sessionScopeKey === undefined) throw new Error('该操作没有会话授权范围。');
+    pending.settle(approved, scope);
   }
 }

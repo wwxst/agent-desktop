@@ -37,7 +37,7 @@ New Session                        新会话                      Commit 21 已�
 Session List & Basic History       会话列表与基础历史          已完成并合并 `main`。
 Runtime Settings                  运行时设置                  Commit 26 已完成并合并 `main`。
 Turn Cancellation                 任务取消                    Commit 27 已完成并合并 `main`。
-DeepSeek Streaming                DeepSeek 流式输出           Commit 28 已完成并合并 `main`。
+Provider Streaming                模型供应商流式输出          SSE 文本增量由通用 OpenAI-compatible Provider 提供，已完成并合并 `main`。
 Conversation Recovery             会话恢复                    Commit 29 已完成并合并 `main`。
 Agent Activity & Close Handoff    活动轨迹与关闭收尾           Commit 30–36 已完成并合并 `main`。
 General Agent Conversation        通用对话与任务推进           Commit 37 已完成并合并 `main`。
@@ -56,13 +56,14 @@ Semantic Candidate Acceptance      候选视频语义验收            已实现
 Codex-style Plugin Runtime         Codex 风格插件运行时       已实现真实公开市场、完整清单、技能缓存与懒加载、版本更新回滚、原子安装、stdio/HTTP/SSE MCP、OAuth 和命令钩子，当前在功能分支；Codex 私有账号云同步及完整应用服务器协议边界见架构文档。
 Local Project Sidebar              本地项目与会话侧栏          已实现项目分区、折叠、置顶、归档恢复与自动保存，当前在功能分支。
 Desktop Probe Plugin              媒体探测插件试点            已完成独立 probe_media 的宿主授权、统一注入及真实 Windows 验收，当前在功能分支；其余 FFmpeg 能力保留，边界见架构文档。
+Codex Architecture Alignment V2   通用智能体架构升级          正在 `codex/agent-platform-v2` 实施；Runtime、Router、代码/浏览器/计算机/文档能力、网络准入和恢复工具集合校验已接入，最终门禁与独立审查尚未完成。
 ```
 
 当前 `@agent-desktop/execution-trace` 只负责把 Turn、Model 和 Tool 的执行状态与耗时持久化到本地 JSONL，由 `ffmpeg-agent` 与 Desktop 两个真实入口消费；Trace 不参与 Agent 推理。
 
 Desktop 已支持多会话列表、切换、本地恢复和运行时设置。Commit 27 通过单个 AbortSignal（取消信号）取消当前 Turn，并保持原 InMemorySession 与已完成产物。
 
-Commit 28 让 DeepSeek Provider 改用 SSE 流式响应，Model 文本增量经 Agent Loop 与现有 `desktop:agent-event` 通道实时到达 Shared Client；增量只用于展示，Session 仍然只保存完整 assistant 回复。
+通用 OpenAI-compatible Provider 使用 SSE 流式响应，Model 文本增量经 Agent Loop 与现有 `desktop:agent-event` 通道实时到达 Shared Client；增量只用于展示，Session 仍然只保存完整 assistant 回复。
 
 # Engineering Rules（工程规则）
 

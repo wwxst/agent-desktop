@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { ModelRequestError, type Model, type ModelMessage, type ModelResponse, type ModelToolDefinition, type ToolResult } from '@agent-desktop/model';
+import { ModelRequestError, type Model, type ModelMessage, type ModelResponse, type ModelToolDefinition } from '@agent-desktop/model';
+import { formatModelToolResult } from '@agent-desktop/tools';
 import {
   projectRecoveryAncestry, projectRecoveryFacts, recoverSessionEvents, SessionPersistenceError,
   type AssistantMessageEvent, type ContextCompactedEvent, type Session, type SessionEvent,
@@ -57,13 +58,9 @@ function throwIfAborted(signal?: AbortSignal): void {
   throw new DOMException('The operation was aborted', 'AbortError');
 }
 
-function formatToolResult(result: ToolResult): string {
-  if (result.status === 'error' && result.output === undefined) return result.message;
-  if (result.status === 'success' && typeof result.output === 'string') return result.output;
-  // 正常协议保留现有 JSON 输出顺序；来源 digest 的排序不能顺手改变工具消息契约。
-  const text = JSON.stringify(result.output);
-  if (text === undefined) throw new Error('Tool result output must be JSON-serializable');
-  return result.status === 'error' ? `${result.message}\n${text}` : text;
+function modelSourceEvent(event: SessionEvent): unknown {
+  if (event.type !== 'tool.result') return event;
+  return { ...event, result: { status: event.result.status, content: formatModelToolResult(event.result) } };
 }
 const stepKey = (event: { readonly turnId: TurnId; readonly stepId: string }): string => JSON.stringify([event.turnId, event.stepId]);
 
@@ -94,7 +91,7 @@ function selectedSources(steps: readonly CompleteStep[], covered: readonly numbe
   return sources;
 }
 
-function sourcePayload(previous: ContextCompactedEvent | undefined, sources: readonly IndexedStepSource[]) {
+function sourcePayload(previous: ContextCompactedEvent | undefined, sources: readonly { readonly sourceEventIndex: number; readonly event: unknown }[]) {
   return { previousSummarySourceDigest: previous?.sourceDigest ?? null, previousSummaryText: previous?.summary ?? null, newStepSources: sources };
 }
 function sourceDigest(previous: ContextCompactedEvent | undefined, sources: readonly IndexedStepSource[]): string {
@@ -225,7 +222,7 @@ function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: 
       if (taskTurns.has(event.turnId) && (event.type === 'turn.recovery.started' || event.type === 'turn.failed' || event.type === 'turn.cancelled' || event.type === 'turn.interrupted')) retained.add(index);
     });
   }
-  if (retained.size > 0) text.push(`重要执行事实（原始资料，不表示批准重放；未知效果须先核验）：\n${canonicalJson([...retained].sort((left, right) => left - right).map(index => ({ sourceEventIndex: index, event: events[index] })))}`);
+  if (retained.size > 0) text.push(`重要执行事实（原始资料，不表示批准重放；未知效果须先核验）：\n${canonicalJson([...retained].sort((left, right) => left - right).map(index => ({ sourceEventIndex: index, event: modelSourceEvent(events[index]!) })))}`);
   // 普通根轮次外部成功保留身份/真实状态/产物索引，大正文仍由完整协议或来源摘要提供。
   const successes = facts.successfulCalls.filter(fact => taskTurns.has(fact.call.turnId) && fact.call.boundary !== 'read-only' && !retained.has(fact.sourceEventIndex));
   if (keepCompletedIdentities && successes.length > 0) text.push(`已发生的调用事实（不重复执行，状态只代表真实工具结果）：\n${canonicalJson(successes.map(fact => ({ sourceEventIndex: fact.sourceEventIndex,
@@ -250,7 +247,7 @@ function projectMessages(events: readonly SessionEvent[], covered: ReadonlySet<n
     } else if (event.type === 'assistant.message' && !coveredKeys.has(stepKey(event))) {
       messages.push(event.content === undefined ? { role: 'assistant', toolCalls: event.toolCalls } : { role: 'assistant', content: event.content, toolCalls: event.toolCalls });
     } else if (event.type === 'tool.result' && !coveredKeys.has(stepKey(event))) {
-      messages.push({ role: 'tool', toolCallId: event.toolCallId, content: formatToolResult(event.result) });
+      messages.push({ role: 'tool', toolCallId: event.toolCallId, content: formatModelToolResult(event.result) });
     }
   }
   if (!inserted) for (const content of derived) messages.push({ role: 'user', content });
@@ -308,7 +305,8 @@ export async function prepareModelContext(input: PrepareModelContextInput): Prom
     let summaryMessages: ModelMessage[] = [];
     for (const step of candidates) {
       const proposed = [...chunkSources, ...step.sources].sort((left, right) => left.sourceEventIndex - right.sourceEventIndex);
-      const proposedMessages: ModelMessage[] = [{ role: 'user', content: canonicalJson(sourcePayload(summary?.value.event, proposed)) }];
+      const proposedMessages: ModelMessage[] = [{ role: 'user', content: canonicalJson(sourcePayload(summary?.value.event,
+        proposed.map(source => ({ ...source, event: modelSourceEvent(source.event) })))) }];
       if (estimateContextTokens({ systemPrompt: SUMMARY_PROMPT, messages: proposedMessages, tools: [] }) > limit) break;
       chunk.push(step); chunkSources = proposed; summaryMessages = proposedMessages;
     }

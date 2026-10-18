@@ -305,7 +305,7 @@ export function isSessionFilePath(
     // 成功结果报告的产物或实际文件路径都是这次会话真实操作过的文件。
     // 工具输入可能只有相对路径，因此定位时也要承认工具执行后解析出的绝对路径。
     if (event.type === 'tool.result' && event.result.status === 'success') {
-      if ((event.result.artifacts ?? []).includes(filePath)) return true;
+      if ((event.result.artifacts ?? []).some((artifact) => artifact.path === filePath)) return true;
       return isRecord(event.result.output) && event.result.output.filePath === filePath;
     }
     return false;

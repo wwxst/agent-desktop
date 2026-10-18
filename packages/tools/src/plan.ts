@@ -3,7 +3,7 @@ import {
   isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTaskPlan, projectTurnState, TaskPlanUpdateError,
   type PlanUpdatedEvent, type QualifyToolEvidence, type Session, type TaskPlanStatus, type TaskPlanStep,
 } from '@agent-desktop/session';
-import type { Tool, ToolExecutionContext } from './index.js';
+import type { Tool, ToolExecutionContext } from './contract.js';
 
 // 模型计划 JSON 只在这一边界限制当前使用的字段，避免计划本身无限占用上下文。
 const MAX_STEPS = 32;

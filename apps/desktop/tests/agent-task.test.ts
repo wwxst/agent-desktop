@@ -10,6 +10,7 @@ import {
 
 const turnId = 'turn-current' as TurnId;
 const stepId = 'step-current' as StepId;
+const artifact = (path: string) => ({ id: `test-${path}`, path, mimeType: 'video/mp4', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'test' });
 
 function outputEvents(
   callId: string,
@@ -32,7 +33,7 @@ function outputEvents(
       stepId,
       toolCallId,
       result: status === 'success'
-        ? { status: 'success', output: `Video created: ${outputPath}`, artifacts: [outputPath] }
+        ? { status: 'success', output: `Video created: ${outputPath}`, artifacts: [artifact(outputPath)] }
         : { status: 'error', message: 'FFmpeg failed' },
     },
   ];
@@ -247,7 +248,7 @@ describe('desktop agent task', () => {
         result: {
           status: 'success',
           output: { filePath: 'D:\\videos\\剪辑清单.txt' },
-          artifacts: ['D:\\videos\\剪辑清单.txt'],
+          artifacts: [artifact('D:\\videos\\剪辑清单.txt')],
         },
       },
     ];
@@ -298,7 +299,7 @@ describe('desktop agent task', () => {
         turnId,
         stepId,
         toolCallId: callId,
-        result: { status: 'success', output: {}, artifacts: ['D:\\videos\\b.txt', 'D:\\videos\\a.txt'] },
+        result: { status: 'success', output: {}, artifacts: [artifact('D:\\videos\\b.txt'), artifact('D:\\videos\\a.txt')] },
       },
     ];
 
@@ -329,7 +330,7 @@ describe('desktop agent task', () => {
         result: {
           status: 'success',
           output: 'Video created: D:\\videos\\trimmed.mp4',
-          artifacts: ['D:\\videos\\trimmed.mp4'],
+          artifacts: [artifact('D:\\videos\\trimmed.mp4')],
         },
       },
     ];
@@ -458,7 +459,7 @@ describe('desktop agent task', () => {
         result: {
           status: 'success',
           output: 'Video created: D:\\videos\\earlier.mp4',
-          artifacts: ['D:\\videos\\earlier.mp4'],
+          artifacts: [artifact('D:\\videos\\earlier.mp4')],
         },
       },
       { type: 'turn.completed', turnId: earlierTurnId },

@@ -3,7 +3,7 @@ import { DEFAULT_MODEL_PROVIDERS, usesDefaultModelEndpoint } from '@agent-deskto
 import { findFirstConversationModel, getConversationCapability, getVisionCapability, resolveVisionModel, UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 import type { ModelApiProtocol, RuntimeModelDefinition, RuntimeModelProvider,
-  RuntimeModelProviderUpdate, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/client';
+  RuntimeModelProviderUpdate, RuntimeModelReference, RuntimeModelCapabilities, RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/client';
 
 type ProviderConfig = Omit<RuntimeModelProvider, 'apiKey'>;
 interface PersistedRuntimeSettings {
@@ -18,14 +18,16 @@ interface PersistedRuntimeSettings {
 interface PersistedRuntimeSecrets { readonly providerApiKeys?: Readonly<Record<string, string>> }
 export interface RuntimeConfiguration {
   readonly conversationModel: RuntimeModelReference;
-  readonly deepSeekApiKey?: string;
-  readonly deepSeekBaseUrl?: string;
-  readonly deepSeekModel?: string;
-  readonly modelProtocol?: ModelApiProtocol;
+  /** 当前对话模型的显式能力快照，供 Tool Exposure 在本轮固定使用。 */
+  readonly modelCapabilities?: RuntimeModelCapabilities;
+  readonly modelApiKey?: string;
+  readonly modelBaseUrl: string;
+  readonly modelId: string;
+  readonly modelProtocol: ModelApiProtocol;
   /** 只读取当前所选模型的明确窗口；缺失时不按名称猜测。 */
   readonly modelContextWindow?: number;
   readonly modelMaxOutputTokens?: number;
-  readonly useDeepSeekThinking?: boolean;
+  readonly modelDisableThinking?: boolean;
   readonly visionApiKey?: string;
   readonly visionBaseUrl?: string;
   readonly visionModel?: string;
@@ -203,8 +205,18 @@ export async function loadRuntimeSettings(path: string, environment: RuntimeEnvi
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
-export async function loadRuntimeConfiguration(path: string, storage: SafeStoragePort, environment: RuntimeEnvironment = process.env): Promise<RuntimeConfiguration> {
-  const saved = savedSettings(path); const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
+/** 只保存公开目录与选择；凭据始终按供应商标识从系统加密存储读取。 */
+export function snapshotRuntimeSettings(path: string, environment: RuntimeEnvironment = process.env): PersistedRuntimeSettings {
+  const saved = savedSettings(path);
+  const providers = providerConfigs(saved, environment);
+  return { modelProviders: providers, ...selections(saved, providers),
+    memoryEnabled: saved.memoryEnabled ?? true, memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
+}
+
+export async function loadRuntimeConfiguration(path: string, storage: SafeStoragePort, environment: RuntimeEnvironment = process.env,
+  snapshot?: unknown): Promise<RuntimeConfiguration> {
+  const saved = snapshot === undefined ? savedSettings(path) : parseStoredSettings(snapshot);
+  const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
   const choice = selections(saved, providers);
   if (choice.conversationModel === null) throw new Error('尚未配置对话模型，请在设置 → 模型中添加供应商并选择模型。');
   const conversation = selectedModel(providers, choice.conversationModel);
@@ -215,10 +227,12 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
   const route = resolveVisionModel({ ...choice, modelProviders: providers.map(provider => ({ ...provider, apiKey: apiKeyStatus(provider.id, secrets, environment) })) });
   const vision = route.available ? route : undefined;
   const visionKey = vision === undefined ? undefined : vision.provider.id === conversation.provider.id ? conversationKey : keyFor(vision.provider);
-  return { conversationModel: choice.conversationModel,
-    ...(conversationKey === undefined ? {} : { deepSeekApiKey: conversationKey }),
-    deepSeekBaseUrl: conversation.provider.baseUrl, deepSeekModel: conversation.model.id, modelProtocol: conversation.provider.protocol,
-    useDeepSeekThinking: new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com',
+  return { conversationModel: choice.conversationModel, modelCapabilities: conversation.model.capabilities,
+    ...(conversationKey === undefined ? {} : { modelApiKey: conversationKey }),
+    modelBaseUrl: conversation.provider.baseUrl, modelId: conversation.model.id, modelProtocol: conversation.provider.protocol,
+    // 禁用思考是官方 Chat 入口的有效配置，不把专用参数发送给其它兼容服务。
+    ...(conversation.provider.protocol === 'chat-completions' && new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com'
+      ? { modelDisableThinking: true } : {}),
     ...(conversation.model.contextWindow === undefined ? {} : { modelContextWindow: conversation.model.contextWindow }),
     ...(conversation.model.maxOutputTokens === undefined ? {} : { modelMaxOutputTokens: conversation.model.maxOutputTokens }),
     ...(vision === undefined ? {} : { ...(visionKey === undefined ? {} : { visionApiKey: visionKey }), visionBaseUrl: vision.provider.baseUrl,
@@ -290,10 +304,14 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
   // 目录和加密密钥仍一次提交到同一数据库，不产生明文密钥文件。
   writeDesktopDocuments(path, [{ name: 'runtime-settings', value: saved }, { name: 'runtime-secrets', value: secrets }]);
 }
-export async function listProviderModels(path: string, query: Pick<RuntimeModelProviderUpdate, 'id' | 'baseUrl' | 'protocol' | 'apiKey'>, storage: SafeStoragePort): Promise<readonly RuntimeModelDefinition[]> {
+export async function listProviderModels(path: string, query: Pick<RuntimeModelProviderUpdate, 'id' | 'baseUrl' | 'protocol' | 'apiKey'>, storage: SafeStoragePort,
+  authorizeNetwork: (request: { readonly url: string; readonly method: string }) => Promise<boolean>): Promise<readonly RuntimeModelDefinition[]> {
   const key = query.apiKey === undefined ? decrypt(savedSecrets(path).providerApiKeys?.[query.id], storage, query.id) ?? environmentKey(query.id, process.env) : query.apiKey;
   if (!key) throw new Error('请先填写 API 密钥。');
-  const response = await fetch(`${query.baseUrl}/models`, { headers: { Authorization: `Bearer ${key}` } });
+  const url = new URL(`${query.baseUrl}/models`);
+  if (!await authorizeNetwork({ url: url.href, method: 'GET' })) throw new Error(`网络策略拒绝访问：${url.origin}`);
+  // 目录请求不跟随重定向，防止密钥被转发到未授权来源。
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, redirect: 'manual' });
   if (!response.ok) throw new Error(`获取模型失败：HTTP ${response.status}`);
   const payload: unknown = await response.json();
   if (!record(payload) || !Array.isArray(payload.data)) throw new Error('供应商返回的模型目录缺少 data。');
