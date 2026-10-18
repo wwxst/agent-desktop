@@ -265,7 +265,10 @@ export class SessionBrowser {
     const id = randomUUID(); const state: PageState = { page, networkController: new AbortController() };
     this.pages.set(id, state);
     page.on('framenavigated', frame => { if (frame === page.mainFrame()) delete state.snapshot; });
-    page.on('close', () => this.pages.delete(id));
+    page.on('close', () => {
+      state.networkController.abort(new DOMException('Browser page closed', 'AbortError'));
+      this.pages.delete(id);
+    });
     page.on('download', download => {
       if (this.permittedDownload === page) this.permittedDownload = undefined;
       else void this.rejectDownload(download);
