@@ -37,7 +37,7 @@ PASS：Electron 主进程、Preload、Renderer 和随包 FFmpeg/Whisper/Vision �
 WARN：CommonJS 打包时 computer-host.ts 和 document-host.ts 的 import.meta 分支产生两条 esbuild 告警；运行分支优先使用 __dirname/__filename。
 
 pnpm --filter @agent-desktop/desktop package:win
-PASS：Windows NSIS 安装包构建完成；Chromium 位于安装包 resources/playwright/chromium/chrome-win64/chrome.exe。安装后启动 smoke test 尚未执行。
+PASS：Windows NSIS 安装包构建完成；Chromium 位于安装包 resources/playwright/chromium/chrome-win64/chrome.exe。另以该分发二进制启动 Chromium 并打开本地 data URL，真实进程 smoke test 通过；安装器安装后的 Electron 应用启动尚未验证。
 ```
 
 最近的聚焦验证也通过：
@@ -92,7 +92,7 @@ DeepSeek cloud model      SKIP：本轮未使用真实供应商密钥。
 OpenAI Vision             SKIP：自动化使用受控边界和本地夹具，未执行真实云端请求。
 FFmpeg / ffprobe          SKIP：构建资源已准备，未执行完整真实用户媒体验收。
 whisper.cpp               SKIP：未执行真实模型端到端验收。
-Browser                   PARTIAL：Playwright 真实进程、本地 HTTP 夹具和 Windows Chromium 安装包路径通过；安装后首次启动尚未验证。
+Browser                   PARTIAL：Playwright 真实进程、本地 HTTP 夹具、Windows Chromium 分发路径及分发二进制 smoke test 通过；安装器安装后的 Electron 应用启动尚未验证。
 Windows UIA Computer     PARTIAL：PowerShell helper 与协议测试通过；目标应用实机验收未在本轮执行。
 Document                  PARTIAL：解析边界有测试；真实用户 PDF/DOCX/XLSX/CSV 大文件验收未完整执行。
 Long Video Recovery       PARTIAL：VideoJob 身份、分段 checkpoint、候选 SHA、视觉批次和语音时间轴缓存已实现；真实进程崩溃与重启验收仍未完成。
@@ -105,7 +105,7 @@ CI Windows / Ubuntu       FAIL：提交 89289d3 的 Actions run 39111790735 两�
 P1  本机 Shell 命令和 Terminal 仍绕过逐请求网络策略；第三方 stdio MCP/Hook 在受限模式下已 fail-closed，但 Windows OS 级隔离尚未实现。
 P1  Capability Catalog 已接入 Desktop，但模型能力到完整 Tool Contract 的映射仍缺失。
 P1  长视频已有 VideoJob、分段状态、候选 SHA、帧文件复用和视觉/语音证据缓存；跨重启真实崩溃验收仍缺失。
-P2  Windows 安装包已包含 Playwright Chromium 并放置在运行时查找路径；安装后启动及无 Playwright 用户缓存的真实运行尚未执行。
+P2  Windows 分发 Chromium 的独立真实启动已通过；安装器安装后的 Electron 应用首次启动尚未执行。
 P1  安装/更新网络路径尚未统一记录用户操作准入。
 P2  AgentRuntime.subscribe 已接入 Desktop 状态投影，Renderer 尚未直接消费 Runtime 事件。
 P2  ToolRouter 尚未强制读取 approvalRequirement。
@@ -120,6 +120,6 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 
 ## 7. Git 状态
 
-本轮未提交、未推送、未合并。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
+本地功能分支已有提交 `89289d3`、`b6c16ba` 和 `14c7683`；最新两个修复提交尚未推送，分支领先 `origin/codex/agent-platform-v2` 两个提交。HTTPS 推送因无法连接 GitHub:443 失败，SSH-over-443 因本机没有可用公钥失败；远端 CI 因此仍停留在提交 `89289d3`。没有合并 `main`。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
 
 最终结论保持 `CHANGES_REQUIRED`，不能将本轮自动化门禁通过等同于完整架构交付通过。
