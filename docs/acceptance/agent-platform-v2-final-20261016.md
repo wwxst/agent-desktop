@@ -28,7 +28,7 @@ pnpm install --frozen-lockfile
 PASS：依赖已按锁文件安装。
 
 pnpm check
-PASS：99 个测试文件通过，1103 项测试通过，1 项跳过。
+PASS：99 个测试文件通过，1105 项测试通过，1 项跳过。
 PASS：19 个 workspace 包架构检查通过。
 PASS：git diff --check。
 
@@ -46,7 +46,10 @@ PASS：Windows NSIS 安装包构建完成；Chromium 位于安装包 resources/p
 pnpm typecheck
 pnpm typecheck:tests
 pnpm vitest run apps/desktop/tests/browser-host.test.ts
-PASS：Browser 6/6，包含延迟页面请求使用页面生命周期信号的回归覆盖。
+PASS：Browser 6/6；上传审批路径断言使用与生产一致的规范路径。
+
+pnpm check（2026-10-18，Node 24.20.0 / pnpm 11.22.0）
+PASS：完整门禁通过，99 个测试文件中 1105 项通过、1 项跳过；19 个 workspace 包架构检查通过。
 
 pnpm vitest run apps/desktop/tests/extension-runtime.test.ts packages/agent-loop/tests/run-turn.test.ts apps/desktop/tests/agent-task-state.test.ts
 PASS：60/60。
@@ -96,7 +99,7 @@ Browser                   PARTIAL：Playwright 真实进程、本地 HTTP 夹具
 Windows UIA Computer     PARTIAL：PowerShell helper 与协议测试通过；目标应用实机验收未在本轮执行。
 Document                  PARTIAL：解析边界有测试；真实用户 PDF/DOCX/XLSX/CSV 大文件验收未完整执行。
 Long Video Recovery       PARTIAL：VideoJob 身份、分段 checkpoint、候选 SHA、视觉批次和语音时间轴缓存已实现；真实进程崩溃与重启验收仍未完成。
-CI Windows / Ubuntu       FAIL：提交 89289d3 的 Actions run 39111790735 两平台均失败；Chromium 未安装导致 Browser 实测失败，Windows 另有短路径/长路径 artifact 断言失败。本次修复尚未推送，等待新提交 CI。
+CI Windows / Ubuntu       PASS：提交 94ace18 的 Actions run 39117601131 中 Windows 与 Ubuntu job 均成功。此前 65a0b92 的 Windows 失败来自临时目录短路径与生产规范长路径断言不一致；94ace18 改为用 realpath 作为期望路径。
 ```
 
 ## 5. 已知剩余风险
@@ -120,6 +123,6 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 
 ## 7. Git 状态
 
-本地功能分支已有提交 `89289d3`、`b6c16ba`、`14c7683`、`568ce70` 和 `824b6f9`；后四个提交尚未推送，分支领先 `origin/codex/agent-platform-v2` 四个提交。此前 HTTPS 推送因无法连接 GitHub:443 失败，SSH-over-443 因本机没有可用公钥失败；远端 CI 因此仍停留在提交 `89289d3`。没有合并 `main`。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
+本地功能分支的 Browser 路径修复提交 `94ace18` 已推送，Actions run `39117601131` 的 Windows 与 Ubuntu jobs 均通过；尚未合并 `main`。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
 
 最终结论保持 `CHANGES_REQUIRED`，不能将本轮自动化门禁通过等同于完整架构交付通过。
