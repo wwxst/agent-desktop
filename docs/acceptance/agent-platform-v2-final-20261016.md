@@ -51,6 +51,10 @@ PASS：Browser 6/6；上传审批路径断言使用与生产一致的规范路�
 pnpm check（2026-10-18，Node 24.20.0 / pnpm 11.22.0）
 PASS：完整门禁通过，99 个测试文件中 1105 项通过、1 项跳过；19 个 workspace 包架构检查通过。
 
+打包桌面应用启动实测（Node 24.20.0 / Playwright 1.63.0）
+PASS：从 win-unpacked 目录启动真实 Agent Desktop.exe，独立 userData 下窗口标题为 Agent Desktop、主界面 .app-shell 可见且生成 agent-desktop.sqlite；隔离 userData 已清理，进程已退出。随包 Chromium 可执行文件存在。
+SKIP：NSIS 安装器安装后的启动未执行；当前用户已有同 appId 的安装注册，覆盖它会改动其它工作树的验收安装。
+
 pnpm vitest run apps/desktop/tests/extension-runtime.test.ts packages/agent-loop/tests/run-turn.test.ts apps/desktop/tests/agent-task-state.test.ts
 PASS：60/60。
 ```
@@ -95,7 +99,7 @@ DeepSeek cloud model      SKIP：本轮未使用真实供应商密钥。
 OpenAI Vision             SKIP：自动化使用受控边界和本地夹具，未执行真实云端请求。
 FFmpeg / ffprobe          SKIP：构建资源已准备，未执行完整真实用户媒体验收。
 whisper.cpp               SKIP：未执行真实模型端到端验收。
-Browser                   PARTIAL：Playwright 真实进程、本地 HTTP 夹具、Windows Chromium 分发路径及分发二进制 smoke test 通过；安装器安装后的 Electron 应用启动尚未验证。
+Browser                   PARTIAL：Playwright 本地 HTTP 夹具与 Windows Chromium 分发路径通过；真实 win-unpacked Electron 应用以隔离 userData 启动并渲染主界面。NSIS 安装后的启动未执行，避免覆盖当前用户已有的同 appId 安装注册。
 Windows UIA Computer     PARTIAL：PowerShell helper 与协议测试通过；目标应用实机验收未在本轮执行。
 Document                  PARTIAL：解析边界有测试；真实用户 PDF/DOCX/XLSX/CSV 大文件验收未完整执行。
 Long Video Recovery       PARTIAL：VideoJob 身份、分段 checkpoint、候选 SHA、视觉批次和语音时间轴缓存已实现；真实进程崩溃与重启验收仍未完成。
@@ -108,7 +112,7 @@ CI Windows / Ubuntu       PASS：提交 94ace18 的 Actions run 39117601131 中 
 P1  Windows OS 级进程及网络隔离尚未实现；受限模式拒绝任意 Shell/Terminal/stdio/Hook 进程，完整访问模式仍允许其不受限网络访问。
 P1  Capability Catalog 已接入 Desktop，但模型能力到完整 Tool Contract 的映射仍缺失。
 P1  长视频已有 VideoJob、分段状态、候选 SHA、帧文件复用和视觉/语音证据缓存；跨重启真实崩溃验收仍缺失。
-P2  Windows 分发 Chromium 的独立真实启动已通过；安装器安装后的 Electron 应用首次启动尚未执行。
+P2  win-unpacked Electron 应用及随包 Chromium 启动证据已通过；NSIS 安装器安装后的应用首次启动尚未执行。
 P1  安装/更新网络路径尚未统一记录用户操作准入。
 P2  AgentRuntime.subscribe 已接入 Desktop 状态投影，Renderer 尚未直接消费 Runtime 事件。
 P2  ToolRouter 尚未强制读取 approvalRequirement。
