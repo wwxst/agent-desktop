@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 
@@ -62,20 +62,13 @@ function errorResult(message: string): ToolResult {
 }
 
 /**
- * 取消信号是活值：它在等待审批期间会被别的代码改变。
- * 单独包一层是为了让「这里必须重新读一次」在类型上也是真的读取，而不是被上一次判断收窄后的常量。
- */
-function isAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-/**
  * 把当前会话的工作目录设置为一个真实存在的目录。
  *
  * 目录是相对路径的解析基准，也是后续本地文件工具的读取范围来源，因此这里必须落在**真实路径**上：
  * 先 `realpath` 消掉 `..`、符号链接和 Windows 目录联接，再请求宿主审批，批准的就是实际会被使用的目录。
  */
 export class SetWorkingDirectoryTool implements Tool {
+  readonly contract = { capability: 'code', riskLevel: 'write', parallelSafety: 'serial', workspaceScope: 'session', approvalRequirement: 'policy' } as const;
   readonly name = 'set_working_directory';
   readonly description = '把当前会话的工作目录设置为一个已存在的目录；首次使用该目录由宿主审批';
   readonly inputSchema = {
@@ -89,7 +82,11 @@ export class SetWorkingDirectoryTool implements Tool {
 
   public constructor(private readonly workspace: WorkspacePort) {}
 
-  async execute(input: unknown, { signal }: ToolExecutionContext): Promise<ToolResult> {
+  async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    return executePreparedAction(await this.prepare(input, context), context);
+  }
+
+  async prepare(input: unknown, { signal }: ToolExecutionContext): Promise<ToolPreparation> {
     if (!isRecord(input) || typeof input.path !== 'string' || input.path.length === 0) {
       return errorResult('set_working_directory requires path to be a non-empty string');
     }
@@ -120,18 +117,20 @@ export class SetWorkingDirectoryTool implements Tool {
 
     // 已经确认的同一目录不重复审批；换到新目录重新交给宿主决定。
     if (base === directory) {
-      return { status: 'success', output: { directory } };
+      return {
+        // 即使不需要新的授权，也延迟结果到执行阶段，使外层 hooks 保持统一顺序。
+        requestApproval: async () => true,
+        execute: async () => ({ status: 'success', output: { directory } }),
+      };
     }
 
-    // 轮次已经取消时不再请求确认：宿主的取消信号在请求之前触发，等待就永远不会有结果。
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-
-    const approved = await this.workspace.requestApproval({ kind: 'directory', path: directory }, signal);
-    // 等待期间用户可能已经取消：批准不能重新启动一个已经失效的操作。
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-    if (!approved) return errorResult(`用户拒绝访问该目录，未做任何改动：${directory}`);
-
-    this.workspace.confirmDirectory(directory);
-    return { status: 'success', output: { directory } };
+    // 审批与提交共用已经解析的真实目录；Router 批准后才更新会话事实。
+    return {
+      requestApproval: () => this.workspace.requestApproval({ kind: 'directory', path: directory }, signal),
+      execute: async () => {
+        this.workspace.confirmDirectory(directory);
+        return { status: 'success', output: { directory } };
+      },
+    };
   }
 }

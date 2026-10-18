@@ -19,10 +19,72 @@ function fixture(names: string[]) {
 }
 function reading(name: string, execute: Tool['execute']): Tool {
   return { name, description: name, inputSchema: {}, executionBoundary: 'read-only',
-    contract: { capability: 'code', parallelSafety: 'safe', riskLevel: 'read' }, execute };
+    contract: { capability: 'code', parallelSafety: 'safe', riskLevel: 'read', approvalRequirement: 'none' }, execute };
 }
 
 describe('routed tool execution in a real Turn', () => {
+  it.each(['default', 'policy'] as const)('records a %s policy tool without prepare as not executed', async policy => {
+    const { agent, session, requests } = fixture(['write']);
+    const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'must not run' }));
+    agent.tools.register({ name: 'write', description: '未提供准备入口', inputSchema: {}, executionBoundary: 'checkpointed',
+      ...(policy === 'default' ? {} : { contract: { approvalRequirement: 'policy' as const } }), execute });
+
+    await runTurn(agent, '尝试未准备的写入');
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests[0]!.tools).toEqual([]);
+    expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ boundary: 'not-executed', toolCallId: 'write' });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ toolCallId: 'write',
+      result: { status: 'error', failureKind: 'permanent', message: 'Tool not found: write' } });
+    expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
+    expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
+  });
+
+  it('waits for prepared approval and records a rejection without executing the action', async () => {
+    const { agent, session } = fixture(['write']);
+    const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'direct execution' }));
+    const effect = vi.fn(async () => ({ status: 'success' as const, output: 'prepared execution' }));
+    const requestApproval = vi.fn(async () => false);
+    const prepare = vi.fn<NonNullable<Tool['prepare']>>(async () => ({ requestApproval, execute: effect }));
+    agent.tools.register({ name: 'write', description: '先审批再写入', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { approvalRequirement: 'policy' }, prepare, execute });
+
+    await runTurn(agent, '拒绝这次写入');
+
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare.mock.calls[0]![1]).toMatchObject({ toolCallId: 'write', signal: expect.any(AbortSignal) });
+    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'error', failureKind: 'denied' } });
+    expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
+    expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
+  });
+
+  it('does not execute a late approval after the Turn was cancelled', async () => {
+    const { agent, session, requests } = fixture(['write']);
+    const controller = new AbortController();
+    let approve!: (approved: boolean) => void;
+    const requestApproval = vi.fn(() => new Promise<boolean>(resolve => { approve = resolve; }));
+    const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'direct execution' }));
+    const effect = vi.fn(async () => ({ status: 'success' as const, output: 'prepared execution' }));
+    agent.tools.register({ name: 'write', description: '等待审批', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { approvalRequirement: 'policy' }, prepare: async () => ({ requestApproval, execute: effect }), execute });
+
+    const task = runTurn(agent, '取消等待中的写入', { signal: controller.signal });
+    await vi.waitFor(() => expect(requestApproval).toHaveBeenCalledOnce());
+    expect(effect).not.toHaveBeenCalled();
+    controller.abort();
+    approve(true);
+
+    await expect(task).rejects.toMatchObject({ name: 'AbortError' });
+    expect(execute).not.toHaveBeenCalled();
+    expect(effect).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(session.events().some(event => event.type === 'tool.effect.prepared' || event.type === 'tool.result')).toBe(false);
+    expect(session.events().at(-1)?.type).toBe('turn.cancelled');
+  });
+
   it('runs only adjacent safe reads in parallel and commits results in model order around write barriers', async () => {
     const { agent, session } = fixture(['readA', 'readB', 'write', 'readC']);
     const order: string[] = []; let releaseFirst!: () => void;
@@ -36,7 +98,7 @@ describe('routed tool execution in a real Turn', () => {
       order.push('readB-end'); return { status: 'success', output: 'B' };
     }));
     agent.tools.register({ name: 'write', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
-      contract: { capability: 'code', parallelSafety: 'serial', riskLevel: 'write' }, execute: async () => {
+      contract: { capability: 'code', parallelSafety: 'serial', riskLevel: 'write', approvalRequirement: 'none' }, execute: async () => {
         expect(order).toContain('readA-end'); expect(order).toContain('readB-end');
         order.push('write'); return { status: 'success', output: 'written' };
       } });

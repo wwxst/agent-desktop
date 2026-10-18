@@ -7,7 +7,7 @@ import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type { PluginApproval } from './tool-approval.js';
-import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, resolveToolContract, ToolExecutionError, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { SessionPersistenceError } from '@agent-desktop/session';
 import type { ToolResult } from '@agent-desktop/model';
 import type { McpServerFile, PluginFiles, SkillFile, StandaloneMcpFile } from './extensions.js';
@@ -65,6 +65,7 @@ export function skillCatalog(skills: readonly SkillFile[], budget = 8000): strin
 class LoadSkillTool implements Tool {
   readonly name = 'load_skill';
   readonly executionBoundary = 'read-only' as const;
+  readonly contract = { approvalRequirement: 'none' as const };
   readonly description = '读取当前已启用技能的完整 SKILL.md；开始匹配任务前先调用它。';
   readonly inputSchema = { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false };
   constructor(private readonly skills: readonly SkillFile[]) {}
@@ -92,7 +93,7 @@ export async function prepareExtensions(
     readonly skipRemoteServers?: boolean;
     readonly whisperEnvironment?: { readonly WHISPER_MODEL_PATH: string; readonly WHISPER_CLI_PATH: string };
     readonly visionConfiguration?: Pick<RuntimeConfiguration, 'visionApiKey' | 'visionBaseUrl' | 'visionModel' | 'visionProtocol' | 'visionMaxOutputTokens'> },
-): Promise<{ tools: Tool[]; instructions: string; hookEvents: ReadonlySet<string>; runHooks(event: string, input: Readonly<Record<string, unknown>>): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
+): Promise<{ tools: Tool[]; instructions: string; hookEvents: ReadonlySet<string>; runHooks(event: string, input: Readonly<Record<string, unknown>>, hookSignal?: AbortSignal): Promise<void>; wrapTool(tool: Tool): Tool; close(): Promise<void> }> {
   const tools: Tool[] = [];
   const clients: Client[] = [];
   const mcpSecrets = new Set<string>();
@@ -124,14 +125,14 @@ export async function prepareExtensions(
   }
   // 宿主只为当前确有命令的钩子写入执行事实，避免空调用反复同步提交 SQLite。
   const hookEvents = new Set(plugins.flatMap(plugin => plugin.hooks?.map(hook => hook.event) ?? []));
-  const runHooks = async (event: string, input: Readonly<Record<string, unknown>>) => {
+  const runHooks = async (event: string, input: Readonly<Record<string, unknown>>, hookSignal = signal) => {
     for (const plugin of plugins) for (const hook of plugin.hooks ?? []) {
       // 启动钩子匹配 startup/resume 来源；工具钩子匹配真实工具名。
       const matcherInput = event === 'SessionStart' ? input.source : input.tool_name;
       if (hook.event !== event || (hook.matcher !== undefined && hook.matcher !== '*' && !new RegExp(hook.matcher).test(String(matcherInput ?? '')))) continue;
       const command = hook.command.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory);
-      if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: `事件钩子 · ${event}`, command, workingDirectory: plugin.directory }, signal)) continue;
-      signal?.throwIfAborted();
+      if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: `事件钩子 · ${event}`, command, workingDirectory: plugin.directory }, hookSignal)) continue;
+      hookSignal?.throwIfAborted();
       // Hook 是任意命令，不能借宿主的 HTTP fetch 包装绕过网络策略。
       // 先完成原有启动审批，再在真正 spawn 前 fail closed，避免未授权进程被创建。
       try { assertProcessLaunch(`插件 ${plugin.item.name} 的事件钩子`); }
@@ -150,13 +151,13 @@ export async function prepareExtensions(
           else { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') reject(error); } }
         };
         const timer = setTimeout(() => { timedOut = true; stop(); }, hook.timeoutMs);
-        const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', stop); };
-        signal?.addEventListener('abort', stop, { once: true });
+        const cleanup = () => { clearTimeout(timer); hookSignal?.removeEventListener('abort', stop); };
+        hookSignal?.addEventListener('abort', stop, { once: true });
         child.stdout.resume(); child.stderr.on('data', data => { errors = (errors + String(data)).slice(-16_000); });
         child.once('error', error => { cleanup(); reject(error); });
         child.once('close', code => {
           cleanup();
-          if (signal?.aborted) reject(signal.reason);
+          if (hookSignal?.aborted) reject(hookSignal.reason);
           else if (timedOut) reject(new Error(`钩子 ${event} 执行超时。`));
           else if (code === 0) resolve();
           else reject(new Error(`钩子 ${event} 失败（${code}）：${errors}`));
@@ -164,17 +165,34 @@ export async function prepareExtensions(
         child.stdin.on('error', error => { if ((error as NodeJS.ErrnoException).code !== 'EPIPE') reject(error); });
         child.stdin.end(JSON.stringify({ ...input, hook_event_name: event, cwd: plugin.directory }));
         // 注册监听前已取消的轮次也必须收尾刚启动的进程。
-        if (signal?.aborted) stop();
+        if (hookSignal?.aborted) stop();
       });
     }
   };
   const wrapTool = (tool: Tool): Tool => hookEvents.size === 0 ? tool : ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
-    ...(tool.contract === undefined ? {} : { contract: tool.contract }),
+    // 先固定内层操作并取得批准，再在执行闭包内逐个审批钩子；免审批工具也经过同一准备顺序。
+    contract: { ...tool.contract, approvalRequirement: 'policy' },
     ...(tool.nestedToolNames === undefined ? {} : { nestedToolNames: tool.nestedToolNames }),
     // 进程钩子的副作用由宿主外部执行，包装后不能继续声称内层边界可证明。
     executionBoundary: 'opaque',
     ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),
-    async execute(input, context) { const visibleInput = tool.sanitizeInput?.(input) ?? input; await runHooks('PreToolUse', { tool_name: tool.name, tool_input: visibleInput }); const result = await tool.execute(input, context); await runHooks('PostToolUse', { tool_name: tool.name, tool_input: visibleInput, tool_response: result }); return result; },
+    ...(tool.prepare !== undefined || resolveToolContract(tool).approvalRequirement === 'none' ? { async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
+      const prepared = tool.prepare !== undefined ? await tool.prepare(input, context)
+        : { requestApproval: async () => true, execute: () => tool.execute(input, context) };
+      if ('status' in prepared) return prepared;
+      const visibleInput = tool.sanitizeInput?.(input) ?? input;
+      return { requestApproval: () => prepared.requestApproval(), async execute() {
+        await runHooks('PreToolUse', { tool_name: tool.name, tool_input: visibleInput }, context.signal);
+        context.signal?.throwIfAborted();
+        const result = await prepared.execute();
+        await runHooks('PostToolUse', { tool_name: tool.name, tool_input: visibleInput, tool_response: result }, context.signal);
+        return result;
+      } };
+    } } : {}),
+    async execute(input, context) {
+      if (this.prepare === undefined) return { status: 'error', failureKind: 'permanent', message: `工具 ${tool.name} 缺少已准备操作契约。` };
+      return executePreparedAction(await this.prepare(input, context), context);
+    },
   });
   // 取消回调与 finally 可能同时关闭；两者等待同一个关闭操作，避免第二次调用提前返回。
   let closing: Promise<void> | undefined;
@@ -311,55 +329,56 @@ export async function prepareExtensions(
             contract: { capability: 'mcp', riskLevel: 'external', parallelSafety: 'serial', timeoutMs: 120_000,
               cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
             sanitizeInput: input => redactMcpValue(input, mcpSecrets),
-            async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+            async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
               context.signal?.throwIfAborted();
               if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', failureKind: 'permanent', message: '插件工具参数必须是对象。' };
-              let client: Client | undefined;
-              try { client = await getClient(); }
-              catch (error) {
-                if (error instanceof SessionPersistenceError || error instanceof ToolExecutionError) throw error;
-                context.signal?.throwIfAborted();
-                if (!(error instanceof Error) || error instanceof TypeError) throw error;
-                // 握手失败尚未调用媒体工具；保留本轮失败，不自动重连或影响其它服务。
-                return { status: 'error', failureKind: 'permanent', message: `${plugin.item.name} 连接失败：${redactMcpValue(error.message, mcpSecrets) as string}` };
-              }
-              if (client === undefined) return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' };
-              // 图片上传审批显示目标服务，路径由视觉适配器先解析授权；密钥不进入审批。
-              const approved = await approve({ kind: 'plugin-tool', pluginName: vision === undefined ? plugin.item.name : `${plugin.item.name} 图片上传 → ${new URL(vision.visionBaseUrl!).origin}`, serverName: server.name,
-                toolName: definition.name, arguments: JSON.stringify(redactMcpValue(input, mcpSecrets)) }, context.signal).catch((error: unknown) => {
-                if (error instanceof SessionPersistenceError) throw error;
-                // 审批门禁以 AbortError 结束等待，原取消/保存错误仍以 signal.reason 为准。
-                context.signal?.throwIfAborted();
-                throw error;
-              });
-              context.signal?.throwIfAborted();
-              if (!approved) {
-                return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' };
-              }
-              // Vision 的真实外发发生在隔离子进程内；宿主须在已批准工具调用后核准固定供应商端点。
-              if (isVision && vision !== undefined && options?.authorizeNetwork !== undefined) {
-                const endpoint = `${vision.visionBaseUrl!.replace(/\/+$/, '')}/${vision.visionProtocol === 'chat-completions' ? 'chat/completions' : 'responses'}`;
-                if (!await options.authorizeNetwork({ url: endpoint, method: 'POST', resourceType: 'vision' }, context.signal)) {
-                  return { status: 'error', failureKind: 'denied', message: '网络策略拒绝访问视觉模型端点。' };
-                }
-              }
-              // 宿主批准后才跨过外部请求边界；保存失败在请求 try/catch 外原样传播。
-              context.checkpoint?.({ kind: 'mcp', pluginId: plugin.item.id, serverName: server.name, toolName: definition.name });
-              let result;
-              try { result = await client.callTool({ name: definition.name, arguments: input as Record<string, unknown> }, undefined,
-                { ...(context.signal === undefined ? {} : { signal: context.signal }),
-                  ...(isWhisper ? { onprogress: () => {}, resetTimeoutOnProgress: true } : {}) }); }
-              catch (error) {
-                if (error instanceof SessionPersistenceError) throw error;
-                context.signal?.throwIfAborted();
-                if (!(error instanceof Error) || error instanceof ToolExecutionError) throw error;
-                throw new ToolExecutionError(redactMcpValue(error.message, mcpSecrets) as string, 'unknown-outcome', { cause: error });
-              }
-              context.signal?.throwIfAborted();
-              // 服务端失败只说明返回了错误，不能证明它没有执行部分外部写入。
-              const sanitized = redactMcpValue(result, mcpSecrets);
-              return result.isError === true ? { status: 'error', failureKind: 'unknown-outcome', message: '插件工具返回失败。', output: sanitized } : { status: 'success', output: sanitized };
+              // 只固定已由宿主适配器规范化的参数；准备不能连接服务或创建进程。
+              const arguments_ = input as Record<string, unknown>;
+              return {
+                requestApproval: () => approve({ kind: 'plugin-tool', pluginName: vision === undefined ? plugin.item.name : `${plugin.item.name} 图片上传 → ${new URL(vision.visionBaseUrl!).origin}`, serverName: server.name,
+                  toolName: definition.name, arguments: JSON.stringify(redactMcpValue(arguments_, mcpSecrets)) }, context.signal).catch((error: unknown) => {
+                  if (error instanceof SessionPersistenceError) throw error;
+                  context.signal?.throwIfAborted();
+                  throw error;
+                }),
+                async execute(): Promise<ToolResult> {
+                  let client: Client | undefined;
+                  try { client = await getClient(); }
+                  catch (error) {
+                    if (error instanceof SessionPersistenceError || error instanceof ToolExecutionError) throw error;
+                    context.signal?.throwIfAborted();
+                    if (!(error instanceof Error) || error instanceof TypeError) throw error;
+                    // 握手失败尚未调用媒体工具；保留本轮失败，不自动重连或影响其它服务。
+                    return { status: 'error', failureKind: 'permanent', message: `${plugin.item.name} 连接失败：${redactMcpValue(error.message, mcpSecrets) as string}` };
+                  }
+                  if (client === undefined) return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' };
+                  // Vision 的真实外发发生在隔离子进程内；宿主须在已批准工具调用后核准固定供应商端点。
+                  if (isVision && vision !== undefined && options?.authorizeNetwork !== undefined) {
+                    const endpoint = `${vision.visionBaseUrl!.replace(/\/+$/, '')}/${vision.visionProtocol === 'chat-completions' ? 'chat/completions' : 'responses'}`;
+                    if (!await options.authorizeNetwork({ url: endpoint, method: 'POST', resourceType: 'vision' }, context.signal)) {
+                      return { status: 'error', failureKind: 'denied', message: '网络策略拒绝访问视觉模型端点。' };
+                    }
+                  }
+                  // 宿主批准后才跨过外部请求边界；保存失败在请求 try/catch 外原样传播。
+                  context.checkpoint?.({ kind: 'mcp', pluginId: plugin.item.id, serverName: server.name, toolName: definition.name });
+                  let result;
+                  try { result = await client.callTool({ name: definition.name, arguments: arguments_ }, undefined,
+                    { ...(context.signal === undefined ? {} : { signal: context.signal }),
+                      ...(isWhisper ? { onprogress: () => {}, resetTimeoutOnProgress: true } : {}) }); }
+                  catch (error) {
+                    if (error instanceof SessionPersistenceError) throw error;
+                    context.signal?.throwIfAborted();
+                    if (!(error instanceof Error) || error instanceof ToolExecutionError) throw error;
+                    throw new ToolExecutionError(redactMcpValue(error.message, mcpSecrets) as string, 'unknown-outcome', { cause: error });
+                  }
+                  context.signal?.throwIfAborted();
+                  // 服务端失败只说明返回了错误，不能证明它没有执行部分外部写入。
+                  const sanitized = redactMcpValue(result, mcpSecrets);
+                  return result.isError === true ? { status: 'error', failureKind: 'unknown-outcome', message: '插件工具返回失败。', output: sanitized } : { status: 'success', output: sanitized };
+                },
+              };
             },
+            async execute(input, context) { return executePreparedAction(await this.prepare!(input, context), context); },
           };
           // 仅随包安装的已知服务可占用既有公开名；同名第三方插件仍使用限定名称。
           const mapped = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:ffmpeg'

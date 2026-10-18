@@ -27,7 +27,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 /** 参数完全来自固定枚举和受限整数，模型不能注入 Git 选项、外部 diff 或 shell。 */
 export class GitReadTool implements Tool {
   readonly executionBoundary = 'read-only' as const;
-  readonly contract = { capability: 'code', riskLevel: 'read', parallelSafety: 'safe', workspaceScope: 'session', timeoutMs: 30_000 } as const;
+  readonly contract = { capability: 'code', riskLevel: 'read', parallelSafety: 'safe', workspaceScope: 'session', timeoutMs: 30_000, approvalRequirement: 'none' } as const;
   readonly description: string;
   readonly inputSchema: unknown;
   constructor(readonly name: GitReadToolName, private readonly workspace: WorkspacePort) {

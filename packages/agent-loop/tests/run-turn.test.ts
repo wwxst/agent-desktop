@@ -71,6 +71,7 @@ describe('runTurn', () => {
     const tools = new TestToolRegistry();
     tools.register({
       name: 'write', description: 'write', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { approvalRequirement: 'none' },
       execute: async (_input, context) => {
         context.checkpoint?.({ kind: 'test-write', path: 'a.txt' });
         order.push('side-effect');
@@ -100,6 +101,7 @@ describe('runTurn', () => {
     const tools = new TestToolRegistry();
     tools.register({
       name: 'pending', description: 'Waits until cancelled.', inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async (_input, { signal }) => new Promise((_resolve, reject) => {
         // Router 为单次超时组合子信号；父 Turn 的取消仍必须到达真实工具边界。
         expect(signal).toBeInstanceOf(AbortSignal);
@@ -157,6 +159,7 @@ describe('runTurn', () => {
     const tools = new TestToolRegistry();
     tools.register({
       name: 'clip', description: 'clip', inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async (_input, { signal }) => {
         toolCalls += 1;
         controller.abort();
@@ -261,6 +264,7 @@ describe('runTurn', () => {
       name: 'echo',
       description: 'Returns its input.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: 'ok' }),
     });
     const deltas: string[] = [];
@@ -291,6 +295,7 @@ describe('runTurn', () => {
       name: 'echo',
       description: 'Returns its input.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: { value: 'hello' } }),
     });
     const session = new InMemorySession();
@@ -327,6 +332,7 @@ describe('runTurn', () => {
       name: 'streaming',
       description: 'Reports progress.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async (_input, { reportProgress }) => {
         reportProgress({ kind: 'command.output', stream: 'stdout', sequence: 0, text: 'chunk-1' });
         reportProgress({ kind: 'command.output', stream: 'stderr', sequence: 1, text: 'chunk-2' });
@@ -368,6 +374,7 @@ describe('runTurn', () => {
       name: 'echo',
       description: 'Returns its input.',
       inputSchema: { type: 'string' },
+      contract: { approvalRequirement: 'none' },
       execute: async (input) => {
         executions += 1;
         return { status: 'success', output: input };
@@ -419,6 +426,7 @@ describe('runTurn', () => {
         name,
         description: name,
         inputSchema: {},
+        contract: { approvalRequirement: 'none' },
         execute: async (input) => {
           executionOrder.push(name);
           return { status: 'success', output: input };
@@ -502,6 +510,7 @@ describe('runTurn', () => {
       name: 'boom',
       description: 'Throws.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => { throw new Error('boom'); },
     };
     tools.register(throwingTool);
@@ -526,6 +535,7 @@ describe('runTurn', () => {
       name: 'throw-value',
       description: 'Throws a value.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => { throw thrown; },
     });
     const session = new InMemorySession();
@@ -548,6 +558,7 @@ describe('runTurn', () => {
       name: 'circular',
       description: 'Returns a circular value.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: circular }),
     });
 
@@ -566,6 +577,7 @@ describe('runTurn', () => {
       name: 'undefined-result',
       description: 'Returns undefined.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: undefined }),
     });
 
@@ -610,6 +622,7 @@ describe('runTurn', () => {
       name: 'echo',
       description: 'Returns its input.',
       inputSchema: { type: 'string' },
+      contract: { approvalRequirement: 'none' },
       execute: async (input) => ({ status: 'success', output: input }),
     });
 
@@ -640,6 +653,7 @@ describe('runTurn', () => {
       name: 'echo',
       description: 'Returns its input.',
       inputSchema: { type: 'string' },
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: 'private output' }),
     });
     const traceEvents: ExecutionTraceEvent[] = [];
@@ -706,6 +720,7 @@ describe('runTurn', () => {
       name: 'failing',
       description: 'Returns an error.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'error', message: 'Failed to open E:\\private\\clip.mp4' }),
     });
     const session = new InMemorySession();
@@ -799,12 +814,14 @@ describe('runTurn', () => {
       name: 'clip',
       description: 'Clips a video.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: 'clip.mp4' }),
     });
     tools.register({
       name: 'pending',
       description: 'Waits until cancelled.',
       inputSchema: {},
+      contract: { approvalRequirement: 'none' },
       execute: async (_input, { signal }) => new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => {
           reject(new DOMException('The operation was aborted', 'AbortError'));

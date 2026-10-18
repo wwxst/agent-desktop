@@ -42,17 +42,17 @@ beforeEach(async () => {
   input = { outputItemId: item.id, candidatePath: join(item.workingDirectory, 'candidate.mp4') };
   requirementId = item.requirements.find((requirement) => requirement.kind === 'semantic')!.id;
   await writeFile(input.candidatePath, 'actual candidate bytes');
-  fullFrames = { name: 'extract_full_video_frames', executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { complete: true, frames } })) };
-  segmentFrames = { name: 'extract_video_segment_frames', executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async input => {
+  fullFrames = { name: 'extract_full_video_frames', contract: { approvalRequirement: 'none' }, executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { complete: true, frames } })) };
+  segmentFrames = { name: 'extract_video_segment_frames', contract: { approvalRequirement: 'none' }, executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async input => {
     const value = input as { startFrame: number; maxFrames: number };
     const endFrame = Math.min(1201, value.startFrame + value.maxFrames);
     return { status: 'success', output: { complete: true, totalFrames: 1201, startFrame: value.startFrame, endFrame,
       frames: Array.from({ length: endFrame - value.startFrame }, (_, index) => ({ path: `frame-${value.startFrame + index}.jpg`, timestamp: (value.startFrame + index) / 30 })) } };
   }) };
-  audio = { name: 'extract_audio', executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'audio' })) };
-  probe = { name: 'probe_media', executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { audioCodec: null, duration: 0.2 } })) };
-  speech = { name: 'transcribe_audio', executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 0.2 }] } })) };
-  vision = { name: 'analyze_images', executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { frames: frames.map((frame) => ({ timestamp: frame.timestamp, description: '红色矩形' })) } })) };
+  audio = { name: 'extract_audio', contract: { approvalRequirement: 'none' }, executionBoundary: 'checkpointed', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'audio' })) };
+  probe = { name: 'probe_media', contract: { approvalRequirement: 'none' }, executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { audioCodec: null, duration: 0.2 } })) };
+  speech = { name: 'transcribe_audio', contract: { approvalRequirement: 'none' }, executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 0.2 }] } })) };
+  vision = { name: 'analyze_images', contract: { approvalRequirement: 'none' }, executionBoundary: 'read-only', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: { frames: frames.map((frame) => ({ timestamp: frame.timestamp, description: '红色矩形' })) } })) };
   model = { complete: vi.fn(async () => ({ toolCalls: [{ id: 'judgment' as never, name: 'report_semantic_checks',
     input: { checks: [{ requirementId, outcome: 'passed', detail: '0 至 0.2 秒为红色矩形' }] } }] })) };
 });
@@ -144,7 +144,7 @@ describe('semantic evidence completeness', () => {
     expect(model.complete).not.toHaveBeenCalled();
   });
   it.each(['read-only', 'opaque'] as const)('rejects an excluded %s nested capability without marking its result unknown', async executionBoundary => {
-    const restrictedProbe = { ...probe, executionBoundary, contract: { capability: 'disabled' } };
+    const restrictedProbe = { ...probe, executionBoundary, contract: { ...probe.contract, capability: 'disabled' } };
     const check = new CheckVideoSemanticsTool(() => session.events(), {
       model, mediaTools: [restrictedProbe, fullFrames], vision,
     });
@@ -204,7 +204,7 @@ describe('semantic evidence completeness', () => {
     }));
     speech.execute.mockResolvedValueOnce({ status: 'error', failureKind: 'denied', message: '用户拒绝语音服务调用。' });
     vi.mocked(model.complete).mockClear();
-    expect(await executeSemantic(check, input, execution)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
+    expect(await executeSemantic(check, input, execution)).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝语音服务调用。' });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it.each(['probe', 'frames', 'audio', 'vision', 'speech'] as const)('preserves an unknown nested %s result in recovery facts', async (stage) => {

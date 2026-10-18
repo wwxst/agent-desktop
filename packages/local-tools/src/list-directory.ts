@@ -59,6 +59,7 @@ async function entryTypeOf(directory: string, dirent: Dirent): Promise<Directory
  */
 export class ListDirectoryTool implements Tool {
   readonly executionBoundary = 'read-only' as const;
+  readonly contract = { capability: 'code', riskLevel: 'read', parallelSafety: 'safe', workspaceScope: 'session', approvalRequirement: 'none' } as const;
   readonly name = 'list_directory';
   readonly description = '列出宿主授权范围内的文件和子目录，省略路径时使用工作目录，可按扩展名过滤';
   readonly inputSchema = {

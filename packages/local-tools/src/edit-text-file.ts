@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -9,10 +9,10 @@ import type { WorkspacePort } from './workspace.js';
 export interface TextChange { readonly oldText: string; readonly newText: string }
 export interface AppliedTextChange extends TextChange { readonly oldStartLine: number; readonly newStartLine: number }
 type EditFailure = Extract<ToolResult, { status: 'error' }>;
-type TextEditResult = EditFailure | {
-  readonly status: 'success'; readonly filePath: string; readonly after: string;
+interface TextEditResult {
+  readonly filePath: string; readonly after: string;
   readonly beforeSha256: string; readonly afterSha256: string; readonly changes: readonly AppliedTextChange[];
-};
+}
 
 export function textEditFailure(message: string, failureKind: 'permanent' | 'denied' | 'unknown-outcome' = 'permanent'): EditFailure {
   return { status: 'error', message, failureKind };
@@ -22,10 +22,11 @@ const digest = (bytes: Buffer | string) => createHash('sha256').update(bytes).di
 const lineCount = (text: string) => text.split('\n').length - 1;
 
 /** 两个真实编辑入口共用 SHA、精确匹配、审批及原子写入规则，避免补丁绕过原编辑边界。 */
-export async function applyTextChanges(
+export async function prepareTextChanges(
   workspace: WorkspacePort, filePath: string, expectedSha256: string,
   changes: readonly TextChange[], context: ToolExecutionContext,
-): Promise<TextEditResult> {
+  result: (edit: TextEditResult) => ToolResult,
+): Promise<ToolPreparation> {
   context.signal?.throwIfAborted();
   const scoped = await resolveScopedPath(workspace.confirmedDirectory(), filePath, workspace.fileAccess === 'all');
   if (!scoped.ok) return textEditFailure(scoped.message);
@@ -63,41 +64,42 @@ export async function applyTextChanges(
   after += before.slice(end);
   const afterSha256 = digest(after);
   context.signal?.throwIfAborted();
-  // 宿主批准原文件与完整结果；多片段不能借局部展示隐去其它变更。
-  const approved = await workspace.requestApproval({ kind: 'edit-file', path: scoped.path, before, after }, context.signal);
-  context.signal?.throwIfAborted();
-  if (!approved) return textEditFailure(`用户拒绝修改该文件，未做任何写入：${scoped.path}`, 'denied');
-
-  // 保存失败必须原样向上暴露，不能被文件系统错误分支吞成普通 Tool 失败。
-  context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256,
-    expectedAfterSha256: afterSha256, expectedBytes: Buffer.byteLength(after, 'utf8') });
-  let temporary: string | undefined; let committed = false;
-  try {
-    try {
-      temporary = await mkdtemp(join(dirname(scoped.path), '.agent-patch-'));
-      const staged = join(temporary, 'content');
-      const mode = (await stat(scoped.path)).mode;
-      await writeFile(staged, after, { encoding: 'utf8', flag: 'wx', mode });
-      // 暂存完成后重读版本，审批期间发生的修改仍然不能覆盖。
-      if (!(await readFile(scoped.path)).equals(original)) return textEditFailure(`文件在审批期间发生变化，请重新读取后再修改：${scoped.path}`);
-      context.signal?.throwIfAborted();
-      // 同目录文件系统中的 rename 是唯一提交动作；写入暂存失败时原文件保持完整。
-      await rename(staged, scoped.path);
-      committed = true;
-    } finally {
-      if (temporary !== undefined) await rm(temporary, { recursive: true, force: true });
-    }
-  } catch (error) {
-    if (!(error instanceof Error) || error.name === 'AbortError') throw error;
-    return textEditFailure(`无法完成文件修改（${error.message}）：${scoped.path}`, committed ? 'unknown-outcome' : 'permanent');
-  }
-  return { status: 'success', filePath: scoped.path, after, beforeSha256, afterSha256, changes: applied };
+  // 宿主批准完整结果，提交闭包复用同一份内容，两个编辑入口只映射各自的输出格式。
+  return {
+    requestApproval: () => workspace.requestApproval({ kind: 'edit-file', path: scoped.path, before, after }, context.signal),
+    execute: async () => {
+      // 保存失败必须原样向上暴露，不能被文件系统错误分支吞成普通 Tool 失败。
+      context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256,
+        expectedAfterSha256: afterSha256, expectedBytes: Buffer.byteLength(after, 'utf8') });
+      let temporary: string | undefined; let committed = false;
+      try {
+        try {
+          temporary = await mkdtemp(join(dirname(scoped.path), '.agent-patch-'));
+          const staged = join(temporary, 'content');
+          const mode = (await stat(scoped.path)).mode;
+          await writeFile(staged, after, { encoding: 'utf8', flag: 'wx', mode });
+          // 暂存完成后重读版本，审批期间发生的修改仍然不能覆盖。
+          if (!(await readFile(scoped.path)).equals(original)) return textEditFailure(`文件在审批期间发生变化，请重新读取后再修改：${scoped.path}`);
+          context.signal?.throwIfAborted();
+          // 同目录文件系统中的 rename 是唯一提交动作；写入暂存失败时原文件保持完整。
+          await rename(staged, scoped.path);
+          committed = true;
+        } finally {
+          if (temporary !== undefined) await rm(temporary, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+        return textEditFailure(`无法完成文件修改（${error.message}）：${scoped.path}`, committed ? 'unknown-outcome' : 'permanent');
+      }
+      return result({ filePath: scoped.path, after, beforeSha256, afterSha256, changes: applied });
+    },
+  };
 }
 
 /** 已有精确替换入口继续消费同一份编辑实现，保持现有工具名称与结果契约。 */
 export class EditTextFileTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
-  readonly contract = { capability: 'code', riskLevel: 'write', parallelSafety: 'serial', workspaceScope: 'session' } as const;
+  readonly contract = { capability: 'code', riskLevel: 'write', parallelSafety: 'serial', workspaceScope: 'session', approvalRequirement: 'policy' } as const;
   readonly name = 'edit_text_file';
   readonly description = '先用 read_file 读取已有文本，再在宿主授权范围内精确替换唯一匹配内容；完整变更经审批后原子写入';
   readonly inputSchema = { type: 'object', properties: {
@@ -108,6 +110,9 @@ export class EditTextFileTool implements Tool {
   }, required: ['filePath', 'expectedSha256', 'oldText', 'newText'], additionalProperties: false };
   constructor(private readonly workspace: WorkspacePort) {}
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    return executePreparedAction(await this.prepare(input, context), context);
+  }
+  async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
     if (typeof input !== 'object' || input === null || Array.isArray(input)) return textEditFailure('edit_text_file requires an object input');
     const value = input as Record<string, unknown>;
     if (typeof value.filePath !== 'string' || value.filePath.length === 0
@@ -115,10 +120,9 @@ export class EditTextFileTool implements Tool {
       || typeof value.oldText !== 'string' || value.oldText.length === 0 || typeof value.newText !== 'string') {
       return textEditFailure('edit_text_file requires filePath, expectedSha256 from read_file, non-empty oldText and string newText');
     }
-    const result = await applyTextChanges(this.workspace, value.filePath, value.expectedSha256,
-      [{ oldText: value.oldText, newText: value.newText }], context);
-    return result.status === 'error' ? result : { status: 'success', output: {
-      filePath: result.filePath, replacements: result.changes.length, bytes: Buffer.byteLength(result.after, 'utf8'),
-    } };
+    return prepareTextChanges(this.workspace, value.filePath, value.expectedSha256,
+      [{ oldText: value.oldText, newText: value.newText }], context, result => ({ status: 'success', output: {
+        filePath: result.filePath, replacements: result.changes.length, bytes: Buffer.byteLength(result.after, 'utf8'),
+      } }));
   }
 }

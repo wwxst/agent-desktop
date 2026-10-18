@@ -22,6 +22,7 @@ function isEchoInput(value: unknown): value is EchoInput {
 
 /** 当前真实模型示例只提供 Echo Tool，用它验证 Function Calling 的完整闭环。 */
 class EchoTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'echo';
   readonly description = '返回输入文本';
   readonly inputSchema = {

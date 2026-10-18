@@ -4,6 +4,8 @@ import { saveMemory } from './memory.js';
 import type { MemoryEntry } from '@agent-desktop/client';
 
 export class SaveMemoryTool implements Tool {
+  // 仅在用户已启用记忆时注册，写入宿主内部记录，不执行本机或外部业务操作。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'save_memory';
   readonly description = '保存一条对用户长期有用的偏好、习惯或事实。只保存用户明确表达或任务中稳定可复用的信息，不保存临时任务细节、秘密或文件内容。';
   readonly inputSchema = { type: 'object', properties: { content: { type: 'string', description: '要在未来任务中使用的简短记忆' } }, required: ['content'], additionalProperties: false };

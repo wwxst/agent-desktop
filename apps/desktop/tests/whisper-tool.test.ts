@@ -18,6 +18,7 @@ const context: ToolExecutionContext = { toolCallId: 'whisper-test' as never, rep
 const roots: string[] = [];
 const rawTool = (result: Awaited<ReturnType<Tool['execute']>>): Tool => ({
   name: 'p_whisper_whisper_transcribe_audio', description: 'Whisper', inputSchema: {},
+  async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
   execute: vi.fn(async () => result),
 });
 

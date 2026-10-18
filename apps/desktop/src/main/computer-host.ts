@@ -4,12 +4,13 @@ import { open, readFile, realpath, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, ToolExecutionError, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { createFileArtifact } from '@agent-desktop/local-tools';
 
 const MAX_HELPER_BYTES = 512 * 1024;
 const HELPER_TIMEOUT_MS = 15_000;
 type Input = Record<string, unknown>;
+type ComputerOperation = { readonly approval?: ComputerApproval; execute(): Promise<unknown> };
 interface ElementIdentity {
   readonly runtimeId: readonly number[];
   readonly processId: number;
@@ -78,9 +79,12 @@ export class SessionComputer {
     const references = ['windowId', 'snapshotId', 'ref'];
     return [
       this.tool('computer_window_list', '枚举当前 Windows 桌面的真实顶层窗口，后续只能使用返回的 windowId。', schema({}, []), false,
-        async (_input, context) => this.listWindows(context.signal)),
+        async (_input, context) => ({ execute: () => this.listWindows(context.signal) })),
       this.tool('computer_snapshot', '读取指定窗口的有界 UI Automation 控件树与文字，返回 snapshotId 和元素 ref；操作后必须重新读取。', schema(windowProperties, ['windowId']), false,
-        async (input, context) => this.snapshot(text(input, 'windowId'), context.signal)),
+        async (input, context) => {
+          const windowId = text(input, 'windowId'); this.window(windowId);
+          return { execute: () => this.snapshot(windowId, context.signal) };
+        }),
       ...(['click', 'type', 'key', 'scroll'] as const).map(action => this.tool(`computer_${action}`,
         action === 'click' ? '通过当前 UI Automation 元素的可操作 Pattern 点击；拒绝坐标猜测。'
           : action === 'type' ? '向确切的可编辑元素填写完整文本；文档输入会先全选替换。'
@@ -94,8 +98,11 @@ export class SessionComputer {
           if (typeof input.milliseconds !== 'number' || !Number.isInteger(input.milliseconds) || input.milliseconds < 0 || input.milliseconds > 5000) {
             throw new ToolExecutionError('milliseconds 必须是 0 至 5000 的整数。', 'permanent');
           }
-          await delay(input.milliseconds, undefined, { signal: context.signal });
-          return { waitedMilliseconds: input.milliseconds, requiresSnapshot: true };
+          const milliseconds = input.milliseconds;
+          return { execute: async () => {
+            await delay(milliseconds, undefined, { signal: context.signal });
+            return { waitedMilliseconds: milliseconds, requiresSnapshot: true };
+          } };
         }),
       this.tool('computer_screenshot', '捕获指定窗口并保存到宿主授权目录中的独占 PNG 文件；不会抓取整个桌面。', schema(windowProperties, ['windowId']), true,
         async (input, context) => this.screenshot(text(input, 'windowId'), context)),
@@ -110,18 +117,28 @@ export class SessionComputer {
   }
 
   private tool(name: string, description: string, inputSchema: unknown, effect: boolean,
-    execute: (input: Input, context: ToolExecutionContext) => Promise<unknown>): Tool {
+    operation: (input: Input, context: ToolExecutionContext) => Promise<ComputerOperation>): Tool {
+    const prepare = async (input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> => {
+      context.signal?.throwIfAborted();
+      if (!record(input)) throw new ToolExecutionError('Windows 工具输入必须是对象。', 'permanent');
+      if (this.closed) throw new ToolExecutionError('本会话的 Windows 自动化已关闭。', 'permanent');
+      const prepared = await operation({ ...input }, context);
+      const execute = async () => {
+        context.signal?.throwIfAborted();
+        const output = await prepared.execute();
+        return { status: 'success' as const, output,
+          ...(name === 'computer_screenshot' && record(output) && typeof output.path === 'string'
+            ? { artifacts: [await createFileArtifact(output.path, name, context.signal)] } : {}) };
+      };
+      const approval = prepared.approval;
+      if (approval === undefined) return { requestApproval: async () => true, execute };
+      return { requestApproval: async () => { await this.approve(approval, context); return true; }, execute };
+    };
     return { name, description, inputSchema, executionBoundary: effect ? 'checkpointed' : 'read-only',
       contract: { capability: 'computer', riskLevel: effect ? 'external' : 'read', parallelSafety: 'serial', timeoutMs: 20_000,
         cancellation: 'signal', workspaceScope: effect ? 'application' : 'none', approvalRequirement: effect ? 'policy' : 'none', outputSchema: { type: 'object' } },
-      execute: async (input, context) => {
-        if (!record(input)) throw new ToolExecutionError('Windows 工具输入必须是对象。', 'permanent');
-        if (this.closed) throw new ToolExecutionError('本会话的 Windows 自动化已关闭。', 'permanent');
-        const output = await execute(input, context);
-        return { status: 'success', output,
-          ...(name === 'computer_screenshot' && record(output) && typeof output.path === 'string'
-            ? { artifacts: [await createFileArtifact(output.path, name, context.signal)] } : {}) };
-      } };
+      prepare,
+      execute: async (input, context) => executePreparedAction(await prepare(input, context), context) };
   }
 
   private async listWindows(signal?: AbortSignal) {
@@ -188,11 +205,14 @@ export class SessionComputer {
     else if (action === 'scroll') fields.direction = text(input, 'direction', 8);
     if (action === 'scroll' && fields.direction !== 'up' && fields.direction !== 'down') throw new ToolExecutionError('direction 只能是 up 或 down。', 'permanent');
     const approval = { ...this.approval(action, target.windowId, target.state), snapshotId: target.snapshotId, ref: target.ref, ...fields };
-    await this.approve(approval, context);
-    // 审批后再在同一次 helper 中重查 RuntimeId/属性/焦点，不能复用审批前的坐标或活引用。
-    context.checkpoint?.({ kind: 'computer', ...approval });
-    try { return await this.helper({ action, window: target.state.identity, element: target.element, ...fields }, context.signal, true); }
-    finally { delete target.state.snapshot; }
+    return { approval, execute: async () => {
+      // 宿主快照也必须仍然是同一个引用；helper 再检查真实窗口与元素身份。
+      this.target({ windowId: target.windowId, snapshotId: target.snapshotId, ref: target.ref });
+      // 审批后再在同一次 helper 中重查 RuntimeId/属性/焦点，不能复用审批前的坐标或活引用。
+      context.checkpoint?.({ kind: 'computer', ...approval });
+      try { return await this.helper({ action, window: target.state.identity, element: target.element, ...fields }, context.signal, true); }
+      finally { delete target.state.snapshot; }
+    } };
   }
 
   private async screenshot(windowId: string, context: ToolExecutionContext) {
@@ -202,17 +222,18 @@ export class SessionComputer {
     if (!(await stat(root)).isDirectory()) throw new ToolExecutionError('Windows 截图输出路径不是目录。', 'permanent');
     const path = join(root, `computer-${randomUUID()}.png`);
     const approval = { ...this.approval('screenshot', windowId, state), path };
-    await this.approve(approval, context);
-    const reserved = await open(path, 'wx'); await reserved.close();
-    try {
-      context.checkpoint?.({ kind: 'computer', ...approval });
-      await this.helper({ action: 'screenshot', window: state.identity, path }, context.signal, true);
-      const bytes = await readFile(path);
-      if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new ToolExecutionError('Windows 截图未产生有效 PNG。', 'unknown-outcome');
-      return { path, mimeType: 'image/png', size: bytes.length };
-    } catch (error) {
-      await unlink(path); throw error;
-    }
+    return { approval, execute: async () => {
+      const reserved = await open(path, 'wx'); await reserved.close();
+      try {
+        context.checkpoint?.({ kind: 'computer', ...approval });
+        await this.helper({ action: 'screenshot', window: state.identity, path }, context.signal, true);
+        const bytes = await readFile(path);
+        if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new ToolExecutionError('Windows 截图未产生有效 PNG。', 'unknown-outcome');
+        return { path, mimeType: 'image/png', size: bytes.length };
+      } catch (error) {
+        await unlink(path); throw error;
+      }
+    } };
   }
 
   private helper(request: Input, signal: AbortSignal | undefined, effect: boolean): Promise<Input> {

@@ -629,7 +629,7 @@ input schema     输入约束    描述合法输入的形状和限制
 execute          执行        接收合法输入并返回结果或错误
 ```
 
-Tool Registry 负责注册、查找和返回 Tool，不负责执行 Loop 算法。ToolRouter 按本轮能力集合解析并执行已注册工具，应用逐工具取消与超时；组合工具只有声明 `nestedToolNames` 时才获得受限子调用入口，子调用仍从同一 Router 重新解析。Desktop 的 `beforeToolCall` 只在 Loop 顶层调用处执行，`approvalRequirement` 目前仍是合约元数据，不能单独证明嵌套调用已通过通用策略或审批；媒体与视觉的当前包装器继续执行其自身的路径授权、MCP 审批和钩子。MVP 不要求使用 Zod、JSON Schema library 或 Valibot，当前通过 Tool 的 inputSchema 描述输入约束。
+Tool Registry 负责注册、查找和返回 Tool，不负责执行 Loop 算法。ToolRouter 按本轮能力集合解析并执行已注册工具，应用逐工具取消与超时；声明 `approvalRequirement: policy` 的工具必须提供 `prepare`，否则不会进入目录或执行；Router 通过 `PreparedToolAction` 在审批后调用同一份确定的执行闭包。组合工具只有声明 `nestedToolNames` 时才获得受限子调用入口，子调用仍从同一 Router 重新解析并重新应用能力、审批、取消和超时。Desktop 的 `beforeToolCall` 仍只在 Loop 顶层调用处执行，插件钩子包装器及媒体适配器在自身边界内复用准备、审批和脱敏投影；这不把宿主钩子协议泄漏到 Agent Core。MVP 不要求使用 Zod、JSON Schema library 或 Valibot，当前通过 Tool 的 inputSchema 描述输入约束。
 
 `execute` 接收 `ToolExecutionContext`（工具执行上下文），而不是继续增加位置参数。上下文提供当前 `AbortSignal`、`toolCallId` 和同步的 `reportProgress`：进度只用于实时展示，同步入队，工具不等待界面消费，也不把 IPC Promise 带进工具契约；具体工具仍然只返回最终结果，不控制 Agent Loop。
 

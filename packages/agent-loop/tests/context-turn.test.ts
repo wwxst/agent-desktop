@@ -27,6 +27,7 @@ describe('context consumed by the real execution loop', () => {
     const requests: ModelRequest[] = [];
     const tools = new InMemoryToolRegistry();
     tools.register({ name: 'read', description: 'actual dynamic read', inputSchema: { type: 'object' },
+      contract: { approvalRequirement: 'none' },
       execute: async () => ({ status: 'success', output: 'read' }) });
     const model = { complete: vi.fn(async (request: ModelRequest) => {
       requests.push(request);

@@ -22,6 +22,7 @@ import {
   ScopedVideoOutputTool,
   ValidateVideoCandidateTool,
   VIDEO_WRITE_TOOL_NAMES,
+  type VideoPublishApproval,
 } from './delivery-tools.js';
 import { AGENT_SYSTEM_PROMPT } from './system-prompt.js';
 import { AskUserTool, type AskUserPort } from './ask-user.js';
@@ -77,6 +78,8 @@ export interface VideoAgentOptions {
   readonly terminal?: TerminalPort;
   /** 专业媒体工具由入口显式提供；缺失时不回退到本机 FFmpeg。 */
   readonly mediaTools?: readonly Tool[];
+  /** 发布审批只消费应用层已验收的候选及审批前固定的目标；无宿主时拒绝实际发布。 */
+  readonly approveVideoPublish?: VideoPublishApproval;
 }
 
 /** 组装当前正式能力；不读取环境、不创建 CLI 或桌面层状态。 */
@@ -112,7 +115,7 @@ export function createVideoAgent(options: VideoAgentOptions): Agent {
   // 交付闭环：声明预期集合、用真实证据验收候选、只把全项通过的候选发布为最终交付文件。
   tools.register(new DeclareVideoOutputsTool(readEvents));
   tools.register(new ValidateVideoCandidateTool(readEvents));
-  tools.register(new PublishVideoOutputTool(readEvents));
+  tools.register(new PublishVideoOutputTool(readEvents, options.approveVideoPublish));
   tools.register(new CheckVideoSemanticsTool(readEvents, {
     // 模型不保存会话；主循环与独立语义判断各自传入明确上下文，复用同一有效配置。
     model: options.model,

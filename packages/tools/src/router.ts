@@ -1,5 +1,5 @@
 import type { ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
-import { ToolExecutionError, type Tool, type ToolContract, type ToolExecutionContext, type ToolRegistry } from './contract.js';
+import { executePreparedAction, ToolExecutionError, type Tool, type ToolContract, type ToolExecutionContext, type ToolRegistry } from './contract.js';
 
 /** 未声明的能力不伪装成本地工具；并行与免审批都必须有显式合约。 */
 export function resolveToolContract(tool: Tool): ToolContract {
@@ -30,8 +30,11 @@ export class ToolRouter {
 
   get(name: string): Tool | undefined {
     const tool = this.registry.get(name);
-    return tool !== undefined && (this.capabilities === undefined || this.capabilities.includes(resolveToolContract(tool).capability))
-      ? tool : undefined;
+    if (tool === undefined) return;
+    const contract = resolveToolContract(tool);
+    // 策略工具缺少准备入口时不能进入目录或执行，Loop 会保存明确的 not-executed 事实。
+    if (contract.approvalRequirement === 'policy' && tool.prepare === undefined) return;
+    return this.capabilities === undefined || this.capabilities.includes(contract.capability) ? tool : undefined;
   }
 
   catalog(): readonly CapabilityCatalogEntry[] {
@@ -82,7 +85,9 @@ export class ToolRouter {
           },
         }),
       };
-      return await tool.execute(call.input, executionContext);
+      return tool.prepare === undefined
+        ? await tool.execute(call.input, executionContext)
+        : await executePreparedAction(await tool.prepare(call.input, executionContext), executionContext);
     } catch (error) {
       if (timedOut && context.signal?.aborted !== true && error instanceof Error && error.name === 'AbortError') {
         throw controller.signal.reason;

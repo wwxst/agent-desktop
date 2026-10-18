@@ -24,6 +24,7 @@ const observation = (timestamps: readonly number[]) => ({ summary: '红色画面
 })) });
 const rawTool = (output: unknown, status: 'success' | 'error' = 'success'): Tool => ({
   name: 'p_vision_vision_analyze_images', description: '观察已授权画面', inputSchema: {},
+  async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
   execute: vi.fn<Tool['execute']>(async () => status === 'error' ? { status, output, message: 'MCP 调用失败' } : { status, output }),
 });
 const accessFor = (directory: string | undefined, attachments: readonly string[] = []): ProbeFileAccess => ({
@@ -88,13 +89,13 @@ describe('Vision host adapter', () => {
     const options = { visionConfiguration: { visionApiKey: 'fixture-key', visionBaseUrl: `http://127.0.0.1:${address.port}/v1`, visionProtocol: 'responses' as const }, visionAccess: accessFor(root) };
     const input = { images: [{ path: image, timestamp: 0 }] };
     try {
-      const denied = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => false, undefined, undefined, options);
+      const denied = await prepareExtensions({ plugins: [plugin], skills: [] }, async request => request.kind === 'plugin-tool', undefined, undefined, options);
       try {
         expect(await denied.tools[0]!.execute(input, context)).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' });
         expect(started).toBe(false);
       } finally { await denied.close(); }
       const rejected = await prepareExtensions({ plugins: [plugin], skills: [] }, async request => request.kind === 'plugin-start', undefined, undefined, options);
-      try { expect(await rejected.tools[0]!.execute(input, context)).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' }); expect(started).toBe(false); }
+      try { expect(await rejected.tools[0]!.execute(input, context)).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了该工具操作。' }); expect(started).toBe(false); }
       finally { await rejected.close(); }
       const controller = new AbortController();
       const runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, async () => true, controller.signal, undefined, options);
@@ -267,8 +268,10 @@ describe('Vision host adapter', () => {
     const access: ProbeFileAccess = { workspace: { confirmedDirectory: () => undefined }, attachments: () => [source], events: () => session.events() };
     const vision = adaptVisionTool(raw, access);
     const mediaTools: Tool[] = [
-      { name: 'probe_media', description: '', inputSchema: {}, execute: async () => ({ status: 'success', output: { audioCodec: null, duration: 1.4 } }) },
-      { name: 'extract_full_video_frames', description: '', inputSchema: {}, execute: async input => {
+      { name: 'probe_media', description: '', inputSchema: {}, contract: { approvalRequirement: 'none' }, execute: async () => ({ status: 'success', output: { audioCodec: null, duration: 1.4 } }) },
+      { name: 'extract_full_video_frames', description: '', inputSchema: {},
+        async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
+        execute: async input => {
         const directory = (input as { outputDir: string }).outputDir; await mkdir(directory);
         const frames = await Promise.all(timestamps.map(async (timestamp, index) => {
           const path = join(directory, `frame-${index}.jpg`); await writeFile(path, 'frame'); return { path, timestamp };

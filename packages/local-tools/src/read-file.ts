@@ -62,6 +62,7 @@ function looksBinary(source: Buffer): boolean {
  */
 export class ReadFileTool implements Tool {
   readonly executionBoundary = 'read-only' as const;
+  readonly contract = { capability: 'code', riskLevel: 'read', parallelSafety: 'safe', workspaceScope: 'session', approvalRequirement: 'none' } as const;
   readonly name = 'read_file';
   readonly description = '按行读取宿主授权范围内的文本文件，可从指定行继续读取；二进制文件不受支持';
   readonly inputSchema = {

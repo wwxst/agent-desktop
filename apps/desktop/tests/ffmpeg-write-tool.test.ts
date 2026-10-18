@@ -71,7 +71,9 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         { status: 'success', output: { outputPath: source } },
         { status: 'error', message: 'malformed success envelope' },
       ]) {
-        const raw: Tool = { name: 'raw', description: '', inputSchema: {}, execute: async () => ({ status: 'success', output: { structuredContent: { toolResult: invalid } } }) };
+        const raw: Tool = { name: 'raw', description: '', inputSchema: {},
+          async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
+          execute: async () => ({ status: 'success', output: { structuredContent: { toolResult: invalid } } }) };
         expect(await adaptFFmpegTool(raw, access, 'trim_video').execute({ inputPath: source, outputPath, start: 0, duration: 1 }, context))
           .toMatchObject({ status: 'error', failureKind: 'unknown-outcome' });
       }
@@ -126,7 +128,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         servers: [{ name: 'ffmpeg', command: 'node', args: [join(directory, 'ffmpeg.cjs')], env: { FFPROBE_PATH: executable('ffprobe'), FFMPEG_PATH: executable('ffmpeg') } }] };
       const approve = vi.fn<Parameters<typeof prepareExtensions>[1]>(async () => true);
       runtime = await prepareExtensions({ plugins: [plugin], skills: [] }, approve, undefined, undefined, { probeAccess: access });
-      const original = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools });
+      const original = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, mediaTools: runtime.tools, approveVideoPublish: async () => true });
       const tools = new InMemoryToolRegistry();
       for (const tool of original.tools.list()) tools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, access) : tool);
       const names = [...VIDEO_WRITE_TOOL_NAMES]; let step = 0;
@@ -197,7 +199,9 @@ describe('FFmpeg plugin write and delivery contracts', () => {
       const source = join(directory, 'source.mp4'); await writeFile(source, 'input');
       const access: ProbeFileAccess = { workspace: { confirmedDirectory: () => directory }, attachments: () => [], events: () => [] };
       for (const name of VIDEO_WRITE_TOOL_NAMES) {
-        const raw: Tool = { name: 'raw', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: {} })) };
+        const raw: Tool = { name: 'raw', description: '', inputSchema: {},
+          async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
+          execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: {} })) };
         const tool = adaptFFmpegTool(raw, access, name);
         const input = name === 'concat_videos' ? { inputPaths: [source], outputPath: join(directory, 'bypass.mp4') }
           : name === 'add_audio' ? { videoPath: source, audioPath: 'https://example.com/audio.wav', outputPath: join(directory, 'bypass.mp4') }
@@ -206,7 +210,9 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         expect(await tool.execute(input, context)).toMatchObject({ status: 'error' });
         expect(raw.execute).not.toHaveBeenCalled();
       }
-      const declare: Tool = { name: 'declare_video_outputs', description: '', inputSchema: {}, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: {} })) };
+      const declare: Tool = { name: 'declare_video_outputs', description: '', inputSchema: {},
+        async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
+        execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: {} })) };
       const unauthorized = await authorizeVideoDeliveryTool(declare, access).execute({ items: [{ sourcePaths: [source], target: { kind: 'explicit', path: join(tmpdir(), 'arbitrary.mp4') } }] }, context);
       expect(unauthorized.status).toBe('error'); expect(declare.execute).not.toHaveBeenCalled();
     } finally { await rm(directory, { recursive: true, force: true }); }

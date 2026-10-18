@@ -1,4 +1,4 @@
-import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, resolveToolContract, ToolExecutionError, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { SessionPersistenceError } from '@agent-desktop/session';
 import type { ToolResult } from '@agent-desktop/model';
 import { authorizeMediaInput, type ProbeFileAccess } from './ffmpeg-tool.js';
@@ -31,30 +31,42 @@ function convert(result: ToolResult): ToolResult {
 
 /** MCP 只能接触宿主先解析并授权的音频路径；语义验收复用这个适配器。 */
 export function adaptWhisperTool(tool: Tool, access: ProbeFileAccess | undefined): Tool {
+  const canPrepare = tool.prepare !== undefined || resolveToolContract(tool).approvalRequirement === 'none';
   return { name: 'transcribe_audio', description: tool.description, inputSchema: tool.inputSchema,
+    ...(tool.nestedToolNames === undefined ? {} : { nestedToolNames: tool.nestedToolNames }),
+    ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),
     executionBoundary: tool.executionBoundary ?? 'opaque',
     contract: { capability: 'media', riskLevel: 'external', parallelSafety: 'serial', timeoutMs: 120_000,
       cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
-    async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    ...(canPrepare ? { async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
       let invoked = false;
-      try {
-        context.signal?.throwIfAborted();
-        if (access === undefined) throw new Error('transcribe_audio 缺少宿主文件授权。');
-        if (typeof input !== 'object' || input === null || !('audioPath' in input) || typeof input.audioPath !== 'string'
-          || !input.audioPath.toLowerCase().endsWith('.wav')) throw new Error('transcribe_audio 需要本地 WAV audioPath。');
-        const audioPath = await authorizeMediaInput({ inputPath: input.audioPath }, access, true);
-        invoked = true;
-        const result = await tool.execute({ audioPath }, context);
-        context.signal?.throwIfAborted();
-        return convert(result);
-      } catch (error) {
+      const failure = (error: unknown): ToolResult => {
         if (error instanceof SessionPersistenceError) throw error;
         context.signal?.throwIfAborted();
         if (!(error instanceof Error) || error.name === 'AbortError') throw error;
         // 请求后的转录损坏不能证明服务未执行；审批拒绝等已知分类由原工具保留。
         return { status: 'error', message: error.message,
           failureKind: error instanceof ToolExecutionError ? error.failureKind : invoked ? 'unknown-outcome' : 'permanent' };
-      }
-    },
+      };
+      try {
+        context.signal?.throwIfAborted();
+        if (access === undefined) throw new Error('transcribe_audio 缺少宿主文件授权。');
+        if (typeof input !== 'object' || input === null || !('audioPath' in input) || typeof input.audioPath !== 'string'
+          || !input.audioPath.toLowerCase().endsWith('.wav')) throw new Error('transcribe_audio 需要本地 WAV audioPath。');
+        const audioPath = await authorizeMediaInput({ inputPath: input.audioPath }, access, true);
+        const prepared = tool.prepare !== undefined ? await tool.prepare({ audioPath }, context)
+          : { requestApproval: async () => true, execute: () => tool.execute({ audioPath }, context) };
+        if ('status' in prepared) return prepared;
+        return { requestApproval: () => prepared.requestApproval(), async execute() {
+          try {
+            invoked = true;
+            const result = await prepared.execute();
+            context.signal?.throwIfAborted();
+            return convert(result);
+          } catch (error) { return failure(error); }
+        } };
+      } catch (error) { return failure(error); }
+    } } : {}),
+    async execute(input, context) { return this.prepare === undefined ? { status: 'error', failureKind: 'permanent', message: `工具 ${tool.name} 缺少已准备操作契约。` } : executePreparedAction(await this.prepare(input, context), context); },
   };
 }

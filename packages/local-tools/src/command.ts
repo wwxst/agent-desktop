@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool, ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
+import { executePreparedAction, type Tool, type ToolExecutionContext, type ToolPreparation, type ToolProgressEvent } from '@agent-desktop/tools';
 import { resolveScopedPath } from './path-scope.js';
 import type { WorkspacePort } from './workspace.js';
 
@@ -317,6 +317,7 @@ async function runCommand(request: RunCommandRequest): Promise<ToolResult> {
  */
 export class RunCommandTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
+  readonly contract = { capability: 'code', riskLevel: 'execute', parallelSafety: 'serial', workspaceScope: 'session', approvalRequirement: 'policy', timeoutMs: MAX_TIMEOUT_MS } as const;
   readonly name = 'run_command';
   readonly description = '在宿主授权范围内的真实目录中运行一条本机命令（Windows 非交互 PowerShell），每次调用由宿主按当前权限模式审批；读取文件、列目录、搜索文本和精确编辑已有文件继续使用各自的专用 Tool，不要改写成命令。命令以当前用户权限运行，工作目录只是执行起点而不是沙箱。';
   readonly inputSchema = {
@@ -342,6 +343,10 @@ export class RunCommandTool implements Tool {
   ) {}
 
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    return executePreparedAction(await this.prepare(input, context), context);
+  }
+
+  async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
     if (!isRecord(input)) {
       return errorResult('run_command requires an object input');
     }
@@ -371,28 +376,23 @@ export class RunCommandTool implements Tool {
     // 任意 Shell 命令都能自行访问网络；宿主没有 OS 级隔离时只允许完全开放的网络模式启动。
     this.host.assertProcessLaunch?.('Shell 命令');
 
-    const approved = await this.workspace.requestApproval({
-      kind: 'command',
-      interpreter: this.host.interpreterPath,
-      command,
-      workingDirectory: scope.path,
-      timeoutMs,
-    }, context.signal);
-    // 等待期间用户可能已经取消：批准不能重新启动一个已经失效的操作。
-    if (isAborted(context.signal)) throw abortError();
-    // 拒绝不启动任何进程，也不产生任何输出。
-    if (!approved) return errorResult(`用户拒绝执行该命令，未启动任何进程：${command}`, 'denied');
-
-    return runCommand({
-      interpreterPath: this.host.interpreterPath,
-      environment: this.host.environment,
-      command,
-      workingDirectory: scope.path,
-      timeoutMs,
-      reportProgress: context.reportProgress,
-      // exactOptionalPropertyTypes 下，没有取消信号时必须省略字段而不是写入 undefined。
-      ...(context.signal === undefined ? {} : { signal: context.signal }),
-      ...(context.checkpoint === undefined ? {} : { checkpoint: context.checkpoint }),
-    });
+    // 解释器、目录及超时在准备时固定，批准后不再从宿主读取另一份执行配置。
+    const interpreterPath = this.host.interpreterPath;
+    const environment = { ...this.host.environment };
+    return {
+      requestApproval: () => this.workspace.requestApproval({ kind: 'command', interpreter: interpreterPath,
+        command, workingDirectory: scope.path, timeoutMs }, context.signal),
+      execute: () => runCommand({
+        interpreterPath,
+        environment,
+        command,
+        workingDirectory: scope.path,
+        timeoutMs,
+        reportProgress: context.reportProgress,
+        // exactOptionalPropertyTypes 下，没有取消信号时必须省略字段而不是写入 undefined。
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        ...(context.checkpoint === undefined ? {} : { checkpoint: context.checkpoint }),
+      }),
+    };
   }
 }

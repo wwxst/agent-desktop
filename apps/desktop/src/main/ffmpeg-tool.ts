@@ -2,7 +2,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import type { WorkspacePort } from '@agent-desktop/local-tools';
 import { SessionPersistenceError, type SessionEvent } from '@agent-desktop/session';
-import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, resolveToolContract, ToolExecutionError, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import type { ToolResult } from '@agent-desktop/model';
 import { isInsideDirectory, producedVideoItem, readVideoDeliveryFacts, resolveThroughExistingParent, VIDEO_WRITE_TOOL_NAMES } from '@agent-desktop/video-agent';
 
@@ -93,29 +93,46 @@ function convert(result: ToolResult, inputPath: string): ToolResult {
 
 /** 同一个适配器供公开调用及语义验收使用，内部调用仍经过原 MCP 审批与取消。 */
 export function adaptProbeMediaTool(tool: Tool, access: ProbeFileAccess | undefined): Tool {
+  // 内层包含命令钩子等不透明效果时，探测适配不能把整条调用升级为只读。
+  const readOnly = tool.executionBoundary !== undefined && tool.executionBoundary !== 'opaque';
+  const canPrepare = tool.prepare !== undefined || resolveToolContract(tool).approvalRequirement === 'none';
   return { name: 'probe_media', description: tool.description, inputSchema: tool.inputSchema,
-    executionBoundary: 'read-only',
+    ...(tool.nestedToolNames === undefined ? {} : { nestedToolNames: tool.nestedToolNames }),
+    ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),
+    executionBoundary: readOnly ? 'read-only' : 'opaque',
     contract: { capability: 'media', riskLevel: 'read', parallelSafety: 'serial', timeoutMs: 120_000,
       cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
-    async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    ...(canPrepare ? { async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
+      let invoked = false;
+      const failure = (error: unknown): ToolResult => {
+        if (error instanceof SessionPersistenceError) throw error;
+        context.signal?.throwIfAborted();
+        if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+        // 只有可证明的纯探测没有磁盘写入；不透明内层的效果分类必须保留。
+        return { status: 'error', message: error.message,
+          failureKind: error instanceof ToolExecutionError && error.failureKind === 'denied' ? 'denied'
+            : invoked && !readOnly ? error instanceof ToolExecutionError ? error.failureKind : 'unknown-outcome' : 'permanent' };
+      };
       try {
         context.signal?.throwIfAborted();
         const inputPath = await authorizeMediaInput(input, access);
         // 只读探测不会产生可恢复的外部效果；不要让底层 MCP 检查点污染只读 Session 事实。
         const { checkpoint: _checkpoint, ...readOnlyContext } = context;
-        const result = await tool.execute({ inputPath }, readOnlyContext);
-        context.signal?.throwIfAborted();
-        // 已知探测服务没有写入；其 MCP 错误响应也不能携带通用服务的未知副作用分类。
-        return convert(result.status === 'error' ? { ...result, failureKind: result.failureKind === 'denied' ? 'denied' : 'permanent' } : result, inputPath);
-      } catch (error) {
-        if (error instanceof SessionPersistenceError) throw error;
-        context.signal?.throwIfAborted();
-        if (!(error instanceof Error) || error.name === 'AbortError') throw error;
-        // 探测没有磁盘写入；保留拒绝审批身份，其余失败不能制造未知外部效果。
-        return { status: 'error', message: error.message,
-          failureKind: error instanceof ToolExecutionError && error.failureKind === 'denied' ? 'denied' : 'permanent' };
-      }
-    },
+        const prepared = tool.prepare !== undefined ? await tool.prepare({ inputPath }, readOnly ? readOnlyContext : context)
+          : { requestApproval: async () => true, execute: () => tool.execute({ inputPath }, readOnly ? readOnlyContext : context) };
+        if ('status' in prepared) return prepared;
+        return { requestApproval: () => prepared.requestApproval(), async execute() {
+          try {
+            invoked = true;
+            const result = await prepared.execute();
+            context.signal?.throwIfAborted();
+            // 已知探测服务没有写入；其 MCP 错误响应也不能携带通用服务的未知副作用分类。
+            return convert(readOnly && result.status === 'error' ? { ...result, failureKind: result.failureKind === 'denied' ? 'denied' : 'permanent' } : result, inputPath);
+          } catch (error) { return failure(error); }
+        } };
+      } catch (error) { return failure(error); }
+    } } : {}),
+    async execute(input, context) { return this.prepare === undefined ? { status: 'error', failureKind: 'permanent', message: `工具 ${tool.name} 缺少已准备操作契约。` } : executePreparedAction(await this.prepare(input, context), context); },
   };
 }
 
@@ -147,13 +164,27 @@ function unwrap(result: ToolResult): unknown {
 export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined, name: string): Tool {
   if (name === 'probe_media') return adaptProbeMediaTool(tool, access);
   const readOnly = name === 'decode_video' || name === 'detect_black_segments';
+  const pureInspection = readOnly && tool.executionBoundary !== undefined && tool.executionBoundary !== 'opaque';
+  const canPrepare = tool.prepare !== undefined || resolveToolContract(tool).approvalRequirement === 'none';
   return { name, description: tool.description, inputSchema: tool.inputSchema,
+    ...(tool.nestedToolNames === undefined ? {} : { nestedToolNames: tool.nestedToolNames }),
+    ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),
     // 抽帧和音频提取会写磁盘，保留原 MCP 工具的检查点边界；只有纯检查声明只读。
-    executionBoundary: readOnly ? 'read-only' : tool.executionBoundary ?? 'opaque',
+    executionBoundary: pureInspection ? 'read-only' : tool.executionBoundary ?? 'opaque',
     contract: { capability: 'media', riskLevel: readOnly ? 'read' : 'write', parallelSafety: 'serial', timeoutMs: 120_000,
       cancellation: 'signal', workspaceScope: 'session', approvalRequirement: 'policy' },
-    async execute(input, context) {
+    ...(canPrepare ? { async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
       let invoked = false;
+      const failure = (error: unknown): ToolResult => {
+        if (error instanceof SessionPersistenceError) throw error;
+        context.signal?.throwIfAborted();
+        if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+        // 授权失败尚未进入服务；写入调用后丢失或无法解析结果仍可能已经生成文件。
+        const failureKind = !invoked ? 'permanent'
+          : error instanceof ToolExecutionError && (!pureInspection || error.failureKind === 'denied') ? error.failureKind
+            : pureInspection ? 'permanent' : 'unknown-outcome';
+        return { status: 'error', message: error.message, failureKind };
+      };
       try {
         context.signal?.throwIfAborted();
         if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new Error('FFmpeg 参数必须是对象。');
@@ -171,57 +202,56 @@ export function adaptFFmpegTool(tool: Tool, access: ProbeFileAccess | undefined,
           if (typeof normalized[field] !== 'string') throw new Error(`${field} 必须是本地路径。`);
           normalized[field] = await authorizeOutput(normalized[field], access, VIDEO_WRITE_TOOL_NAMES.has(name));
         }
-        invoked = true;
         let executionContext = context;
-        if (readOnly) {
+        if (pureInspection) {
           const { checkpoint: _checkpoint, ...readOnlyContext } = context;
           executionContext = readOnlyContext;
         }
-        const response = await tool.execute(normalized, executionContext);
-        context.signal?.throwIfAborted();
-        if (response.status === 'error') {
-          return convert(readOnly ? { ...response, failureKind: response.failureKind === 'denied' ? 'denied' : 'permanent' } : response, '');
-        }
-        const envelope = unwrap(response) as { toolResult?: unknown } | null;
-        const result = envelope?.toolResult as { status?: unknown; output?: unknown; artifacts?: unknown } | undefined;
-        if (result?.status !== 'success' || result.output === undefined || result.artifacts !== undefined) throw new Error('FFmpeg 插件结果不符合工具契约。');
-        const value = result.output as Record<string, unknown>;
-        if (VIDEO_WRITE_TOOL_NAMES.has(name)) {
-          if (value.outputPath !== normalized.outputPath || typeof value.outputPath !== 'string'
-            || !(await stat(value.outputPath)).isFile()) throw new Error('写出结果与实际授权候选不一致。');
-          // 服务使用真实路径，生产归属仍使用原调用的候选引用，保留现有会话与交付契约。
-          return { status: 'success', output: { outputPath: (input as Record<string, unknown>).outputPath } };
-        } else if (name === 'extract_audio') {
-          if (result.output !== `Audio created: ${normalized.outputPath as string}`) throw new Error('音频结果与已授权输出路径不一致。');
-        } else if (name === 'decode_video') {
-          if (value.inputPath !== normalized.inputPath || typeof value.hasVideoStream !== 'boolean' || typeof value.fullyDecoded !== 'boolean'
-            || !(value.videoCodec === null || typeof value.videoCodec === 'string')
-            || !(value.durationSeconds === null || typeof value.durationSeconds === 'number' && Number.isFinite(value.durationSeconds))) throw new Error('解码结果不符合原工具契约。');
-        } else if (name === 'detect_black_segments') {
-          if (value.inputPath !== normalized.inputPath || typeof value.hasBlackSegments !== 'boolean' || !Array.isArray(value.segments)
-            || !value.segments.every(segment => segment !== null && typeof segment === 'object' && ['start', 'end', 'duration'].every(key => typeof segment[key] === 'number' && Number.isFinite(segment[key])))
-            || typeof value.parameters !== 'object' || value.parameters === null) throw new Error('黑段结果不符合原工具契约。');
-        } else if (name === 'extract_full_video_frames' && value.complete === false) {
-          if (typeof value.reason !== 'string') throw new Error('全帧预算结果缺少受阻原因。');
-        } else {
-          if (!Array.isArray(value.frames) || (name === 'extract_full_video_frames' && (value.complete !== true || value.frames.length === 0))) throw new Error('抽帧结果缺少完整帧列表。');
-          for (const frame of value.frames as Array<{ path: unknown; timestamp: unknown }>) {
-            if (typeof frame?.path !== 'string' || typeof frame.timestamp !== 'number' || !Number.isFinite(frame.timestamp)
-              || !await isInsideDirectory(frame.path, normalized.outputDir as string)) throw new Error('抽帧结果超出已授权目录或缺少时间戳。');
-          }
-        }
-        return { status: 'success', output: result.output };
-      } catch (error) {
-        if (error instanceof SessionPersistenceError) throw error;
-        context.signal?.throwIfAborted();
-        if (!(error instanceof Error) || error.name === 'AbortError') throw error;
-        // 授权失败尚未进入服务；写入调用后丢失或无法解析结果仍可能已经生成文件。
-        const failureKind = !invoked ? 'permanent'
-          : error instanceof ToolExecutionError && (!readOnly || error.failureKind === 'denied') ? error.failureKind
-            : readOnly ? 'permanent' : 'unknown-outcome';
-        return { status: 'error', message: error.message, failureKind };
-      }
-    },
+        const prepared = tool.prepare !== undefined ? await tool.prepare(normalized, executionContext)
+          : { requestApproval: async () => true, execute: () => tool.execute(normalized, executionContext) };
+        if ('status' in prepared) return prepared;
+        return { requestApproval: () => prepared.requestApproval(), async execute() {
+          try {
+            invoked = true;
+            const response = await prepared.execute();
+            context.signal?.throwIfAborted();
+            if (response.status === 'error') {
+              return convert(pureInspection ? { ...response, failureKind: response.failureKind === 'denied' ? 'denied' : 'permanent' } : response, '');
+            }
+            const envelope = unwrap(response) as { toolResult?: unknown } | null;
+            const result = envelope?.toolResult as { status?: unknown; output?: unknown; artifacts?: unknown } | undefined;
+            if (result?.status !== 'success' || result.output === undefined || result.artifacts !== undefined) throw new Error('FFmpeg 插件结果不符合工具契约。');
+            const value = result.output as Record<string, unknown>;
+            if (VIDEO_WRITE_TOOL_NAMES.has(name)) {
+              if (value.outputPath !== normalized.outputPath || typeof value.outputPath !== 'string'
+                || !(await stat(value.outputPath)).isFile()) throw new Error('写出结果与实际授权候选不一致。');
+              // 服务使用真实路径，生产归属仍使用原调用的候选引用，保留现有会话与交付契约。
+              return { status: 'success', output: { outputPath: (input as Record<string, unknown>).outputPath } };
+            } else if (name === 'extract_audio') {
+              if (result.output !== `Audio created: ${normalized.outputPath as string}`) throw new Error('音频结果与已授权输出路径不一致。');
+            } else if (name === 'decode_video') {
+              if (value.inputPath !== normalized.inputPath || typeof value.hasVideoStream !== 'boolean' || typeof value.fullyDecoded !== 'boolean'
+                || !(value.videoCodec === null || typeof value.videoCodec === 'string')
+                || !(value.durationSeconds === null || typeof value.durationSeconds === 'number' && Number.isFinite(value.durationSeconds))) throw new Error('解码结果不符合原工具契约。');
+            } else if (name === 'detect_black_segments') {
+              if (value.inputPath !== normalized.inputPath || typeof value.hasBlackSegments !== 'boolean' || !Array.isArray(value.segments)
+                || !value.segments.every(segment => segment !== null && typeof segment === 'object' && ['start', 'end', 'duration'].every(key => typeof segment[key] === 'number' && Number.isFinite(segment[key])))
+                || typeof value.parameters !== 'object' || value.parameters === null) throw new Error('黑段结果不符合原工具契约。');
+            } else if (name === 'extract_full_video_frames' && value.complete === false) {
+              if (typeof value.reason !== 'string') throw new Error('全帧预算结果缺少受阻原因。');
+            } else {
+              if (!Array.isArray(value.frames) || (name === 'extract_full_video_frames' && (value.complete !== true || value.frames.length === 0))) throw new Error('抽帧结果缺少完整帧列表。');
+              for (const frame of value.frames as Array<{ path: unknown; timestamp: unknown }>) {
+                if (typeof frame?.path !== 'string' || typeof frame.timestamp !== 'number' || !Number.isFinite(frame.timestamp)
+                  || !await isInsideDirectory(frame.path, normalized.outputDir as string)) throw new Error('抽帧结果超出已授权目录或缺少时间戳。');
+              }
+            }
+            return { status: 'success', output: result.output };
+          } catch (error) { return failure(error); }
+        } };
+      } catch (error) { return failure(error); }
+    } } : {}),
+    async execute(input, context) { return this.prepare === undefined ? { status: 'error', failureKind: 'permanent', message: `工具 ${tool.name} 缺少已准备操作契约。` } : executePreparedAction(await this.prepare(input, context), context); },
   };
 }
 
@@ -242,39 +272,51 @@ async function authorizeTarget(path: string, sources: readonly string[], access:
 
 /** 交付规则保持在应用层，宿主只补充真实目录与附件授权，不改变验收结论。 */
 export function authorizeVideoDeliveryTool(tool: Tool, access: ProbeFileAccess): Tool {
+  const canPrepare = tool.prepare !== undefined || resolveToolContract(tool).approvalRequirement === 'none';
   return { name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
     ...(tool.executionBoundary === undefined ? {} : { executionBoundary: tool.executionBoundary }),
-    async execute(input, context) {
-    let invoked = false;
-    try {
-      context.signal?.throwIfAborted();
-      if (typeof input === 'object' && input !== null) {
-        const value = input as Record<string, unknown>;
-        if (tool.name === 'declare_video_outputs' && Array.isArray(value.items)) {
-          for (const item of value.items as Array<{ sourcePaths?: unknown; target?: { kind?: unknown; path?: unknown } }>) {
-            if (!Array.isArray(item?.sourcePaths)) continue; // 原工具负责结构错误，宿主仅检查文件边界。
-            const sources: string[] = [];
-            for (const source of item.sourcePaths) sources.push(await authorizeMediaInput({ inputPath: source }, access));
-            if (item.target?.kind === 'explicit' && typeof item.target.path === 'string') await authorizeTarget(item.target.path, sources, access);
-          }
-        } else if (tool.name === 'publish_video_output') {
-          const facts = readVideoDeliveryFacts(access.events());
-          const validation = facts.validations.find(entry => entry.id === value.validationId);
-          const candidate = facts.candidates.find(entry => entry.id === validation?.candidateId);
-          const item = facts.items.find(entry => entry.id === candidate?.outputItemId);
-          if (item !== undefined) {
-            for (const source of item.sourcePaths) if (!await authorizedSource(source, access)) throw new Error('交付来源未经宿主授权。');
-            await authorizeTarget(item.target.kind === 'explicit' ? item.target.path : item.target.preferredPath, item.sourcePaths, access);
+    ...(tool.contract === undefined ? {} : { contract: tool.contract }),
+    ...(tool.nestedToolNames === undefined ? {} : { nestedToolNames: tool.nestedToolNames }),
+    ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),
+    ...(canPrepare ? { async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
+      let invoked = false;
+      const failure = (error: unknown): ToolResult => {
+        if (error instanceof SessionPersistenceError) throw error;
+        context.signal?.throwIfAborted();
+        if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+        return { status: 'error', failureKind: invoked ? (error instanceof ToolExecutionError ? error.failureKind : 'unknown-outcome') : 'permanent', message: error.message };
+      };
+      try {
+        context.signal?.throwIfAborted();
+        if (typeof input === 'object' && input !== null) {
+          const value = input as Record<string, unknown>;
+          if (tool.name === 'declare_video_outputs' && Array.isArray(value.items)) {
+            for (const item of value.items as Array<{ sourcePaths?: unknown; target?: { kind?: unknown; path?: unknown } }>) {
+              if (!Array.isArray(item?.sourcePaths)) continue; // 原工具负责结构错误，宿主仅检查文件边界。
+              const sources: string[] = [];
+              for (const source of item.sourcePaths) sources.push(await authorizeMediaInput({ inputPath: source }, access));
+              if (item.target?.kind === 'explicit' && typeof item.target.path === 'string') await authorizeTarget(item.target.path, sources, access);
+            }
+          } else if (tool.name === 'publish_video_output') {
+            const facts = readVideoDeliveryFacts(access.events());
+            const validation = facts.validations.find(entry => entry.id === value.validationId);
+            const candidate = facts.candidates.find(entry => entry.id === validation?.candidateId);
+            const item = facts.items.find(entry => entry.id === candidate?.outputItemId);
+            if (item !== undefined) {
+              for (const source of item.sourcePaths) if (!await authorizedSource(source, access)) throw new Error('交付来源未经宿主授权。');
+              await authorizeTarget(item.target.kind === 'explicit' ? item.target.path : item.target.preferredPath, item.sourcePaths, access);
+            }
           }
         }
-      }
-      invoked = true;
-      return await tool.execute(input, context);
-    } catch (error) {
-      if (error instanceof SessionPersistenceError) throw error;
-      context.signal?.throwIfAborted();
-      if (!(error instanceof Error) || error.name === 'AbortError') throw error;
-      return { status: 'error', failureKind: invoked ? (error instanceof ToolExecutionError ? error.failureKind : 'unknown-outcome') : 'permanent', message: error.message };
-    }
-  } };
+        const prepared = tool.prepare !== undefined ? await tool.prepare(input, context)
+          : { requestApproval: async () => true, execute: () => tool.execute(input, context) };
+        if ('status' in prepared) return prepared;
+        return { requestApproval: () => prepared.requestApproval(), async execute() {
+          try { invoked = true; return await prepared.execute(); }
+          catch (error) { return failure(error); }
+        } };
+      } catch (error) { return failure(error); }
+    } } : {}),
+    async execute(input, context) { return this.prepare === undefined ? { status: 'error', failureKind: 'permanent', message: `工具 ${tool.name} 缺少已准备操作契约。` } : executePreparedAction(await this.prepare(input, context), context); },
+  };
 }

@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, open, realpath, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath, stat, unlink } from 'node:fs/promises';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { candidateDigest } from './candidate-digest.js';
 import type { ToolCallId, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, type SessionEvent } from '@agent-desktop/session';
-import { ToolExecutionError, type Tool, type ToolContract, type ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, resolveToolContract, ToolExecutionError, type Tool, type ToolContract, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { createFileArtifact } from '@agent-desktop/local-tools';
 import {
   DECLARE_VIDEO_OUTPUTS_TOOL,
@@ -168,6 +168,7 @@ function parseRequirements(value: unknown): Parsed<readonly OutputRequirement[]>
  * 声明列表就是预期交付集合：不额外插入从首个附件推导的最终路径，也不默认要求多视频合并。
  */
 export class DeclareVideoOutputsTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = DECLARE_VIDEO_OUTPUTS_TOOL;
   // 目录创建是声明阶段唯一的宿主副作用；在 mkdir 前持久化检查点，保存失败时不创建目录。
   readonly executionBoundary = 'checkpointed' as const;
@@ -561,6 +562,7 @@ function checkRequirement(
  * 因此模型既不能提交「通过」结论，也不能拿别的文件或别的输出项的检查结果冒充本候选证据。
  */
 export class ValidateVideoCandidateTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = VALIDATE_VIDEO_CANDIDATE_TOOL;
   // 验收只读取候选和已有证据；补齐检查事实后必须允许对同一候选重新验收。
   readonly executionBoundary = 'read-only' as const;
@@ -650,7 +652,7 @@ export class ValidateVideoCandidateTool implements Tool {
 /**
  * 独占创建目标后复制候选。
  *
- * 目标已存在时由 `wx` 直接拒绝，调用方据此决定是否尝试下一个默认名称；
+ * 目标已存在时由 `wx` 直接拒绝，目标在审批前已经固定，冲突不能批准后改名；
  * 复制未完成时清理本次调用创建的目标，并把清理失败如实暴露。
  */
 async function copyExclusively(
@@ -659,14 +661,15 @@ async function copyExclusively(
   signal: AbortSignal | undefined,
   checkpoint: ToolExecutionContext['checkpoint'],
 ): Promise<void> {
-  // 保存检查点失败时不创建目标；已存在目标保持原始 EEXIST，供调用方安全换名或拒绝。
+  // 保存检查点失败时不创建目标；已存在目标保持永久拒绝，不尝试未获批的新路径。
   checkpoint?.({ kind: 'video-publish', targetPath });
   // open 在 try 之外：创建失败说明目标不属于本次调用，不能去删除已有文件。
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(targetPath, 'wx');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw error;
+    // 目标冲突证明本次调用没有创建文件；调用方保留永久拒绝，不尝试其他名称。
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ToolExecutionError(`发布目标已存在：${targetPath}`, 'permanent', { cause: error });
     if (error instanceof Error) throw new ToolExecutionError(error.message, 'permanent', { cause: error });
     throw error;
   }
@@ -696,7 +699,12 @@ async function copyExclusively(
  *
  * 只接受验收引用：目标、要求与候选都由应用层从已有事实反查，模型不能在发布时放宽条件。
  */
+export type VideoPublishApproval = (
+  target: { readonly candidatePath: string; readonly targetPath: string }, context: ToolExecutionContext,
+) => Promise<boolean>;
+
 export class PublishVideoOutputTool implements Tool {
+  readonly contract = { approvalRequirement: 'policy' } as const;
   readonly name = PUBLISH_VIDEO_OUTPUT_TOOL;
   // 发布前的目标复制是可核验的外部副作用，实际复制前保存检查点。
   readonly executionBoundary = 'checkpointed' as const;
@@ -708,9 +716,13 @@ export class PublishVideoOutputTool implements Tool {
     additionalProperties: false,
   };
 
-  constructor(private readonly readEvents: SessionReader) {}
+  constructor(private readonly readEvents: SessionReader, private readonly approve?: VideoPublishApproval) {}
 
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    return executePreparedAction(await this.prepare(input, context), context);
+  }
+
+  async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
     if (!isRecord(input) || typeof input.validationId !== 'string') {
       return { status: 'error', message: 'publish_video_output 需要 validationId 字符串' };
     }
@@ -761,48 +773,41 @@ export class PublishVideoOutputTool implements Tool {
         return { status: 'error', message: '候选内容与验收时不一致，必须重新验收后发布。' };
       }
 
-      let publishedPath: string;
-      if (item.target.kind === 'explicit') {
-        publishedPath = item.target.path;
-        try {
-          await copyExclusively(candidate.path, publishedPath, context.signal, context.checkpoint);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-            return {
-              status: 'error',
-              failureKind: 'permanent',
-              message: `目标文件已存在，不会覆盖也不会改名：${publishedPath}`,
-            };
-          }
-          throw error;
+      // 自动命名在审批前固定；获批后冲突只能失败，不能改为另一个未获批路径。
+      let publishedPath = '';
+      for (let sequence = 1; ; sequence += 1) {
+        const target = item.target.kind === 'explicit' ? item.target.path : automaticTargetPath(item.target.preferredPath, sequence);
+        const path = await resolveThroughExistingParent(target);
+        try { await lstat(path); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          publishedPath = path;
+          break;
         }
-      } else {
-        publishedPath = '';
-        for (let sequence = 1; ; sequence += 1) {
-          const targetPath = automaticTargetPath(item.target.preferredPath, sequence);
-          try {
-            await copyExclusively(candidate.path, targetPath, context.signal, context.checkpoint);
-            publishedPath = targetPath;
-            break;
-          } catch (error) {
-            // 只有「名字已被占用」才继续尝试下一个名称；权限、磁盘等错误直接暴露。
-            if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
-            throw error;
-          }
-        }
+        if (item.target.kind === 'explicit') return { status: 'error', failureKind: 'permanent', message: `目标文件已存在，不会覆盖也不会改名：${path}` };
       }
-
-      const output: PublishedOutput = {
-        outputItemId: item.id,
-        validationId: validation.id,
-        path: publishedPath,
-      };
-
-      // 文件完整写入并关闭后才产生发布事实；artifacts 与业务对象来自同一个发布结果值。
+      const approve = this.approve;
+      if (approve === undefined) return { status: 'error', failureKind: 'permanent', message: '发布视频缺少宿主审批入口。' };
       return {
-        status: 'success',
-        output: { kind: 'video.output.published', output },
-        artifacts: [await createFileArtifact(publishedPath, this.name, context.signal)],
+        requestApproval: () => approve({ candidatePath: candidate.path, targetPath: publishedPath }, context),
+        execute: async () => {
+          try {
+            if (await candidateDigest(candidate.path, context.signal) !== validation.candidateSha256) {
+              return { status: 'error', failureKind: 'permanent', message: '候选在审批期间改变，必须重新验收。' };
+            }
+            if (await resolveThroughExistingParent(publishedPath) !== publishedPath) {
+              return { status: 'error', failureKind: 'permanent', message: '交付目录在审批期间改变，必须重新准备发布。' };
+            }
+            try { await copyExclusively(candidate.path, publishedPath, context.signal, context.checkpoint); }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { status: 'error', failureKind: 'permanent', message: `目标文件已存在，不会覆盖也不会改名：${publishedPath}` };
+              throw error;
+            }
+            const output: PublishedOutput = { outputItemId: item.id, validationId: validation.id, path: publishedPath };
+            return { status: 'success', output: { kind: 'video.output.published', output },
+              artifacts: [await createFileArtifact(publishedPath, this.name, context.signal)] };
+          } catch (error) { return errorResult(error); }
+        },
       };
     } catch (error) {
       return errorResult(error);
@@ -817,10 +822,19 @@ export class PublishVideoOutputTool implements Tool {
  * 没有声明就写出会被拒绝，直接写最终目标或已有候选路径同样被拒绝。
  */
 export class ScopedVideoOutputTool implements Tool {
+  readonly prepare?: (input: unknown, context: ToolExecutionContext) => Promise<ToolPreparation>;
+  readonly nestedToolNames?: readonly string[];
+
   constructor(
     private readonly inner: Tool,
     private readonly readEvents: SessionReader,
-  ) {}
+  ) {
+    if (inner.nestedToolNames !== undefined) this.nestedToolNames = inner.nestedToolNames;
+    // 包装器不制造内层缺失的审批能力；无效策略工具仍由 Router 在调用前排除。
+    if (inner.prepare !== undefined || resolveToolContract(inner).approvalRequirement === 'none') {
+      this.prepare = (input, context) => this.prepareScoped(input, context);
+    }
+  }
 
   get name(): string { return this.inner.name; }
   get description(): string { return this.inner.description; }
@@ -832,9 +846,18 @@ export class ScopedVideoOutputTool implements Tool {
   get sanitizeInput(): (input: unknown) => unknown { return this.inner.sanitizeInput ?? ((input: unknown) => input); }
 
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    if (this.prepare === undefined) return { status: 'error', failureKind: 'permanent', message: `工具 ${this.inner.name} 缺少已准备操作契约。` };
+    return executePreparedAction(await this.prepare(input, context), context);
+  }
+
+  private async prepareScoped(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
+    const prepareInner = (): Promise<ToolPreparation> => {
+      if (this.inner.prepare !== undefined) return this.inner.prepare(input, context);
+      return Promise.resolve({ requestApproval: async () => true, execute: () => this.inner.execute(input, context) });
+    };
     // 输入不是当前契约形状时交给内层工具返回它自己的字段错误，不在这里重复校验。
     const outputPath = isRecord(input) && typeof input.outputPath === 'string' ? input.outputPath : undefined;
-    if (outputPath === undefined) return this.inner.execute(input, context);
+    if (outputPath === undefined) return prepareInner();
 
     if (!isAbsolute(outputPath)) {
       return {
@@ -865,6 +888,6 @@ export class ScopedVideoOutputTool implements Tool {
       };
     }
 
-    return this.inner.execute(input, context);
+    return prepareInner();
   }
 }

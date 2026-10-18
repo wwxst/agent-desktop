@@ -20,7 +20,7 @@ describe('current model request and commentary contracts', () => {
     });
     const current = agent({ complete });
     const execute = vi.fn(async () => ({ status: 'success' as const, output: 'file' }));
-    current.tools.register({ name: 'read', description: 'read', inputSchema: {}, execute });
+    current.tools.register({ name: 'read', description: 'read', inputSchema: {}, contract: { approvalRequirement: 'none' }, execute });
     const text = vi.fn();
     const trace = vi.fn();
     const result = await runTurn(current, 'test', { trace, onModelText: text });

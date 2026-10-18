@@ -19,6 +19,7 @@ function isEchoInput(input: unknown): input is EchoInput {
 
 /** Echo Tool 只返回传入文本，用最小行为证明 Tool Registry 和执行链路可工作。 */
 export class EchoTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'echo';
   readonly description = '返回输入文本';
   readonly inputSchema = {

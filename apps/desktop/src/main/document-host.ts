@@ -6,7 +6,7 @@ import { setImmediate } from 'node:timers/promises';
 import { createFileArtifact, resolveCreatablePath, resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
 import type { ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError } from '@agent-desktop/session';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 
 export type DocumentToolName = 'read_pdf' | 'render_pdf_page' | 'read_docx' | 'read_xlsx' | 'read_csv';
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -25,18 +25,30 @@ function optionalString(value: unknown, label: string): string | undefined {
   return value;
 }
 
-/** 文件范围来自真实宿主，解析器只收到已经授权且有大小上限的字节。 */
-async function documentBytes(input: Input, workspace: WorkspacePort, signal?: AbortSignal): Promise<{ filePath: string; bytes: Buffer }> {
+/** 文件范围来自真实宿主；准备阶段只固定已授权的真实路径。 */
+async function documentPath(input: Input, workspace: WorkspacePort): Promise<string> {
   const filePath = optionalString(input.filePath, 'filePath');
   if (filePath === undefined) throw new Error('需要 filePath。');
   const scoped = await resolveScopedPath(workspace.confirmedDirectory(), filePath, workspace.fileAccess === 'all');
   if (!scoped.ok) throw new Error(scoped.message);
-  const info = await stat(scoped.path);
+  return scoped.path;
+}
+
+/** 实际读取延后到审批和执行钩子之后，在读取边界核对文件预算。 */
+async function documentBytes(filePath: string, signal?: AbortSignal): Promise<Buffer> {
+  const info = await stat(filePath);
   if (!info.isFile() || info.size === 0 || info.size > MAX_FILE_BYTES) throw new Error('文档必须是非空文件且不超过 20 MiB；请拆分大文件。');
   signal?.throwIfAborted();
-  const bytes = await readFile(scoped.path, signal === undefined ? undefined : { signal });
+  const bytes = await readFile(filePath, signal === undefined ? undefined : { signal });
   if (bytes.byteLength > MAX_FILE_BYTES) throw new Error('文档读取期间超过 20 MiB。');
-  return { filePath: scoped.path, bytes };
+  return bytes;
+}
+
+function documentFailure(error: unknown, context: ToolExecutionContext): ToolResult {
+  if (error instanceof SessionPersistenceError) throw error;
+  context.signal?.throwIfAborted();
+  if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+  return { status: 'error', failureKind: 'permanent', message: error.message };
 }
 
 /** 同步解析前核对压缩目录；只解压所需 DOCX XML，XLSX 只用此步骤检查展开体积。 */
@@ -194,7 +206,7 @@ async function readCsv(bytes: Buffer, input: Input, context: ToolExecutionContex
       mean: item.numericCount === 0 ? null : item.sum / item.numericCount })), ...(nextStartRow === undefined ? {} : { nextStartRow, truncated: true }) };
 }
 
-async function readPdf(bytes: Buffer, input: Input, workspace: WorkspacePort, context: ToolExecutionContext): Promise<ToolResult> {
+async function readPdf(bytes: Buffer, input: Input, context: ToolExecutionContext): Promise<ToolResult> {
   // 官方 ESM 和字体/CMap/worker 均从正式 npm 依赖读取，不能依赖开发机 Office 或 Python。
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   context.signal?.throwIfAborted();
@@ -222,16 +234,12 @@ async function readPdf(bytes: Buffer, input: Input, workspace: WorkspacePort, co
       if (characters > MAX_OUTPUT_CHARACTERS) throw new Error('PDF 文本超过 100000 字符输出预算，请缩小页范围。');
       pages.push({ pageNumber: number, text }); page.cleanup();
     }
-    let rendered: { path: string; mimeType: string; sha256: string; size: number; pageNumber: number } | undefined;
+    const output = { pageCount: pdf.numPages, pages, ...(end < pdf.numPages ? { nextStartPage: end + 1, truncated: true } : {}) };
     if (input.renderPage !== undefined) {
       const number = integer(input.renderPage, 1, pdf.numPages, 'renderPage');
       const outputPath = optionalString(input.outputPath, 'outputPath');
       if (outputPath === undefined) throw new Error('渲染 PDF 页需要已授权范围内的 outputPath。');
-      const scoped = await resolveCreatablePath(workspace.confirmedDirectory(), outputPath, workspace.fileAccess === 'all');
-      if (!scoped.ok) throw new Error(scoped.message);
-      const approved = await workspace.requestApproval({ kind: 'create-file', path: scoped.path }, context.signal);
-      context.signal?.throwIfAborted();
-      if (!approved) return { status: 'error', failureKind: 'denied', message: '用户拒绝创建 PDF 页面图片。' };
+      // 解析和渲染都在审批与前置钩子之后；写入仍使用准备阶段固定的真实目标路径。
       const page = await pdf.getPage(number);
       const original = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: Math.min(1.5, 2000 / Math.max(original.width, original.height)) });
@@ -244,25 +252,26 @@ async function readPdf(bytes: Buffer, input: Input, workspace: WorkspacePort, co
       context.signal?.throwIfAborted();
       const image = await canvas.encode('png');
       const sha256 = createHash('sha256').update(image).digest('hex');
-      context.checkpoint?.({ kind: 'document-render', path: scoped.path, expectedAfterSha256: sha256, expectedBytes: image.byteLength });
-      const temporary = await mkdtemp(join(dirname(scoped.path), '.document-render-'));
+      page.cleanup();
+      context.signal?.throwIfAborted();
+      context.checkpoint?.({ kind: 'document-render', path: outputPath, expectedAfterSha256: sha256, expectedBytes: image.byteLength });
       let committed = false;
       try {
+        const temporary = await mkdtemp(join(dirname(outputPath), '.document-render-'));
         try {
           const staged = join(temporary, 'page.png');
           await writeFile(staged, image, { flag: 'wx' }); context.signal?.throwIfAborted();
-          await link(staged, scoped.path); committed = true;
+          await link(staged, outputPath); committed = true;
         } finally { await rm(temporary, { recursive: true, force: true }); }
+        return { status: 'success', output: { ...output,
+          renderedPage: { path: outputPath, mimeType: 'image/png', sha256, size: image.byteLength, pageNumber: number } },
+          artifacts: [await createFileArtifact(outputPath, 'render_pdf_page', context.signal)] };
       } catch (error) {
         if (!(error instanceof Error) || error.name === 'AbortError') throw error;
         return { status: 'error', failureKind: committed ? 'unknown-outcome' : 'permanent', message: error.message };
       }
-      rendered = { path: scoped.path, mimeType: 'image/png', sha256, size: image.byteLength, pageNumber: number };
-      page.cleanup();
     }
-    return { status: 'success', output: { pageCount: pdf.numPages, pages, ...(end < pdf.numPages ? { nextStartPage: end + 1, truncated: true } : {}),
-      ...(rendered === undefined ? {} : { renderedPage: rendered }) },
-    ...(rendered === undefined ? {} : { artifacts: [await createFileArtifact(rendered.path, 'render_pdf_page', context.signal)] }) };
+    return { status: 'success', output };
   } finally {
     context.signal?.removeEventListener('abort', abort);
     await loading.destroy();
@@ -292,31 +301,61 @@ export class DocumentTool implements Tool {
       required: name === 'render_pdf_page' ? ['filePath', 'pageNumber', 'outputPath'] : ['filePath'], additionalProperties: false };
     this.executionBoundary = name === 'render_pdf_page' ? 'checkpointed' : 'read-only';
     this.contract = { capability: 'document', riskLevel: name === 'render_pdf_page' ? 'write' as const : 'read' as const,
-      parallelSafety: name === 'render_pdf_page' ? 'serial' as const : 'safe' as const, timeoutMs: 120_000, workspaceScope: 'session' as const };
+      parallelSafety: name === 'render_pdf_page' ? 'serial' as const : 'safe' as const,
+      approvalRequirement: name === 'render_pdf_page' ? 'policy' as const : 'none' as const, timeoutMs: 120_000, workspaceScope: 'session' as const };
   }
   async execute(value: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    return executePreparedAction(await this.prepare(value, context), context);
+  }
+  async prepare(value: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
     try {
       context.signal?.throwIfAborted();
       if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('文档工具需要对象参数。');
       const input = value as Input;
       if (Object.keys(input).some(key => !fields[this.name].includes(key))) throw new Error('文档工具收到未声明的参数。');
-      const { filePath, bytes } = await documentBytes(input, this.workspace, context.signal);
+      const filePath = await documentPath(input, this.workspace);
       if (this.name === 'read_pdf' || this.name === 'render_pdf_page') {
-        const pdfInput = this.name === 'read_pdf' ? input : { startPage: input.pageNumber, endPage: input.pageNumber, renderPage: input.pageNumber, outputPath: input.outputPath };
         if (this.name === 'render_pdf_page' && input.pageNumber === undefined) throw new Error('渲染需要 pageNumber。');
-        const result = await readPdf(bytes, pdfInput, this.workspace, context);
-        return result.status === 'error' ? result : { ...result, output: { filePath, ...(result.output as object) } };
+        let preparedOutputPath: string | undefined;
+        if (this.name === 'render_pdf_page') {
+          const outputPath = optionalString(input.outputPath, 'outputPath');
+          if (outputPath === undefined) throw new Error('渲染 PDF 页需要已授权范围内的 outputPath。');
+          const scoped = await resolveCreatablePath(this.workspace.confirmedDirectory(), outputPath, this.workspace.fileAccess === 'all');
+          if (!scoped.ok) throw new Error(scoped.message);
+          preparedOutputPath = scoped.path;
+        }
+        const pdfInput = this.name === 'read_pdf' ? input : { startPage: input.pageNumber, endPage: input.pageNumber, renderPage: input.pageNumber, outputPath: preparedOutputPath };
+        const withFilePath = (result: ToolResult): ToolResult => result.status === 'error' ? result : { ...result, output: { filePath, ...(result.output as object) } };
+        return {
+          requestApproval: this.name === 'render_pdf_page'
+            ? () => this.workspace.requestApproval({ kind: 'create-file', path: preparedOutputPath! }, context.signal)
+            : async () => true,
+          execute: async () => {
+            try {
+              return withFilePath(await readPdf(await documentBytes(filePath, context.signal), pdfInput, context));
+            } catch (error) {
+              return documentFailure(error, context);
+            }
+          },
+        };
       }
-      const result = this.name === 'read_docx' ? await readDocx(bytes, input, context)
-        : this.name === 'read_xlsx' ? await readXlsx(bytes, input, context) : await readCsv(bytes, input, context);
-      context.signal?.throwIfAborted();
-      if (JSON.stringify(result).length > MAX_OUTPUT_CHARACTERS) throw new Error('文档结果超过 100000 字符预算，请缩小范围。');
-      return { status: 'success', output: { filePath, ...(result as object) } };
+      return {
+        requestApproval: async () => true,
+        execute: async () => {
+          try {
+            const bytes = await documentBytes(filePath, context.signal);
+            const result = this.name === 'read_docx' ? await readDocx(bytes, input, context)
+              : this.name === 'read_xlsx' ? await readXlsx(bytes, input, context) : await readCsv(bytes, input, context);
+            context.signal?.throwIfAborted();
+            if (JSON.stringify(result).length > MAX_OUTPUT_CHARACTERS) throw new Error('文档结果超过 100000 字符预算，请缩小范围。');
+            return { status: 'success', output: { filePath, ...(result as object) } };
+          } catch (error) {
+            return documentFailure(error, context);
+          }
+        },
+      };
     } catch (error) {
-      if (error instanceof SessionPersistenceError) throw error;
-      context.signal?.throwIfAborted();
-      if (!(error instanceof Error) || error.name === 'AbortError') throw error;
-      return { status: 'error', failureKind: 'permanent', message: error.message };
+      return documentFailure(error, context);
     }
   }
 }

@@ -28,7 +28,7 @@ pnpm install --frozen-lockfile
 PASS：依赖已按锁文件安装。
 
 pnpm check
-PASS：99 个测试文件通过，1105 项测试通过，1 项跳过。
+PASS：99 个测试文件通过，1119 项测试通过，1 项跳过。
 PASS：19 个 workspace 包架构检查通过。
 PASS：git diff --check。
 
@@ -52,7 +52,7 @@ pnpm exec vitest run apps/desktop/tests/safe-storage.test.ts
 PASS：12/12；Windows SQLite 耐久性用例的单项时限调整后通过。
 
 pnpm check（2026-10-18，Node 24.20.0 / pnpm 11.22.0）
-PASS：完整门禁通过，99 个测试文件中 1105 项通过、1 项跳过；19 个 workspace 包架构检查通过。
+PASS：完整门禁通过，99 个测试文件中 1119 项通过、1 项跳过；19 个 workspace 包架构检查通过。
 
 打包桌面应用启动实测（Node 24.20.0 / Playwright 1.63.0）
 PASS：从 win-unpacked 目录启动真实 Agent Desktop.exe，独立 userData 下窗口标题为 Agent Desktop、主界面 .app-shell 可见且生成 agent-desktop.sqlite；隔离 userData 已清理，进程已退出。随包 Chromium 可执行文件存在。
@@ -118,7 +118,6 @@ P1  长视频已有 VideoJob、分段状态、候选 SHA、帧文件复用和视
 P2  win-unpacked Electron 应用及随包 Chromium 启动证据已通过；NSIS 安装器安装后的应用首次启动尚未执行。
 P1  安装/更新网络路径尚未统一记录用户操作准入。
 P2  AgentRuntime.subscribe 已接入 Desktop 状态投影，Renderer 尚未直接消费 Runtime 事件。
-P2  ToolRouter 尚未强制读取 approvalRequirement。
 P2  Session 仍以事件索引为稳定顺序，没有统一持久化 sessionId/sequence/timestamp/itemId 字段。
 P2  同名工具 schema、实现、插件版本和 Skill 正文变化不能由 toolNames 快照检测。
 P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产品恢复能力仍不完整。
@@ -138,6 +137,6 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 
 语义视频验收的内部媒体与 Vision 调用现在只允许访问自身声明的子工具名称，并重新经 `ToolRouter` 校验注册与当前能力集合、应用子工具超时。调用使用注册表中的同一授权包装实例，保留外层 `toolCallId`、进度回调和检查点归属，不增加伪造的 Session 子调用。聚焦验证覆盖未注册或能力排除的子工具、父取消、子工具超时、检查点及结果未知语义。
 
-独立审查发现并修复了钩子包装丢失子工具名单，以及未执行的能力拒绝被误标为未知效果两项问题。`ToolRoutingError` 只表示进入子工具前的路由拒绝，语义验收将其报告为能力受阻；已执行工具的未知效果分类仍保留。四组相关测试 96 项通过，真实 `runTurn` 覆盖包装后组合工具且只生成外层 Session 调用。
+独立审查发现并修复了钩子包装丢失子工具名单、未执行的能力拒绝被误标为未知效果、无审批观察工具在准备阶段提前读取，以及媒体适配器丢失脱敏投影四类问题。`ToolRoutingError` 只表示进入子工具前的路由拒绝，语义验收将其报告为能力受阻；已执行工具的未知效果分类仍保留。`ToolRouter` 现在隐藏缺少 `prepare` 的策略工具，并统一执行 `PreparedToolAction`；Browser、Computer、Document 和插件钩子均在真实操作前完成准备与审批。相关聚焦测试覆盖 Router、包装器、文档和媒体适配器，真实 `runTurn` 仍只生成外层 Session 调用。
 
-修复后 `pnpm check` 通过：99 个测试文件、1110 项测试通过、1 项跳过；19 个 workspace 包架构检查通过。独立复审通过本次变更范围。Router 尚未强制执行 `approvalRequirement`，嵌套调用也不运行 Desktop `beforeToolCall`/`taskToolGate`；当前媒体和 Vision 的授权包装器仍执行其路径授权、MCP 审批及钩子，因此不能把此变更视作通用审批缺口已解决。最终决定继续保持 `CHANGES_REQUIRED`。
+本轮实施跟进的自动化门禁在最终验证后记录实际数量；Windows OS 级隔离、完整真实外部链路、长视频崩溃恢复、Renderer 直接 Runtime 事件消费和模型能力完整映射仍未完成，因此最终决定继续保持 `CHANGES_REQUIRED`。

@@ -48,6 +48,25 @@ export class ToolExecutionError extends Error {
   }
 }
 
+/** 准备阶段只验证并固定操作；批准与执行闭包共享同一份规范化参数。 */
+export interface PreparedToolAction {
+  requestApproval(): Promise<boolean>;
+  execute(): Promise<ToolResult>;
+}
+
+/** 无需操作的成功或输入失败直接返回；只有待执行操作包含审批与执行闭包。 */
+export type ToolPreparation = PreparedToolAction | ToolResult;
+
+/** Router 和独立工具运行入口共用同一审批顺序，不保存第二份授权状态。 */
+export async function executePreparedAction(prepared: ToolPreparation, context: ToolExecutionContext): Promise<ToolResult> {
+  if ('status' in prepared) return prepared;
+  context.signal?.throwIfAborted();
+  const approved = await prepared.requestApproval();
+  context.signal?.throwIfAborted();
+  if (!approved) return { status: 'error', failureKind: 'denied', message: '用户拒绝了该工具操作。' };
+  return prepared.execute();
+}
+
 /**
  * Tool 在模型可见描述上增加 execute 运行能力。
  * Tool 只能返回执行结果，不能反向控制 Agent Loop 的生命周期。
@@ -61,6 +80,8 @@ export interface Tool extends ModelToolDefinition {
   readonly executionBoundary?: Exclude<ExecutionBoundary, 'not-executed'>;
   /** 组合工具可调用的已注册子工具名称；模型看不到该执行权限列表。 */
   readonly nestedToolNames?: readonly string[];
+  /** 需要策略审批的工具必须先准备确切操作，Router 不审批原始模型参数。 */
+  prepare?(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation>;
   execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult>;
 }
 

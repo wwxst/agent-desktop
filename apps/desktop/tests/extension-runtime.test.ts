@@ -12,6 +12,7 @@ import { InMemoryToolRegistry, ToolExecutionError, type Tool } from '@agent-desk
 import { prepareExtensions, selectSkills } from '../src/main/extension-runtime.js';
 import { adaptWhisperTool } from '../src/main/whisper-tool.js';
 import { adaptVisionTool } from '../src/main/vision-tool.js';
+import { adaptFFmpegTool, adaptProbeMediaTool } from '../src/main/ffmpeg-tool.js';
 import { readPlugin, readSkill, type PluginFiles } from '../src/main/extensions.js';
 import { taskToolGate } from '../src/main/agent-task-state.js';
 import { ToolApprovalGate } from '../src/main/tool-approval.js';
@@ -275,7 +276,7 @@ describe('actual extension runtime tool chain', () => {
     expect(denied.tools).toHaveLength(0);
     await denied.close();
     const runtime = await prepareExtensions({ plugins: [files], skills: [] }, async request => request.kind === 'plugin-start');
-    try { expect(await runtime.tools[0]!.execute({}, { toolCallId: 'deny' as never, reportProgress: () => {} })).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' }); }
+    try { expect(await runtime.tools[0]!.execute({}, { toolCallId: 'deny' as never, reportProgress: () => {} })).toMatchObject({ status: 'error', failureKind: 'denied', message: '用户拒绝了该工具操作。' }); }
     finally { await runtime.close(); }
   });
 
@@ -407,6 +408,10 @@ describe('actual extension runtime tool chain', () => {
       expect(approve).not.toHaveBeenCalled();
       expect(connect).not.toHaveBeenCalled();
       const input = name === 'whisper' ? { audioPath: path } : { images: [{ path, timestamp: 0 }] };
+      const prepared = await runtime.tools[0]!.prepare!(input, { toolCallId: 'prepare-only' as never, reportProgress: () => {} });
+      expect(prepared).toHaveProperty('requestApproval');
+      expect(approve).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
       await expect(runtime.tools[0]!.execute(input, { toolCallId: 'lazy-start' as never, reportProgress: () => {} })).rejects.toBe(error);
       expect(approve).toHaveBeenCalledOnce();
       expect(connect).not.toHaveBeenCalled();
@@ -415,11 +420,14 @@ describe('actual extension runtime tool chain', () => {
 
   it('keeps tools wrapped by process hooks opaque even when the inner tool is read-only', async () => {
     const files = await plugin();
-    const runtime = await prepareExtensions({ plugins: [{ ...files, servers: [], hooks: [{ event: 'PreToolUse', command: 'echo hook', timeoutMs: 1000 }] }], skills: [] }, async () => false);
+    const approve = vi.fn(async () => false);
+    const runtime = await prepareExtensions({ plugins: [{ ...files, servers: [], hooks: [{ event: 'PreToolUse', command: 'echo hook', timeoutMs: 1000 }] }], skills: [] }, approve);
     try {
-      const wrapped = runtime.wrapTool({ name: 'read', description: 'read', inputSchema: { type: 'object' }, executionBoundary: 'read-only', execute: async () => ({ status: 'success', output: {} }) });
+      const wrapped = runtime.wrapTool({ name: 'read', description: 'read', inputSchema: { type: 'object' }, executionBoundary: 'read-only', contract: { approvalRequirement: 'none' }, execute: async () => ({ status: 'success', output: {} }) });
       expect(wrapped.executionBoundary ?? 'opaque').toBe('opaque');
-      const composite = runtime.wrapTool({ name: 'composite', description: '', inputSchema: {}, nestedToolNames: ['read'],
+      await wrapped.prepare!({}, { toolCallId: 'prepare-read' as never, reportProgress: () => {} });
+      expect(approve).not.toHaveBeenCalled();
+      const composite = runtime.wrapTool({ name: 'composite', description: '', inputSchema: {}, nestedToolNames: ['read'], contract: { approvalRequirement: 'none' },
         execute: async (_input, context) => context.invokeNestedTool!('read', {}) });
       const tools = new InMemoryToolRegistry();
       tools.register(wrapped);
@@ -431,12 +439,65 @@ describe('actual extension runtime tool chain', () => {
       await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '读取');
       expect(session.events().filter(event => event.type === 'tool.called').map(event => event.name)).toEqual(['composite']);
       expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: {} } });
+      expect(approve).toHaveBeenCalledTimes(2);
       // 媒体适配器前后任一层有钩子时，最终门禁看到的都必须是外层不透明边界。
-      const raw: Tool = { name: 'media', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute: async () => ({ status: 'success', output: {} }) };
+      const raw: Tool = { name: 'media', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
+        contract: { approvalRequirement: 'policy' }, execute: vi.fn<Tool['execute']>(async () => ({ status: 'success', output: {} })) };
       for (const adapt of [adaptWhisperTool, adaptVisionTool]) {
         expect(runtime.wrapTool(adapt(raw, undefined)).executionBoundary ?? 'opaque').toBe('opaque');
         expect(adapt(runtime.wrapTool(raw), undefined).executionBoundary).toBe('opaque');
+        expect(adapt(raw, undefined).prepare).toBeUndefined();
       }
+      expect(adaptProbeMediaTool(runtime.wrapTool(raw), undefined).executionBoundary).toBe('opaque');
+      expect(adaptFFmpegTool(runtime.wrapTool(raw), undefined, 'decode_video').executionBoundary).toBe('opaque');
+      const blocked = runtime.wrapTool(raw);
+      expect(blocked.prepare).toBeUndefined();
+      const blockedTools = new InMemoryToolRegistry(); blockedTools.register(blocked);
+      const blockedSession = new InMemorySession();
+      const blockedApprovalCount = approve.mock.calls.length;
+      await runTurn({ model: { complete: vi.fn<Model['complete']>()
+        .mockResolvedValueOnce({ toolCalls: [{ id: 'blocked-policy' as never, name: 'media', input: {} }] })
+        .mockResolvedValueOnce({ text: '未执行', toolCalls: [] }) }, tools: blockedTools, session: blockedSession,
+        systemPrompt: { build: () => '' } }, '执行未准备工具');
+      expect(raw.execute).not.toHaveBeenCalled();
+      expect(approve).toHaveBeenCalledTimes(blockedApprovalCount);
+      expect(blockedSession.events().find(event => event.type === 'tool.called')).toMatchObject({ name: 'media', boundary: 'not-executed' });
+      expect(projectRecoveryFacts(blockedSession.events()).unknownEffects).toEqual([]);
+    } finally { await runtime.close(); }
+  });
+
+  it('runs prepared inner approval before hooks and preserves its nested call and input projection', async () => {
+    const files = await plugin(); const order: string[] = []; let allowed = false;
+    const approve = vi.fn(async () => { order.push('hook'); return false; });
+    const runtime = await prepareExtensions({ plugins: [{ ...files, servers: [], hooks: ['PreToolUse', 'PostToolUse'].map(event => ({ event, command: 'echo hook', timeoutMs: 1000 })) }], skills: [] }, approve);
+    const execute = vi.fn<Tool['execute']>();
+    const inner: Tool = { name: 'write', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { capability: 'code', approvalRequirement: 'policy' }, nestedToolNames: ['read'],
+      sanitizeInput: () => ({ credential: '[REDACTED]' }), execute,
+      async prepare(input, context) {
+        const value = (input as { value: string }).value.trim();
+        return { requestApproval: async () => { order.push(`approve:${value}`); return allowed; }, execute: async () => {
+          order.push(`execute:${value}`); return context.invokeNestedTool!('read', { value });
+        } };
+      } };
+    const wrapped = runtime.wrapTool(inner); const tools = new InMemoryToolRegistry(); tools.register(wrapped);
+    const nested = vi.fn<Tool['execute']>(async input => ({ status: 'success', output: input }));
+    tools.register({ name: 'read', description: '', inputSchema: {}, contract: { capability: 'code', approvalRequirement: 'none' }, execute: nested });
+    const input = { value: ' exact ', credential: 'secret' };
+    try {
+      await wrapped.prepare!(input, { toolCallId: 'prepare-hook' as never, reportProgress: () => {} });
+      expect(order).toEqual([]); expect(approve).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+      for (const approved of [false, true]) {
+        allowed = approved; order.length = 0; const session = new InMemorySession();
+        const complete = vi.fn<Model['complete']>().mockResolvedValueOnce({ toolCalls: [{ id: 'write' as never, name: wrapped.name, input }] })
+          .mockResolvedValueOnce({ text: '完成', toolCalls: [] });
+        await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '写入', { toolCapabilities: ['code'] });
+        expect(order).toEqual(approved ? ['approve:exact', 'hook', 'execute:exact', 'hook'] : ['approve:exact']);
+        expect(JSON.stringify(session.events())).not.toContain('secret');
+        expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: approved
+          ? { status: 'success', output: { value: 'exact' } } : { status: 'error', failureKind: 'denied' } });
+      }
+      expect(nested).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled(); expect(approve).toHaveBeenCalledTimes(2);
     } finally { await runtime.close(); }
   });
 

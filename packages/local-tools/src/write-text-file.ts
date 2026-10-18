@@ -1,5 +1,5 @@
 import type { ToolResult } from '@agent-desktop/model';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
 import { link, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -27,14 +27,6 @@ async function exists(target: string): Promise<boolean> {
 }
 
 /**
- * 取消信号是活值：它在等待审批期间会被别的代码改变。
- * 单独包一层是为了让「这里必须重新读一次」在类型上也是真的读取，而不是被上一次判断收窄后的常量。
- */
-function isAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
-/**
  * 经宿主批准后创建一个新的文本文件。
  *
  * 三条边界：
@@ -46,6 +38,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
  */
 export class WriteTextFileTool implements Tool {
   readonly executionBoundary = 'checkpointed' as const;
+  readonly contract = { capability: 'code', riskLevel: 'write', parallelSafety: 'serial', workspaceScope: 'session', approvalRequirement: 'policy' } as const;
   readonly name = 'write_text_file';
   readonly description = '在宿主授权范围内创建一个新的文本文件；已有文件不会被覆盖，写入前由宿主审批';
   readonly inputSchema = {
@@ -61,6 +54,10 @@ export class WriteTextFileTool implements Tool {
   public constructor(private readonly workspace: WorkspacePort) {}
 
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
+    return executePreparedAction(await this.prepare(input, context), context);
+  }
+
+  async prepare(input: unknown, context: ToolExecutionContext): Promise<ToolPreparation> {
     const { signal } = context;
     if (!isRecord(input)) return errorResult('write_text_file requires an object input');
     const { filePath, content } = input;
@@ -78,48 +75,43 @@ export class WriteTextFileTool implements Tool {
       return errorResult(`文件已存在，不会覆盖：${scoped.path}`);
     }
 
-    // 轮次已经取消时不再请求确认：宿主的取消信号在请求之前触发，等待就永远不会有结果。
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-
-    const approved = await this.workspace.requestApproval(
-      { kind: 'create-file', path: scoped.path },
-      signal,
-    );
-    // 等待期间用户可能已经取消：批准不能重新启动一个已经失效的操作。
-    if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-    if (!approved) return errorResult(`用户拒绝创建该文件，未做任何写入：${scoped.path}`, 'denied');
-
-    // 持久化失败原样传播，不能转成普通文件错误。
-    context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: null,
-      expectedAfterSha256: createHash('sha256').update(content, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(content, 'utf8') });
-    let temporary: string | undefined;
-    let committed = false;
-    try {
-      try {
-        temporary = await mkdtemp(join(dirname(scoped.path), '.agent-create-'));
-        const staged = join(temporary, 'content');
-        await writeFile(staged, content, { encoding: 'utf8', flag: 'wx' });
-        if (isAborted(signal)) throw new DOMException('The operation was aborted', 'AbortError');
-        // 同文件系统硬链接一次发布完整文件；已有目标直接 EEXIST，不覆盖且不暴露部分内容。
-        await link(staged, scoped.path);
-        committed = true;
-      } finally {
-        if (temporary !== undefined) await rm(temporary, { recursive: true, force: true });
-      }
-    } catch (error) {
-      if (!(error instanceof Error) || error.name === 'AbortError') throw error;
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') return errorResult(`文件已存在，不会覆盖：${scoped.path}`);
-      return errorResult(`无法写入该文件（${code ?? error.message}）：${scoped.path}`, committed ? 'unknown-outcome' : 'permanent');
-    }
-
+    // 路径和内容在准备时固定，批准之后只执行这一次排他创建。
     return {
-      status: 'success',
-      output: {
-        filePath: scoped.path,
-        bytes: Buffer.byteLength(content, 'utf8'),
+      requestApproval: () => this.workspace.requestApproval({ kind: 'create-file', path: scoped.path }, signal),
+      execute: async () => {
+        // 持久化失败原样传播，不能转成普通文件错误。
+        context.checkpoint?.({ kind: 'text-file', path: scoped.path, beforeSha256: null,
+          expectedAfterSha256: createHash('sha256').update(content, 'utf8').digest('hex'), expectedBytes: Buffer.byteLength(content, 'utf8') });
+        let temporary: string | undefined;
+        let committed = false;
+        try {
+          try {
+            temporary = await mkdtemp(join(dirname(scoped.path), '.agent-create-'));
+            const staged = join(temporary, 'content');
+            await writeFile(staged, content, { encoding: 'utf8', flag: 'wx' });
+            signal?.throwIfAborted();
+            // 同文件系统硬链接一次发布完整文件；已有目标直接 EEXIST，不覆盖且不暴露部分内容。
+            await link(staged, scoped.path);
+            committed = true;
+          } finally {
+            if (temporary !== undefined) await rm(temporary, { recursive: true, force: true });
+          }
+        } catch (error) {
+          if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'EEXIST') return errorResult(`文件已存在，不会覆盖：${scoped.path}`);
+          return errorResult(`无法写入该文件（${code ?? error.message}）：${scoped.path}`, committed ? 'unknown-outcome' : 'permanent');
+        }
+
+        return {
+          status: 'success',
+          output: {
+            filePath: scoped.path,
+            bytes: Buffer.byteLength(content, 'utf8'),
+          },
+          artifacts: [await createFileArtifact(scoped.path, this.name, signal)],
+        };
       },
-      artifacts: [await createFileArtifact(scoped.path, this.name, signal)],
     };
   }
 }

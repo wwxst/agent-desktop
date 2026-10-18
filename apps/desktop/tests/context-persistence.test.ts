@@ -90,6 +90,7 @@ describe('persisted model context', () => {
       baseUrl: `http://127.0.0.1:${address.port}/v1`, maxOutputTokens: 4096, disableThinking: false });
     const tools = new InMemoryToolRegistry();
     tools.register({ name: 'read', description: '读取资料', inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      contract: { approvalRequirement: 'none' },
       execute: async () => { throw new Error('本测试不会重放历史工具。'); } });
     const original = history();
     const session = new InMemorySession(original);

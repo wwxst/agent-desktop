@@ -12,6 +12,7 @@ import { createCommandPort } from './command-host.js';
 /** 一个会话的真实终端资源；快照只是历史，不能用于创建或重连进程。 */
 export class SessionTerminal {
   readonly terminalId: string;
+  readonly interpreterPath: string;
   private readonly process: IPty;
   private readonly output = new BoundedTextBuffer(0, 64 * 1024);
   private status: 'running' | 'exited' = 'running';
@@ -19,9 +20,10 @@ export class SessionTerminal {
   private readonly finished: Promise<void>;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private closing: Promise<void> | undefined;
-  constructor(readonly workingDirectory: string, readonly command: string, private readonly publish: (snapshot: TerminalSnapshot) => void, terminalId = randomUUID()) {
+  constructor(readonly workingDirectory: string, readonly command: string, private readonly publish: (snapshot: TerminalSnapshot) => void,
+    terminalId = randomUUID(), port = createCommandPort()) {
     this.terminalId = terminalId;
-    const port = createCommandPort();
+    this.interpreterPath = port.interpreterPath;
     // 编码参数保留完整启动命令；NoExit 让同会话后续轮次仍能向 shell 输入。
     this.process = spawn(port.interpreterPath, ['-NoLogo', '-NoProfile', '-NoExit', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], {
       name: 'xterm-256color', cols: 80, rows: 14, cwd: workingDirectory, env: port.environment as Record<string, string>, useConpty: true,
@@ -79,15 +81,22 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       if (!(await stat(scoped.path)).isDirectory()) throw new Error('终端执行起点不是目录。');
       // 终端是跨调用存活的任意命令进程，不能用单次命令审批替代 OS 级网络隔离。
       assertProcessLaunch('会话终端');
-      const approved = await workspace.requestApproval({ kind: 'terminal-start', command, workingDirectory: scoped.path,
-        interpreter: createCommandPort().interpreterPath }, context.signal);
-      context.signal?.throwIfAborted();
-      if (!approved) throw new ToolExecutionError('用户拒绝启动终端，没有创建进程。', 'denied');
-      touched();
-      const terminalId = randomUUID();
-      context.checkpoint?.({ kind: 'terminal', terminalId, operation: 'open', command, workingDirectory: scoped.path });
-      owner.terminal = new SessionTerminal(scoped.path, command, (snapshot) => { owner.terminalHistory = snapshot; publish(snapshot); }, terminalId);
-      return owner.terminal.snapshot();
+      const port = createCommandPort();
+      const approval = { kind: 'terminal-start' as const, command, workingDirectory: scoped.path, interpreter: port.interpreterPath };
+      return { requestApproval: async () => {
+        const approved = await workspace.requestApproval(approval, context.signal);
+        context.signal?.throwIfAborted();
+        if (!approved) throw new ToolExecutionError('用户拒绝启动终端，没有创建进程。', 'denied');
+        return true;
+      }, execute: async () => {
+        context.signal?.throwIfAborted();
+        if (owner.terminal?.snapshot().status === 'running') throw new ToolExecutionError('本会话已有运行中的终端，请先关闭。', 'permanent');
+        touched();
+        const terminalId = randomUUID();
+        context.checkpoint?.({ kind: 'terminal', terminalId, operation: 'open', command, workingDirectory: scoped.path });
+        owner.terminal = new SessionTerminal(scoped.path, command, (snapshot) => { owner.terminalHistory = snapshot; publish(snapshot); }, terminalId, port);
+        return { status: 'success', output: owner.terminal.snapshot() };
+      } };
     },
     read: async (id, waitMs, context) => {
       // 重启后没有活的 SessionTerminal；只返回保存过的有界历史，绝不重连或重放旧进程。
@@ -102,12 +111,19 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
     },
     write: async (id, input, context) => {
       const terminal = current(id);
-      const approved = await workspace.requestApproval({ kind: 'terminal-input', command: input,
-        workingDirectory: terminal.workingDirectory, interpreter: createCommandPort().interpreterPath }, context.signal);
-      context.signal?.throwIfAborted();
-      if (!approved) throw new ToolExecutionError('用户拒绝终端输入，没有发送。', 'denied');
-      context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'input' });
-      touched(); terminal.write(input); return terminal.snapshot();
+      const approval = { kind: 'terminal-input' as const, command: input,
+        workingDirectory: terminal.workingDirectory, interpreter: terminal.interpreterPath };
+      return { requestApproval: async () => {
+        const approved = await workspace.requestApproval(approval, context.signal);
+        context.signal?.throwIfAborted();
+        if (!approved) throw new ToolExecutionError('用户拒绝终端输入，没有发送。', 'denied');
+        return true;
+      }, execute: async () => {
+        context.signal?.throwIfAborted();
+        if (current(id) !== terminal) throw new ToolExecutionError('终端连接已变化，请重新读取。', 'permanent');
+        context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'input' });
+        touched(); terminal.write(input); return { status: 'success', output: terminal.snapshot() };
+      } };
     },
     close: async (id, context) => { const terminal = current(id); context.checkpoint?.({ kind: 'terminal', terminalId: terminal.terminalId, operation: 'close' }); touched(); await terminal.close(); return terminal.snapshot(); },
   };

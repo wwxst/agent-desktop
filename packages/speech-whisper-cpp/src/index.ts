@@ -185,6 +185,8 @@ function errorResult(error: unknown): ToolResult {
 
 /** 读取 whisper.cpp 官方 JSON，返回完整文字和 segment-level 时间轴。 */
 export class TranscribeAudioTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'transcribe_audio';
   readonly description = '使用本机 whisper.cpp 将标准 WAV 音频转录为文字和段落时间轴';
   readonly inputSchema = {

@@ -157,6 +157,8 @@ async function imageDataUrl(path: string): Promise<{ url: string; size: number }
 }
 
 export class AnalyzeImagesTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'analyze_images';
   readonly description = '使用本次配置的视觉模型分析一至六张 JPG/PNG 图片或视频帧并返回结构化描述';
   readonly inputSchema = {

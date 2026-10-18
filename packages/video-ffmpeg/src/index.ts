@@ -92,6 +92,8 @@ export async function extractFullVideoFrames(inputPath: string, outputDir: strin
 
 /** 把既有全帧算法暴露为工具，使语义验收也经过入口注入的权限、审批和取消。 */
 export class ExtractFullVideoFramesTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'extract_full_video_frames';
   readonly description = '提取候选全部解码帧与原始时间戳；超过 600 帧明确受阻，不降为采样。';
   readonly inputSchema = { type: 'object', properties: { inputPath: { type: 'string' }, outputDir: { type: 'string' } },
@@ -108,6 +110,8 @@ export class ExtractFullVideoFramesTool implements Tool {
 
 /** 分段按解码序号选择每一帧，时间戳仍来自原视频；不能用 fps 采样替代完整覆盖。 */
 export class ExtractVideoSegmentFramesTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'extract_video_segment_frames';
   readonly description = '按从零开始的 startFrame 提取最多 600 个连续解码帧，返回原始时间戳和完整覆盖范围，用于长视频分段验收。';
   readonly inputSchema = { type: 'object', properties: { inputPath: { type: 'string' }, outputDir: { type: 'string' },
@@ -281,6 +285,8 @@ function videoProduced(outputPath: string): ToolResult {
 
 /** 从视频提取供本地语音识别使用的单声道 16 kHz 16-bit PCM WAV 音频。 */
 export class ExtractAudioTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'extract_audio';
 description = '从视频中提取单声道 16 kHz 16-bit PCM WAV 音频';
   readonly inputSchema = {
@@ -424,6 +430,8 @@ async function hasAudioStream(
 
 /** 使用 ffprobe 读取媒体容器和音视频流的基本信息。 */
 export class ProbeMediaTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'probe_media';
 description = '读取媒体文件的时长、画面尺寸和音视频编码信息';
   readonly inputSchema = {
@@ -462,6 +470,8 @@ description = '读取媒体文件的时长、画面尺寸和音视频编码信�
 
 /** 使用 FFmpeg blackdetect 检测黑段；这是只读检查，不登记产物。 */
 export class DetectBlackSegmentsTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'detect_black_segments';
 description = '使用 FFmpeg blackdetect 检测视频中的黑段区间';
   readonly inputSchema = {
@@ -528,6 +538,8 @@ interface DecodeVideoInfo {
  * 「解码到 null」真正读完所有帧。它只报告检查事实，不决定候选是否合格。
  */
 export class DecodeVideoTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'decode_video';
   readonly description = '对视频做全文件解码检查，确认存在可用视频流并且整段可以完整解码';
   readonly inputSchema = {
@@ -661,6 +673,8 @@ async function extractFramesAtTimestamps(
  * 图片留在调用方指定的目录，方便后续视觉分析和人工检查；本 Tool 不负责生命周期清理。
  */
 export class ExtractVideoFramesTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'extract_video_frames';
   readonly description = '从视频中均匀抽取六张代表性画面并返回图片路径与时间戳';
   readonly inputSchema = {
@@ -715,6 +729,8 @@ interface ExtractVideoRangeFramesOutput {
  * timestamp 保持原视频绝对时间，让 DeepSeek 可以直接据此选择 trim_video 的时间参数。
  */
 export class ExtractVideoRangeFramesTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'extract_video_range_frames';
 description = '在指定原视频时间范围内均匀抽取六帧，用于进一步确认内容变化和近似剪切边界';
   readonly inputSchema = {
@@ -786,6 +802,8 @@ description = '在指定原视频时间范围内均匀抽取六帧，用于进�
 
 /** 使用 FFmpeg 重新编码指定时间范围，优先保证裁剪结果稳定正确。 */
 export class TrimVideoTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'trim_video';
   readonly description = '从指定开始时间裁剪固定时长的视频';
   readonly inputSchema = {
@@ -862,6 +880,8 @@ export class TrimVideoTool implements Tool {
  * 只有部分片段有音轨时明确失败，不产出比视频短的音轨。
  */
 export class ConcatVideosTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'concat_videos';
   readonly description = '按顺序拼接多个编码条件一致的视频';
   readonly inputSchema = {
@@ -940,6 +960,8 @@ export class ConcatVideosTool implements Tool {
 
 /** 保留视频画面，并用传入音频替换输出文件的声音。 */
 export class AddAudioTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'add_audio';
 description = '保留视频画面并使用传入音频，输出时长以视频为准';
   readonly inputSchema = {
@@ -999,6 +1021,8 @@ description = '保留视频画面并使用传入音频，输出时长以视频�
 
 /** 使用 FFmpeg subtitles filter 把外部 SRT 字幕永久烧录进视频画面。 */
 export class AddSubtitlesTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'add_subtitles';
 description = '将外部 SRT 字幕烧录到视频画面中';
   readonly inputSchema = {
@@ -1062,6 +1086,8 @@ description = '将外部 SRT 字幕烧录到视频画面中';
 
 /** scale filter 将每一帧直接缩放到用户指定宽高，不隐式保持原始比例。 */
 export class ResizeVideoTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'resize_video';
 description = '将视频画面直接缩放到指定宽度和高度';
   readonly inputSchema = {
@@ -1129,6 +1155,8 @@ description = '将视频画面直接缩放到指定宽度和高度';
 
 /** crop filter 从每一帧的 x、y 起点截取指定宽高矩形。 */
 export class CropVideoTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'crop_video';
   readonly description = '从视频画面指定坐标裁出固定宽高的矩形区域';
   readonly inputSchema = {
@@ -1204,6 +1232,8 @@ export class CropVideoTool implements Tool {
 
 /** 在 0.5～2.0 倍范围内同步调整视频时间戳与音频节奏。 */
 export class SetSpeedTool implements Tool {
+  // 受控执行器的宿主或 CLI 入口负责授权；本层只执行固定媒体算法。
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'set_speed';
 description = '在 0.5 到 2.0 倍范围内同步调整视频播放速度';
   readonly inputSchema = {

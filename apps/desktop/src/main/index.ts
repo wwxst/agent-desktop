@@ -1115,6 +1115,9 @@ function registerIpcHandlers(): void {
       });
       // 一个 Turn 只创建一个 Agent，并把已有 InMemorySession 原样注入以保留模型上下文。
       let agent = createVideoAgent({
+        approveVideoPublish: (target, context) => runtime.withWaiting('waiting_for_approval', () => approvalGate.request({
+          kind: 'tool-action', capability: 'video', action: 'publish', arguments: JSON.stringify(target),
+        }, context.signal)),
         model: new OpenAICompatibleModel({ apiKey: settings.modelApiKey,
           baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
           authorizeNetwork: (request, requestSignal) => session.network.requireProvider(request, requestSignal),

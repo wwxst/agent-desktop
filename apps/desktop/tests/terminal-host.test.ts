@@ -42,7 +42,11 @@ describe('terminal authorization and ownership', () => {
       requestApproval: () => new Promise((resolve) => { answer = resolve; }) };
     const touched = vi.fn();
     const port = terminalPortFor({}, workspace, vi.fn(), touched, vi.fn());
-    const pending = port.open('echo hello', undefined, context);
+    const prepared = await new TerminalTool('open_terminal', port).prepare({ command: 'echo hello' }, context);
+    expect(native.spawn).not.toHaveBeenCalled();
+    expect(answer).toBeUndefined();
+    if ('status' in prepared) throw new Error('Terminal did not prepare an action');
+    const pending = prepared.requestApproval();
     await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
     expect(native.spawn).not.toHaveBeenCalled();
     answer(false);
@@ -58,18 +62,20 @@ describe('terminal authorization and ownership', () => {
     const write = vi.fn();
     const requestApproval = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const workspace: WorkspacePort = { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval };
-    const terminal = { terminalId: 'owned', workingDirectory: process.cwd(), write, snapshot: () => ({ status: 'running' }) } as unknown as SessionTerminal;
+    const terminal = { terminalId: 'owned', workingDirectory: process.cwd(), interpreterPath: 'fixed-powershell.exe', write,
+      snapshot: () => ({ status: 'running' }) } as unknown as SessionTerminal;
     const port = terminalPortFor({ terminal }, workspace, vi.fn(), vi.fn(), vi.fn());
-    await expect(port.write('other-session', 'echo unsafe\n', context)).rejects.toThrow('不属于');
+    const tool = new TerminalTool('write_terminal', port);
+    await expect(tool.execute({ terminalId: 'other-session', input: 'echo unsafe\n' }, context)).rejects.toThrow('不属于');
     expect(requestApproval).not.toHaveBeenCalled();
-    await expect(port.write('owned', 'echo denied\n', context)).rejects.toMatchObject({
+    await expect(tool.execute({ terminalId: 'owned', input: 'echo denied\n' }, context)).rejects.toMatchObject({
       constructor: ToolExecutionError,
       failureKind: 'denied',
       message: expect.stringContaining('拒绝'),
     });
     expect(write).not.toHaveBeenCalled();
-    await port.write('owned', 'echo accepted\n', context);
-    expect(requestApproval).toHaveBeenNthCalledWith(2, expect.objectContaining({ kind: 'terminal-input', command: 'echo accepted\n' }), undefined);
+    await tool.execute({ terminalId: 'owned', input: 'echo accepted\n' }, context);
+    expect(requestApproval).toHaveBeenNthCalledWith(2, expect.objectContaining({ kind: 'terminal-input', command: 'echo accepted\n', interpreter: terminal.interpreterPath }), undefined);
     expect(write).toHaveBeenCalledExactlyOnceWith('echo accepted\n');
   });
 

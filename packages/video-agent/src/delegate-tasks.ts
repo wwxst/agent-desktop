@@ -12,6 +12,7 @@ export type DelegateTasksPort = (task: ReadOnlyTask, context: ToolExecutionConte
 
 /** 一轮最多两项明确委派，数量在生产工具边界执行，子 Agent 不注册本工具。 */
 export class DelegateTasksTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'delegate_tasks';
   readonly description = '委派一层只读文件检查任务；每轮合计最多两个，可并行，不能写文件或执行命令。';
   readonly inputSchema = { type: 'object', properties: { tasks: { type: 'array', minItems: 1, maxItems: 2,

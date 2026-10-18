@@ -7,6 +7,7 @@ export type AskUserPort = (question: UserQuestion, context: ToolExecutionContext
 
 /** 问答是应用层交互；它只等待宿主答复，不启动新轮次或批准副作用。 */
 export class AskUserTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'ask_user';
   readonly description = '任务确实需要用户补充信息时提问；回答后继续当前轮次。回答不是文件或命令授权。';
   readonly inputSchema = { type: 'object', properties: {

@@ -210,7 +210,7 @@ describe('RunCommandTool input and approval boundaries', () => {
     expect(result).toEqual({
       status: 'error',
       failureKind: 'denied',
-      message: "用户拒绝执行该命令，未启动任何进程：Set-Content -LiteralPath 'denied.txt' -Value 'should-not-run'",
+      message: '用户拒绝了该工具操作。',
     });
     // 拒绝不产生任何输出。
     expect(events).toEqual([]);

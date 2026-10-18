@@ -32,7 +32,9 @@ beforeEach(async () => {
 });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
 function rawTool(): Tool & { execute: ReturnType<typeof vi.fn<Tool['execute']>> } {
-  return { name: 'raw', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute: vi.fn<Tool['execute']>(async input => ({ status: 'success',
+  return { name: 'raw', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
+    async prepare(input, context) { return { requestApproval: async () => true, execute: () => this.execute(input, context) }; },
+    execute: vi.fn<Tool['execute']>(async input => ({ status: 'success',
     output: { structuredContent: { ...output((input as { inputPath: string }).inputPath), extra: true } } })) };
 }
 
@@ -319,8 +321,8 @@ describe('host Probe capability boundary', () => {
         ? { text: 'verified', toolCalls: [] } : { toolCalls: [{ id: 'probe' as never, name: 'probe_media', input: { inputPath: '真实 video.mp4' } }] } } }, 'probe');
       expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ name: 'probe_media' });
       expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: output(await realpath(inputPath)) } });
-      expect(approve.mock.calls.map(([request]) => request.kind)).toEqual(['plugin-start', 'plugin-tool']);
-      expect(approve.mock.calls[1]?.[0]).toMatchObject({ arguments: JSON.stringify({ inputPath: await realpath(inputPath) }) });
+      expect(approve.mock.calls.map(([request]) => request.kind)).toEqual(['plugin-tool', 'plugin-start']);
+      expect(approve.mock.calls[0]?.[0]).toMatchObject({ arguments: JSON.stringify({ inputPath: await realpath(inputPath) }) });
     } finally { await runtime.close(); }
     const denied = await prepareExtensions({ plugins: [plugin], skills: [] }, async request => request.kind === 'plugin-start', undefined, undefined, { probeAccess: access });
     try {
@@ -331,7 +333,7 @@ describe('host Probe capability boundary', () => {
         { id: 'repeat-probe' as never, name: 'probe_media', input: { inputPath } },
       ] } : { text: 'denied', toolCalls: [] } } }, 'probe denied', { beforeToolCall: input => taskToolGate(deniedSession.events(), input) });
       expect(deniedSession.events().find(event => event.type === 'tool.result' && event.toolCallId === 'denied-probe'))
-        .toMatchObject({ result: { status: 'error', failureKind: 'denied', message: '用户拒绝了插件工具调用。' } });
+        .toMatchObject({ result: { status: 'error', failureKind: 'denied', message: '用户拒绝了该工具操作。' } });
       expect(deniedSession.events().find(event => event.type === 'tool.called' && event.toolCallId === 'repeat-probe')).toMatchObject({ boundary: 'not-executed' });
       expect(projectRecoveryFacts(deniedSession.events()).unknownEffects).toEqual([]);
     }

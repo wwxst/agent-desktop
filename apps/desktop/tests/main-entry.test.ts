@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DesktopTaskOptions } from '../src/main/agent-task.js';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { executePreparedAction, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
 import type { TerminalPort } from '@agent-desktop/video-agent';
 import { projectRecoveryFacts, projectTurnState } from '@agent-desktop/session';
 import { DesktopExtensions, type PluginFiles } from '../src/main/extensions.js';
@@ -428,7 +428,7 @@ describe('desktop main session lifecycle', () => {
     const desktopOptions = mainMocks.agentOptions[0]!;
     desktopOptions.workspace!.confirmDirectory(process.cwd());
     const terminalContext: ToolExecutionContext = { toolCallId: 'permission-transition' as never, reportProgress: () => {} };
-    await desktopOptions.terminal!.open("Write-Output 'running'", undefined, terminalContext);
+    await executePreparedAction(await desktopOptions.terminal!.open("Write-Output 'running'", undefined, terminalContext), terminalContext);
     expect(terminalMocks.spawn).toHaveBeenCalledOnce();
 
     await expect(deleteSession!({}, firstSessionId)).rejects.toThrow('Agent 正在执行');

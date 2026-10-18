@@ -65,9 +65,12 @@ describe('Desktop task state projection', () => {
 describe('Desktop per-call recovery gate', () => {
   it('matches a denied nested input independent of key order and permits a new explicit turn', async () => {
     const session = new InMemorySession();
-    const execute = vi.fn<Tool['execute']>(async () => ({ status: 'error', failureKind: 'denied', message: '用户拒绝。' }));
+    const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: '必须审批后才执行的写入' }));
+    const approve = vi.fn(async () => false);
     const tools = new InMemoryToolRegistry();
-    tools.register({ name: 'writer', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute });
+    tools.register({ name: 'writer', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { approvalRequirement: 'policy' },
+      prepare: async (input, context) => ({ requestApproval: approve, execute: () => execute(input, context) }), execute });
     let requests = 0;
     const model: Model = { complete: async () => ++requests === 1 ? { toolCalls: [
       { id: 'first' as ToolCallId, name: 'writer', input: { nested: { a: 1, b: 2 } } },
@@ -78,13 +81,15 @@ describe('Desktop per-call recovery gate', () => {
 
     await runTurn(agent, '写入', options);
 
-    expect(execute).toHaveBeenCalledOnce();
+    expect(approve).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
     expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'reordered'))
       .toMatchObject({ boundary: 'not-executed' });
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     requests = 0;
     await runTurn(agent, '重新申请', options);
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(approve).toHaveBeenCalledTimes(2);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('uses a successful result from an interrupted recovery chain instead of replaying its writer', async () => {
@@ -100,8 +105,12 @@ describe('Desktop per-call recovery gate', () => {
     const recovery = prepareTurnStart('继续', { sourceTurnId: original.turnId, mode: 'continue' });
     session.appendMany(recovery.events);
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'duplicate' }));
+    const prepare = vi.fn<NonNullable<Tool['prepare']>>(async (input, context) => ({
+      requestApproval: async () => true, execute: () => execute(input, context),
+    }));
     const tools = new InMemoryToolRegistry();
-    tools.register({ name: 'writer', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute });
+    tools.register({ name: 'writer', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { approvalRequirement: 'policy' }, prepare, execute });
     let requests = 0;
     const model: Model = { complete: async () => ++requests === 1
       ? { toolCalls: [{ id: 'duplicate' as ToolCallId, name: 'writer', input: { path: 'done' } }] }
@@ -111,6 +120,7 @@ describe('Desktop per-call recovery gate', () => {
       { beforeToolCall: input => taskToolGate(session.events(), input) });
 
     expect(execute).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
     expect(session.events().find(event => event.type === 'tool.result' && event.toolCallId === 'duplicate'))
       .toMatchObject({ result: { status: 'error', failureKind: 'permanent', output: { sourceEventIndexes: [sourceEventIndex] } } });
     expect(projectRecoveryFacts(session.events()).successfulCalls).toHaveLength(1);

@@ -51,6 +51,10 @@ export interface SemanticCheckOptions {
 }
 /** 验收独立消费候选实际内容；父模型只提交身份，不能填写通过或覆盖范围。 */
 export class CheckVideoSemanticsTool implements Tool {
+  // 验收本身只编排已授权输出项内的中间证据；各外部子操作独立经过 Router 审批。
+  readonly contract = { approvalRequirement: 'none' } as const;
+  // 语义验收会在输出项工作目录创建临时目录并保存分段证据，必须保留可恢复检查点边界。
+  readonly executionBoundary = 'checkpointed' as const;
   readonly name = 'check_video_semantics';
   readonly description = '针对已声明候选的内容要求逐帧观察、完整语音转录并独立判断；缺少服务、覆盖或判据时返回无法确认。';
   readonly inputSchema = { type: 'object', properties: { outputItemId: { type: 'string' }, candidatePath: { type: 'string' } },
@@ -81,6 +85,9 @@ export class CheckVideoSemanticsTool implements Tool {
       checks: requirements.map((requirement) => ({ requirementId: requirement.id, outcome: 'blocked', detail: reason })) } });
     // hooks 或其他 opaque 包装层可能已经产生副作用；不能把其错误伪装成普通 blocked 成功。
     const nestedFailure = (tool: Tool, result: Extract<ToolResult, { status: 'error' }>, reason: string): ToolResult => {
+      // Router 在准备阶段拒绝时不会进入子工具；已声明边界的拒绝可以安全保留，
+      // 让外层任务门禁识别为 denied，避免把一次审批拒绝伪装成可重试的 blocked 验收。
+      if (result.failureKind === 'denied' && tool.executionBoundary !== undefined && tool.executionBoundary !== 'opaque') return result;
       if (result.failureKind === 'unknown-outcome' || tool.executionBoundary === 'opaque' || tool.executionBoundary === undefined) {
         return { ...result, failureKind: 'unknown-outcome' };
       }

@@ -15,7 +15,7 @@ function routerFor(tool: Tool): ToolRouter {
 }
 const read: Tool = { name: 'read', description: 'read source', inputSchema: { type: 'object' },
   executionBoundary: 'read-only', execute: async () => ({ status: 'success', output: 'source' }),
-  contract: { capability: 'code', riskLevel: 'read', parallelSafety: 'safe' } };
+  contract: { capability: 'code', riskLevel: 'read', parallelSafety: 'safe', approvalRequirement: 'none' } };
 
 describe('ToolRouter', () => {
   it('uses one conservative contract and requires both explicit parallel safety and a read-only boundary', () => {
@@ -31,7 +31,7 @@ describe('ToolRouter', () => {
     const registry = new InMemoryToolRegistry();
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'video' }));
     registry.register(read);
-    registry.register({ ...read, name: 'video', contract: { capability: 'video' }, execute });
+    registry.register({ ...read, name: 'video', contract: { ...read.contract, capability: 'video' }, execute });
     const router = new ToolRouter(registry, ['code']);
     expect(router.catalog().map(entry => entry.name)).toEqual(['read']);
     expect(router.definitions()).toEqual([{ name: read.name, description: read.description, inputSchema: read.inputSchema }]);
@@ -75,7 +75,7 @@ describe('ToolRouter', () => {
     const registry = new InMemoryToolRegistry();
     registry.register(parent('missing'));
     registry.register(parent('video'));
-    registry.register({ ...read, name: 'video', execute: excludedExecute, contract: { capability: 'video' } });
+    registry.register({ ...read, name: 'video', execute: excludedExecute, contract: { ...read.contract, capability: 'video' } });
     const router = new ToolRouter(registry, ['code']);
 
     await expect(router.execute({ ...call, name: 'parent_missing' }, context)).rejects.toMatchObject({ failureKind: 'permanent' });
@@ -86,7 +86,7 @@ describe('ToolRouter', () => {
   it('propagates parent cancellation and applies the nested tool timeout', async () => {
     const parent: Tool = { ...read, name: 'parent', nestedToolNames: ['slow'], execute: async (_input, execution) =>
       execution.invokeNestedTool!('slow', {}) };
-    const slow: Tool = { ...read, name: 'slow', contract: { timeoutMs: 5 }, execute: async (_input, execution) =>
+    const slow: Tool = { ...read, name: 'slow', contract: { ...read.contract, timeoutMs: 5 }, execute: async (_input, execution) =>
       new Promise((_resolve, reject) => execution.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })) };
     const registry = new InMemoryToolRegistry();
     registry.register(parent);
@@ -97,7 +97,7 @@ describe('ToolRouter', () => {
     const controller = new AbortController();
     let markStarted!: () => void;
     const started = new Promise<void>(resolve => { markStarted = resolve; });
-    const cancellable: Tool = { ...slow, contract: { timeoutMs: 120_000 }, execute: async (_input, execution) => new Promise((_resolve, reject) => {
+    const cancellable: Tool = { ...slow, contract: { ...read.contract, timeoutMs: 120_000 }, execute: async (_input, execution) => new Promise((_resolve, reject) => {
       execution.signal!.addEventListener('abort', () => reject(execution.signal!.reason), { once: true });
       markStarted();
     }) };
@@ -111,7 +111,7 @@ describe('ToolRouter', () => {
   });
 
   it.each(['read-only', 'opaque'] as const)('classifies a real signalled timeout at the %s boundary', async boundary => {
-    const router = routerFor({ ...read, executionBoundary: boundary, contract: { timeoutMs: 5 },
+    const router = routerFor({ ...read, executionBoundary: boundary, contract: { ...read.contract, timeoutMs: 5 },
       execute: async (_input, inputContext) => new Promise((_resolve, reject) => {
         inputContext.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
       }) });
@@ -134,7 +134,7 @@ describe('ToolRouter', () => {
   });
 
   it('waits for a tool that cannot stop and preserves its actual final success instead of leaving background work', async () => {
-    const router = routerFor({ ...read, executionBoundary: 'opaque', contract: { timeoutMs: 1, cancellation: 'none' },
+    const router = routerFor({ ...read, executionBoundary: 'opaque', contract: { ...read.contract, timeoutMs: 1, cancellation: 'none' },
       execute: async () => {
         await new Promise(resolve => setTimeout(resolve, 10));
         return { status: 'success', output: 'actual external completion' };

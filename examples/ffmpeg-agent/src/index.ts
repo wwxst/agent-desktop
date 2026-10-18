@@ -71,6 +71,11 @@ async function runCli(
 ): Promise<void> {
   const endpoint = modelBaseUrl ?? 'https://api.deepseek.com';
   const agent = createVideoAgent({
+    approveVideoPublish: async (target, context) => {
+      const answer = await terminal.question(`发布 ${target.candidatePath} → ${target.targetPath}？[y/N] `,
+        context.signal === undefined ? {} : { signal: context.signal });
+      return answer.trim().toLowerCase() === 'y';
+    },
     model: new OpenAICompatibleModel({ apiKey, baseUrl: endpoint,
       model: process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro', disableThinking: new URL(endpoint).hostname === 'api.deepseek.com' }),
     mediaTools: [new ProbeMediaTool(), new DecodeVideoTool(), new DetectBlackSegmentsTool(), new ExtractVideoFramesTool(),

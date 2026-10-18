@@ -26,7 +26,7 @@ async function fixture() {
     if (args.includes('libx264')) await copyFile(args[args.indexOf('-i') + 1]!, args[args.length - 1]!);
     return { stdout: '', stderr: '' };
   };
-  const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session,
+  const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, approveVideoPublish: async () => true,
     workspace: { confirmedDirectory: () => directory, requestApproval: async () => true, confirmDirectory: () => {} },
     mediaTools: [new TrimVideoTool(execute), new DecodeVideoTool(execute)] });
   return { directory, source, session, agent };

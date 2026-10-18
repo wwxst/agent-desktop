@@ -19,6 +19,7 @@ function error(message: string): ToolResult {
  * 外层插件/宿主副作用仍保持 unresolved；是否能解除整个调用由用户核验入口决定。
  */
 export class VerifyToolOutcomeTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly name = 'verify_tool_outcome';
   readonly description = '核验已有文件工具的实际文件字节；只接受 Session 事实索引，不重放原工具或修改文件。';
   readonly executionBoundary = 'read-only' as const;

@@ -30,7 +30,7 @@ describe('per-call host gate and bounded tool attempts', () => {
       context.checkpoint?.({ kind: 'actual-effect' });
       return { status: 'success', output: 'written' };
     });
-    const tool: Tool = { name: 'write', description: '', inputSchema: {}, execute };
+    const tool: Tool = { name: 'write', description: '', inputSchema: {}, contract: { approvalRequirement: 'none' }, execute };
     agent.tools.register(tool);
     const beforeToolCall = vi.fn<NonNullable<RunTurnOptions['beforeToolCall']>>(input => {
       expect(input.tool).toBe(tool);
@@ -51,7 +51,7 @@ describe('per-call host gate and bounded tool attempts', () => {
     const session = new RecordingSession();
     const agent = agentFor([{ toolCalls: [call('first'), call('second')] }, final], session);
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'error', message: 'response lost', failureKind: 'unknown-outcome' }));
-    agent.tools.register({ name: 'write', description: '', inputSchema: {}, execute });
+    agent.tools.register({ name: 'write', description: '', inputSchema: {}, contract: { approvalRequirement: 'none' }, execute });
     const beforeToolCall: NonNullable<RunTurnOptions['beforeToolCall']> = () => {
       const unknown = projectRecoveryFacts(session.events()).unknownEffects;
       return { boundary: 'opaque', ...(unknown.length === 0 ? {} : { blocked: {
@@ -103,7 +103,7 @@ describe('per-call host gate and bounded tool attempts', () => {
     }
     const agent = agentFor([{ toolCalls: [call('blocked')] }], new FailingSession());
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'write' }));
-    agent.tools.register({ name: 'write', description: '', inputSchema: {}, execute });
+    agent.tools.register({ name: 'write', description: '', inputSchema: {}, contract: { approvalRequirement: 'none' }, execute });
     const onToolResult = vi.fn();
     const trace = vi.fn();
 
@@ -119,7 +119,7 @@ describe('per-call host gate and bounded tool attempts', () => {
   it('counts blocked attempts toward the cap without losing a prior successful write', async () => {
     const agent = agentFor([{ toolCalls: [call('success'), call('blocked'), call('excess')] }]);
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'real success' }));
-    agent.tools.register({ name: 'write', description: '', inputSchema: {}, execute });
+    agent.tools.register({ name: 'write', description: '', inputSchema: {}, contract: { approvalRequirement: 'none' }, execute });
     const beforeToolCall = vi.fn<NonNullable<RunTurnOptions['beforeToolCall']>>(input => ({ boundary: 'checkpointed',
       ...(input.call.id === 'blocked' ? { blocked: { message: '不可执行', sourceEventIndexes: [] } } : {}) }));
 

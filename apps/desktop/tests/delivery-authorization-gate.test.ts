@@ -1,10 +1,11 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import type { ToolResult } from '@agent-desktop/model';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { runTurn } from '@agent-desktop/agent-loop';
+import type { Model, ToolResult } from '@agent-desktop/model';
 import { InMemorySession, projectRecoveryFacts, type SessionEvent } from '@agent-desktop/session';
-import type { Tool } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolRouter, type Tool } from '@agent-desktop/tools';
 import {
   DeclareVideoOutputsTool,
   PublishVideoOutputTool,
@@ -43,6 +44,41 @@ function access(directory: () => string, session: InMemorySession, attachments: 
 }
 
 describe('video delivery authorization recovery gate', () => {
+  it('preserves prepared delivery approval, nested routing and persisted input redaction', async () => {
+    const session = new InMemorySession(); const execute = vi.fn<Tool['execute']>();
+    const requestApproval = vi.fn(async () => false);
+    const nestedExecute = vi.fn<Tool['execute']>(async input => ({ status: 'success', output: input }));
+    const prepare = vi.fn<NonNullable<Tool['prepare']>>(async (_input, context) => ({ requestApproval,
+      execute: () => context.invokeNestedTool!('read_delivery_metadata', { normalized: true }) }));
+    const inner: Tool = { name: 'publish_video_output', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
+      contract: { capability: 'media', approvalRequirement: 'policy' }, nestedToolNames: ['read_delivery_metadata'],
+      sanitizeInput: () => ({ credential: '[REDACTED]' }), prepare, execute };
+    const wrapped = authorizeVideoDeliveryTool(inner, access(() => tmpdir(), session));
+    const tools = new InMemoryToolRegistry(); tools.register(wrapped);
+    tools.register({ name: 'read_delivery_metadata', description: '', inputSchema: {}, executionBoundary: 'read-only',
+      contract: { capability: 'media', approvalRequirement: 'none' }, execute: nestedExecute });
+    const router = new ToolRouter(tools, ['media']);
+    const context = { toolCallId: 'prepared-delivery' as never, reportProgress: () => {} };
+    await wrapped.prepare!({}, context);
+    expect(requestApproval).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); expect(nestedExecute).not.toHaveBeenCalled();
+
+    expect(await router.execute({ id: context.toolCallId, name: wrapped.name, input: {} }, context)).toMatchObject({ status: 'error', failureKind: 'denied' });
+    expect(nestedExecute).not.toHaveBeenCalled();
+    requestApproval.mockResolvedValue(true);
+    const complete = vi.fn<Model['complete']>().mockResolvedValueOnce({ toolCalls: [{ id: 'publish' as never, name: wrapped.name, input: { credential: 'secret' } }] })
+      .mockResolvedValueOnce({ text: '完成', toolCalls: [] });
+    await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '交付', { toolCapabilities: ['media'] });
+    expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ input: { credential: '[REDACTED]' } });
+    expect(JSON.stringify(session.events())).not.toContain('secret');
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: { normalized: true } } });
+    expect(nestedExecute).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
+
+    const { prepare: _prepare, ...missingPreparation } = inner;
+    const blockedTools = new InMemoryToolRegistry();
+    blockedTools.register(authorizeVideoDeliveryTool(missingPreparation, access(() => tmpdir(), session)));
+    expect(new ToolRouter(blockedTools).definitions()).toEqual([]);
+  });
+
   it('classifies an unauthorized declaration as permanent and permits the same call after authorization', async () => {
     const root = await mkdtemp(join(tmpdir(), 'delivery-auth-declare-')); roots.push(root);
     const workspace = join(root, 'workspace'); const outside = join(root, 'outside');
@@ -90,7 +126,7 @@ describe('video delivery authorization recovery gate', () => {
     const validation = await invoke(session, validationTool, validationInput, 'validate');
     expect(validation.status).toBe('success');
     const validationId = ((validation.output as { validation: { id: string } }).validation).id;
-    const publish = authorizeVideoDeliveryTool(new PublishVideoOutputTool(readEvents), access(() => confirmed, session));
+    const publish = authorizeVideoDeliveryTool(new PublishVideoOutputTool(readEvents, async () => true), access(() => confirmed, session));
     const publishInput = { validationId };
 
     const denied = await invoke(session, publish, publishInput, 'publish-denied');

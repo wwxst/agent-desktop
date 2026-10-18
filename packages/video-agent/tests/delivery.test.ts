@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolCallId, ToolResult } from '@agent-desktop/model';
 import { candidateDigest } from '../src/candidate-digest.js';
 import { InMemorySession, type StepId, type TurnId } from '@agent-desktop/session';
@@ -88,6 +88,7 @@ function decodableEvidence(inputPath: string, decoded = true): unknown {
 
 /** 候选写出工具：真实写入文件，并返回结构化生产事实。 */
 class CandidateTool implements Tool {
+  readonly contract = { approvalRequirement: 'none' } as const;
   readonly description = '测试用候选写出工具';
   readonly inputSchema = { type: 'object', properties: { outputPath: { type: 'string' } } };
   readonly written: string[] = [];
@@ -115,7 +116,7 @@ function createDeliveryTools(session: InMemorySession = newSession()): DeliveryT
     session,
     declare: new DeclareVideoOutputsTool(readEvents),
     validate: new ValidateVideoCandidateTool(readEvents),
-    publish: new PublishVideoOutputTool(readEvents),
+    publish: new PublishVideoOutputTool(readEvents, async () => true),
   };
 }
 
@@ -614,6 +615,33 @@ describe('candidate validation', () => {
 });
 
 describe('publishing', () => {
+  it.each(['deny', 'target-conflict', 'candidate-change'] as const)('fixes the exact publish action before approval and stops on %s', async scenario => {
+    const directory = await temporaryDirectory();
+    const tools = createDeliveryTools();
+    const item = await declareItem(tools, join(directory, 'source.mp4'), { kind: 'automatic' });
+    const candidate = await produceCandidate(tools, item.workingDirectory, 'attempt.mp4', item.sourcePath);
+    appendCheck(tools.session, 'decode_video', candidate.path, decodableEvidence(candidate.path));
+    const validation = await validateCandidate(tools, item.outputItemId, candidate.path);
+    const target = join(await realpath(directory), 'source-edited.mp4');
+    const approve = vi.fn(async (action: { candidatePath: string; targetPath: string }) => {
+      expect(action).toEqual({ candidatePath: candidate.path, targetPath: target });
+      await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+      if (scenario === 'target-conflict') await writeFile(target, 'someone else');
+      if (scenario === 'candidate-change') await writeFile(candidate.path, 'changed after approval began');
+      return scenario !== 'deny';
+    });
+    const publish = new PublishVideoOutputTool(() => tools.session.events(), approve);
+    const checkpoint = vi.fn();
+    const result = await publish.execute({ validationId: validation.validationId }, { ...toolContext(), checkpoint });
+    expect(approve).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ status: 'error', failureKind: scenario === 'deny' ? 'denied' : 'permanent' });
+    if (scenario === 'target-conflict') expect(await readFile(target, 'utf8')).toBe('someone else');
+    else await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(join(directory, 'source-edited-2.mp4'))).rejects.toMatchObject({ code: 'ENOENT' });
+    if (scenario !== 'target-conflict') expect(checkpoint).not.toHaveBeenCalled();
+    expect(readVideoDeliveryFacts(tools.session.events()).published).toEqual([]);
+  });
+
   it('publishes only the repaired candidate and keeps the failed one out of the delivery', async () => {
     const directory = await temporaryDirectory();
     const tools = createDeliveryTools();

@@ -40,7 +40,7 @@ describe('video validation through the Desktop recovery gate', () => {
         if (args.includes('libx264')) await copyFile(args[args.indexOf('-i') + 1]!, args[args.length - 1]!);
         return { stdout: '', stderr: '' };
       };
-      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session,
+      const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session, approveVideoPublish: async () => true,
         mediaTools: [new TrimVideoTool(execute), new DecodeVideoTool(execute), new ProbeMediaTool(execute)] });
       let request = 0;
       let outputItemId = '';
@@ -87,9 +87,10 @@ describe('video validation through the Desktop recovery gate', () => {
 
       // 发布检查点保存失败必须向 Loop 传播，不能被应用 Tool 转成普通失败或创建目标。
       const beforePublish = new InMemorySession(prePublishEvents);
-      const publishTool = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session: beforePublish }).tools.get('publish_video_output')!;
+      const publishTool = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session: beforePublish, approveVideoPublish: async () => true }).tools.get('publish_video_output')!;
+      await rm(target);
       await expect(publishTool.execute({ validationId: prePublishValidationId }, failingContext)).rejects.toBe(persistenceFailure);
-      expect(await readFile(target, 'utf8')).toBe('candidate fixture bytes');
+      await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
 
       const calls = session.events().filter(event => event.type === 'tool.called');
       expect(calls.find(event => event.type === 'tool.called' && event.name === 'validate_video_candidate'))
