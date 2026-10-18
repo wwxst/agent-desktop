@@ -1,5 +1,5 @@
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -130,7 +130,7 @@ describe('real session browser runtime', () => {
     const checkpoint = vi.fn();
     await call(browser, 'browser_upload', { ...element(snapshot, 'Upload'), filePath: 'upload.txt' }, { ...execution, checkpoint });
     expect((await call(browser, 'browser_snapshot', { pageId: opened.pageId })).text).toContain('upload.txt');
-    expect(decisions).toContainEqual(expect.objectContaining({ action: 'upload', filePath: join(directory, 'upload.txt') }));
+    expect(decisions).toContainEqual(expect.objectContaining({ action: 'upload', filePath: await realpath(join(directory, 'upload.txt')) }));
     expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({ kind: 'browser', action: 'upload' }));
     const failedSave = new SessionPersistenceError(new Error('disk full'));
     await expect(call(browser, 'browser_screenshot', { pageId: opened.pageId }, { ...execution, checkpoint: () => { throw failedSave; } })).rejects.toBe(failedSave);
