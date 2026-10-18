@@ -853,6 +853,11 @@ function registerIpcHandlers(): void {
     const mode = parsePermissionMode(value);
     const session = activeSession();
     if (clientState === null) throw new Error('当前聊天尚未保存。');
+    // 已运行的持久终端不受后续逐请求网络策略约束；收紧权限前先结束整棵进程树。
+    if (mode !== 'full-access' && session.terminal?.snapshot().status === 'running') {
+      await session.terminal.close();
+      session.terminalHistory = session.terminal.snapshot();
+    }
     const applyMode = (conversation: ClientStateSnapshot['conversations'][number]) => conversation.id === activeSessionId
       ? { ...conversation, permissionMode: mode } : conversation;
     const snapshot = { ...clientState, conversations: clientState.conversations.map(applyMode),
@@ -1065,6 +1070,9 @@ function registerIpcHandlers(): void {
       const availableExtensions = { ...extensionFiles, plugins: extensionFiles.plugins.filter(plugin => plugin !== whisper || whisperUnavailable === undefined) };
       const mediaAccess = { workspace: workspace, attachments: () => session.attachments.map(attachment => attachment.path),
         events: () => session.session.events() };
+      const assertProcessLaunch = (target: string) => session.executionBoundary.assertProcessLaunch({
+        target, networkAllowed: session.network.allowsUnrestrictedProcess(),
+      });
       const extensions = await runHostOperation(session, preparedStart.turnId, 'prepare', '准备本轮扩展、技能和工具服务。',
         () => prepareExtensions(availableExtensions, (request, signal) => runtime.withWaiting('waiting_for_approval', () => approvalGate.request(request, signal)), signal, prompt.trim(),
           { authProvider: (plugin, server) => connectionStore().provider(plugin.item.id, server.name, server.url!),
@@ -1118,7 +1126,7 @@ function registerIpcHandlers(): void {
         session: session.session,
         workspace: workspace,
         // 命令能力由宿主提供解释器绝对路径和受限子进程环境；工具自己不做这些选择。
-        command: createCommandPort(),
+        command: createCommandPort(assertProcessLaunch),
         terminal: terminalPortFor(session, workspace, (terminal) => {
           sendAgentEvent({ type: 'terminal.updated', sessionId, terminal });
           // 只在宿主终态转换时保存终端事实，逐块输出仍按现有有界内存通知。
@@ -1126,7 +1134,7 @@ function registerIpcHandlers(): void {
             persistSessionResourceState(sessionId);
             if (terminal.status === 'running') terminalRunningPersisted = true;
           }
-        }, () => { if (activeTask?.runtime === runtime) activeTask.terminalTouched = true; }),
+        }, () => { if (activeTask?.runtime === runtime) activeTask.terminalTouched = true; }, assertProcessLaunch),
         askUser: (question, context) => {
           const called = session.session.events().findLast((event) => event.type === 'tool.called' && event.toolCallId === context.toolCallId);
           if (called?.type !== 'tool.called') throw new Error('提问缺少当前工具调用事实。');

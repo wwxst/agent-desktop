@@ -26,6 +26,8 @@ export interface CommandPort {
   readonly interpreterPath: string;
   /** 只包含运行工具链所需基础变量的子进程环境。 */
   readonly environment: NodeJS.ProcessEnv;
+  /** Desktop 没有 OS 级网络隔离时，在启动任意命令前拒绝受限网络策略。 */
+  readonly assertProcessLaunch?: (target: string) => void;
 }
 
 /** 一次命令的真实终态；退出码为 0 只代表该命令正常退出。 */
@@ -365,6 +367,9 @@ export class RunCommandTool implements Tool {
 
     // 轮次已经取消时不再请求确认：宿主的取消信号在请求之前触发，等待就永远不会有结果。
     if (isAborted(context.signal)) throw abortError();
+
+    // 任意 Shell 命令都能自行访问网络；宿主没有 OS 级隔离时只允许完全开放的网络模式启动。
+    this.host.assertProcessLaunch?.('Shell 命令');
 
     const approved = await this.workspace.requestApproval({
       kind: 'command',

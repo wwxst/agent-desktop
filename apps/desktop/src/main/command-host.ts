@@ -39,7 +39,7 @@ const FLUSH_INTERVAL_MS = 50;
  *
  * 解释器绝对路径由宿主给出，因此工具不搜索 PATH，也不静默在多个解释器之间切换。
  */
-export function createCommandPort(): CommandPort {
+export function createCommandPort(assertProcessLaunch?: (target: string) => void): CommandPort {
   const systemRoot = process.env.SystemRoot;
   // 解析不到系统目录时不猜一个可能错误的路径，直接失败让问题可见。
   if (systemRoot === undefined) throw new Error('SystemRoot 未设置，无法解析命令解释器路径。');
@@ -53,6 +53,7 @@ export function createCommandPort(): CommandPort {
   return {
     interpreterPath: join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     environment,
+    ...(assertProcessLaunch === undefined ? {} : { assertProcessLaunch }),
   };
 }
 

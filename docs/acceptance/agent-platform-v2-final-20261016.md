@@ -62,7 +62,7 @@ PASS：60/60。
 
 未通过项：
 
-- 受限网络模式已在进程创建前拒绝第三方 stdio MCP 和插件 Hook；本机命令、Terminal 仍无法被 `NetworkAccessPolicy` 逐请求拦截，Windows OS 级隔离尚未实现。
+- 受限网络模式已在进程创建前拒绝第三方 stdio MCP、插件 Hook、本机 `run_command` 和 Terminal；Windows OS 级隔离尚未实现，完整访问模式中的任意进程仍不受逐请求网络控制。
 - Desktop 已消费 Capability Catalog，按最终注册表和视觉路由筛选模型工具集合，并保留 unknown 能力；模型能力契约仍没有覆盖工具、流式、reasoning、并行和 Tool Search 等字段。
 - `ToolRouter` 不读取 `approvalRequirement` 强制执行统一审批；现有内置工具已各自接入审批，但新工具可能遗漏。
 - `AgentRuntime.subscribe` 已被 Desktop 用于触发任务状态投影，但 Renderer 仍消费现有宿主事件，而不是直接消费 Runtime 事件协议。
@@ -75,7 +75,7 @@ PASS：60/60。
 
 仍需后续修复的行为边界：
 
-- stdio、Hook 和本机命令网络隔离缺少可执行的 OS 级实现。
+- Windows OS 级进程与网络隔离尚未实现；受限模式以拒绝任意进程 fail closed，完整访问模式中的进程不受逐请求网络控制。
 - 安装包已分发 Chromium 到运行时路径；无 Playwright 用户缓存的安装后启动 smoke test 仍未执行。
 - 市场下载、Whisper/FFmpeg 资源下载和更新器网络属于安装/更新边界，尚未接入聊天轮次策略；需要单独的显式用户操作准入记录。
 
@@ -102,7 +102,7 @@ CI Windows / Ubuntu       FAIL：提交 89289d3 的 Actions run 39111790735 两�
 ## 5. 已知剩余风险
 
 ```text
-P1  本机 Shell 命令和 Terminal 仍绕过逐请求网络策略；第三方 stdio MCP/Hook 在受限模式下已 fail-closed，但 Windows OS 级隔离尚未实现。
+P1  Windows OS 级进程及网络隔离尚未实现；受限模式拒绝任意 Shell/Terminal/stdio/Hook 进程，完整访问模式仍允许其不受限网络访问。
 P1  Capability Catalog 已接入 Desktop，但模型能力到完整 Tool Contract 的映射仍缺失。
 P1  长视频已有 VideoJob、分段状态、候选 SHA、帧文件复用和视觉/语音证据缓存；跨重启真实崩溃验收仍缺失。
 P2  Windows 分发 Chromium 的独立真实启动已通过；安装器安装后的 Electron 应用首次启动尚未执行。

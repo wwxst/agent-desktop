@@ -19,12 +19,29 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('terminal authorization and ownership', () => {
+  it('rejects a terminal before asking for approval when its process cannot be network-isolated', async () => {
+    const requestApproval = vi.fn(async () => true);
+    const assertProcessLaunch = vi.fn((target: string) => {
+      throw new ToolExecutionError(`受限网络策略不能启动${target}。`, 'denied');
+    });
+    const workspace: WorkspacePort = { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval };
+    const touched = vi.fn();
+    const port = terminalPortFor({}, workspace, vi.fn(), touched, assertProcessLaunch);
+
+    await expect(port.open('echo hello', undefined, context)).rejects.toMatchObject({ failureKind: 'denied' });
+
+    expect(assertProcessLaunch).toHaveBeenCalledExactlyOnceWith('会话终端');
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(native.spawn).not.toHaveBeenCalled();
+    expect(touched).not.toHaveBeenCalled();
+  });
+
   it('does not create a PTY before or after rejected start authorization', async () => {
     let answer!: (approved: boolean) => void;
     const workspace: WorkspacePort = { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(),
       requestApproval: () => new Promise((resolve) => { answer = resolve; }) };
     const touched = vi.fn();
-    const port = terminalPortFor({}, workspace, vi.fn(), touched);
+    const port = terminalPortFor({}, workspace, vi.fn(), touched, vi.fn());
     const pending = port.open('echo hello', undefined, context);
     await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
     expect(native.spawn).not.toHaveBeenCalled();
@@ -42,7 +59,7 @@ describe('terminal authorization and ownership', () => {
     const requestApproval = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const workspace: WorkspacePort = { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval };
     const terminal = { terminalId: 'owned', workingDirectory: process.cwd(), write, snapshot: () => ({ status: 'running' }) } as unknown as SessionTerminal;
-    const port = terminalPortFor({ terminal }, workspace, vi.fn(), vi.fn());
+    const port = terminalPortFor({ terminal }, workspace, vi.fn(), vi.fn(), vi.fn());
     await expect(port.write('other-session', 'echo unsafe\n', context)).rejects.toThrow('不属于');
     expect(requestApproval).not.toHaveBeenCalled();
     await expect(port.write('owned', 'echo denied\n', context)).rejects.toMatchObject({
@@ -61,7 +78,7 @@ describe('terminal authorization and ownership', () => {
     const workspace: WorkspacePort = { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval };
     const session = new InMemorySession();
     const tools = new InMemoryToolRegistry();
-    tools.register(new TerminalTool('open_terminal', terminalPortFor({}, workspace, vi.fn(), vi.fn())));
+    tools.register(new TerminalTool('open_terminal', terminalPortFor({}, workspace, vi.fn(), vi.fn(), vi.fn())));
     let request = 0;
     const model: Model = { complete: async () => ++request === 1
       ? { toolCalls: [
@@ -89,7 +106,7 @@ describe('terminal authorization and ownership', () => {
       output: 'old output', droppedBytes: 0, status: 'running' as const, exitCode: null };
     const touched = vi.fn();
     const port = terminalPortFor({ terminalHistory: history },
-      { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval: vi.fn() }, vi.fn(), touched);
+      { confirmedDirectory: () => process.cwd(), confirmDirectory: vi.fn(), requestApproval: vi.fn() }, vi.fn(), touched, vi.fn());
 
     await expect(port.read(history.terminalId, 2_000, context)).resolves.toEqual({ ...history, status: 'disconnected' });
     expect(touched).not.toHaveBeenCalled();

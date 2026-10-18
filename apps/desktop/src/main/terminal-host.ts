@@ -65,7 +65,8 @@ export class SessionTerminal {
 interface TerminalOwner { terminal?: SessionTerminal; terminalHistory?: TerminalSnapshot; }
 /** 同一会话跨轮复用，模型和 IPC 都校验宿主生成的终端标识。 */
 export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
-  publish: (snapshot: TerminalSnapshot) => void, touched: () => void): TerminalPort {
+  publish: (snapshot: TerminalSnapshot) => void, touched: () => void,
+  assertProcessLaunch: (target: string) => void): TerminalPort {
   const current = (id: string): SessionTerminal => {
     if (owner.terminal?.terminalId !== id) throw new Error('终端不属于当前会话，或连接已结束。');
     return owner.terminal;
@@ -76,6 +77,8 @@ export function terminalPortFor(owner: TerminalOwner, workspace: WorkspacePort,
       const scoped = await resolveScopedPath(workspace.confirmedDirectory(), directory, workspace.fileAccess === 'all');
       if (!scoped.ok) throw new Error(scoped.message);
       if (!(await stat(scoped.path)).isDirectory()) throw new Error('终端执行起点不是目录。');
+      // 终端是跨调用存活的任意命令进程，不能用单次命令审批替代 OS 级网络隔离。
+      assertProcessLaunch('会话终端');
       const approved = await workspace.requestApproval({ kind: 'terminal-start', command, workingDirectory: scoped.path,
         interpreter: createCommandPort().interpreterPath }, context.signal);
       context.signal?.throwIfAborted();

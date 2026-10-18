@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolResult } from '@agent-desktop/model';
 import type { ToolExecutionContext, ToolProgressEvent } from '@agent-desktop/tools';
 import {
@@ -79,11 +79,12 @@ function portFor(options: {
 }
 
 /** 只提供当前用例真正使用的解释器路径和子进程环境。 */
-function commandPort(): CommandPort {
+function commandPort(assertProcessLaunch?: (target: string) => void): CommandPort {
   return {
     interpreterPath: interpreterPath ?? 'unused-interpreter',
     // 测试进程需要 PATH 才能启动工具链；这不是产品代码的环境构造规则。
     environment: process.env,
+    ...(assertProcessLaunch === undefined ? {} : { assertProcessLaunch }),
   };
 }
 
@@ -174,6 +175,18 @@ describe('RunCommandTool input and approval boundaries', () => {
     const result = await toolFor(port).execute({ command: 'Write-Output 1' }, contextWithProgress([]));
 
     expect(result.status).toBe('error');
+    expect(requested).toEqual([]);
+  });
+
+  it('rejects a process before asking for command approval when the host cannot isolate its network', async () => {
+    const { port, requested } = portFor({ directory: root });
+    const assertProcessLaunch = vi.fn(() => { throw new Error('受限网络策略不能启动 Shell 命令。'); });
+    const tool = new RunCommandTool(port, commandPort(assertProcessLaunch));
+
+    await expect(tool.execute({ command: 'Write-Output 1' }, contextWithProgress([])))
+      .rejects.toThrow('受限网络策略不能启动 Shell 命令');
+
+    expect(assertProcessLaunch).toHaveBeenCalledExactlyOnceWith('Shell 命令');
     expect(requested).toEqual([]);
   });
 

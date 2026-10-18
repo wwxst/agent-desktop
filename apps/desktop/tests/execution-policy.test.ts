@@ -16,6 +16,7 @@ describe('execution boundary', () => {
     expect(approve).not.toHaveBeenCalled();
     expect(new NetworkAccessPolicy(() => ({ mode: 'allowed' }), approve).allowsUnrestrictedProcess()).toBe(true);
     expect(limited.allowsUnrestrictedProcess()).toBe(false);
+    expect(() => new WindowsExecutionBoundary().assertProcessLaunch({ target: 'Shell 命令', networkAllowed: true })).not.toThrow();
     await expect(disabled.require({ url: 'https://example.com' })).rejects.toMatchObject({ failureKind: 'denied' });
     expect(() => new WindowsExecutionBoundary().requireProcessIsolation()).toThrow('不能建立');
     expect(() => new WindowsExecutionBoundary().assertProcessLaunch({ target: '第三方 stdio', networkAllowed: false })).toThrow('不能建立');
