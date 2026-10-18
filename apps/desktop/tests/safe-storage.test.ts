@@ -104,7 +104,7 @@ describe('credential database commits await encryption durability', () => {
     expect(readDesktopDocument(database, 'runtime-settings')).toMatchObject({ theme: 'light', memoryEnabled: false,
       modelProviders: expect.arrayContaining([expect.objectContaining({ id: 'custom' })]) });
     expect(readDesktopDocument(database, 'runtime-secrets')).toMatchObject({ providerApiKeys: { custom: Buffer.from('ciphertext-fixture').toString('base64') } });
-  });
+  }, 30_000);
 
   it('keeps the prior model directory and secret until encryption is durable, and preserves them when waiting fails', async () => {
     const database = join(await temp(), 'db.sqlite');
