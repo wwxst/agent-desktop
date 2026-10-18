@@ -36,11 +36,13 @@ export interface ToolExecutionContext {
    * Loop 的生产上下文始终提供它；直接调用工具的入口可以不启用持久检查点。
    */
   readonly checkpoint?: (data: unknown) => void;
+  /** 只供声明了 nestedToolNames 的组合工具使用；Router 按声明集合重新解析并执行子工具。 */
+  readonly invokeNestedTool?: (name: string, input: unknown) => Promise<ToolResult>;
 }
 
 /** 工具边界可抛出有分类的真实失败；保留 cause，不把原始异常换成默认文本。 */
 export class ToolExecutionError extends Error {
-  override readonly name = 'ToolExecutionError';
+  override readonly name: string = 'ToolExecutionError';
   constructor(message: string, readonly failureKind: ToolFailureKind, options?: ErrorOptions) {
     super(message, options);
   }
@@ -57,6 +59,8 @@ export interface Tool extends ModelToolDefinition {
   readonly contract?: Partial<ToolContract>;
   /** 可证明执行边界的工具才声明 checkpointed；其他工具按 opaque 处理。 */
   readonly executionBoundary?: Exclude<ExecutionBoundary, 'not-executed'>;
+  /** 组合工具可调用的已注册子工具名称；模型看不到该执行权限列表。 */
+  readonly nestedToolNames?: readonly string[];
   execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult>;
 }
 

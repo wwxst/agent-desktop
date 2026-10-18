@@ -1,7 +1,7 @@
 import { access, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Model, ToolResult } from '@agent-desktop/model';
-import { ToolExecutionError } from '@agent-desktop/tools';
+import { ToolExecutionError, ToolRoutingError } from '@agent-desktop/tools';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
 import { SessionPersistenceError } from '@agent-desktop/session';
 import { readVideoDeliveryFacts, type RequirementCheck } from './delivery.js';
@@ -9,6 +9,10 @@ import type { SessionReader } from './delivery-tools.js';
 import { candidateDigest } from './candidate-digest.js';
 import { isInsideDirectory } from './delivery-tools.js';
 import { projectVideoJob, videoJobId, type VideoJobFrame, type VideoJobObservation, type VideoJobSegment, type VideoJobTranscript } from './video-job.js';
+
+const SEMANTIC_MEDIA_TOOL_NAMES = new Set([
+  'probe_media', 'extract_full_video_frames', 'extract_video_segment_frames', 'extract_audio', 'transcribe_audio',
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -51,7 +55,15 @@ export class CheckVideoSemanticsTool implements Tool {
   readonly description = '针对已声明候选的内容要求逐帧观察、完整语音转录并独立判断；缺少服务、覆盖或判据时返回无法确认。';
   readonly inputSchema = { type: 'object', properties: { outputItemId: { type: 'string' }, candidatePath: { type: 'string' } },
     required: ['outputItemId', 'candidatePath'], additionalProperties: false };
-  constructor(private readonly readEvents: SessionReader, private readonly options: SemanticCheckOptions) {}
+  readonly nestedToolNames: readonly string[];
+
+  constructor(private readonly readEvents: SessionReader, private readonly options: SemanticCheckOptions) {
+    this.nestedToolNames = [...new Set([
+      ...(options.mediaTools ?? []).filter(tool => SEMANTIC_MEDIA_TOOL_NAMES.has(tool.name)).map(tool => tool.name),
+      ...(options.vision === undefined ? [] : [options.vision.name]),
+    ])];
+  }
+
   async execute(input: unknown, context: ToolExecutionContext): Promise<ToolResult> {
     context.signal?.throwIfAborted();
     if (typeof input !== 'object' || input === null) return { status: 'error', message: '语义检查需要输出项与候选路径。' };
@@ -77,10 +89,13 @@ export class CheckVideoSemanticsTool implements Tool {
     // 先经过入口提供的权限、审批与 Probe；不能先读取候选或发出昂贵的视觉请求。
     const probe = this.options.mediaTools?.find(tool => tool.name === 'probe_media');
     if (probe === undefined) return blocked('未提供 probe_media，候选语义验收无法确认。');
+    const invokeNestedTool = context.invokeNestedTool;
+    if (invokeNestedTool === undefined) return { status: 'error', failureKind: 'permanent', message: '语义验收子工具必须经过 ToolRouter 执行。' };
+    const executeNested = (tool: Tool, nestedInput: unknown) => invokeNestedTool(tool.name, nestedInput);
     let temporary: string | undefined;
     let persistenceFailure: SessionPersistenceError | undefined;
     try {
-      const probed = await probe.execute({ inputPath }, context);
+      const probed = await executeNested(probe, { inputPath });
       if (probed.status === 'error') return nestedFailure(probe, probed, `候选探测失败：${probed.message}`);
       const media = probed.output as { audioCodec: string | null; duration: number | null };
       digest = await candidateDigest(inputPath, context.signal);
@@ -102,7 +117,7 @@ export class CheckVideoSemanticsTool implements Tool {
       } else {
         const fullFrames = this.options.mediaTools?.find(tool => tool.name === 'extract_full_video_frames');
         if (fullFrames === undefined) return blocked('未提供 extract_full_video_frames，不能确认全部画面。');
-        const extraction = await fullFrames.execute({ inputPath, outputDir: join(temporary, 'frames') }, context);
+        const extraction = await executeNested(fullFrames, { inputPath, outputDir: join(temporary, 'frames') });
         if (extraction.status === 'error') {
           return nestedFailure(fullFrames, extraction, `提取候选画面失败：${extraction.message}`);
         }
@@ -128,7 +143,7 @@ export class CheckVideoSemanticsTool implements Tool {
             }
             const segmentDirectory = join(temporary, `segment-${startFrame}`);
             context.checkpoint?.({ kind: 'semantic-segment', outputItemId: item.id, candidatePath: inputPath, startFrame, endFrame });
-            const segment = await segmentTool.execute({ inputPath, outputDir: segmentDirectory, startFrame, maxFrames: endFrame - startFrame }, context);
+            const segment = await executeNested(segmentTool, { inputPath, outputDir: segmentDirectory, startFrame, maxFrames: endFrame - startFrame });
             if (segment.status === 'error') return nestedFailure(segmentTool, segment, `提取长视频分段画面失败：${segment.message}`);
             const value = segment.output as { complete?: unknown; totalFrames?: unknown; startFrame?: unknown; endFrame?: unknown; frames?: unknown };
             if (value.complete !== true || value.totalFrames !== extracted.frameCount || value.startFrame !== startFrame
@@ -155,7 +170,7 @@ export class CheckVideoSemanticsTool implements Tool {
           observations.push(...recoveredObservation.observations);
           continue;
         }
-        const result = await this.options.vision.execute({ images: batch }, context);
+        const result = await executeNested(this.options.vision, { images: batch });
         if (result.status === 'error') return nestedFailure(this.options.vision, result, `视觉检查失败：${result.message}`);
         const observed = result.output as { frames?: unknown };
         if (!Array.isArray(observed.frames) || observed.frames.length !== batch.length) return blocked('视觉服务没有覆盖该批全部帧。');
@@ -182,14 +197,14 @@ export class CheckVideoSemanticsTool implements Tool {
           const extractAudio = this.options.mediaTools?.find(tool => tool.name === 'extract_audio');
           if (extractAudio === undefined) return blocked('未提供 extract_audio，不能检查候选声音。');
           if (recoveredAudio === undefined || !(await fileExists(recoveredAudio))) {
-            const audio = await extractAudio.execute({ videoPath: inputPath, outputPath: wav }, context);
+            const audio = await executeNested(extractAudio, { videoPath: inputPath, outputPath: wav });
             if (audio.status === 'error') {
               return nestedFailure(extractAudio, audio, `提取候选声音失败：${audio.message}`);
             }
             context.checkpoint?.({ kind: 'video-job', version: 1, jobId, outputItemId: item.id,
               candidatePath: inputPath, candidateSha256: digest, phase: 'audio-completed', audioPath: wav });
           }
-          const transcribed = await speech.execute({ audioPath: wav }, context);
+          const transcribed = await executeNested(speech, { audioPath: wav });
           if (transcribed.status === 'error') return nestedFailure(speech, transcribed, `语音检查失败：${transcribed.message}`);
           const spoken = transcribed.output as { segments?: Array<{ start: number; end: number }>; text?: unknown };
           if (typeof spoken.text !== 'string' || !Array.isArray(spoken.segments) || media.duration === null
@@ -224,6 +239,7 @@ export class CheckVideoSemanticsTool implements Tool {
     } catch (error) {
       if (error instanceof SessionPersistenceError) { persistenceFailure = error; throw error; }
       if (!(error instanceof Error) || error.name === 'AbortError') throw error;
+      if (error instanceof ToolRoutingError) return blocked(error.message);
       if (error instanceof ToolExecutionError) return { status: 'error', failureKind: error.failureKind, message: error.message };
       return { status: 'error', message: error.message };
     } finally {

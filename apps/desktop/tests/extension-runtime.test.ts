@@ -419,6 +419,18 @@ describe('actual extension runtime tool chain', () => {
     try {
       const wrapped = runtime.wrapTool({ name: 'read', description: 'read', inputSchema: { type: 'object' }, executionBoundary: 'read-only', execute: async () => ({ status: 'success', output: {} }) });
       expect(wrapped.executionBoundary ?? 'opaque').toBe('opaque');
+      const composite = runtime.wrapTool({ name: 'composite', description: '', inputSchema: {}, nestedToolNames: ['read'],
+        execute: async (_input, context) => context.invokeNestedTool!('read', {}) });
+      const tools = new InMemoryToolRegistry();
+      tools.register(wrapped);
+      tools.register(composite);
+      const session = new InMemorySession();
+      const complete = vi.fn<Model['complete']>()
+        .mockResolvedValueOnce({ toolCalls: [{ id: 'composite-call' as never, name: 'composite', input: {} }] })
+        .mockResolvedValueOnce({ text: '完成', toolCalls: [] });
+      await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '读取');
+      expect(session.events().filter(event => event.type === 'tool.called').map(event => event.name)).toEqual(['composite']);
+      expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: {} } });
       // 媒体适配器前后任一层有钩子时，最终门禁看到的都必须是外层不透明边界。
       const raw: Tool = { name: 'media', description: '', inputSchema: {}, executionBoundary: 'checkpointed', execute: async () => ({ status: 'success', output: {} }) };
       for (const adapt of [adaptWhisperTool, adaptVisionTool]) {

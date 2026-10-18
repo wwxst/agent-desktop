@@ -170,6 +170,7 @@ export async function prepareExtensions(
   };
   const wrapTool = (tool: Tool): Tool => hookEvents.size === 0 ? tool : ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
     ...(tool.contract === undefined ? {} : { contract: tool.contract }),
+    ...(tool.nestedToolNames === undefined ? {} : { nestedToolNames: tool.nestedToolNames }),
     // 进程钩子的副作用由宿主外部执行，包装后不能继续声称内层边界可证明。
     executionBoundary: 'opaque',
     ...(tool.sanitizeInput === undefined ? {} : { sanitizeInput: tool.sanitizeInput }),

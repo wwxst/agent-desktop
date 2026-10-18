@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Model } from '@agent-desktop/model';
-import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolRouter, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
 import { InMemorySession, projectRecoveryFacts, SessionPersistenceError } from '@agent-desktop/session';
 import { ToolExecutionError } from '@agent-desktop/tools';
 import { DeclareVideoOutputsTool } from '../src/delivery-tools.js';
@@ -59,17 +59,28 @@ beforeEach(async () => {
 afterEach(async () => { vi.restoreAllMocks(); await rm(directory, { recursive: true, force: true }); });
 const tool = (includeVision = true) => new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, segmentFrames, audio, speech], ...(includeVision ? { vision } : {}) });
 
+async function executeSemantic(check: Tool, value = input, execution = context, replacements: readonly Tool[] = [], capabilities?: readonly string[]) {
+  const dependencies = new Map([probe, fullFrames, segmentFrames, audio, speech, vision, ...replacements].map(dependency => [dependency.name, dependency]));
+  const registry = new InMemoryToolRegistry();
+  registry.register(check);
+  for (const name of check.nestedToolNames ?? []) {
+    const dependency = dependencies.get(name);
+    if (dependency !== undefined) registry.register(dependency);
+  }
+  return new ToolRouter(registry, capabilities).execute({ id: execution.toolCallId, name: check.name, input: value }, execution);
+}
+
 describe('semantic evidence completeness', () => {
   it('preserves all observations and binds the independent verdict to candidate bytes', async () => {
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { outputItemId: input.outputItemId,
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { outputItemId: input.outputItemId,
       coverage: 'all-frames-and-transcript', frameCount: 2, candidateSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       evidence: { frames: [{ timestamp: 0 }, { timestamp: 0.1 }], transcript: { hasAudio: false } }, checks: [{ outcome: 'passed' }] } });
     expect(model.complete).toHaveBeenCalledOnce();
   });
   it('blocks missing Vision and an exceeded frame budget without calling the judge', async () => {
-    expect(await tool(false).execute(input, context)).toMatchObject({ status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked' }] } });
+    expect(await executeSemantic(tool(false))).toMatchObject({ status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked' }] } });
     fullFrames.execute.mockResolvedValue({ status: 'success', output: { complete: false, reason: '超过 600 帧预算' } });
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: '超过 600 帧预算' }] } });
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: '超过 600 帧预算' }] } });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('observes every frame in ordered 600-frame segments for a long candidate', async () => {
@@ -79,7 +90,7 @@ describe('semantic evidence completeness', () => {
       return { status: 'success', output: { frames: images.map(frame => ({ timestamp: frame.timestamp, description: `画面 ${frame.timestamp}` })) } };
     });
 
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: {
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: {
       coverage: 'all-frames-and-transcript', frameCount: 1201, checks: [{ outcome: 'passed' }],
     } });
     expect(segmentFrames.execute.mock.calls.map(([value]) => (value as { startFrame: number; maxFrames: number })))
@@ -94,13 +105,13 @@ describe('semantic evidence completeness', () => {
     segmentFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: true, totalFrames: 2, startFrame: 0, endFrame: 2,
       frames: [{ path: input.candidatePath, timestamp: 0 }, { path: input.candidatePath, timestamp: 0.1 }] } });
     const execution = { ...context, checkpoint: (data: unknown) => session.append({ type: 'tool.effect.prepared', turnId: 't' as never, sourceEventIndex: 0, data }) };
-    expect((await tool().execute(input, execution)).status).toBe('success');
+    expect((await executeSemantic(tool(), input, execution)).status).toBe('success');
     expect(segmentFrames.execute).toHaveBeenCalledOnce();
     fullFrames.execute.mockClear();
     segmentFrames.execute.mockClear();
     vision.execute.mockClear();
     vi.mocked(model.complete).mockClear();
-    expect((await tool().execute(input, execution)).status).toBe('success');
+    expect((await executeSemantic(tool(), input, execution)).status).toBe('success');
     expect(fullFrames.execute).not.toHaveBeenCalled();
     expect(segmentFrames.execute).not.toHaveBeenCalled();
     expect(vision.execute).not.toHaveBeenCalled();
@@ -108,56 +119,77 @@ describe('semantic evidence completeness', () => {
   });
   it('rejects omitted frame observations and audio without transcription capability', async () => {
     vision.execute.mockResolvedValueOnce({ status: 'success', output: { frames: [{ timestamp: 0, description: 'red' }] } });
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked' }] } });
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked' }] } });
     probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
     const withoutSpeech = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio], vision });
-    expect(await withoutSpeech.execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('语音识别') }] } });
+    expect(await executeSemantic(withoutSpeech)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('语音识别') }] } });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('blocks malformed external verdicts and candidate mutation during checking', async () => {
     vi.mocked(model.complete).mockResolvedValueOnce({ toolCalls: [{ id: 'bad' as never, name: 'report_semantic_checks', input: { checks: [null] } }] });
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked' }] } });
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked' }] } });
     vision.execute.mockImplementationOnce(async () => {
       await writeFile(input.candidatePath, 'modified while observing');
       return { status: 'success', output: { frames: frames.map((frame) => ({ timestamp: frame.timestamp, description: 'red' })) } };
     });
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('改变') }] } });
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('改变') }] } });
   });
   it('blocks absent and failed Probe before extracting frames or invoking external services', async () => {
     fullFrames.execute.mockClear();
     const missing = new CheckVideoSemanticsTool(() => session.events(), { model });
-    expect(await missing.execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('probe_media') }] } });
+    expect(await executeSemantic(missing)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('probe_media') }] } });
     probe.execute.mockResolvedValueOnce({ status: 'error', message: '用户拒绝了插件工具调用。' });
-    expect(await tool().execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
     expect(fullFrames.execute).not.toHaveBeenCalled();
     expect(model.complete).not.toHaveBeenCalled();
   });
+  it.each(['read-only', 'opaque'] as const)('rejects an excluded %s nested capability without marking its result unknown', async executionBoundary => {
+    const restrictedProbe = { ...probe, executionBoundary, contract: { capability: 'disabled' } };
+    const check = new CheckVideoSemanticsTool(() => session.events(), {
+      model, mediaTools: [restrictedProbe, fullFrames], vision,
+    });
+
+    session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: context.toolCallId,
+      name: check.name, input, boundary: 'opaque' });
+    const result = await executeSemantic(check, input, context, [restrictedProbe], ['unknown']);
+    expect(result).toMatchObject({
+      status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked' }] },
+    });
+    session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: context.toolCallId, result });
+    expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
+    expect(restrictedProbe.execute).not.toHaveBeenCalled();
+    expect(fullFrames.execute).not.toHaveBeenCalled();
+  });
   it('passes the same context to the injected Probe and propagates cancellation', async () => {
     const execution = { ...context, signal: new AbortController().signal };
-    await tool().execute(input, execution);
-    expect(probe.execute).toHaveBeenCalledWith({ inputPath: input.candidatePath }, execution);
+    await executeSemantic(tool(), input, execution);
+    expect(probe.execute).toHaveBeenCalledWith({ inputPath: input.candidatePath }, expect.objectContaining({
+      toolCallId: execution.toolCallId, checkpoint: execution.checkpoint, reportProgress: execution.reportProgress,
+    }));
     probe.execute.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
-    await expect(tool().execute(input, execution)).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(executeSemantic(tool(), input, execution)).rejects.toMatchObject({ name: 'AbortError' });
   });
   it('uses the injected Vision context and preserves approval rejection and cancellation', async () => {
     const agent = createVideoAgent({ model, session, mediaTools: [probe, fullFrames, audio, speech], visionTool: vision });
     const check = agent.tools.get('check_video_semantics')!;
     const execution = { ...context, signal: new AbortController().signal };
     expect(agent.tools.get('analyze_images')).toBe(vision);
-    await check.execute(input, execution);
-    expect(vision.execute).toHaveBeenCalledWith({ images: frames }, execution);
+    await executeSemantic(check, input, execution);
+    expect(vision.execute).toHaveBeenCalledWith({ images: frames }, expect.objectContaining({
+      toolCallId: execution.toolCallId, checkpoint: execution.checkpoint, reportProgress: execution.reportProgress,
+    }));
     vision.execute.mockResolvedValueOnce({ status: 'error', message: '用户拒绝了插件工具调用。' });
     vi.mocked(model.complete).mockClear();
-    expect(await check.execute(input, execution)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
+    expect(await executeSemantic(check, input, execution)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
     expect(model.complete).not.toHaveBeenCalled();
     vision.execute.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
-    await expect(check.execute(input, execution)).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(executeSemantic(check, input, execution)).rejects.toMatchObject({ name: 'AbortError' });
   });
   it('uses injected duration to reject a mismatched speech timeline', async () => {
     probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
     speech.execute.mockResolvedValueOnce({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 2 }] } });
     const check = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], vision });
-    expect(await check.execute(input, context)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('时长不一致') }] } });
+    expect(await executeSemantic(check)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('时长不一致') }] } });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('uses the same injected Speech instance and context for public and semantic calls', async () => {
@@ -166,11 +198,13 @@ describe('semantic evidence completeness', () => {
     const execution = { ...context, signal: new AbortController().signal };
     probe.execute.mockResolvedValue({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
     expect(agent.tools.get('transcribe_audio')).toBe(speech);
-    await check.execute(input, execution);
-    expect(speech.execute).toHaveBeenCalledWith({ audioPath: expect.stringContaining('audio.wav') }, execution);
+    await executeSemantic(check, input, execution);
+    expect(speech.execute).toHaveBeenCalledWith({ audioPath: expect.stringContaining('audio.wav') }, expect.objectContaining({
+      toolCallId: execution.toolCallId, checkpoint: execution.checkpoint, reportProgress: execution.reportProgress,
+    }));
     speech.execute.mockResolvedValueOnce({ status: 'error', failureKind: 'denied', message: '用户拒绝语音服务调用。' });
     vi.mocked(model.complete).mockClear();
-    expect(await check.execute(input, execution)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
+    expect(await executeSemantic(check, input, execution)).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'blocked', detail: expect.stringContaining('用户拒绝') }] } });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it.each(['probe', 'frames', 'audio', 'vision', 'speech'] as const)('preserves an unknown nested %s result in recovery facts', async (stage) => {
@@ -185,7 +219,7 @@ describe('semantic evidence completeness', () => {
     session.append({ type: 'tool.called', turnId: 't' as never, stepId: 'check-step' as never, toolCallId: 'nested' as never,
       name: check.name, input, boundary: 'opaque' });
     const sourceEventIndex = session.events().length - 1;
-    const result = await check.execute(input, { ...context, checkpoint: data => session.append({
+    const result = await executeSemantic(check, input, { ...context, checkpoint: data => session.append({
       type: 'tool.effect.prepared', turnId: 't' as never, sourceEventIndex, data,
     }) });
     expect(result).toEqual(unknown);
@@ -204,7 +238,7 @@ describe('semantic evidence completeness', () => {
       sent();
       return { status: 'success', output: { complete: true, frames } };
     });
-    await expect(tool().execute(input, { ...context, checkpoint: data => {
+    await expect(executeSemantic(tool(), input, { ...context, checkpoint: data => {
       if ((data as { kind: string }).kind === 'mcp') throw failure;
     } })).rejects.toBe(failure);
     expect(sent).not.toHaveBeenCalled();
@@ -215,7 +249,7 @@ describe('semantic evidence completeness', () => {
     const failure = new SessionPersistenceError(new Error('disk full'));
     const mkdir = vi.mocked(mkdtemp).mockClear();
     const checkpoint = vi.fn(() => { throw failure; });
-    await expect(tool().execute(input, { ...context, checkpoint })).rejects.toBe(failure);
+    await expect(executeSemantic(tool(), input, { ...context, checkpoint })).rejects.toBe(failure);
     expect(checkpoint).toHaveBeenCalledWith({ kind: 'semantic-temporary-directory', outputItemId: input.outputItemId,
       candidatePath: input.candidatePath, directoryPrefix: join(input.candidatePath, '..', '.semantic-') });
     expect(mkdir).not.toHaveBeenCalled();
@@ -230,14 +264,14 @@ describe('semantic evidence completeness', () => {
     const nested = { probe, frames: fullFrames, audio, vision, speech }[stage];
     nested.execute.mockRejectedValueOnce(failure);
     if (stage === 'audio' || stage === 'speech') probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
-    await expect(tool().execute(input, context)).rejects.toBe(failure);
+    await expect(executeSemantic(tool())).rejects.toBe(failure);
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('keeps the original persistence error even when temporary cleanup also fails', async () => {
     const failure = new SessionPersistenceError(new Error('checkpoint write failed'));
     const cleanup = vi.mocked(rm).mockClear().mockRejectedValueOnce(new Error('cleanup access denied'));
     fullFrames.execute.mockRejectedValueOnce(failure);
-    await expect(tool().execute(input, context)).rejects.toBe(failure);
+    await expect(executeSemantic(tool())).rejects.toBe(failure);
     expect(cleanup).toHaveBeenCalledOnce();
     expect(model.complete).not.toHaveBeenCalled();
   });
@@ -245,7 +279,7 @@ describe('semantic evidence completeness', () => {
     const nested = { probe, frames: fullFrames, audio, vision, speech }[stage];
     nested.execute.mockRejectedValueOnce(new ToolExecutionError('transport lost', 'unknown-outcome'));
     if (stage === 'audio' || stage === 'speech') probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
-    expect(await tool().execute(input, context)).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'transport lost' });
+    expect(await executeSemantic(tool())).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'transport lost' });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it.each(['probe', 'frames', 'audio', 'vision', 'speech'] as const)('propagates nested %s cancellation instead of a blocked verdict', async (stage) => {
@@ -253,7 +287,7 @@ describe('semantic evidence completeness', () => {
     const cancellation = new DOMException('cancelled', 'AbortError');
     nested.execute.mockRejectedValueOnce(cancellation);
     if (stage === 'audio' || stage === 'speech') probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
-    await expect(tool().execute(input, context)).rejects.toBe(cancellation);
+    await expect(executeSemantic(tool())).rejects.toBe(cancellation);
     expect(model.complete).not.toHaveBeenCalled();
   });
   it.each(['probe_media', 'extract_full_video_frames', 'extract_audio', 'analyze_images', 'transcribe_audio'])('keeps a denied %s with opaque hooks unknown', async (name) => {
@@ -263,14 +297,14 @@ describe('semantic evidence completeness', () => {
     if (name === 'extract_audio' || name === 'transcribe_audio') probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
     const check = new CheckVideoSemanticsTool(() => session.events(), { model,
       mediaTools: [probe, fullFrames, audio, speech].map(media => media.name === name ? nested : media), vision: name === 'analyze_images' ? nested : vision });
-    expect(await check.execute(input, context)).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'hook executed before denial' });
+    expect(await executeSemantic(check, input, context, [nested])).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'hook executed before denial' });
     expect(model.complete).not.toHaveBeenCalled();
   });
   it('keeps a failed injected Vision without a declared boundary unknown', async () => {
     const { executionBoundary: _boundary, ...unclassifiedVision } = vision;
     unclassifiedVision.execute.mockResolvedValueOnce({ status: 'error', failureKind: 'denied', message: 'undeclared tool rejected' });
     const check = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames], vision: unclassifiedVision });
-    expect(await check.execute(input, context)).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'undeclared tool rejected' });
+    expect(await executeSemantic(check, input, context, [unclassifiedVision])).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'undeclared tool rejected' });
     expect(model.complete).not.toHaveBeenCalled();
   });
 });

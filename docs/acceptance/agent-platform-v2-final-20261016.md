@@ -133,3 +133,11 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 本地功能分支的 Browser 路径修复 `94ace18` 和 safe-storage 测试时限修复 `2d3ac88` 已推送；代码修复提交 `2d3ac88` 的 Actions run `39119918572` 与验收记录提交 `6f372ac` 的 run `39120238708` 中，Windows、Ubuntu jobs 均通过。`main` 尚未合并。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
 
 最终结论保持 `CHANGES_REQUIRED`，不能将本轮自动化门禁通过等同于完整架构交付通过。
+
+## 8. 2026-10-18 实施跟进
+
+语义视频验收的内部媒体与 Vision 调用现在只允许访问自身声明的子工具名称，并重新经 `ToolRouter` 校验注册与当前能力集合、应用子工具超时。调用使用注册表中的同一授权包装实例，保留外层 `toolCallId`、进度回调和检查点归属，不增加伪造的 Session 子调用。聚焦验证覆盖未注册或能力排除的子工具、父取消、子工具超时、检查点及结果未知语义。
+
+独立审查发现并修复了钩子包装丢失子工具名单，以及未执行的能力拒绝被误标为未知效果两项问题。`ToolRoutingError` 只表示进入子工具前的路由拒绝，语义验收将其报告为能力受阻；已执行工具的未知效果分类仍保留。四组相关测试 96 项通过，真实 `runTurn` 覆盖包装后组合工具且只生成外层 Session 调用。
+
+修复后 `pnpm check` 通过：99 个测试文件、1110 项测试通过、1 项跳过；19 个 workspace 包架构检查通过。独立复审通过本次变更范围。Router 尚未强制执行 `approvalRequirement`，嵌套调用也不运行 Desktop `beforeToolCall`/`taskToolGate`；当前媒体和 Vision 的授权包装器仍执行其路径授权、MCP 审批及钩子，因此不能把此变更视作通用审批缺口已解决。最终决定继续保持 `CHANGES_REQUIRED`。

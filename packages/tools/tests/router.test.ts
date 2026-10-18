@@ -39,6 +39,77 @@ describe('ToolRouter', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('routes only declared nested tools through the registry and strips the parent nested permission', async () => {
+    let nestedContext: ToolExecutionContext | undefined;
+    const nestedExecute = vi.fn<Tool['execute']>(async (_input, nested) => {
+      nestedContext = nested;
+      return { status: 'success', output: 'nested' };
+    });
+    const nestedTool: Tool = { ...read, execute: nestedExecute };
+    const composite: Tool = { ...read, name: 'composite', nestedToolNames: ['read'], execute: async (_input, execution) => {
+      const result = await execution.invokeNestedTool!('read', { path: 'nested.ts' });
+      await expect(execution.invokeNestedTool!('sibling', {})).rejects.toMatchObject({ failureKind: 'permanent' });
+      return result;
+    } };
+    const siblingExecute = vi.fn<Tool['execute']>();
+    const registry = new InMemoryToolRegistry();
+    registry.register(nestedTool);
+    registry.register(composite);
+    registry.register({ ...read, name: 'sibling', execute: siblingExecute });
+    const router = new ToolRouter(registry);
+    const checkpoint = vi.fn();
+    const progress = vi.fn();
+    const execution = { ...context, checkpoint, reportProgress: progress };
+
+    await expect(router.execute({ ...call, name: 'composite' }, execution)).resolves.toEqual({ status: 'success', output: 'nested' });
+    expect(nestedExecute).toHaveBeenCalledOnce();
+    expect(siblingExecute).not.toHaveBeenCalled();
+    expect(nestedContext).toMatchObject({ toolCallId: context.toolCallId, checkpoint, reportProgress: progress });
+    expect(nestedContext?.invokeNestedTool).toBeUndefined();
+  });
+
+  it('does not execute an unregistered or capability-filtered nested tool', async () => {
+    const excludedExecute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: undefined }));
+    const parent = (name: string): Tool => ({ ...read, name: `parent_${name}`, nestedToolNames: [name],
+      execute: async (_input, execution) => execution.invokeNestedTool!(name, {}) });
+    const registry = new InMemoryToolRegistry();
+    registry.register(parent('missing'));
+    registry.register(parent('video'));
+    registry.register({ ...read, name: 'video', execute: excludedExecute, contract: { capability: 'video' } });
+    const router = new ToolRouter(registry, ['code']);
+
+    await expect(router.execute({ ...call, name: 'parent_missing' }, context)).rejects.toMatchObject({ failureKind: 'permanent' });
+    await expect(router.execute({ ...call, name: 'parent_video' }, context)).rejects.toMatchObject({ failureKind: 'permanent' });
+    expect(excludedExecute).not.toHaveBeenCalled();
+  });
+
+  it('propagates parent cancellation and applies the nested tool timeout', async () => {
+    const parent: Tool = { ...read, name: 'parent', nestedToolNames: ['slow'], execute: async (_input, execution) =>
+      execution.invokeNestedTool!('slow', {}) };
+    const slow: Tool = { ...read, name: 'slow', contract: { timeoutMs: 5 }, execute: async (_input, execution) =>
+      new Promise((_resolve, reject) => execution.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })) };
+    const registry = new InMemoryToolRegistry();
+    registry.register(parent);
+    registry.register(slow);
+    const routed = new ToolRouter(registry);
+    await expect(routed.execute({ ...call, name: 'parent' }, context)).rejects.toMatchObject({ name: 'ToolExecutionError', failureKind: 'transient' });
+
+    const controller = new AbortController();
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const cancellable: Tool = { ...slow, contract: { timeoutMs: 120_000 }, execute: async (_input, execution) => new Promise((_resolve, reject) => {
+      execution.signal!.addEventListener('abort', () => reject(execution.signal!.reason), { once: true });
+      markStarted();
+    }) };
+    const cancellingRegistry = new InMemoryToolRegistry();
+    cancellingRegistry.register(parent);
+    cancellingRegistry.register(cancellable);
+    const pending = new ToolRouter(cancellingRegistry).execute({ ...call, name: 'parent' }, { ...context, signal: controller.signal });
+    await started;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it.each(['read-only', 'opaque'] as const)('classifies a real signalled timeout at the %s boundary', async boundary => {
     const router = routerFor({ ...read, executionBoundary: boundary, contract: { timeoutMs: 5 },
       execute: async (_input, inputContext) => new Promise((_resolve, reject) => {

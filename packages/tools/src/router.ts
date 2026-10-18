@@ -15,6 +15,12 @@ export interface CapabilityCatalogEntry extends ModelToolDefinition {
   readonly executionBoundary: NonNullable<Tool['executionBoundary']>;
 }
 
+/** 子调用在进入工具前被路由拒绝；组合工具可报告能力缺失，不冒充已执行后的错误。 */
+export class ToolRoutingError extends ToolExecutionError {
+  override readonly name = 'ToolRoutingError';
+  constructor(message: string) { super(message, 'permanent'); }
+}
+
 /**
  * 所有正式工具执行汇入同一路由；注册表只保留名称与工具事实。
  * 调用身份、Session 保存和执行前策略仍由 Loop 提供，不把宿主协议塞进工具包。
@@ -59,7 +65,24 @@ export class ToolRouter {
     try {
       signal.throwIfAborted();
       // 工具必须通过自己的真实进程/网络边界响应取消；不提前返回并遗留后台副作用。
-      return await tool.execute(call.input, { ...context, signal });
+      const { invokeNestedTool: _parentInvokeNestedTool, ...parentContext } = context;
+      const nestedToolNames = tool.nestedToolNames;
+      const executionContext: ToolExecutionContext = {
+        ...parentContext,
+        signal,
+        ...(nestedToolNames === undefined ? {} : {
+          invokeNestedTool: async (name: string, input: unknown): Promise<ToolResult> => {
+            if (!nestedToolNames.includes(name)) {
+              throw new ToolRoutingError(`Tool is not allowed as a nested call: ${name}`);
+            }
+            // 路由拒绝尚未进入子工具；不能让组合工具按 opaque 子工具失败误判未知副作用。
+            if (this.get(name) === undefined) throw new ToolRoutingError(`Tool not found: ${name}`);
+            // 子工具保留父调用身份与检查点，但重新经过注册表、能力集合和自身执行时限。
+            return this.execute({ id: context.toolCallId, name, input }, executionContext);
+          },
+        }),
+      };
+      return await tool.execute(call.input, executionContext);
     } catch (error) {
       if (timedOut && context.signal?.aborted !== true && error instanceof Error && error.name === 'AbortError') {
         throw controller.signal.reason;

@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Model } from '@agent-desktop/model';
-import { ToolExecutionError, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolExecutionError, ToolRouter, type Tool, type ToolExecutionContext } from '@agent-desktop/tools';
 import { InMemorySession, SessionPersistenceError } from '@agent-desktop/session';
 import { createVideoAgent, readVideoDeliveryFacts } from '@agent-desktop/video-agent';
 import { CheckVideoSemanticsTool } from '../../../packages/video-agent/src/semantic-check.js';
@@ -282,7 +282,12 @@ describe('Vision host adapter', () => {
       return { toolCalls: [{ id: 'judgment' as never, name: 'report_semantic_checks', input: { checks: evidence.requirements.map(requirement => ({ requirementId: requirement.id, outcome: 'passed', detail: '0 至 1.2 秒逐帧均为红色矩形。' })) } }] };
     });
     const check = new CheckVideoSemanticsTool(() => session.events(), { model: { complete }, mediaTools, vision });
-    const result = await check.execute({ outputItemId: item.id, candidatePath: candidate }, context);
+    const registry = new InMemoryToolRegistry();
+    registry.register(check);
+    for (const tool of [...mediaTools, vision]) registry.register(tool);
+    const router = new ToolRouter(registry);
+    const checkInput = { outputItemId: item.id, candidatePath: candidate };
+    const result = await router.execute({ id: context.toolCallId, name: check.name, input: checkInput }, context);
     expect(result).toMatchObject({ status: 'success', output: { coverage: 'all-frames-and-transcript', frameCount: 7, candidateSha256: expect.any(String), checks: [{ outcome: 'passed' }], evidence: { frames: observation(timestamps).frames } } });
     expect(raw.execute).toHaveBeenCalledTimes(2);
     expect((raw.execute as ReturnType<typeof vi.fn>).mock.calls.map(call => (call[0] as { images: unknown[] }).images.length)).toEqual([6, 1]);
@@ -290,7 +295,11 @@ describe('Vision host adapter', () => {
     expect((await readdir(item.workingDirectory)).some(name => name.startsWith('.semantic-'))).toBe(false);
     // 内部观察归入 check_video_semantics 证据；不伪造独立公开调用事件。
     expect(session.events().filter(event => event.type === 'tool.called' && event.name === 'analyze_images')).toEqual([]);
-    const missing = await new CheckVideoSemanticsTool(() => session.events(), { model: { complete }, mediaTools }).execute({ outputItemId: item.id, candidatePath: candidate }, context);
+    const missingCheck = new CheckVideoSemanticsTool(() => session.events(), { model: { complete }, mediaTools });
+    const missingRegistry = new InMemoryToolRegistry();
+    missingRegistry.register(missingCheck);
+    for (const tool of mediaTools) missingRegistry.register(tool);
+    const missing = await new ToolRouter(missingRegistry).execute({ id: context.toolCallId, name: missingCheck.name, input: checkInput }, context);
     expect(missing).toMatchObject({ status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked' }] } });
     expect(complete).toHaveBeenCalledOnce();
   });
