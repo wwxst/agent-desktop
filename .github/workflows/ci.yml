@@ -30,6 +30,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Playwright Chromium on Ubuntu
+        if: runner.os == 'Linux'
+        run: pnpm --filter @agent-desktop/desktop exec playwright install --with-deps chromium
+
+      - name: Install Playwright Chromium on Windows
+        if: runner.os == 'Windows'
+        run: pnpm --filter @agent-desktop/desktop exec playwright install chromium
+
       - name: Install real media test tools
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg

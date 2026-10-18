@@ -39,9 +39,7 @@ export interface SessionBrowserOptions {
 }
 interface PageState {
   readonly page: Page;
-  /** 只有当前工具操作期间允许页面请求进入网络策略；后台请求不能借用下一轮信号。 */
-  activeNetwork: boolean;
-  activeSignal: AbortSignal | undefined;
+  /** 页面请求只使用页面自身的生命周期信号，不能借用后续 Turn 的信号。 */
   readonly networkController: AbortController;
   snapshot?: { readonly id: string; readonly revision: number; readonly elements: ReadonlyMap<string, ElementHandle>;
     readonly descriptions: ReadonlyMap<string, { readonly name: string; readonly destination?: string }> };
@@ -94,12 +92,10 @@ export class SessionBrowser {
         execution.checkpoint?.({ kind: 'browser', action: 'open', url });
         const context = await this.getContext(execution.signal);
         const page = await context.newPage();
-        const pageId = await this.remember(page, execution.signal);
+        const pageId = await this.remember(page);
         try {
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
           const state = this.pageState(pageId);
-          state.activeNetwork = false;
-          state.activeSignal = undefined;
           return this.pageInfo(pageId, state);
         } catch (error) {
           await page.close();
@@ -212,12 +208,6 @@ export class SessionBrowser {
         execution.signal?.throwIfAborted();
         if (typeof input !== 'object' || input === null || Array.isArray(input)) return { status: 'error', failureKind: 'permanent', message: '浏览器工具参数必须是对象。' };
         const abort = () => { void this.close(); };
-        const pageInput = input as Input;
-        const pageState = typeof pageInput.pageId === 'string' ? this.pages.get(pageInput.pageId) : undefined;
-        if (pageState !== undefined) {
-          pageState.activeNetwork = true;
-          pageState.activeSignal = execution.signal;
-        }
         execution.signal?.addEventListener('abort', abort, { once: true });
         let effectStarted = false;
         try {
@@ -233,10 +223,6 @@ export class SessionBrowser {
           throw new ToolExecutionError(error.message, effectStarted ? 'unknown-outcome' : 'permanent', { cause: error });
         } finally {
           execution.signal?.removeEventListener('abort', abort);
-          if (pageState !== undefined) {
-            pageState.activeNetwork = false;
-            pageState.activeSignal = undefined;
-          }
         }
       } };
   }
@@ -273,10 +259,10 @@ export class SessionBrowser {
     return context;
   }
 
-  private async remember(page: Page, signal?: AbortSignal): Promise<string> {
+  private async remember(page: Page): Promise<string> {
     const existing = [...this.pages].find(([, state]) => state.page === page);
     if (existing !== undefined) return existing[0];
-    const id = randomUUID(); const state: PageState = { page, activeNetwork: true, activeSignal: signal, networkController: new AbortController() };
+    const id = randomUUID(); const state: PageState = { page, networkController: new AbortController() };
     this.pages.set(id, state);
     page.on('framenavigated', frame => { if (frame === page.mainFrame()) delete state.snapshot; });
     page.on('close', () => this.pages.delete(id));
@@ -297,13 +283,18 @@ export class SessionBrowser {
 
   private async networkRequest(transport: CDPSession, page: Page, requestId: string, request: BrowserNetworkRequest): Promise<void> {
     try {
-      const state = [...this.pages.values()].find(candidate => candidate.page === page);
+      const pageEntry = [...this.pages].find(([, candidate]) => candidate.page === page);
+      const pageId = pageEntry?.[0];
+      const state = pageEntry?.[1];
+      const signal = state?.networkController.signal;
       let allowed = false;
-      try { allowed = ['http:', 'https:'].includes(new URL(request.url).protocol)
-        // 直接调用工具时没有轮次信号，保留现有浏览器会话的无信号行为；Desktop 轮次始终有 signal，收尾后后台请求会被拒绝。
-        && state !== undefined
-        && (state.activeNetwork === true || state.activeSignal === undefined)
-        && await this.options.networkAccess(request, state.activeSignal ?? state.networkController.signal); }
+      try {
+        allowed = ['http:', 'https:'].includes(new URL(request.url).protocol)
+          && state !== undefined && signal?.aborted !== true
+          && await this.options.networkAccess(request, signal);
+        allowed = allowed && pageId !== undefined && this.pages.get(pageId) === state
+          && signal?.aborted !== true;
+      }
       catch (error) {
         if (!(error instanceof Error)) throw error;
         if (this.blockedRequests.length < 8) this.blockedRequests.push(error.message.slice(0, 256));

@@ -28,13 +28,16 @@ pnpm install --frozen-lockfile
 PASS：依赖已按锁文件安装。
 
 pnpm check
-PASS：99 个测试文件通过，1101 项测试通过，1 项跳过。
+PASS：99 个测试文件通过，1103 项测试通过，1 项跳过。
 PASS：19 个 workspace 包架构检查通过。
 PASS：git diff --check。
 
 pnpm desktop:build
 PASS：Electron 主进程、Preload、Renderer 和随包 FFmpeg/Whisper/Vision 资源构建完成。
 WARN：CommonJS 打包时 computer-host.ts 和 document-host.ts 的 import.meta 分支产生两条 esbuild 告警；运行分支优先使用 __dirname/__filename。
+
+pnpm --filter @agent-desktop/desktop package:win
+PASS：Windows NSIS 安装包构建完成；Chromium 位于安装包 resources/playwright/chromium/chrome-win64/chrome.exe。安装后启动 smoke test 尚未执行。
 ```
 
 最近的聚焦验证也通过：
@@ -43,7 +46,7 @@ WARN：CommonJS 打包时 computer-host.ts 和 document-host.ts 的 import.meta 
 pnpm typecheck
 pnpm typecheck:tests
 pnpm vitest run apps/desktop/tests/browser-host.test.ts
-PASS：Browser 5/5。
+PASS：Browser 6/6，包含延迟页面请求使用页面生命周期信号的回归覆盖。
 
 pnpm vitest run apps/desktop/tests/extension-runtime.test.ts packages/agent-loop/tests/run-turn.test.ts apps/desktop/tests/agent-task-state.test.ts
 PASS：60/60。
@@ -73,7 +76,7 @@ PASS：60/60。
 仍需后续修复的行为边界：
 
 - stdio、Hook 和本机命令网络隔离缺少可执行的 OS 级实现。
-- Browser 使用 Playwright Chromium；Electron 构建配置没有明确分发 Chromium 浏览器二进制，目标机可能依赖外部 Playwright 缓存。
+- 安装包已分发 Chromium 到运行时路径；无 Playwright 用户缓存的安装后启动 smoke test 仍未执行。
 - 市场下载、Whisper/FFmpeg 资源下载和更新器网络属于安装/更新边界，尚未接入聊天轮次策略；需要单独的显式用户操作准入记录。
 
 ### Review 3：真实产品完整性 Review
@@ -89,11 +92,11 @@ DeepSeek cloud model      SKIP：本轮未使用真实供应商密钥。
 OpenAI Vision             SKIP：自动化使用受控边界和本地夹具，未执行真实云端请求。
 FFmpeg / ffprobe          SKIP：构建资源已准备，未执行完整真实用户媒体验收。
 whisper.cpp               SKIP：未执行真实模型端到端验收。
-Browser                   PARTIAL：Playwright 真实进程和本地 HTTP 夹具通过；目标机 Chromium 分发仍未确认。
+Browser                   PARTIAL：Playwright 真实进程、本地 HTTP 夹具和 Windows Chromium 安装包路径通过；安装后首次启动尚未验证。
 Windows UIA Computer     PARTIAL：PowerShell helper 与协议测试通过；目标应用实机验收未在本轮执行。
 Document                  PARTIAL：解析边界有测试；真实用户 PDF/DOCX/XLSX/CSV 大文件验收未完整执行。
 Long Video Recovery       PARTIAL：VideoJob 身份、分段 checkpoint、候选 SHA、视觉批次和语音时间轴缓存已实现；真实进程崩溃与重启验收仍未完成。
-CI Windows / Ubuntu       UNKNOWN：本地无法代替远端 CI 结果。
+CI Windows / Ubuntu       FAIL：提交 89289d3 的 Actions run 39111790735 两平台均失败；Chromium 未安装导致 Browser 实测失败，Windows 另有短路径/长路径 artifact 断言失败。本次修复尚未推送，等待新提交 CI。
 ```
 
 ## 5. 已知剩余风险
@@ -102,7 +105,7 @@ CI Windows / Ubuntu       UNKNOWN：本地无法代替远端 CI 结果。
 P1  本机 Shell 命令和 Terminal 仍绕过逐请求网络策略；第三方 stdio MCP/Hook 在受限模式下已 fail-closed，但 Windows OS 级隔离尚未实现。
 P1  Capability Catalog 已接入 Desktop，但模型能力到完整 Tool Contract 的映射仍缺失。
 P1  长视频已有 VideoJob、分段状态、候选 SHA、帧文件复用和视觉/语音证据缓存；跨重启真实崩溃验收仍缺失。
-P1  Playwright Chromium 是否随目标桌面包分发尚未确认。
+P2  Windows 安装包已包含 Playwright Chromium 并放置在运行时查找路径；安装后启动及无 Playwright 用户缓存的真实运行尚未执行。
 P1  安装/更新网络路径尚未统一记录用户操作准入。
 P2  AgentRuntime.subscribe 已接入 Desktop 状态投影，Renderer 尚未直接消费 Runtime 事件。
 P2  ToolRouter 尚未强制读取 approvalRequirement。

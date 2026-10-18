@@ -639,7 +639,7 @@ describe('publishing', () => {
 
     expect(published).toMatchObject({
       status: 'success',
-      artifacts: [expect.objectContaining({ path: join(directory, 'source-result.mp4') })],
+      artifacts: [expect.objectContaining({ path: await realpath(join(directory, 'source-result.mp4')) })],
     });
     expect(await readFile(join(directory, 'source-result.mp4'), 'utf8')).toBe(`candidate:attempt-b.mp4`);
     // 修复候选成为唯一交付结果，旧候选仍保留在过程记录里。
@@ -695,7 +695,7 @@ describe('publishing', () => {
 
     expect(result).toMatchObject({
       status: 'success',
-      artifacts: [expect.objectContaining({ path: join(directory, 'clip-edited-2.mp4') })],
+      artifacts: [expect.objectContaining({ path: await realpath(join(directory, 'clip-edited-2.mp4')) })],
     });
     expect(await readFile(join(directory, 'clip-edited.mp4'), 'utf8')).toBe('existing output');
   });
@@ -717,7 +717,7 @@ describe('publishing', () => {
     const result = await runTool(tools.session, tools.publish, { validationId: validation.validationId });
 
     // 未发布不跳号：第一次发布仍然拿到首选名。
-    expect(result).toMatchObject({ status: 'success', artifacts: [expect.objectContaining({ path: join(directory, 'clip-edited.mp4') })] });
+    expect(result).toMatchObject({ status: 'success', artifacts: [expect.objectContaining({ path: await realpath(join(directory, 'clip-edited.mp4')) })] });
   });
 
   it('registers nothing and removes the incomplete target when publishing is cancelled', async () => {

@@ -36,15 +36,15 @@ async function fixture(onRequest?: (url: string, response: ServerResponse) => bo
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (address === null || typeof address === 'string') throw new Error('Missing fixture address');
   const directory = await mkdtemp(join(tmpdir(), 'agent-browser-acceptance-')); directories.push(directory);
-  const decisions: BrowserApproval[] = []; const network: BrowserNetworkRequest[] = [];
+  const decisions: BrowserApproval[] = []; const network: BrowserNetworkRequest[] = []; const networkSignals: (AbortSignal | undefined)[] = [];
   const browser = new SessionBrowser({
     outputDirectory: () => directory,
     workspace: { confirmedDirectory: () => directory, requestApproval: async () => true, confirmDirectory: () => {} },
     approve: async action => { decisions.push(action); return true; },
-    networkAccess: async request => { network.push(request); return !new URL(request.url).pathname.startsWith('/blocked'); },
+    networkAccess: async (request, signal) => { network.push(request); networkSignals.push(signal); return !new URL(request.url).pathname.startsWith('/blocked'); },
   });
   browsers.push(browser);
-  return { browser, directory, requests, decisions, network, url: `http://127.0.0.1:${address.port}` };
+  return { browser, directory, requests, decisions, network, networkSignals, url: `http://127.0.0.1:${address.port}` };
 }
 function element(snapshot: Record<string, unknown>, name: string): Record<string, unknown> {
   const found = (snapshot.elements as { ref: string; name: string }[]).find(entry => entry.name === name);
@@ -168,6 +168,25 @@ describe('real session browser runtime', () => {
     await expect(loading).rejects.toMatchObject({ name: 'AbortError' });
     await expect(call(browser, 'browser_snapshot', { pageId: opened.pageId })).rejects.toThrow('页面不存在');
     expect(await call(browser, 'browser_open', { url })).toHaveProperty('pageId');
+  }, 30_000);
+
+  it('binds delayed page requests to the page lifecycle instead of a later turn signal', async () => {
+    const { browser, url, requests, network, networkSignals } = await fixture((path, response) => {
+      if (path !== '/background-page') return false;
+      response.setHeader('Content-Type', 'text/html');
+      response.end('<body><script>setTimeout(() => fetch("/background-request").catch(() => {}), 500)</script>page</body>');
+      return true;
+    });
+    const firstTurn = new AbortController();
+    const opened = await call(browser, 'browser_open', { url: `${url}/background-page` }, { ...execution, signal: firstTurn.signal });
+    const nextTurn = new AbortController();
+    await call(browser, 'browser_snapshot', { pageId: opened.pageId }, { ...execution, signal: nextTurn.signal });
+    await new Promise(resolve => setTimeout(resolve, 800));
+    expect(requests).toContain('GET /background-request');
+    const requestIndex = network.findIndex(request => request.url === `${url}/background-request`);
+    expect(requestIndex).toBeGreaterThanOrEqual(0);
+    expect(networkSignals[requestIndex]).not.toBe(firstTurn.signal);
+    expect(networkSignals[requestIndex]).not.toBe(nextTurn.signal);
   }, 30_000);
 
   it('bounds snapshot output and never executes a denied action', async () => {

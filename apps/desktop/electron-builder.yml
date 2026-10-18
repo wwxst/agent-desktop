@@ -18,7 +18,13 @@ files:
   - dist/preload/**/*
   - dist/renderer/**/*
   - resources/**/*
+  - '!resources/playwright/**/*'
   - bundled-media/**/*
+extraResources:
+  - from: resources/playwright
+    to: playwright
+    filter:
+      - chromium/**/*
 win:
   target: nsis
   artifactName: Agent-Desktop-Setup-${version}-${arch}.${ext}
