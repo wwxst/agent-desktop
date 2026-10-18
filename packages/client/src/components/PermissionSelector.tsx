@@ -4,9 +4,9 @@ import type { PermissionMode } from '../api.js';
 import { ExtensionToast } from './ExtensionFeedback.js';
 
 const modes = [
-  { value: 'ask', label: '请求批准', description: '工作区内编辑文件，目录授权、命令和插件操作前询问', icon: ShieldQuestion },
-  { value: 'auto-review', label: '帮我批准', description: '由独立模型审查需要批准的操作', icon: ShieldCheck },
-  { value: 'full-access', label: '完全访问权限', description: '允许访问本地文件并自动批准操作', icon: Shield },
+  { value: 'ask', label: '请求批准', description: '文件编辑可直接执行；目录和网络插件操作前询问，命令与终端不可用', icon: ShieldQuestion },
+  { value: 'auto-review', label: '帮我批准', description: '独立模型审查可用操作；命令与终端不可用', icon: ShieldCheck },
+  { value: 'full-access', label: '完全访问权限', description: '本机文件和进程自动允许，并可访问网络', icon: Shield },
 ] as const;
 
 /** 权限选择只提交会话设置；实际审批和访问范围始终由宿主执行。 */
@@ -90,7 +90,7 @@ export function PermissionSelector({ mode, busy, disabled, onSelect }: {
         {mode === value && <Check size={15} aria-label="已选中" />}
       </button>)}
       {open && feedback}
-      <p className="composer-permission-scope">本机命令和插件以当前用户权限运行。</p>
+      <p className="composer-permission-scope">本机命令和终端只在完全访问模式运行，并以当前用户权限访问网络。</p>
     </div>
     {!open && feedback}
   </div>;

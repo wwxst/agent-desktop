@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DesktopTaskOptions } from '../src/main/agent-task.js';
-import type { Tool } from '@agent-desktop/tools';
+import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
+import type { TerminalPort } from '@agent-desktop/video-agent';
 import { projectRecoveryFacts, projectTurnState } from '@agent-desktop/session';
 import { DesktopExtensions, type PluginFiles } from '../src/main/extensions.js';
 import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
@@ -12,6 +13,31 @@ import type { DesktopPersistentSession, PersistedDesktopState } from '../src/mai
 
 type IpcHandler = (...args: unknown[]) => unknown;
 const artifact = (path: string) => ({ id: `test-${path}`, path, mimeType: 'video/mp4', size: 1, sha256: 'a'.repeat(64), createdAt: '2026-10-18T00:00:00.000Z', sourceTool: 'test' });
+
+const terminalMocks = vi.hoisted(() => {
+  let onExit: ((event: { exitCode: number }) => void) | undefined;
+  const terminal = {
+    pid: 321,
+    onExit: vi.fn((listener: (event: { exitCode: number }) => void) => { onExit = listener; }),
+    onData: vi.fn(),
+    write: vi.fn(),
+    resize: vi.fn(),
+    kill: vi.fn(),
+  };
+  const finish = () => onExit?.({ exitCode: 0 });
+  return {
+    terminal,
+    spawn: vi.fn(() => terminal),
+    execFile: vi.fn((_file: string, _args: readonly string[], _options: object, callback: (error: Error | null) => void) => {
+      finish();
+      callback(null);
+    }),
+    reset: () => {
+      onExit = undefined;
+      terminal.onExit.mockClear(); terminal.onData.mockClear(); terminal.write.mockClear(); terminal.resize.mockClear(); terminal.kill.mockClear();
+    },
+  };
+});
 
 const mainMocks = vi.hoisted(() => {
   const handlers = new Map<string, IpcHandler>();
@@ -24,6 +50,7 @@ const mainMocks = vi.hoisted(() => {
   // 组装参数要保留：宿主注入的工作目录端口只有在这里才能验证真实形状。
   const agentOptions: Array<{
     readonly mediaTools?: readonly Tool[];
+    readonly terminal?: TerminalPort;
     readonly workspace?: {
       confirmedDirectory(): string | undefined;
       requestApproval(target: { kind: 'directory' | 'create-file'; path: string }, signal?: AbortSignal): Promise<boolean>;
@@ -72,6 +99,7 @@ const mainMocks = vi.hoisted(() => {
         requestApproval(target: { kind: 'directory' | 'create-file'; path: string }, signal?: AbortSignal): Promise<boolean>;
         confirmDirectory(directory: string): void;
       };
+      terminal?: TerminalPort;
     }) => {
       const agent = {
         session: options.session,
@@ -157,6 +185,12 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
   mkdir: mainMocks.mkdir,
   readFile: mainMocks.readFile,
   writeFile: mainMocks.writeFile,
+}));
+
+vi.mock('node-pty', () => ({ spawn: terminalMocks.spawn }));
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFile: terminalMocks.execFile,
 }));
 
 vi.mock('../src/main/safe-storage.js', () => ({
@@ -371,6 +405,8 @@ describe('desktop main session lifecycle', () => {
     expect(switchSession).toBeTypeOf('function');
     expect(saveRuntimeSettings).toBeTypeOf('function');
     const firstSessionId = await getActiveSessionId!({});
+    terminalMocks.reset();
+    await setPermissionMode({}, 'full-access');
 
     mainMocks.showOpenDialog.mockResolvedValue({
       canceled: false,
@@ -388,6 +424,12 @@ describe('desktop main session lifecycle', () => {
     }));
     const runningTask = runAgentTask!({}, taskRequest('记住数字 731'));
     await vi.waitFor(() => expect(mainMocks.runDesktopAgentTask).toHaveBeenCalledOnce());
+
+    const desktopOptions = mainMocks.agentOptions[0]!;
+    desktopOptions.workspace!.confirmDirectory(process.cwd());
+    const terminalContext: ToolExecutionContext = { toolCallId: 'permission-transition' as never, reportProgress: () => {} };
+    await desktopOptions.terminal!.open("Write-Output 'running'", undefined, terminalContext);
+    expect(terminalMocks.spawn).toHaveBeenCalledOnce();
 
     await expect(deleteSession!({}, firstSessionId)).rejects.toThrow('Agent 正在执行');
     await expect(setPermissionMode({}, 'full-access')).rejects.toThrow('Agent 正在执行，无法变更权限模式。');
@@ -422,8 +464,11 @@ describe('desktop main session lifecycle', () => {
 
     const firstAgent = mainMocks.agents[0]!;
     await expect(setPermissionMode({}, 'auto-review')).resolves.toBe('auto-review');
+    expect(terminalMocks.execFile).toHaveBeenCalledOnce();
     const savedModes = mainMocks.handlers.get('desktop:load-client-state')!({}) as PersistedDesktopState['clientState'];
     expect(savedModes.conversations.find(item => item.id === firstSessionId)?.permissionMode).toBe('auto-review');
+    const persistedSession = (mainMocks.documents.get('session-state') as PersistedDesktopState).sessions.find(item => item.id === firstSessionId);
+    expect(persistedSession).toMatchObject({ permissionMode: 'auto-review', terminalHistory: { status: 'exited', exitCode: 0 } });
     await expect(setPermissionMode({}, 'unknown')).rejects.toThrow('permissionMode');
     await setPermissionMode({}, 'ask');
     // 未安装 Probe 插件时没有 Probe 注入，普通任务仍然正常运行。

@@ -1229,10 +1229,10 @@ function registerIpcHandlers(): void {
       }
       const basePrompt = agent.systemPrompt.build();
       const permissionPrompt = permissionMode === 'full-access'
-        ? '当前聊天为完全访问：宿主已允许本地文件范围和操作自动批准，无需重复请求授权。相对路径仍需要明确工作目录；操作系统权限、输入校验、任务恢复核验和视频验收规则继续生效。'
+        ? '当前聊天为完全访问：宿主已允许本地文件范围和操作自动批准，无需重复请求授权。本机命令、终端及本地插件进程以当前用户权限运行并可访问网络。相对路径仍需要明确工作目录；操作系统权限、输入校验、任务恢复核验和视频验收规则继续生效。'
         : permissionMode === 'auto-review'
-          ? '当前聊天为帮我批准：工作目录内常规文本编辑可直接执行，目录变更、命令、终端和插件操作由独立模型审查。审查拒绝或失败表示操作未执行，不得绕过；目录范围外请先通过 set_working_directory 请求授权。'
-          : '当前聊天为请求批准：工作目录内常规文本编辑可直接执行，目录变更、命令、终端和插件操作会请求用户批准。目录范围外请先通过 set_working_directory 请求授权。';
+          ? '当前聊天为帮我批准：工作目录内常规文本编辑可直接执行，目录变更和可用的网络插件操作由独立模型审查。当前 Windows 宿主没有 OS 级网络隔离，因此本机命令、终端和 stdio/Hook 插件进程在此模式不可用；不要调用 run_command、open_terminal 或 write_terminal。如任务确实需要本机进程，说明用户需要切换到完全访问。审查拒绝或失败表示操作未执行，不得绕过；目录范围外请先通过 set_working_directory 请求授权。'
+          : '当前聊天为请求批准：工作目录内常规文本编辑可直接执行，目录变更和可用的网络插件操作会请求用户批准。当前 Windows 宿主没有 OS 级网络隔离，因此本机命令、终端和 stdio/Hook 插件进程在此模式不可用；不要调用 run_command、open_terminal 或 write_terminal。如任务确实需要本机进程，说明用户需要切换到完全访问。目录范围外请先通过 set_working_directory 请求授权。';
       agent = { ...agent, systemPrompt: { build: () => `${basePrompt}\n${permissionPrompt}` } };
       // Desktop 脚本从 app package 目录启动，Trace 仍统一写入仓库根 logs/。
       const logsDirectory = resolve(app.getAppPath(), '..', '..', 'logs');

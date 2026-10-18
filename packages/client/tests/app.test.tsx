@@ -122,6 +122,10 @@ describe('shared App', () => {
     render(<App api={{ ...api, loadRuntimeSettings: async () => settings, saveRuntimeSettings: save, setPermissionMode, runAgentTask: run }} />);
     const input = await screen.findByLabelText('剪辑需求');
     fireEvent.change(input, { target: { value: '下一条消息' } });
+    fireEvent.click(screen.getByRole('button', { name: '选择操作权限：请求批准' }));
+    expect(screen.getByRole('menuitemradio', { name: /请求批准.*命令与终端不可用/ })).toBeTruthy();
+    expect(screen.getByText(/本机命令和终端只在完全访问模式运行/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '选择操作权限：请求批准' }));
     fireEvent.click(await screen.findByRole('button', { name: '选择对话模型：DeepSeek V4 Pro' }));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /DeepSeek V4.1 Flash/ }));
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
