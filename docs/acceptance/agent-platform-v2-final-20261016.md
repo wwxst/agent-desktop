@@ -48,6 +48,9 @@ pnpm typecheck:tests
 pnpm vitest run apps/desktop/tests/browser-host.test.ts
 PASS：Browser 6/6；上传审批路径断言使用与生产一致的规范路径。
 
+pnpm exec vitest run apps/desktop/tests/safe-storage.test.ts
+PASS：12/12；Windows SQLite 耐久性用例的单项时限调整后通过。
+
 pnpm check（2026-10-18，Node 24.20.0 / pnpm 11.22.0）
 PASS：完整门禁通过，99 个测试文件中 1105 项通过、1 项跳过；19 个 workspace 包架构检查通过。
 
@@ -103,7 +106,7 @@ Browser                   PARTIAL：Playwright 本地 HTTP 夹具与 Windows Chr
 Windows UIA Computer     PARTIAL：PowerShell helper 与协议测试通过；目标应用实机验收未在本轮执行。
 Document                  PARTIAL：解析边界有测试；真实用户 PDF/DOCX/XLSX/CSV 大文件验收未完整执行。
 Long Video Recovery       PARTIAL：VideoJob 身份、分段 checkpoint、候选 SHA、视觉批次和语音时间轴缓存已实现；真实进程崩溃与重启验收仍未完成。
-CI Windows / Ubuntu       PASS：提交 94ace18 的 Actions run 39117601131 中 Windows 与 Ubuntu job 均成功。此前 65a0b92 的 Windows 失败来自临时目录短路径与生产规范长路径断言不一致；94ace18 改为用 realpath 作为期望路径。
+CI Windows / Ubuntu       PASS：提交 2d3ac88 的 Actions run 39119918572 中 Windows 与 Ubuntu job 均成功。此前 65a0b92 的 Windows 路径断言与生产规范化路径不一致，已由 94ace18 修正；提交 18e3ce5 的 Windows 全量门禁曾因 safe-storage.test.ts 默认 5 秒时限超时，2d3ac88 将该真实 SQLite/加密边界用例时限改为 30 秒，生产逻辑未变。
 ```
 
 ## 5. 已知剩余风险
@@ -127,6 +130,6 @@ P2  恢复时跳过 MCP 会安全拒绝依赖插件工具的普通恢复，产�
 
 ## 7. Git 状态
 
-本地功能分支的 Browser 路径修复提交 `94ace18` 已推送，Actions run `39117601131` 的 Windows 与 Ubuntu jobs 均通过；尚未合并 `main`。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
+本地功能分支的 Browser 路径修复 `94ace18` 和 safe-storage 测试时限修复 `2d3ac88` 已推送；最新 Actions run `39119918572` 的 Windows 与 Ubuntu jobs 均通过。`main` 尚未合并。必须保留任务前已有未跟踪内容：`.workbuddy-ai/`、`html.zip`、`html/` 和 `docs/superpowers/plans/2026-10-11-probe-media-plugin-migration-plan.md`。由于仍存在 P1 风险和未完成真实验收，不执行最终合并或发布结论。
 
 最终结论保持 `CHANGES_REQUIRED`，不能将本轮自动化门禁通过等同于完整架构交付通过。
