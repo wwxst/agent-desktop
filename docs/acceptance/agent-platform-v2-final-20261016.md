@@ -2,7 +2,7 @@
 
 实际复核日期：2026-10-19。最终决定：`CHANGES_REQUIRED`。
 
-原实施分支为 `codex/agent-platform-v2`。工作树迁移到 `4bdd` 后，原分支仍由 `fc46` 使用；当前续接分支为 `codex/agent-platform-v2-validation`，精确提交为 `e06348784f0c71c48ab0d401be5d93abd2c64cc6`。本文是实施中记录，不代表全部交付或允许合并。
+原实施分支为 `codex/agent-platform-v2`。工作树迁移到 `4bdd` 后，原分支仍由 `fc46` 使用；验证基线为 `e06348784f0c71c48ab0d401be5d93abd2c64cc6`。当前修复分支为 `codex/agent-platform-v2-review-fixes`，本轮代码基线为 `d71209ddecea428f59d6d91de5a7ce491a1f562f`；本文后续提交只更新验收事实，源码以该基线为准。本文是实施中记录，不代表全部交付或允许合并。
 
 ## 1. 要求逐项核对
 
@@ -31,8 +31,8 @@
 22 Recovery                任务恢复          普通文件强杀重启及未知命令效果核验有真实桌面证据。
 23 Compatibility Cleanup   历史兼容清理      已核对的旧文件迁移和旧活动/产物/附件转换已移除。
 24 Documentation           文档同步          架构事实随实现更新，本文保持未完成结论。
-25 Tests                   自动化测试        `e063487` 的完整门禁记录为 1175 项通过、1 项跳过；修复分支需重新执行。
-26 CI                      持续集成          历史提交双平台通过，精确 `e063487` 尚无对应双平台结果。
+25 Tests                   自动化测试        本轮代码基线完整门禁 1204 项通过、1 项跳过，构建通过。
+26 CI                      持续集成          `d71209d` 双平台通过；运行链接见第 4 节。
 27 Review 1                架构审查          CHANGES_REQUIRED；控制权转交、工具发现和长视频恢复仍有缺口。
 28 Review 2                安全恢复审查      取消证明与网络准入专项独立复核通过，全局尚待收口。
 29 Review 3                产品完整性审查    CHANGES_REQUIRED；完整外部链路与长视频恢复未全部验收。
@@ -61,7 +61,40 @@ Windows 没有操作系统级进程/网络沙箱。受限模式在创建前拒�
 
 ## 4. 本轮验证
 
-历史兼容清理后的完整门禁：
+### 4.1 修复分支当前代码基线
+
+本轮复核及命令对应 `d71209ddecea428f59d6d91de5a7ce491a1f562f`，Node `24.20.0` / pnpm `11.22.0`；CI 使用仓库指定的 Node `24.19.0`。本机结果不能冒充相同运行时的 CI 证据。
+
+```text
+pnpm install --frozen-lockfile  PASS     锁文件未变化。
+pnpm check                      PASS     99 个测试文件通过、1 个跳过；1204 项通过、1 项跳过。
+pnpm check:architecture          PASS     19 个工作区包；包含在完整门禁中。
+pnpm desktop:build               PASS     主进程、预加载、渲染层及随包资源。
+git diff --check                PASS     无补丁格式错误。
+Chromium upload cases          PASS     真实浏览器 10 项，包含文件类型、超限和审批竞态。
+Cloud semantic acceptance      SKIP     本轮未重跑真实云视觉/语音/模型内容质量验收。
+Desktop kill-and-resume        BLOCKED  显式恢复协议尚未闭环；Session 重建测试不等于进程强杀验收。
+NSIS installed first launch    SKIP     本轮未运行安装后首次启动。
+```
+
+本轮处理第二次复核指出的边界：每批用户消息中的证据 JSON 包含批次元数据，后续单帧也重新检查 200,000 字节上限；超长转录/要求完整保留并明确受阻。测试补齐 `failed > blocked > passed` 聚合、超限单帧与转录、观察重叠/缺口/时间戳错位及完整覆盖对照。VideoJob 候选使用流式 SHA-256；上传复用统一 MIME（媒体类型）映射，并限制单文件 20 MiB、在读取期间累计计数，审批后只上传同一份已核验字节。20 MiB 不表示进程峰值内存，拼接和 Playwright 仍有额外副本。
+
+恢复目录新增所有权检查点及目录标记；取消/失败保留，完整观察、转录和判定持久化后才清理可证明拥有的直属目录。转录每段文本一并持久化，新一轮检查清除旧判定进度；完成检查点只允许核验工具返回 `judgment-checkpointed`，不写 `effect.outcome.verified`，不替代正式 `tool.result`。测试覆盖保存失败、Session 序列化重建后复用和清理、缺少标记不删除、目录链接替换不删除用户文件。没有执行真实子进程强杀；缺少所有权标记的历史目录保留。
+
+```text
+Review（本轮改动范围）
+- Findings: 上传边界、批次预算、核验覆盖和目录生命周期经独立代理及主代理复核，无新增阻断项。
+- Required changes: 本轮回归已补齐；跨片关系/全局存在性仍采用保守判定，任意长转录分块未实现。
+- Decision: PASS（仅本轮修复范围）；V2 全局继续 CHANGES_REQUIRED。
+```
+
+本轮代码基线的 [CI 运行](https://github.com/wwxst/agent-desktop/actions/runs/39214704205) 已完成，Ubuntu 与 Windows 两个任务均通过。文档-only 的后续提交仍需遵循当前分支 CI。
+
+### 4.2 历史基线证据
+
+上一修复提交 `ae92f60e57327ada40f5bfdef7abee115a65ba03` 的本机完整门禁为 99 个测试文件通过、1 个跳过，1178 项通过、1 项跳过；其 [CI 运行](https://github.com/wwxst/agent-desktop/actions/runs/39197821651) 的 Windows、Ubuntu 两项任务均成功。验证基线 `e063487` 的本机记录为 1175 项通过、1 项跳过。这些结果只绑定各自提交。
+
+以下保留历史兼容清理及早期 V2 验收事实，不作为本轮精确代码基线的完整外部验收：
 
 ```text
 pnpm install --frozen-lockfile  PASS  Node 24.20.0 / pnpm 11.22.0。
@@ -117,13 +150,16 @@ Electron 44 网络证据：`logs/acceptance/network-admission-20261018-2259/resu
 - 子智能体后续控制权转交，以及模型转向/工具搜索协商仍缺失。只读委派和随包懒启动不能称为完整实现。
 - 语义工具强杀后会形成未知效果，Desktop 安全恢复集移除该工具；`verify_tool_outcome` 现在可只读检查已持久化的 VideoJob 候选摘要、分段、观察和中间文件，并返回可重新判定的进度，但不会把未知外部效果标记为完成。现有缓存测试直接第二次调用语义工具，不能作为跨进程真实恢复通过证据；候选摘要不变和临时文件存在也不能证明上传未发生或整次调用未应用，仍需真实强杀验收和显式恢复协议。
 - 第三方 MCP 缺定义时普通恢复安全拒绝；同名工具/插件/技能内容变化仍有配置漂移风险。
-- 历史 `2d3ac88`、`6f372ac` 的 Windows/Ubuntu CI 成功不能覆盖精确 `e063487` 之后的修复分支。
+- 历史 `2d3ac88`、`6f372ac`、`ae92f60` 的 Windows/Ubuntu CI 成功不能覆盖本轮代码基线，精确运行见第 4 节。
+- 每批仍携带完整要求和转录；超长音轨的分块语义聚合未实现，超限时明确受阻，不再以总视觉观察大小阻塞。没有所有权标记的历史临时目录不会自动删除，避免误删用户文件。
 - 安装包构建和 `win-unpacked` 启动曾通过；NSIS 安装后启动未执行，避免覆盖当前用户已有同 appId 安装注册。
 - Codex 私有云同步和完整应用服务器协议未实现；没有新增无消费者的生成模型框架。
 
 ## 7. 清理与分支状态
 
 设置、模型选择、独立 MCP、UIA、普通文件恢复及其失败反证使用隔离目录，已退出进程并清理测试配置/工作目录，必要 JSON、SQLite 副本和 PNG 作为证据保留。三个媒体场景的测试配置与临时媒体均已清理，准确路径保存在各用例 `cleanup.json`。CLI 仅产生已有忽略规则下的构建产物，没有创建本机供应商或持久会话。
+
+本轮新增回归全部使用测试自建目录、真实本地 HTTP 服务器和独立 Chromium，会在测试收尾关闭进程并删除夹具；没有改动日常供应商、模型、会话或项目。取消/失败目录保留只在夹具内验证，随后由夹具统一清理。
 
 自动审批拒绝清理 `logs/acceptance/network-admission-20261018-2259/user-data/`，仅返回 `blocked by policy`、没有具体原因；该目录及同处 `download.cjs` 保留。重复下载的两个 `apps/desktop/bundled-media/**/*.partial` 文件清理也被自动审批拒绝，尚未删除。它们没有作为日常配置使用。原工作树及任务前 `.workbuddy-ai/`、`html.zip`、`html/`、指定 Probe 计划文件均保留。
 
