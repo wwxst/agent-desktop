@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { realpath, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Download, type ElementHandle, type Page } from 'playwright';
 import { createFileArtifact, resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
@@ -60,6 +60,10 @@ function webUrl(value: string): string {
 }
 function schema(properties: Record<string, unknown>, required: readonly string[]) {
   return { type: 'object', properties, required, additionalProperties: false };
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 /** 正式 Windows 包把 Chromium 放入 resources；开发和测试继续使用 Playwright 默认缓存。 */
@@ -173,10 +177,16 @@ export class SessionBrowser {
         const scoped = await resolveScopedPath(workspace.confirmedDirectory(), text(input, 'filePath'), workspace.fileAccess === 'all');
         if (!scoped.ok) throw new ToolExecutionError(scoped.message, 'denied');
         if (!(await stat(scoped.path)).isFile()) throw new ToolExecutionError('上传路径不是文件。', 'permanent');
+        const preparedBytes = await readFile(scoped.path);
+        const preparedSha256 = sha256(preparedBytes);
         return { approval: { ...this.action('upload', input, target), filePath: scoped.path }, execute: async () => {
           await this.recheck(input);
+          const currentBytes = await readFile(scoped.path);
+          if (sha256(currentBytes) !== preparedSha256) {
+            throw new ToolExecutionError('审批等待期间上传文件内容已变化，操作未执行。', 'permanent');
+          }
           execution.checkpoint?.({ kind: 'browser', action: 'upload', filePath: scoped.path, pageId: input.pageId });
-          await target.element.setInputFiles(scoped.path, { timeout: TIMEOUT_MS });
+          await target.element.setInputFiles({ name: basename(scoped.path), mimeType: 'application/octet-stream', buffer: currentBytes }, { timeout: TIMEOUT_MS });
           delete target.state.snapshot;
           return { uploadedFile: scoped.path, pageId: input.pageId };
         } };

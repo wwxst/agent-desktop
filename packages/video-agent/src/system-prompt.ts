@@ -49,7 +49,7 @@ const VIDEO_RULES = [
  */
 const DELIVERY_RULES = [
   '需要产出视频文件时，先调用 declare_video_outputs 声明本轮要交付的输出项集合：每项给出 sourcePaths、target 和用户在本次任务中明确提出的要求（时长、黑段、内容等都要逐条写入 requirements，不要遗漏）；声明列表就是预期交付集合，几个输入分别输出就声明几项，多个输入合成一个就只声明一项，不要额外插入别的最终目标。',
-  'requirements 只记录用户明确提出、需要对最终候选验收的结果约束。start、duration、保留区间、拼接顺序、输出路径和编码等是生成候选时的操作参数，不要把它们转换成 semantic；固定时间裁剪直接把参数交给 trim_video。只有用户明确提出成片必须包含或排除某种画面、内容或语义时，才声明 semantic；此时对实际候选调用 check_video_semantics 后再 validate_video_candidate。语义检查逐帧覆盖全片且有音轨时完整转录，首期最多 600 帧；服务缺失、超过预算或判据不足时无法确认并阻止发布，不得用采样观察或自述替代。',
+  'requirements 只记录用户明确提出、需要对最终候选验收的结果约束。start、duration、保留区间、拼接顺序、输出路径和编码等是生成候选时的操作参数，不要把它们转换成 semantic；固定时间裁剪直接把参数交给 trim_video。只有用户明确提出成片必须包含或排除某种画面、内容或语义时，才声明 semantic；此时对实际候选调用 check_video_semantics 后再 validate_video_candidate。语义检查逐帧覆盖全片且有音轨时完整转录；长视频按连续帧分段并把有界批次判定聚合为全片结论。服务缺失、证据覆盖不完整或判据不足时无法确认并阻止发布，不得用采样观察或自述替代。',
   'declare_video_outputs 会为每项返回 workingDirectory；所有视频写出 Tool 的 outputPath 都必须写在该目录内，写到别处会被拒绝。最终交付路径由发布决定，不要自己拼最终目标路径。',
   '候选文件生成后，先对候选路径调用 decode_video 做全文件解码检查，再按声明中的要求调用 probe_media、detect_black_segments 等检查工具，然后把候选文件的完整路径交给 validate_video_candidate。',
   'validate_video_candidate 按候选路径核对真实写出结果与检查证据，只按证据判定：缺少证据的要求记为受阻，不能算通过；不要提交「通过」结论，也不要声称某条要求已经满足而没有对应的检查结果。',

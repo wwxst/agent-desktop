@@ -60,4 +60,33 @@ describe('VerifyToolOutcomeTool', () => {
     const missing = await new VerifyToolOutcomeTool(missingSession, workspaceFor(directory)).execute({ sourceEventIndex: 3 }, context);
     expect(missing).toMatchObject({ status: 'success', output: { outcome: 'not-applied' } });
   });
+
+  it('reports persisted VideoJob evidence without claiming the unknown call completed', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'agent-desktop-verify-'));
+    const candidatePath = join(directory, 'candidate.mp4');
+    const frame0 = join(directory, 'frame-0.jpg');
+    const frame1 = join(directory, 'frame-1.jpg');
+    await writeFile(candidatePath, 'candidate bytes', 'utf8');
+    await writeFile(frame0, 'frame 0', 'utf8');
+    await writeFile(frame1, 'frame 1', 'utf8');
+    const candidateSha256 = createHash('sha256').update('candidate bytes', 'utf8').digest('hex');
+    const session = new InMemorySession([], 'session');
+    session.appendMany([
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'user.message', turnId, payload: { content: 'inspect' } },
+      { type: 'step.started', turnId, payload: { stepId } },
+      { type: 'tool.called', turnId, payload: { stepId, toolCallId: 'source-call' as never, name: 'check_video_semantics', input: {}, boundary: 'checkpointed' } },
+      { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { kind: 'video-job', version: 1, jobId: 'job', outputItemId: 'item', candidatePath, candidateSha256, phase: 'started' } } },
+      { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { kind: 'video-job', version: 1, jobId: 'job', outputItemId: 'item', candidatePath, candidateSha256, phase: 'segment-completed', segment: { startFrame: 0, endFrame: 2, totalFrames: 2, frames: [{ path: frame0, timestamp: 0 }, { path: frame1, timestamp: 0.1 }] } } } },
+      { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { kind: 'video-job', version: 1, jobId: 'job', outputItemId: 'item', candidatePath, candidateSha256, phase: 'observations-completed', startFrame: 0, observations: [{ timestamp: 0, description: 'first' }, { timestamp: 0.1, description: 'second' }] } } },
+    ]);
+
+    const result = await new VerifyToolOutcomeTool(session, workspaceFor(directory)).execute({ sourceEventIndex: 3 }, context);
+
+    expect(result).toMatchObject({ status: 'success', output: {
+      kind: 'video-job', status: 'evidence-ready-for-recheck', expectedSha256: candidateSha256, currentSha256: candidateSha256,
+      segmentCount: 1, totalFrames: 2, observedFrameCount: 2, missingFrameCount: 0,
+    } });
+    expect(session.events().filter(event => event.type === 'effect.outcome.verified')).toHaveLength(0);
+  });
 });

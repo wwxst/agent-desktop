@@ -148,6 +148,36 @@ describe('real session browser runtime', () => {
     expect(downloaded.artifacts).toMatchObject([{ path: downloaded.filePath, mimeType: 'application/octet-stream' }]);
   }, 30_000);
 
+  it('rejects an upload whose contents change while approval is pending', async () => {
+    const { url, directory } = await fixture();
+    const uploadPath = join(directory, 'approval-race.txt');
+    await writeFile(uploadPath, 'approved bytes');
+    let releaseApproval!: () => void;
+    const approvalReady = new Promise<void>(resolve => { releaseApproval = resolve; });
+    let approvalEntered!: () => void;
+    const approvalStarted = new Promise<void>(resolve => { approvalEntered = resolve; });
+    const browser = new SessionBrowser({
+      outputDirectory: () => directory,
+      workspace: { confirmedDirectory: () => directory, requestApproval: async () => true, confirmDirectory: () => {} },
+      approve: async action => {
+        if (action.action === 'upload') {
+          approvalEntered();
+          await approvalReady;
+        }
+        return true;
+      },
+      networkAccess: async () => true,
+    });
+    browsers.push(browser);
+    const opened = await call(browser, 'browser_open', { url });
+    const snapshot = await call(browser, 'browser_snapshot', { pageId: opened.pageId });
+    const upload = call(browser, 'browser_upload', { ...element(snapshot, 'Upload'), filePath: uploadPath });
+    await approvalStarted;
+    await writeFile(uploadPath, 'changed bytes');
+    releaseApproval();
+    await expect(upload).rejects.toThrow('内容已变化');
+  }, 30_000);
+
   it('closes real in-flight browser activity on cancellation and rejects stale document references', async () => {
     const { browser, url } = await fixture((path, response) => {
       if (path === '/slow') return true;

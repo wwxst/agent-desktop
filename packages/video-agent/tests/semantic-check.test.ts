@@ -101,6 +101,23 @@ describe('semantic evidence completeness', () => {
     expect(vision.execute).toHaveBeenCalledTimes(201);
     expect(model.complete).toHaveBeenCalledOnce();
   });
+  it('judges oversized full-frame evidence in bounded batches and aggregates every result', async () => {
+    const description = '画面证据'.repeat(15_000);
+    vision.execute.mockImplementation(async value => {
+      const images = (value as { images: typeof frames }).images;
+      return { status: 'success', output: { frames: images.map(frame => ({ timestamp: frame.timestamp, description })) } };
+    });
+    vi.mocked(model.complete).mockClear();
+
+    const result = await executeSemantic(tool());
+
+    expect(result).toMatchObject({ status: 'success', output: { coverage: 'all-frames-and-transcript', checks: [{ outcome: 'passed' }] } });
+    expect(model.complete).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(model.complete).mock.calls.every(([request]) => {
+      const content = request.messages[0]?.content;
+      return typeof content === 'string' && Buffer.byteLength(content, 'utf8') < 200_000;
+    })).toBe(true);
+  });
   it('resumes a persisted segment when the candidate and its frame files are unchanged', async () => {
     fullFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: false, frameCount: 2, reason: '需要分段' } });
     segmentFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: true, totalFrames: 2, startFrame: 0, endFrame: 2,
