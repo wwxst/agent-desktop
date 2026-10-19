@@ -1,5 +1,5 @@
 import { createServer, type Server, type ServerResponse } from 'node:http';
-import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, truncate, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,7 +26,7 @@ async function fixture(onRequest?: (url: string, response: ServerResponse) => bo
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.end(`<!doctype html><html><body>
       <h1>Browser acceptance</h1><input aria-label="Name" name="name"><button onclick="document.getElementById('result').textContent='Clicked'">Apply</button>
-      <input aria-label="Upload" type="file" onchange="document.getElementById('result').textContent=this.files[0].name">
+      <input aria-label="Upload" type="file" onchange="document.getElementById('result').textContent=this.files[0].name+':'+this.files[0].type">
       <a href="/download">Download evidence</a><form method="post" action="/submitted"><input name="message" aria-label="Message"><button>Send form</button></form>
       <a href="javascript:document.getElementById('result').textContent='unsafe'">Unsafe link</a>
       <div id="result">Ready</div><img src="/blocked-resource" alt="blocked">
@@ -148,7 +148,30 @@ describe('real session browser runtime', () => {
     expect(downloaded.artifacts).toMatchObject([{ path: downloaded.filePath, mimeType: 'application/octet-stream' }]);
   }, 30_000);
 
-  it('rejects an upload whose contents change while approval is pending', async () => {
+  it('preserves upload MIME types in the actual browser File object', async () => {
+    const { browser, url, directory } = await fixture();
+    const opened = await call(browser, 'browser_open', { url });
+    for (const [name, mime] of [ ['picture.PNG', 'image/png'], ['document.pdf', 'application/pdf'],
+      ['clip.mp4', 'video/mp4'], ['data.unknown', 'application/octet-stream'] ]) {
+      await writeFile(join(directory, name!), 'upload bytes');
+      const snapshot = await call(browser, 'browser_snapshot', { pageId: opened.pageId });
+      await call(browser, 'browser_upload', { ...element(snapshot, 'Upload'), filePath: name });
+      expect((await call(browser, 'browser_snapshot', { pageId: opened.pageId })).text).toContain(`${name}:${mime}`);
+    }
+  }, 30_000);
+
+  it('rejects an oversized file before requesting upload approval', async () => {
+    const { browser, url, directory, decisions } = await fixture();
+    const path = join(directory, 'large.mp4');
+    await writeFile(path, '');
+    await truncate(path, 20 * 1024 * 1024 + 1);
+    const opened = await call(browser, 'browser_open', { url });
+    const snapshot = await call(browser, 'browser_snapshot', { pageId: opened.pageId });
+    await expect(call(browser, 'browser_upload', { ...element(snapshot, 'Upload'), filePath: path })).rejects.toThrow('20 MiB');
+    expect(decisions.filter(action => action.action === 'upload')).toHaveLength(0);
+  }, 30_000);
+
+  it.each(['changed contents', 'oversized replacement'])('rejects %s while upload approval is pending', async replacement => {
     const { url, directory } = await fixture();
     const uploadPath = join(directory, 'approval-race.txt');
     await writeFile(uploadPath, 'approved bytes');
@@ -173,9 +196,11 @@ describe('real session browser runtime', () => {
     const snapshot = await call(browser, 'browser_snapshot', { pageId: opened.pageId });
     const upload = call(browser, 'browser_upload', { ...element(snapshot, 'Upload'), filePath: uploadPath });
     await approvalStarted;
-    await writeFile(uploadPath, 'changed bytes');
+    if (replacement === 'changed contents') await writeFile(uploadPath, 'changed bytes');
+    else await truncate(uploadPath, 20 * 1024 * 1024 + 1);
     releaseApproval();
-    await expect(upload).rejects.toThrow('内容已变化');
+    await expect(upload).rejects.toThrow(replacement === 'changed contents' ? '内容已变化' : '20 MiB');
+    expect((await call(browser, 'browser_snapshot', { pageId: opened.pageId })).text).toContain('Ready');
   }, 30_000);
 
   it('closes real in-flight browser activity on cancellation and rejects stale document references', async () => {

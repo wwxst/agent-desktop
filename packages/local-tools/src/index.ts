@@ -13,7 +13,7 @@ export {
   type CommandPort,
 } from './command.js';
 export { EditTextFileTool } from './edit-text-file.js';
-export { createFileArtifact } from './artifact.js';
+export { createFileArtifact, fileMimeType } from './artifact.js';
 export { ApplyPatchTool } from './apply-patch.js';
 export { GitReadTool, type GitReadToolName } from './git.js';
 export { ListDirectoryTool } from './list-directory.js';

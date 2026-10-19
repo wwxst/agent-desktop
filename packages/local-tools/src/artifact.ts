@@ -12,6 +12,11 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.pdf': 'application/pdf',
 };
 
+/** 上传与产物登记共用文件名类型映射；未知扩展名保留二进制类型。 */
+export function fileMimeType(path: string): string {
+  return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
+}
+
 /** 写出工具在文件落地后登记真实元数据；大文件流式计算，不把整段视频载入内存。 */
 export async function createFileArtifact(filePath: string, sourceTool: string, signal?: AbortSignal): Promise<FileArtifact> {
   try {
@@ -22,7 +27,7 @@ export async function createFileArtifact(filePath: string, sourceTool: string, s
     const digest = createHash('sha256');
     for await (const chunk of createReadStream(path, signal === undefined ? {} : { signal })) digest.update(chunk);
     signal?.throwIfAborted();
-    return { id: randomUUID(), path, mimeType: MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream',
+    return { id: randomUUID(), path, mimeType: fileMimeType(path),
       size: info.size, sha256: digest.digest('hex'), createdAt: new Date().toISOString(), sourceTool };
   } catch (error) {
     signal?.throwIfAborted();

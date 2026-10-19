@@ -89,4 +89,79 @@ describe('VerifyToolOutcomeTool', () => {
     } });
     expect(session.events().filter(event => event.type === 'effect.outcome.verified')).toHaveLength(0);
   });
+
+  it.each([
+    { name: 'overlapping batches with the expected total count', status: 'incomplete-observation-coverage', batches: [{ startFrame: 0, count: 6, timestampOffset: 0 }, { startFrame: 4, count: 4, timestampOffset: 0 }] },
+    { name: 'a gap between batches with the expected total count', status: 'incomplete-observation-coverage', batches: [{ startFrame: 0, count: 4, timestampOffset: 0 }, { startFrame: 5, count: 6, timestampOffset: 0 }] },
+    { name: 'a batch with mismatched frame timestamps', status: 'incomplete-observation-coverage', batches: [{ startFrame: 0, count: 6, timestampOffset: 0 }, { startFrame: 6, count: 4, timestampOffset: 1 }] },
+    { name: 'complete batches spanning segment boundaries', status: 'evidence-ready-for-recheck', batches: [{ startFrame: 0, count: 6, timestampOffset: 0 }, { startFrame: 6, count: 4, timestampOffset: 0 }] },
+    { name: 'a valid prefix of observed frames', status: 'partial-evidence', batches: [{ startFrame: 0, count: 6, timestampOffset: 0 }] },
+  ])('classifies VideoJob evidence with $name', async ({ batches, status }) => {
+    directory = await mkdtemp(join(tmpdir(), 'agent-desktop-verify-'));
+    const candidatePath = join(directory, 'candidate.mp4');
+    // 候选超过一个流读取块，核对分块摘要与原始字节的一致性。
+    const candidateBytes = Buffer.alloc(200_000, 'candidate');
+    await writeFile(candidatePath, candidateBytes);
+    const candidateSha256 = createHash('sha256').update(candidateBytes).digest('hex');
+    const frames = Array.from({ length: 10 }, (_, index) => ({ path: join(directory!, `frame-${index}.jpg`), timestamp: index / 10 }));
+    await Promise.all(frames.map(frame => writeFile(frame.path, 'frame', 'utf8')));
+    const checkpoint = { kind: 'video-job', version: 1, jobId: 'job', outputItemId: 'item', candidatePath, candidateSha256 };
+    const session = new InMemorySession([], 'session');
+    session.appendMany([
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'user.message', turnId, payload: { content: 'inspect' } },
+      { type: 'step.started', turnId, payload: { stepId } },
+      { type: 'tool.called', turnId, payload: { stepId, toolCallId: 'source-call' as never, name: 'check_video_semantics', input: {}, boundary: 'checkpointed' } },
+      // 两段真实帧提供权威序号/时间戳，观察批次允许跨越分段边界。
+      ...[0, 5].map(startFrame => ({ type: 'tool.effect.prepared' as const, turnId, payload: { sourceEventIndex: 3, data: {
+        ...checkpoint, phase: 'segment-completed', segment: { startFrame, endFrame: startFrame + 5, totalFrames: 10, frames: frames.slice(startFrame, startFrame + 5) },
+      } } })),
+      ...batches.map(batch => ({ type: 'tool.effect.prepared' as const, turnId, payload: { sourceEventIndex: 3, data: {
+        ...checkpoint, phase: 'observations-completed', startFrame: batch.startFrame,
+        observations: Array.from({ length: batch.count }, (_, index) => ({ timestamp: (batch.startFrame + index + batch.timestampOffset) / 10, description: 'observed frame' })),
+      } } })),
+    ]);
+
+    const result = await new VerifyToolOutcomeTool(session, workspaceFor(directory)).execute({ sourceEventIndex: 3 }, context);
+
+    expect(result).toMatchObject({ status: 'success', output: {
+      kind: 'video-job', status, segmentCount: 2,
+      totalFrames: 10, observedFrameCount: batches.reduce((count, batch) => count + batch.count, 0), missingFrameCount: 0, currentSha256: candidateSha256,
+    } });
+    expect(session.events().filter(event => event.type === 'effect.outcome.verified')).toHaveLength(0);
+  });
+
+  it.each([
+    { name: 'complete persisted judgment after frame cleanup', frameCount: 1, hasTranscript: true, observationTimestamp: 0, changedCandidate: false, status: 'judgment-checkpointed' },
+    { name: 'mismatched judgment frame count', frameCount: 2, hasTranscript: true, observationTimestamp: 0, changedCandidate: false, status: 'missing-checkpoint-files' },
+    { name: 'missing transcript checkpoint', frameCount: 1, hasTranscript: false, observationTimestamp: 0, changedCandidate: false, status: 'missing-checkpoint-files' },
+    { name: 'inconsistent persisted observation', frameCount: 1, hasTranscript: true, observationTimestamp: 1, changedCandidate: false, status: 'missing-checkpoint-files' },
+    { name: 'changed candidate after a persisted judgment', frameCount: 1, hasTranscript: true, observationTimestamp: 0, changedCandidate: true, status: 'candidate-changed' },
+  ])('reports $name without completing the unknown call', async ({ frameCount, hasTranscript, observationTimestamp, changedCandidate, status }) => {
+    directory = await mkdtemp(join(tmpdir(), 'agent-desktop-verify-'));
+    const candidatePath = join(directory, 'candidate.mp4');
+    await writeFile(candidatePath, changedCandidate ? 'changed' : 'candidate', 'utf8');
+    const candidateSha256 = createHash('sha256').update('candidate', 'utf8').digest('hex');
+    const checkpoint = { kind: 'video-job', version: 1, jobId: 'job', outputItemId: 'item', candidatePath, candidateSha256 };
+    const session = new InMemorySession([], 'session');
+    session.appendMany([
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'user.message', turnId, payload: { content: 'inspect' } },
+      { type: 'step.started', turnId, payload: { stepId } },
+      { type: 'tool.called', turnId, payload: { stepId, toolCallId: 'source-call' as never, name: 'check_video_semantics', input: {}, boundary: 'checkpointed' } },
+      { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { ...checkpoint, phase: 'segment-completed',
+        segment: { startFrame: 0, endFrame: 1, totalFrames: 1, frames: [{ path: join(directory, 'removed-frame.jpg'), timestamp: 0 }] } } } },
+      { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { ...checkpoint, phase: 'observations-completed',
+        startFrame: 0, observations: [{ timestamp: observationTimestamp, description: 'observed frame' }] } } },
+      ...(hasTranscript ? [{ type: 'tool.effect.prepared' as const, turnId, payload: { sourceEventIndex: 3, data: { ...checkpoint,
+        phase: 'transcript-completed', transcript: { text: '', segments: [] } } } }] : []),
+      { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { ...checkpoint, phase: 'judgment-completed',
+        judgment: { frameCount, checks: [{ requirementId: 'semantic', outcome: 'passed', detail: 'checked' }] } } } },
+    ]);
+
+    const result = await new VerifyToolOutcomeTool(session, workspaceFor(directory)).execute({ sourceEventIndex: 3 }, context);
+
+    expect(result).toMatchObject({ status: 'success', output: { kind: 'video-job', status, missingFrameCount: 1 } });
+    expect(session.events().filter(event => event.type === 'effect.outcome.verified')).toHaveLength(0);
+  });
 });

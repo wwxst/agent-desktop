@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { createReadStream, existsSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Download, type ElementHandle, type Page } from 'playwright';
-import { createFileArtifact, resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
+import { createFileArtifact, fileMimeType, resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
 import type { FileArtifact } from '@agent-desktop/model';
 import { SessionPersistenceError } from '@agent-desktop/session';
 import { executePreparedAction, ToolExecutionError, type Tool, type ToolExecutionContext, type ToolPreparation } from '@agent-desktop/tools';
@@ -11,6 +11,8 @@ import { executePreparedAction, ToolExecutionError, type Tool, type ToolExecutio
 const TIMEOUT_MS = 15_000;
 const MAX_ELEMENTS = 128;
 const MAX_TEXT = 12_000;
+// 已核验 Buffer 才能避免上传时再次读取可变路径；限制单文件内存，包含读取期间增长。
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 export interface BrowserNetworkRequest {
   readonly url: string;
@@ -62,8 +64,22 @@ function schema(properties: Record<string, unknown>, required: readonly string[]
   return { type: 'object', properties, required, additionalProperties: false };
 }
 
-function sha256(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
+async function uploadSnapshot(path: string, keepBytes: boolean, signal?: AbortSignal): Promise<{ sha256: string; bytes: Buffer }> {
+  const info = await stat(path);
+  if (!info.isFile()) throw new ToolExecutionError('上传路径不是文件。', 'permanent');
+  if (info.size > MAX_UPLOAD_BYTES) throw new ToolExecutionError('浏览器上传文件不能超过 20 MiB。', 'permanent');
+  const hash = createHash('sha256');
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of createReadStream(path, { signal })) {
+    size += chunk.length;
+    if (size > MAX_UPLOAD_BYTES) throw new ToolExecutionError('浏览器上传文件不能超过 20 MiB。', 'permanent');
+    hash.update(chunk);
+    // 审批前只保留摘要；审批后才保存有界字节，随后上传同一份快照。
+    if (keepBytes) chunks.push(chunk);
+  }
+  signal?.throwIfAborted();
+  return { sha256: hash.digest('hex'), bytes: Buffer.concat(chunks) };
 }
 
 /** 正式 Windows 包把 Chromium 放入 resources；开发和测试继续使用 Playwright 默认缓存。 */
@@ -171,22 +187,20 @@ export class SessionBrowser {
           return { filePath, artifacts: [await createFileArtifact(filePath, 'browser_screenshot', execution.signal)] };
         } };
       }),
-      this.tool('browser_upload', '仅把工作区已授权的现有文件发送到快照指定的文件输入元素；展示确切本地路径审批。', schema({ ...refProperties, filePath: string }, [...refRequired, 'filePath']), 'external', async (input, execution) => {
+      this.tool('browser_upload', '仅把工作区已授权、不超过 20 MiB 的现有文件发送到快照指定的文件输入元素；展示确切本地路径审批。', schema({ ...refProperties, filePath: string }, [...refRequired, 'filePath']), 'external', async (input, execution) => {
         const target = await this.element(input); const workspace = this.options.workspace;
         if (workspace === undefined) throw new ToolExecutionError('当前会话未提供文件上传授权范围。', 'denied');
         const scoped = await resolveScopedPath(workspace.confirmedDirectory(), text(input, 'filePath'), workspace.fileAccess === 'all');
         if (!scoped.ok) throw new ToolExecutionError(scoped.message, 'denied');
-        if (!(await stat(scoped.path)).isFile()) throw new ToolExecutionError('上传路径不是文件。', 'permanent');
-        const preparedBytes = await readFile(scoped.path);
-        const preparedSha256 = sha256(preparedBytes);
+        const preparedSha256 = (await uploadSnapshot(scoped.path, false, execution.signal)).sha256;
         return { approval: { ...this.action('upload', input, target), filePath: scoped.path }, execute: async () => {
           await this.recheck(input);
-          const currentBytes = await readFile(scoped.path);
-          if (sha256(currentBytes) !== preparedSha256) {
+          const current = await uploadSnapshot(scoped.path, true, execution.signal);
+          if (current.sha256 !== preparedSha256) {
             throw new ToolExecutionError('审批等待期间上传文件内容已变化，操作未执行。', 'permanent');
           }
           execution.checkpoint?.({ kind: 'browser', action: 'upload', filePath: scoped.path, pageId: input.pageId });
-          await target.element.setInputFiles({ name: basename(scoped.path), mimeType: 'application/octet-stream', buffer: currentBytes }, { timeout: TIMEOUT_MS });
+          await target.element.setInputFiles({ name: basename(scoped.path), mimeType: fileMimeType(scoped.path), buffer: current.bytes }, { timeout: TIMEOUT_MS });
           delete target.state.snapshot;
           return { uploadedFile: scoped.path, pageId: input.pageId };
         } };

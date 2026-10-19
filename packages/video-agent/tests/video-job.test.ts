@@ -49,4 +49,22 @@ describe('persistent video job projection', () => {
     expect(projectVideoJob(events, jobId)).toMatchObject({ observations: [{ startFrame: 0, observations: [{ timestamp: 0, description: 'red' }] }],
       transcript: { text: 'spoken', segments: [{ start: 0, end: 1 }] } });
   });
+
+  it('clears an older judgment when the same candidate starts a new check', () => {
+    const jobId = videoJobId('item', 'candidate.mp4', 'sha');
+    const session = new InMemorySession();
+    session.append({ type: 'tool.called', turnId: 'turn' as never, payload: {
+      stepId: 'step' as never, toolCallId: 'check' as never, name: 'check_video_semantics', input: {},
+    } });
+    const checkpoint = (phase: string, extra = {}) => session.append({ type: 'tool.effect.prepared', turnId: 'turn' as never,
+      payload: { sourceEventIndex: 0, data: { kind: 'video-job', version: 1, jobId, outputItemId: 'item',
+        candidatePath: 'candidate.mp4', candidateSha256: 'sha', phase, ...extra } } });
+    checkpoint('transcript-completed', { transcript: { text: 'spoken', segments: [{ start: 0, end: 1, text: 'spoken' }] } });
+    checkpoint('judgment-completed', { judgment: { frameCount: 1, checks: [{ requirementId: 'semantic', outcome: 'passed', detail: '0 秒' }] } });
+    expect(projectVideoJob(session.events(), jobId)?.judgment).toBeDefined();
+    checkpoint('started');
+    const restored = projectVideoJob(new InMemorySession(JSON.parse(JSON.stringify(session.events()))).events(), jobId);
+    expect(restored?.judgment).toBeUndefined();
+    expect(restored?.transcript).toEqual({ text: 'spoken', segments: [{ start: 0, end: 1, text: 'spoken' }] });
+  });
 });

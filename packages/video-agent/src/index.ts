@@ -29,6 +29,7 @@ import { AskUserTool, type AskUserPort } from './ask-user.js';
 import { DelegateTasksTool, type DelegateTasksPort } from './delegate-tasks.js';
 import { TerminalTool, type TerminalPort } from './terminal-tools.js';
 import { CheckVideoSemanticsTool } from './semantic-check.js';
+export { candidateDigest } from './candidate-digest.js';
 export { projectVideoJob, videoJobId } from './video-job.js';
 export type { VideoJobCheckpoint, VideoJobFrame, VideoJobObservation, VideoJobSegment, VideoJobState, VideoJobTranscript } from './video-job.js';
 export type { TerminalPort } from './terminal-tools.js';

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -117,6 +117,74 @@ describe('semantic evidence completeness', () => {
       const content = request.messages[0]?.content;
       return typeof content === 'string' && Buffer.byteLength(content, 'utf8') < 200_000;
     })).toBe(true);
+  });
+  it('includes batch metadata in the serialized judgment budget', async () => {
+    const requirements = readVideoDeliveryFacts(session.events()).items[0]!.requirements.filter(requirement => requirement.kind === 'semantic');
+    const observations = frames.map(frame => ({ timestamp: frame.timestamp, description: 'red' }));
+    const evidenceBytes = Buffer.byteLength(JSON.stringify({ requirements, duration: 0.2, frames: observations,
+      transcript: { text: '', segments: [], hasAudio: false } }), 'utf8');
+    // 证据本身恰好占满预算；加上真实请求的批次元数据后必须拆成两批。
+    observations[0]!.description = 'a'.repeat(200_000 - evidenceBytes + 3);
+    vision.execute.mockResolvedValueOnce({ status: 'success', output: { frames: observations } });
+
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: 'passed' }] } });
+    expect(model.complete).toHaveBeenCalledTimes(2);
+    for (const [request] of vi.mocked(model.complete).mock.calls) {
+      expect(Buffer.byteLength(request.messages[0]!.content!, 'utf8')).toBeLessThanOrEqual(200_000);
+    }
+  });
+  it('blocks an oversized non-first frame before sending any judgment request', async () => {
+    vision.execute.mockResolvedValueOnce({ status: 'success', output: { frames: [
+      { timestamp: 0, description: 'red' }, { timestamp: 0.1, description: 'e'.repeat(200_000) },
+    ] } });
+
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: {
+      coverage: 'incomplete', checks: [{ outcome: 'blocked', detail: expect.stringContaining('单批判定的上下文预算') }],
+    } });
+    expect(model.complete).not.toHaveBeenCalled();
+  });
+  it('blocks a complete transcript that exceeds the judgment budget without truncating it', async () => {
+    probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
+    const transcript = { text: 't'.repeat(200_000), segments: [{ start: 0, end: 0.2 }] };
+    speech.execute.mockResolvedValueOnce({ status: 'success', output: transcript });
+    const checkpoint = vi.fn();
+
+    expect(await executeSemantic(tool(), input, { ...context, checkpoint })).toMatchObject({ status: 'success', output: {
+      coverage: 'incomplete', checks: [{ outcome: 'blocked', detail: expect.stringContaining('不能截断证据') }],
+    } });
+    expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({ phase: 'transcript-completed', transcript }));
+    expect(model.complete).not.toHaveBeenCalled();
+  });
+  it('blocks requirements that exceed the judgment budget without sending partial requirements', async () => {
+    session.append({ type: 'turn.started', turnId: 'large-requirement' as never, payload: {} });
+    const result = await new DeclareVideoOutputsTool(() => session.events()).execute({ items: [{ sourcePaths: [join(directory, 'source.mp4')],
+      target: { kind: 'automatic' }, requirements: [{ kind: 'semantic', description: 'r'.repeat(200_000) }] }] }, context);
+    session.append({ type: 'tool.called', turnId: 'large-requirement' as never, payload: { stepId: 's' as never, toolCallId: 'declare-large' as never, name: 'declare_video_outputs', input: {} } });
+    session.append({ type: 'tool.result', turnId: 'large-requirement' as never, payload: { stepId: 's' as never, toolCallId: 'declare-large' as never, result } });
+    const item = readVideoDeliveryFacts(session.events()).items[0]!;
+    input = { outputItemId: item.id, candidatePath: join(item.workingDirectory, 'candidate.mp4') };
+    await writeFile(input.candidatePath, 'candidate with large requirements');
+
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: {
+      coverage: 'incomplete', checks: [{ outcome: 'blocked', detail: expect.stringContaining('完整要求') }],
+    } });
+    expect(model.complete).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['blocked', 'failed', 'failed'],
+    ['failed', 'blocked', 'failed'],
+    ['passed', 'blocked', 'blocked'],
+    ['blocked', 'passed', 'blocked'],
+  ] as const)('aggregates %s and %s batches as %s', async (first, second, expected) => {
+    vision.execute.mockResolvedValueOnce({ status: 'success', output: { frames: frames.map(frame => ({
+      timestamp: frame.timestamp, description: 'e'.repeat(120_000),
+    })) } });
+    for (const outcome of [first, second]) vi.mocked(model.complete).mockResolvedValueOnce({ toolCalls: [{
+      id: 'judgment' as never, name: 'report_semantic_checks', input: { checks: [{ requirementId, outcome, detail: outcome }] },
+    }] });
+
+    expect(await executeSemantic(tool())).toMatchObject({ status: 'success', output: { checks: [{ outcome: expected }] } });
+    expect(model.complete).toHaveBeenCalledTimes(2);
   });
   it('resumes a persisted segment when the candidate and its frame files are unchanged', async () => {
     fullFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: false, frameCount: 2, reason: '需要分段' } });
@@ -288,12 +356,12 @@ describe('semantic evidence completeness', () => {
     await expect(executeSemantic(tool())).rejects.toBe(failure);
     expect(model.complete).not.toHaveBeenCalled();
   });
-  it('keeps the original persistence error even when temporary cleanup also fails', async () => {
+  it('keeps the original persistence error and preserves the checkpoint directory', async () => {
     const failure = new SessionPersistenceError(new Error('checkpoint write failed'));
-    const cleanup = vi.mocked(rm).mockClear().mockRejectedValueOnce(new Error('cleanup access denied'));
+    const cleanup = vi.mocked(rm).mockClear();
     fullFrames.execute.mockRejectedValueOnce(failure);
     await expect(executeSemantic(tool())).rejects.toBe(failure);
-    expect(cleanup).toHaveBeenCalledOnce();
+    expect(cleanup).not.toHaveBeenCalled();
     expect(model.complete).not.toHaveBeenCalled();
   });
   it.each(['probe', 'frames', 'audio', 'vision', 'speech'] as const)('preserves a classified nested %s transport exception', async (stage) => {
@@ -327,5 +395,106 @@ describe('semantic evidence completeness', () => {
     const check = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames], vision: unclassifiedVision });
     expect(await executeSemantic(check, input, context, [unclassifiedVision])).toEqual({ status: 'error', failureKind: 'unknown-outcome', message: 'undeclared tool rejected' });
     expect(model.complete).not.toHaveBeenCalled();
+  });
+});
+
+describe('semantic checkpoint directory ownership', () => {
+  function execution(beforeCheckpoint?: (data: Record<string, unknown>) => void): ToolExecutionContext {
+    session.append({ type: 'tool.called', turnId: 't' as never, payload: { stepId: 'cleanup' as never,
+      toolCallId: context.toolCallId, name: 'check_video_semantics', input, boundary: 'checkpointed' } });
+    const sourceEventIndex = session.events().length - 1;
+    return { ...context, checkpoint: data => {
+      beforeCheckpoint?.(data as Record<string, unknown>);
+      session.append({ type: 'tool.effect.prepared', turnId: 't' as never, payload: { sourceEventIndex, data } });
+    } };
+  }
+
+  function recordedTemporary(): { directory: string; ownershipToken: string } {
+    const event = session.events().find(event => event.type === 'tool.effect.prepared'
+      && (event.payload.data as { phase?: string }).phase === 'temporary-created');
+    return (event!.payload as { data: { temporary: { directory: string; ownershipToken: string } } }).data.temporary;
+  }
+
+  function writeRealFrames(): void {
+    fullFrames.execute.mockImplementation(async value => {
+      const { outputDir } = value as { outputDir: string };
+      await mkdir(outputDir);
+      const extracted = frames.map((frame, index) => ({ ...frame, path: join(outputDir, `frame-${index}.jpg`) }));
+      await Promise.all(extracted.map(frame => writeFile(frame.path, 'frame')));
+      return { status: 'success', output: { complete: true, frames: extracted } };
+    });
+  }
+
+  it('preserves evidence on cancellation and removes recovered directories only after judgment persists', async () => {
+    writeRealFrames();
+    probe.execute.mockResolvedValue({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
+    speech.execute.mockResolvedValue({ status: 'success', output: { text: 'spoken', segments: [{ start: 0, end: 0.2, text: 'spoken' }] } });
+    vi.mocked(model.complete).mockRejectedValueOnce(new DOMException('cancelled after observations', 'AbortError'));
+    await expect(executeSemantic(tool(), input, execution())).rejects.toMatchObject({ name: 'AbortError' });
+    const old = recordedTemporary();
+    await expect(access(join(old.directory, 'frames', 'frame-0.jpg'))).resolves.toBeUndefined();
+
+    // 新 Session 与工具模拟重启后的检查点读取；不会复用原工具实例的内存。
+    session = new InMemorySession(JSON.parse(JSON.stringify(session.events())));
+    fullFrames.execute.mockClear();
+    vision.execute.mockClear();
+    speech.execute.mockClear();
+    let persistedJudgment = false;
+    const checkpointed = execution(data => {
+      if (data.phase === 'judgment-completed') {
+        // checkpoint 尚未提交时，旧文件仍是唯一的可恢复媒体，不能提早回收。
+        expect(vi.mocked(rm).mock.calls.some(([path]) => path === old.directory)).toBe(false);
+        persistedJudgment = true;
+      }
+    });
+    expect(await executeSemantic(tool(), input, checkpointed)).toMatchObject({ status: 'success', output: { coverage: 'all-frames-and-transcript' } });
+    expect(persistedJudgment).toBe(true);
+    expect(fullFrames.execute).not.toHaveBeenCalled();
+    expect(vision.execute).not.toHaveBeenCalled();
+    expect(speech.execute).not.toHaveBeenCalled();
+    expect(JSON.parse(vi.mocked(model.complete).mock.calls.at(-1)![0].messages[0]!.content!)).toMatchObject({
+      transcript: { text: 'spoken', segments: [{ start: 0, end: 0.2, text: 'spoken' }] },
+    });
+    await expect(access(old.directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(session.events().some(event => event.type === 'effect.outcome.verified')).toBe(false);
+  });
+
+  it('retains registered frames when the final judgment checkpoint fails', async () => {
+    writeRealFrames();
+    const failure = new SessionPersistenceError(new Error('final judgment disk full'));
+    await expect(executeSemantic(tool(), input, execution(data => {
+      if (data.phase === 'judgment-completed') throw failure;
+    }))).rejects.toBe(failure);
+    const owned = recordedTemporary();
+    await expect(access(join(owned.directory, 'frames', 'frame-0.jpg'))).resolves.toBeUndefined();
+    expect(session.events().some(event => event.type === 'tool.effect.prepared'
+      && (event.payload.data as { phase?: string }).phase === 'judgment-completed')).toBe(false);
+  });
+
+  it('keeps a registered directory whose ownership marker was removed', async () => {
+    writeRealFrames();
+    vi.mocked(model.complete).mockRejectedValueOnce(new DOMException('cancelled after observations', 'AbortError'));
+    await expect(executeSemantic(tool(), input, execution())).rejects.toMatchObject({ name: 'AbortError' });
+    const owned = recordedTemporary();
+    await rm(join(owned.directory, '.semantic-owner.json'));
+    expect(await executeSemantic(tool(), input, execution())).toMatchObject({ status: 'success' });
+    await expect(access(join(owned.directory, 'frames', 'frame-0.jpg'))).resolves.toBeUndefined();
+  });
+
+  it('does not delete a recovered directory replaced by a junction to user files', async () => {
+    writeRealFrames();
+    vi.mocked(model.complete).mockRejectedValueOnce(new DOMException('cancelled after observations', 'AbortError'));
+    await expect(executeSemantic(tool(), input, execution())).rejects.toMatchObject({ name: 'AbortError' });
+    const owned = recordedTemporary();
+    const marker = await readFile(join(owned.directory, '.semantic-owner.json'));
+    await rm(owned.directory, { recursive: true });
+    const userDirectory = join(directory, 'user-owned');
+    await mkdir(userDirectory);
+    await writeFile(join(userDirectory, '.semantic-owner.json'), marker);
+    await writeFile(join(userDirectory, 'keep.txt'), 'user data');
+    await symlink(userDirectory, owned.directory, 'junction');
+    expect(await executeSemantic(tool(), input, execution())).toMatchObject({ status: 'success' });
+    expect(await readFile(join(userDirectory, 'keep.txt'), 'utf8')).toBe('user data');
+    expect(vi.mocked(rm).mock.calls.filter(([path]) => path === owned.directory)).toHaveLength(1);
   });
 });

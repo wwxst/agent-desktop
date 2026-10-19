@@ -1,5 +1,6 @@
-import { access, mkdtemp, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { access, lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Model, ToolResult } from '@agent-desktop/model';
 import { ToolExecutionError, ToolRoutingError } from '@agent-desktop/tools';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
@@ -8,12 +9,13 @@ import { readVideoDeliveryFacts, type RequirementCheck } from './delivery.js';
 import type { SessionReader } from './delivery-tools.js';
 import { candidateDigest } from './candidate-digest.js';
 import { isInsideDirectory } from './delivery-tools.js';
-import { projectVideoJob, videoJobId, type VideoJobFrame, type VideoJobObservation, type VideoJobSegment, type VideoJobTranscript } from './video-job.js';
+import { projectVideoJob, videoJobId, type VideoJobFrame, type VideoJobObservation, type VideoJobSegment, type VideoJobTemporaryDirectory, type VideoJobTranscript } from './video-job.js';
 
 const SEMANTIC_MEDIA_TOOL_NAMES = new Set([
   'probe_media', 'extract_full_video_frames', 'extract_video_segment_frames', 'extract_audio', 'transcribe_audio',
 ]);
 const SEMANTIC_JUDGE_MAX_BYTES = 200_000;
+const SEMANTIC_DIRECTORY_OWNER = '.semantic-owner.json';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -25,13 +27,18 @@ function splitJudgeFrames(
   duration: number | null,
   transcript: unknown,
 ): readonly (readonly VideoJobObservation[])[] | undefined {
+  // 最多一帧一批；按这个上界预留实际请求的批次元数据，保证发送内容也在预算内。
+  const bytes = (batch: readonly VideoJobObservation[]) => Buffer.byteLength(JSON.stringify({
+    batchIndex: frames.length - 1, batchCount: frames.length, requirements, duration, frames: batch, transcript,
+  }), 'utf8');
+  if (bytes([]) > SEMANTIC_JUDGE_MAX_BYTES) return undefined;
   const batches: VideoJobObservation[][] = [];
   let current: VideoJobObservation[] = [];
   for (const frame of frames) {
+    // 拆分后的单帧也必须放得下完整要求和转录，不能让后续大帧绕过预算。
+    if (bytes([frame]) > SEMANTIC_JUDGE_MAX_BYTES) return undefined;
     const candidate = [...current, frame];
-    const bytes = Buffer.byteLength(JSON.stringify({ requirements, duration, frames: candidate, transcript }), 'utf8');
-    if (bytes > SEMANTIC_JUDGE_MAX_BYTES && current.length === 0) return undefined;
-    if (bytes > SEMANTIC_JUDGE_MAX_BYTES) {
+    if (bytes(candidate) > SEMANTIC_JUDGE_MAX_BYTES) {
       batches.push(current);
       current = [frame];
     } else {
@@ -53,6 +60,23 @@ async function filesExist(frames: readonly VideoJobFrame[]): Promise<boolean> {
 async function fileExists(path: string): Promise<boolean> {
   try { await access(path); return true; }
   catch { return false; }
+}
+
+/** 只有直属工作目录、没有被替换为链接且所有权仍匹配的工具目录才允许递归删除。 */
+async function removeOwnedDirectory(temporary: VideoJobTemporaryDirectory, workingDirectory: string, jobId: string): Promise<void> {
+  const directory = resolve(temporary.directory);
+  if (dirname(directory) !== resolve(workingDirectory) || !basename(directory).startsWith('.semantic-')) return;
+  try {
+    const metadata = await lstat(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()
+      || dirname(await realpath(directory)) !== await realpath(workingDirectory)) return;
+    const owner: unknown = JSON.parse(await readFile(join(directory, SEMANTIC_DIRECTORY_OWNER), 'utf8'));
+    if (!isRecord(owner) || owner.jobId !== jobId || owner.ownershipToken !== temporary.ownershipToken) return;
+    await rm(directory, { recursive: true, force: true });
+  } catch (error) {
+    // 已清理的历史目录无需再次删除；其余读写失败不能被伪装成成功清理。
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 }
 
 async function recoveredFrames(job: ReturnType<typeof projectVideoJob>): Promise<readonly VideoJobFrame[] | undefined> {
@@ -124,6 +148,7 @@ export class CheckVideoSemanticsTool implements Tool {
     if (invokeNestedTool === undefined) return { status: 'error', failureKind: 'permanent', message: '语义验收子工具必须经过 ToolRouter 执行。' };
     const executeNested = (tool: Tool, nestedInput: unknown) => invokeNestedTool(tool.name, nestedInput);
     let temporary: string | undefined;
+    let checkpointedTemporary = false;
     let persistenceFailure: SessionPersistenceError | undefined;
     try {
       const probed = await executeNested(probe, { inputPath });
@@ -140,6 +165,12 @@ export class CheckVideoSemanticsTool implements Tool {
         candidatePath: inputPath, candidateSha256: digest, phase: 'started' });
       // 临时媒体只留在本输出项已授权的工作目录，插件不获得任意系统临时目录写权限。
       temporary = await mkdtemp(directoryPrefix);
+      const ownedTemporary = { directory: temporary, ownershipToken: randomUUID() };
+      await writeFile(join(temporary, SEMANTIC_DIRECTORY_OWNER), JSON.stringify({ jobId, ownershipToken: ownedTemporary.ownershipToken }), { flag: 'wx' });
+      context.checkpoint?.({ kind: 'video-job', version: 1, jobId, outputItemId: item.id,
+        candidatePath: inputPath, candidateSha256: digest, phase: 'temporary-created', temporary: ownedTemporary });
+      // 登记后失败或取消都保留目录；它可能承载已保存或结果未知的嵌套调用所需文件。
+      checkpointedTemporary = context.checkpoint !== undefined;
       let frames: readonly { path: string; timestamp: number }[];
       // 进程崩溃后若分段帧仍在输出项目录内，则直接复用已完成覆盖；否则从缺失分段继续。
       const recovered = await recoveredFrames(previousJob);
@@ -223,11 +254,12 @@ export class CheckVideoSemanticsTool implements Tool {
         } else {
           const speech = this.options.mediaTools?.find(tool => tool.name === 'transcribe_audio');
           if (speech === undefined) return blocked('候选有音轨，但未配置本地语音识别；不能省略声音内容验收。');
-          const recoveredAudio = previousJob?.audioPath;
+          const priorAudio = previousJob?.audioPath;
+          const recoveredAudio = priorAudio !== undefined && await fileExists(priorAudio) ? priorAudio : undefined;
           const wav = recoveredAudio === undefined ? join(temporary, 'audio.wav') : recoveredAudio;
           const extractAudio = this.options.mediaTools?.find(tool => tool.name === 'extract_audio');
           if (extractAudio === undefined) return blocked('未提供 extract_audio，不能检查候选声音。');
-          if (recoveredAudio === undefined || !(await fileExists(recoveredAudio))) {
+          if (recoveredAudio === undefined) {
             const audio = await executeNested(extractAudio, { videoPath: inputPath, outputPath: wav });
             if (audio.status === 'error') {
               return nestedFailure(extractAudio, audio, `提取候选声音失败：${audio.message}`);
@@ -237,18 +269,21 @@ export class CheckVideoSemanticsTool implements Tool {
           }
           const transcribed = await executeNested(speech, { audioPath: wav });
           if (transcribed.status === 'error') return nestedFailure(speech, transcribed, `语音检查失败：${transcribed.message}`);
-          const spoken = transcribed.output as { segments?: Array<{ start: number; end: number }>; text?: unknown };
+          const spoken = transcribed.output as { segments?: Array<{ start: number; end: number; text?: unknown }>; text?: unknown };
           if (typeof spoken.text !== 'string' || !Array.isArray(spoken.segments) || media.duration === null
-            || spoken.segments.some((segment) => segment.start < 0 || segment.end < segment.start || segment.end > media.duration! + 0.1)) return blocked('语音时间轴与候选时长不一致。');
+            || spoken.segments.some((segment) => segment.start < 0 || segment.end < segment.start || segment.end > media.duration! + 0.1
+              || (segment.text !== undefined && typeof segment.text !== 'string'))) return blocked('语音时间轴与候选时长不一致。');
           transcript = transcribed.output;
           const checkpointTranscript: VideoJobTranscript = { text: spoken.text,
-            segments: spoken.segments.map(segment => ({ start: segment.start, end: segment.end })) };
+            // 判定实际消费每段文本；恢复和音频清理前必须保留同一份有时间位置的语义证据。
+            segments: spoken.segments.map(segment => ({ start: segment.start, end: segment.end,
+              ...(segment.text === undefined ? {} : { text: segment.text as string }) })) };
           context.checkpoint?.({ kind: 'video-job', version: 1, jobId, outputItemId: item.id,
             candidatePath: inputPath, candidateSha256: digest, phase: 'transcript-completed', transcript: checkpointTranscript });
         }
       }
       const judgeBatches = splitJudgeFrames(observations, requirements, media.duration, transcript);
-      if (judgeBatches === undefined) return blocked('单帧视觉观察超过当前判定的上下文预算。');
+      if (judgeBatches === undefined) return blocked('完整要求、转录或单帧视觉观察超过当前单批判定的上下文预算；不能截断证据。');
       const batchChecks: Array<readonly RequirementCheck[]> = [];
       for (let batchIndex = 0; batchIndex < judgeBatches.length; batchIndex += 1) {
         const framesForJudge = judgeBatches[batchIndex]!;
@@ -276,6 +311,18 @@ export class CheckVideoSemanticsTool implements Tool {
         return { requirementId: requirement.id, outcome, detail: evidence.map((check, index) => `批次 ${index + 1}：${check.detail}`).join('；') };
       });
       if (await candidateDigest(inputPath, context.signal) !== digest) return blocked('候选在语义检查期间改变，必须重新检查。');
+      context.signal?.throwIfAborted();
+      if (context.checkpoint !== undefined) {
+        // 无音轨也保存明确的空转录，使帧观察、转录及最终判定均已持久化后才清理媒体。
+        if (media.audioCodec === null) context.checkpoint({ kind: 'video-job', version: 1, jobId, outputItemId: item.id,
+          candidatePath: inputPath, candidateSha256: digest, phase: 'transcript-completed', transcript: { text: '', segments: [] } });
+        context.checkpoint({ kind: 'video-job', version: 1, jobId, outputItemId: item.id,
+          candidatePath: inputPath, candidateSha256: digest, phase: 'judgment-completed', judgment: { frameCount: frames.length, checks } });
+        // 正式验收证据仍由随后的 tool.result 提交；此处只回收不再承载唯一证据的拥有目录。
+        for (const owned of [...previousJob?.temporaryDirectories ?? [], ownedTemporary]) {
+          await removeOwnedDirectory(owned, item.workingDirectory, jobId);
+        }
+      }
       return { status: 'success', output: { inputPath, outputItemId: item.id, candidateSha256: digest,
         coverage: 'all-frames-and-transcript', frameCount: frames.length, checks,
         evidence: { frames: observations, transcript } } };
@@ -286,7 +333,7 @@ export class CheckVideoSemanticsTool implements Tool {
       if (error instanceof ToolExecutionError) return { status: 'error', failureKind: error.failureKind, message: error.message };
       return { status: 'error', message: error.message };
     } finally {
-      if (temporary !== undefined) {
+      if (temporary !== undefined && !checkpointedTemporary) {
         try { await rm(temporary, { recursive: true, force: true }); }
         // 原始保存失败决定本轮已无法继续，清理失败不能把它改写成普通文件错误。
         catch (error) { if (persistenceFailure === undefined) throw error; }

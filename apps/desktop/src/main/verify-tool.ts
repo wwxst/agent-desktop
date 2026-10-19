@@ -5,7 +5,7 @@ import type { ToolResult } from '@agent-desktop/model';
 import { resolveScopedPath, type WorkspacePort } from '@agent-desktop/local-tools';
 import { projectTurnState, type Session, type SessionEvent } from '@agent-desktop/session';
 import type { Tool, ToolExecutionContext } from '@agent-desktop/tools';
-import { projectVideoJob } from '@agent-desktop/video-agent';
+import { candidateDigest, projectVideoJob } from '@agent-desktop/video-agent';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -104,7 +104,8 @@ export class VerifyToolOutcomeTool implements Tool {
     if (!scoped.ok) return error(scoped.message);
     let currentSha256: string;
     try {
-      currentSha256 = createHash('sha256').update(await readFile(scoped.path)).digest('hex');
+      // 视频可能远大于主进程可用内存；与验收、发布共用流式内容摘要。
+      currentSha256 = await candidateDigest(scoped.path, context.signal);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return {
         status: 'success', output: { sourceEventIndex, kind: 'video-job', jobId: data.jobId, status: 'candidate-missing', candidatePath: scoped.path },
@@ -114,8 +115,9 @@ export class VerifyToolOutcomeTool implements Tool {
     const state = projectVideoJob(this.session.events(), data.jobId);
     const segments = state?.segments ?? [];
     const observations = state?.observations ?? [];
+    const frames = segments.flatMap(segment => segment.frames);
     let missingFrameCount = 0;
-    for (const frame of segments.flatMap(segment => segment.frames)) {
+    for (const frame of frames) {
       try { await access(frame.path); }
       catch (cause) {
         if ((cause as NodeJS.ErrnoException).code === 'ENOENT') missingFrameCount += 1;
@@ -125,18 +127,32 @@ export class VerifyToolOutcomeTool implements Tool {
     const totalFrames = segments[0]?.totalFrames ?? 0;
     const observedFrameCount = observations.reduce((count, batch) => count + batch.observations.length, 0);
     let nextFrame = 0;
-    const contiguous = segments.every(segment => {
+    const contiguousSegments = segments.every(segment => {
       const valid = segment.totalFrames === totalFrames && segment.startFrame === nextFrame;
       nextFrame = segment.endFrame;
       return valid;
     }) && (segments.length === 0 || nextFrame <= totalFrames);
+    // 总数相同并不能证明覆盖完整；观察必须从首帧连续推进，逐项对应已核验分段帧。
+    let nextObservation = 0;
+    const contiguousObservations = observations.every(batch => {
+      const valid = batch.startFrame === nextObservation && batch.observations.length > 0
+        && batch.observations.every((observation, index) =>
+          observation.timestamp === frames[batch.startFrame + index]?.timestamp);
+      nextObservation = batch.startFrame + batch.observations.length;
+      return valid;
+    });
     const candidateMatches = currentSha256 === data.candidateSha256;
-    const evidenceReady = totalFrames > 0 && observedFrameCount === totalFrames;
+    const evidenceReady = totalFrames > 0 && nextFrame === totalFrames && nextObservation === totalFrames;
+    // 独立判定与转录已持久化后，拥有的帧目录可被清理；这仍不代表未知调用已提交正式结果。
+    const judgmentCheckpointed = contiguousSegments && contiguousObservations && evidenceReady
+      && state?.judgment?.frameCount === totalFrames && state.transcript !== undefined;
     const status = !candidateMatches ? 'candidate-changed'
       : state === undefined ? 'not-started'
-        : missingFrameCount > 0 ? 'missing-checkpoint-files'
-          : !contiguous ? 'incomplete-segment-coverage'
-            : evidenceReady ? 'evidence-ready-for-recheck' : 'partial-evidence';
+        : judgmentCheckpointed ? 'judgment-checkpointed'
+          : missingFrameCount > 0 ? 'missing-checkpoint-files'
+            : !contiguousSegments ? 'incomplete-segment-coverage'
+              : !contiguousObservations ? 'incomplete-observation-coverage'
+                : evidenceReady ? 'evidence-ready-for-recheck' : 'partial-evidence';
     context.signal?.throwIfAborted();
     return { status: 'success', output: {
       sourceEventIndex, kind: 'video-job', jobId: data.jobId, status, candidatePath: scoped.path,
