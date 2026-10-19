@@ -69,7 +69,7 @@ describe('persisted model context', () => {
       expect(request.url).toBe(protocol === 'responses' ? '/v1/responses' : '/v1/chat/completions');
       let text = ''; for await (const chunk of request) text += chunk;
       const body = JSON.parse(text) as Record<string, unknown>;
-      const summary = (body.tools as unknown[]).length === 0;
+      const summary = body.tools === undefined;
       received.push({ body, summary });
       if (summary) {
         const sourceMessages = (protocol === 'responses' ? body.input : body.messages) as { role: string; content: string }[];

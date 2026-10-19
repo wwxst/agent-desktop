@@ -4,12 +4,14 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRequest } from '@agent-desktop/model';
 import { runReadOnlySubagent, type SubagentRecord } from '../src/main/subagent.js';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
 const fake = vi.hoisted(() => ({ complete: vi.fn() }));
 vi.mock('@agent-desktop/model-deepseek', () => ({ OpenAICompatibleModel: class { complete = fake.complete; } }));
 afterEach(() => { vi.useRealTimers(); fake.complete.mockReset(); });
 const context = { toolCallId: 'parent' as never, reportProgress: () => {} };
 const settings = { modelApiKey: 'fixture', modelBaseUrl: 'https://example.test/v1', modelId: 'fixture', modelProtocol: 'chat-completions' as const,
+  modelCapabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const },
   conversationModel: { providerId: 'deepseek', modelId: 'fixture' } };
 
 describe('desktop read-only child execution', () => {

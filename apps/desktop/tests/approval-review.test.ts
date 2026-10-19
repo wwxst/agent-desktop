@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
 const model = vi.hoisted(() => ({ complete: vi.fn() }));
 vi.mock('@agent-desktop/model-deepseek', () => ({ OpenAICompatibleModel: class {
@@ -16,6 +17,7 @@ describe('automatic approval review', () => {
     const secret = 'private-file-content-and-token';
     const result = await reviewApproval({ kind: 'command', interpreter: 'C:/Windows/System32/cmd.exe', command: 'echo ok', workingDirectory: 'D:/work', timeoutMs: 120_000 }, {
       modelApiKey: 'key', modelBaseUrl: 'https://example.test/v1', modelId: 'reviewer', modelProtocol: 'chat-completions',
+      modelCapabilities: { ...UNKNOWN_MODEL_CAPABILITIES, streaming: 'supported', chatCompletions: 'supported' },
       conversationModel: { providerId: 'test', modelId: 'reviewer' },
     }, [
       { type: 'user.message', turnId: 'turn' as never, content: '请执行这个命令。' },

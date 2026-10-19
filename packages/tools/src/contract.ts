@@ -48,6 +48,20 @@ export class ToolExecutionError extends Error {
   }
 }
 
+/** Router 证明本次调用尚未进入执行闭包；该事实由宿主保存，不进入模型结果协议。 */
+export class ToolNotExecutedError extends ToolExecutionError {
+  override readonly name = 'ToolNotExecutedError';
+  constructor(readonly result: Extract<ToolResult, { status: 'error' }>, options?: ErrorOptions) {
+    super(result.message, result.failureKind ?? 'permanent', options);
+  }
+}
+
+/** 保留取消语义，同时只证明当前 Router 调用没有进入执行闭包。 */
+export class ToolNotExecutedCancellationError extends Error {
+  override readonly name = 'AbortError';
+  constructor(readonly cancellation: Error) { super(cancellation.message, { cause: cancellation }); }
+}
+
 /** 准备阶段只验证并固定操作；批准与执行闭包共享同一份规范化参数。 */
 export interface PreparedToolAction {
   requestApproval(): Promise<boolean>;

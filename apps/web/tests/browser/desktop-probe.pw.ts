@@ -5,10 +5,12 @@ import { createRequire } from 'node:module';
 import { basename, resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
 import type { ApprovalRequest } from '@agent-desktop/client';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { cleanupDesktopAcceptance } from './desktop-acceptance-cleanup.js';
 
 interface ModelInput {
   messages: { role: string; content: string | { type: string; text?: string; image_url?: { url: string } }[] }[];
-  tools: { function: { name: string } }[];
+  tools?: { function: { name: string } }[];
   response_format?: unknown;
 }
 interface Evidence { scenario: string; tools: string[]; results: string[] }
@@ -46,7 +48,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ summary: '红色画面', frames }) } }] })); return;
     }
-    const names = input.tools.map(tool => tool.function.name);
+    const names = input.tools?.map(tool => tool.function.name) ?? [];
     let delta: object; let finish = 'stop';
     const call = (name: string, args: object, id: string) => { finish = 'tool_calls'; return { tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] }; };
     if (names.includes('report_semantic_checks')) {
@@ -142,20 +144,21 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   };
   try {
     app = await launch(); page = await app.firstWindow(); await observeApprovals();
-    await page.evaluate(async baseUrl => {
+    await page.evaluate(async ({ baseUrl, capabilities }) => {
       const defaults = (await window.agentDesktop.extensions.list()).plugins;
       if (!defaults.every(plugin => plugin.installed && plugin.enabled)) throw new Error('基础插件未默认安装并启用。');
       for (const plugin of defaults.filter(plugin => plugin.id !== 'plugin:ffmpeg')) await window.agentDesktop.extensions.setEnabled(plugin.id, false);
       await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false,
-        modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] },
+        modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] },
         conversationModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionEnabled: true });
-    }, `http://127.0.0.1:${address.port}`);
+    }, { baseUrl: `http://127.0.0.1:${address.port}`, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
     await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, source);
     await page.getByRole('button', { name: '选择输入文件', exact: true }).click();
     const probed = await run('probe');
     expect(probed.tools.filter(name => name === 'probe_media')).toHaveLength(1);
     expect(JSON.parse(probed.results[0]!)).toEqual({ inputPath: source, duration: 1, width: 160, height: 120, videoCodec: 'h264', audioCodec: null });
-    expect((await approvals()).map(request => request.kind)).toEqual(['plugin-start', 'plugin-tool']);
+    // 准备动作先通过工具审批，再懒启动插件进程，不能在获准前连接外部服务。
+    expect((await approvals()).map(request => request.kind)).toEqual(['plugin-tool', 'plugin-start']);
     await run('workspace');
     for (const scenario of ['unauthorized', 'junction', 'url']) {
       const count = (await approvals()).filter(request => request.kind === 'plugin-tool').length;
@@ -170,7 +173,8 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await expect.poll(() => page.evaluate(() => (window as unknown as { held?: ApprovalRequest }).held?.kind)).toBe('plugin-tool');
     const processName = basename(executablePath).replaceAll("'", "''");
     const pids = () => execFileSync('powershell.exe', ['-NoProfile', '-Command', `Get-CimInstance Win32_Process -Filter "Name='${processName}'" | Where-Object { $_.CommandLine -like '*ffmpeg.cjs*' -and $_.CommandLine.Contains('${profile.replaceAll("'", "''")}') } | Select-Object -ExpandProperty ProcessId`], { encoding: 'utf8', windowsHide: true }).trim();
-    const activePids = pids(); expect(activePids).not.toBe('');
+    // 工具审批尚未通过时不启动插件；取消等待也不能留下随后才启动的进程。
+    const activePids = pids(); expect(activePids).toBe('');
     for (const action of ['update', 'uninstall', 'disable']) {
       const error = await page.evaluate(async action => {
         try {
@@ -197,7 +201,7 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     const validation = JSON.parse(delivered.results[5]!) as { validation: { checks: { outcome: string; evidenceToolCallIds: string[] }[] } };
     expect(validation.validation.checks.every(check => check.outcome === 'passed')).toBe(true);
     expect(validation.validation.checks[1]?.evidenceToolCallIds).toEqual(['delivery-3']);
-    const published = JSON.parse(delivered.results[6]!) as { output: { path: string } };
+    const published = (JSON.parse(delivered.results[6]!) as { output: { output: { path: string } } }).output;
     const media = JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', published.output.path], { encoding: 'utf8' })) as { format: { duration: string }; streams: { width: number }[] };
     expect(Number(media.format.duration)).toBeCloseTo(0.6); expect(media.streams[0]?.width).toBe(160); expect(imageCount).toBe(3);
     const pixels = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', published.output.path, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']);
@@ -205,12 +209,12 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
     await page.screenshot({ path: resolve(evidence, 'published.png') });
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('CASE:delivery-failure');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    const failedReply = page.getByRole('alert', { name: 'Agent 回复' }).filter({ hasText: 'DeepSeek API request failed: 400' });
+    const failedReply = page.getByRole('alert', { name: 'Agent 回复' }).filter({ hasText: 'Chat Completions API request failed: 400' });
     // 等待实际七工具媒体链及后续模型失败；并行真实模型验收负载下已复现五秒不足。
     await expect(failedReply).toContainText('任务失败', { timeout: 120_000 });
     await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
     const failedDelivery = requests.findLast(entry => entry.scenario === 'delivery-failure')!;
-    const failedPublished = JSON.parse(failedDelivery.results[6]!) as { output: { path: string } };
+    const failedPublished = (JSON.parse(failedDelivery.results[6]!) as { output: { output: { path: string } } }).output;
     await expect(failedReply.getByText(basename(failedPublished.output.path), { exact: true })).toHaveCount(2);
     await expect(failedReply.getByRole('button', { name: '打开文件' })).toBeVisible();
     await expect(failedReply.getByRole('button', { name: '继续未完成任务' })).toBeVisible();
@@ -261,7 +265,10 @@ test('real Desktop Probe plugin permissions, lifecycle and semantic delivery', a
   } finally {
     await writeFile(resolve(evidence, 'requests.json'), JSON.stringify(requests, null, 2));
     try { await close(); }
-    finally { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); }
+    finally {
+      try { await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); }
+      finally { await cleanupDesktopAcceptance(evidence, profile, true); }
+    }
   }
 });
 

@@ -24,9 +24,11 @@ Session 提供同步 `appendMany`，供宿主一次提交执行起点与展示�
 
 Desktop 在每次工具调用前用 `taskToolGate` 读取同一 Session 的恢复事实：已有未知外部效果时阻止新外部操作，同一轮的相同拒绝不重复审批，恢复任务链中已经成功的相同外部操作不重复执行。Loop 将拦截与未知工具保存为 `not-executed` 调用及真实失败结果，不制造未知副作用；恢复轮次限制为 24 个模型步骤和 48 次工具调用尝试。轮次起点已有未知效果时不连接插件或执行其钩子，只提供本地读取、计划更新和效果核验工具；该轮工具集固定到结束，不注册 `save_memory`。
 
+工具路由器证明准备或审批阶段失败、执行闭包尚未进入时，抛出 `ToolNotExecutedError`；循环把原始失败结果与宿主专属的 `tool.result.executionBoundary: 'not-executed'` 一起保存。准备或审批期间取消不生成工具结果，而是保存宿主 `effect.outcome.verified` 的整次调用未应用证明，再传播原取消错误；重启后不会把尚未执行的不透明工具误判为未知效果。审批超时不冒充用户拒绝。嵌套工具的未执行证明不能转移给已经开始执行的外层工具。截图在创建占位文件前保存检查点；媒体服务首次连接使用当前工具信号，工具超时会撤销启动审批，握手中取消会关闭服务进程。
+
 每个新轮次在起点保存公开的 `turn.configuration`，扩展准备完成后追加本轮实际暴露的 `toolNames` 集合。恢复任务要求普通恢复与原集合完全一致；已有未知效果的核验恢复只能使用原集合的安全子集。该快照保证工具暴露增删不会静默漂移，但不等价于插件版本、同名工具 schema、实现或技能正文的内容指纹；这些变化仍属于恢复风险。
 
-恢复准备阶段会跳过全部 MCP 服务，不在工具集合比较前建立本地进程、远程连接或工具列举；因此依赖 MCP 工具的普通恢复会安全拒绝，直到恢复能力可以提供同一集合。Browser 页面请求按页面持有网络生命周期：活动 Desktop 轮次结束后，后台页面请求不能借用下一轮的取消信号。
+恢复准备阶段跳过需要连接后列举工具的第三方 MCP；随包 FFmpeg、Whisper 和 Vision 使用同一实现的本地工具定义重建目录，比较前不启动进程或访问网络，实际执行仍需重新准入。依赖第三方 MCP 的普通恢复会因工具集合缺失安全拒绝。Browser 页面请求按页面持有网络生命周期：活动 Desktop 轮次结束后，后台页面请求不能借用下一轮的取消信号。
 
 长视频语义验收使用候选路径与 SHA-256 内容摘要生成 `VideoJob` 身份，并把已完成的连续帧分段、视觉批次和语音时间轴检查点写入通用 `tool.effect.prepared` 事实。重启或中断后仅复用仍存在且连续覆盖的分段帧及时间戳匹配的观察、转录；候选字节变化、缺帧或不连续时从缺失范围重新检查。最终语义判定仍属于当前验收调用，每次恢复都会重新执行，真实跨进程崩溃验收仍需单独验证。
 
@@ -58,7 +60,7 @@ Marketplace               插件市场        从实际清单发现、下载和�
 
 Desktop 是当前消费者：`extensions.ts` 解析 Codex 风格清单、建立 catalog（目录）和 authority（来源权威）、发现技能并激活安装；`extension-marketplaces.ts` 管理市场清单与来源检出；`extension-connections.ts` 管理操作系统加密凭据及授权；`extension-runtime.ts` 每轮准备技能、工具及钩子；`index.ts` 注册到现有 Agent 并追加技能目录。Core、Loop 和 CLI 不引入插件协议。界面通过 `AgentClientApi.extensions` 消费宿主事实。
 
-Desktop 的 `NetworkAccessPolicy` 是聊天任务的网络准入来源。对话模型、子智能体、远程 MCP 的 HTTP/SSE 请求、OAuth 发现/注册/令牌交换及固定 Vision 供应商端点都在请求前经过它；跨来源重定向不会自动跟随。用户从设置页主动拉取模型目录或发起账户连接时，使用同一个策略的显式用户操作入口，不递归弹出 Agent 工具审批。市场下载、随包媒体资源下载及更新器网络属于安装/更新操作，当前不由聊天轮次策略控制。
+Desktop 的 `NetworkAccessPolicy` 是网络准入来源。对话模型、子智能体、远程 MCP 的 HTTP/SSE 请求、OAuth 发现/注册/令牌交换及固定 Vision 供应商端点都在请求前经过它；这些请求不自动跟随跨来源重定向。用户从设置页拉取模型目录、连接账户、添加市场、安装远程资源或检查更新时，使用同一个策略的显式用户操作入口，不递归弹出 Agent 工具审批。媒体资源下载使用独立非持久 Electron 网络分区，在每次请求及 CDN（内容分发网络）跳转前准入；更新器在自身分区逐请求准入；npm 和 Git 的 HTTP 下载禁止自动重定向。Git 的 SSH 来源按目标主机准入，实际 Git 仍是受信任本机进程边界，不能宣称操作系统级网络隔离。默认随包资源安装离线执行，显式操作准入不另存一套持久授权记录。
 
 在没有 Windows OS 级网络隔离时，`ask`、`auto-review` 和域名白名单模式会在进程创建前拒绝第三方 stdio MCP、插件生命周期 Hook、任意 `run_command` 和 Terminal；完整访问模式才允许不受限进程。切换到受限模式时会结束仍运行的持久终端。随包 FFmpeg、Whisper、Vision helper 是由宿主固定用途与实现的本地服务，不接受任意命令。
 
@@ -328,7 +330,7 @@ Model Catalog            模型目录          保存 ID、名称、上下文窗
 Model Selection          模型选择          使用供应商 ID 与模型 ID 引用目录，当前对话模型全局统一。
 Capability Status        能力状态          支持、不支持、未知三态，未知不能被视为支持或触发备用。
 Vision Routing           视觉路由          默认跟随对话模型，仅明确不支持时允许显式启用的备用。
-Chat Completions         对话补全协议      使用消息与工具调用的流式请求，输出上限进入 max_tokens。
+Chat Completions         对话补全协议      使用消息与工具调用请求，输出上限进入 max_tokens。
 Responses                响应协议          将通用消息转换为输入与函数结果，输出上限进入 max_output_tokens。
 ```
 
@@ -338,13 +340,15 @@ Responses                响应协议          将通用消息转换为输入与
 
 模型目录提供上下文窗口和输出上限时，Desktop 仅在两项同时存在时将它们交给 Loop；Loop 在动态系统指令和工具 schema（结构定义）组装后计算保守输入预算，必要时按完整 Step（模型步骤）压缩并保存来源摘要。摘要不是系统指令或长期记忆，原始 Session 仍保留；缺少任一限额时沿用原请求行为。最大输出上限进入实际请求。
 
-能力按具体模型与协议配置，当前只保存 `textInput`、`textOutput`、`imageInput`、`imageUnderstanding` 四项三态字段。2026-10-13 main 模型路由验收中的 DeepSeek 官方目录及真实图片调用确认 `deepseek-flash` 支持图片理解；`deepseek-v4-pro` 目录声明仅文本，不根据品牌或服务临时重定向统一标记视觉。修改模型 ID、地址或协议后，设置草稿的能力需要再次确认。首次预填的官方能力只适用于已验证的地址和协议；用户可以按实际协议明确填写能力。该历史证据不代替当前集成候选的真实云 Vision 插件链路及 Responses 供应商验收。
+能力按具体模型与协议配置，保存 `textInput`、`textOutput`、`imageInput`、`imageUnderstanding`、`tools`、`streaming`、`reasoning`、`parallelTools`、`responses`、`chatCompletions` 十项三态字段。对话必须确认文本输入输出和所选协议；工具能力未确认时不暴露工具；流式能力未确认时使用非流式完整响应。并行能力未确认时不发送 `parallel_tool_calls`，循环串行执行；明确不支持时发送 `false`，明确支持仍需满足工具自身只读与并行安全合约。模型可保存已确认的推理强度目录和当前值，实际请求只发送受支持的选择；DeepSeek 官方 Chat 的推理工具往返因尚未保存 `reasoning_content` 而明确拒绝，不用猜测参数补齐。
+
+2026-10-13 main 模型路由验收中的 DeepSeek 官方目录及真实图片调用确认 `deepseek-flash` 支持图片理解；`deepseek-v4-pro` 目录声明仅文本，不根据品牌或服务临时重定向统一标记视觉。修改模型 ID、地址或协议后，设置草稿的能力与推理值需要再次确认。首次预填的官方能力只适用于已验证的地址和协议；用户可以按实际协议明确填写能力。该历史证据不代替当前集成候选的真实云 Vision 插件链路及 Responses 供应商验收。当前没有已实现的供应商工具搜索协议，不伪造远程延迟工具发现。
 
 后续图片生成、图片编辑、视频理解、视频生成及音频输入输出各自增加独立能力和有生产消费者的任务选择，继续复用供应商目录与模型引用。视觉理解默认跟随对话的规则只属于视觉任务，不要求生成任务使用对话模型。本期不添加未消费的能力字段、生成模型选择器或调度平台。
 
 模型发现经宿主实际请求 `/models`，消费供应商返回的 ID、可选名称和明确声明的 `input_modalities`、`output_modalities`；未声明的能力保持未知，不从名称推断图片能力或 token 上限。打开配置仅生成脱敏查看快照，数据库保持唯一权威来源。`App` 持有聊天选择器与设置页共用的已保存配置，并按操作顺序提交；宿主保存成功后更新显示，失败保持原选择，保存期间阻止新发送，停止当前任务仍可用。模型选择不是会话字段，切换不改变草稿、附件、历史或会话身份。浏览器开发宿主只恢复脱敏配置，目录网络获取和本地配置文件仍明确要求桌面应用。
 
-启动恢复前，`legacy-storage-migration.ts` 读取同一目录内尚未导入的 `session-state.json`、`runtime-settings.json` 与 `runtime-secrets.json`，先按当前解析规则读取，再由一个事务导入。旧文件保留且不再写入；已有数据库记录始终优先。任何旧文件解析失败都不提交部分迁移，数据库损坏也不会用空状态覆盖。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）仍使用现有写入链路。
+Desktop 启动从 SQLite（本地事务数据库）恢复当前会话、设置及加密凭据，数据库损坏时明确失败。已删除旧 JSON 文件导入，以及旧工具活动、按文件名索引的产物表和仅视频附件格式的转换；磁盘上的原文件保持原样。当前附件明确保存路径和角色，活动轨迹使用 `activity`，可选产物使用 `outputFiles`；普通问答没有产物，失败或取消轮次仍保留已成功产出的文件。Execution Trace（执行追踪）的诊断 JSONL（逐行日志格式）继续使用现有写入链路。
 
 `@agent-desktop/client` 是 Web（网页）与 Desktop（桌面）共用的产品级 React Client（客户端），只依赖显式传入的 `AgentClientApi`（客户端宿主能力接口），并拥有唯一的 App、Session UI、Runtime Settings UI（运行时设置界面）、Agent Activity、Artifact Card 和样式实现。`cancelTask`（取消任务）与 `revealFile`（定位文件）由同一接口提供；`apps/desktop` 通过 preload API 提供真实 Electron 宿主，`apps/web` 提供可取消的内存模拟 Turn，不执行本地视频 Agent。网页开发宿主仅将脱敏运行时设置写入浏览器 `localStorage`，刷新后恢复模型选择；模拟密钥状态不代表真实密钥存储，会话仍仅在内存中。写入失败不提交新状态，目录网络获取和本地配置文件仍明确要求桌面应用。
 
@@ -352,15 +356,11 @@ Responses                响应协议          将通用消息转换为输入与
 
 输入附件用统一的 `Attachment`（附件）表达，字段只有 `path`（身份，也是模型实际使用的路径）、`name`（界面展示名）和 `role`（用途）。`role` 当前只有 `video`（主视频）和 `audio`（外加音轨）两种取值，它决定提示词把该文件描述成什么，而不是决定工具调用顺序——顺序仍由模型根据提示词与已注册工具自行判断。角色按扩展名判定（`.mp3` 等归 `audio`，其余归 `video`），且必须对应一个已注册的工具消费者：`audio` 的消费者是 `add_audio`。共同的文件对话框按这两类扩展名过滤，因此「用户能选到」与「有工具能用」始终是同一份来源。宿主不再为视频任务预设最终输出路径：输出项由模型按用户要求声明，最终名称在发布时按真实磁盘占用确定，因此单独添加音轨与缺少主视频都不会改变任何命名事实。
 
-每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/agent-desktop.sqlite`。每个会话只长期持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot 里的附件只是发给 Renderer 的展示副本；重启恢复时按会话附件重建一次界面副本，避免旧格式快照里「只有名称、没有路径」的副本被继续沿用。旧快照里的全局输出序号不再参与任何命名，读取时直接忽略：新命名只依赖发布时的真实磁盘占用。
+每个 Desktop 窗口维护一个最小 `Map<sessionId, DesktopSessionState>`，并将必要状态保存到 Electron `app.getPath('userData')/agent-desktop.sqlite`。每个会话持有 InMemorySession（内存会话）和待提交附件；`activeSessionId` 决定后续文件选择、任务执行和产物定位操作的目标。会话侧附件是权威事实，Client Snapshot（客户端快照）里的附件用于展示，重启恢复时由会话附件重建。输出命名依赖发布时的真实磁盘占用。
 
 产物由所属会话、轮次、工具调用和真实路径识别，文件名只是界面标签。识别规则只有一个权威实现（`apps/desktop/src/main/agent-task.ts` 的 `findTurnArtifacts`）：以成功结果自己报告的 `artifacts` 为准（见「成功结果的产物事实」），不因为磁盘上存在同名文件就登记产物，也不把 `outputDir` 当成视频文件。产物路径随轮次写入 Client Snapshot，因此同名文件位于不同目录、或同一轮次产生多个产物都能分别定位；宿主不再维护按文件名索引的产物表，`revealFile` 用会话事件与附件路径校验来路后才交给系统文件管理器。
 
 整轮失败或用户取消不代表本轮此前已成功的工具没有产出。收尾路径只查询本次任务起点 `firstTaskEventIndex` 之后的 Session 事实，用 `findLatestTurnId` 反查本次 Turn（失败时 `runTurn` 直接抛错，拿不到返回值，但 `turn.started` 已落盘），再按同一个 turnId 统计已成功的产物；主进程将这些产物以 `outputFiles` 放入失败或取消结果对象，经 preload 转交，由 Renderer 还原错误后交给 Shared Client，最终并入同一轮的 `failed` / `cancelled` 终态。因此产物卡在成功、失败、取消三种终态下是同一张卡、同一套定位入口。字段缺失或为空数组都表示本轮没有产物，不允许凭空造卡。
-
-历史快照的产物关联在读取时做一次最小换算：旧格式把路径存在会话侧的 `outputFilePaths`（按文件名索引的路径表），回复里只记 `outputFileName`，解析时据此还原成等价的 `outputFiles: [{ path, fileName }]`；查不到对应路径时按「本轮没有产物」读取，不编造路径。换算需要先把会话侧的旧产物表读出来再解析 Client Snapshot，所以状态解析顺序是先 sessions、后 clientState。换算只发生在读取边界，写回磁盘时一律是新格式。
-
-历史快照的附件同样在读取边界换算一次：旧会话存 `selectedVideoPaths`、旧界面副本存 `selectedVideos`，那时唯一的附件语义就是视频，因此一律换算成 `role: 'video'`。界面副本无法从旧字段恢复真实路径（旧字段只有名称），所以换算后由会话事实重建，而不是沿用空路径。两种旧字段都不存在时按空附件读取。
 
 每次用户 Turn（用户任务轮次）开始时，Electron Main 重新读取最新 Runtime Settings（运行时设置）并创建一个 Video Agent（视频智能体）；该 Agent 在完整 Turn 内保持不变，下一个 Turn 才重新创建。每次创建都注入会话原有的同一个 InMemorySession，因此 Agent Loop 仍只根据 Session 事件重建 Model Context（模型上下文）。Renderer 为每个会话保存消息、草稿和附件等 UI History（界面历史），但不把这些消息重新拼接进模型请求。每轮 Agent Activity（活动轨迹）、Artifact（产物）和 Trace ID 都归属发起该轮任务的会话与 Agent 回复。
 
@@ -411,7 +411,7 @@ Update State            更新状态        宿主将检查、下载、就绪、
 Update Installation     更新安装        用户点击入口后保存会话并退出，安装器覆盖应用并重新启动。
 ```
 
-`apps/desktop/src/main/app-updater.ts` 使用 `electron-updater` 的 Windows 安装包更新器，发布源固定为当前公开仓库 `wwxst/agent-desktop` 的 GitHub 正式发布。只有 Windows 已打包应用创建更新器；源码模式返回空闲状态，浏览器宿主没有安装能力。启动时检查一次，发现新版本自动下载并由软件开发工具包校验摘要，完成后等待用户点击；普通退出不会自动安装，不提供版本详情页或供应商设置。
+`apps/desktop/src/main/app-updater.ts` 使用 `electron-updater` 的 Windows 安装包更新器，发布源固定为当前公开仓库 `wwxst/agent-desktop` 的 GitHub 正式发布。只有 Windows 已打包应用创建更新器；源码模式返回空闲状态，浏览器宿主没有安装能力。启动不检查更新，用户点击“检查更新”才准入检查与后续下载，由软件开发工具包校验摘要，完成后等待用户点击安装；普通退出不会自动安装，不提供版本详情页或供应商设置。
 
 更新状态经独立 `desktop:update-state` 通道到达预加载桥接，共享客户端的可选 `appUpdates` 能力只展示状态与发送安装、重试请求。更新不进入模型上下文、执行追踪或 Agent Core（智能体核心）。宿主拒绝任务或扩展操作未完成时的安装；就绪更新进入安装状态后，复用窗口关闭的终端收尾和客户端快照提交，SQLite（本地嵌入式数据库）保存成功才调用安装器。保存失败保留已下载更新与窗口，安装器失败保留真实错误；保存过程中不允许重复关闭握手或开始新任务。
 

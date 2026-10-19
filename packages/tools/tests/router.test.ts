@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ToolCall, ToolCallId, ToolResult } from '@agent-desktop/model';
 import {
   DEFAULT_TOOL_OUTPUT_LIMITS, formatModelToolResult, InMemoryToolRegistry, resolveToolContract,
-  ToolExecutionError, ToolRouter, type Tool, type ToolExecutionContext,
+  ToolExecutionError, ToolNotExecutedError, ToolRouter, type Tool, type ToolExecutionContext,
 } from '../src/index.js';
 
 const call: ToolCall = { id: 'call' as ToolCallId, name: 'read', input: { path: 'source.ts' } };
@@ -117,6 +117,29 @@ describe('ToolRouter', () => {
       }) });
     await expect(router.execute(call, context)).rejects.toMatchObject({ name: 'ToolExecutionError',
       failureKind: boundary === 'read-only' ? 'transient' : 'unknown-outcome' });
+  });
+
+  it.each(['checkpointed', 'opaque'] as const)('proves approval timeout never entered the %s execution closure', async boundary => {
+    const execute = vi.fn<Tool['execute']>();
+    const effect = vi.fn(async () => ({ status: 'success' as const, output: 'must not run' }));
+    const router = routerFor({ ...read, executionBoundary: boundary, contract: { ...read.contract, timeoutMs: 5, approvalRequirement: 'policy' },
+      prepare: async (_input, execution) => ({ requestApproval: () => new Promise((_resolve, reject) => {
+        execution.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      }), execute: effect }), execute });
+    await expect(router.execute(call, context)).rejects.toMatchObject({ constructor: ToolNotExecutedError,
+      result: { status: 'error', failureKind: 'transient', message: expect.stringContaining('超时') } });
+    expect(execute).not.toHaveBeenCalled(); expect(effect).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a nested not-executed proof for an already executing opaque parent', async () => {
+    const registry = new InMemoryToolRegistry();
+    registry.register({ ...read, name: 'nested', executionBoundary: 'opaque', contract: { approvalRequirement: 'policy' },
+      prepare: async () => ({ requestApproval: async () => false, execute: async () => ({ status: 'success', output: 'must not run' }) }) });
+    registry.register({ ...read, name: 'parent', executionBoundary: 'opaque', nestedToolNames: ['nested'],
+      execute: async (_input, execution) => execution.invokeNestedTool!('nested', {}) });
+    const failure = await new ToolRouter(registry).execute({ ...call, name: 'parent' }, context).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ToolExecutionError);
+    expect(failure).not.toBeInstanceOf(ToolNotExecutedError);
   });
 
   it('propagates parent cancellation and does not convert it into a timeout failure', async () => {

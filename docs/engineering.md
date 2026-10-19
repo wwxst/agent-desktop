@@ -381,7 +381,7 @@ pnpm desktop           Desktop 真实桌面链路         启动不要求预先�
 
 当前没有独立的 FFmpeg-only、Whisper-only、Vision-only 或完整 E2E 非交互命令；这些能力在现有 `ffmpeg-agent` 与 Desktop 入口中组合验证。`ffmpeg-agent` 仍由环境变量显式提供本机 Whisper 资源及视觉配置；Desktop 完整包首次离线安装 Whisper 插件和模型后由宿主管理路径，不读取用户 Whisper 路径环境变量。Desktop 允许无 Key 启动，缺少当前对话模型密钥只在发送任务时明确失败；Vision 只在插件已启用且当前视觉配置完整时注册。外部二进制、模型、HTTP 或图片响应失败在 Tool 执行边界暴露。对承诺存在环境的专用验证任务，缺配置必须 FAIL；本地未执行的真实链路可以 SKIP，但不能将跳过伪装为通过。Vision 的本机 HTTP 协议夹具只证明实际 MCP/请求映射，不代表云模型观察质量或真实云服务通过。
 
-`pnpm ffmpeg-agent` 调用示例包的 `start`，用项目已有版本的 esbuild 构建 `examples/ffmpeg-agent/dist/index.cjs` 后由本机 Node 执行。原生 TypeScript 转换不会把源代码中的 `.js` 引用解析为 `.ts` 子模块，直接执行源入口会在导入阶段失败。构建保留 `@vscode/ripgrep` 为外部运行时依赖，避免破坏其平台二进制的模块定位；示例包显式声明同版本的 esbuild 与 ripgrep，不引入新库或框架。此修正不改变 CLI 模型、工具或交付逻辑。
+`pnpm echo-agent`、`pnpm deepseek-agent` 和 `pnpm ffmpeg-agent` 调用各自示例包的 `start`，由项目已有版本的 esbuild 打包后再用本机 Node 执行。前两者生成各自的 `dist/index.js`，保留 ESM 和顶层 `await`；视频入口生成 `examples/ffmpeg-agent/dist/index.cjs`。原生 TypeScript 转换不会把源代码中的 `.js` 引用解析为 `.ts` 子模块，直接执行源入口会在导入阶段失败。三个示例包只在开发依赖中声明 `esbuild@0.27.4`，唯一职责是命令行入口打包；视频构建另保留 `@vscode/ripgrep` 为外部运行时依赖，避免破坏其平台二进制的模块定位。此修正不改变 CLI 模型、工具或交付逻辑。
 
 无法执行真实验证时，必须明确说明原因、未验证范围和风险，不得将 Real Verification 标记为通过。
 

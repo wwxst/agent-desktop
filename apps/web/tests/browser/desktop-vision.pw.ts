@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import { basename, resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
 import type { ApprovalRequest } from '@agent-desktop/client';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { cleanupDesktopAcceptance } from './desktop-acceptance-cleanup.js';
 
 interface Part { type: string; text?: string; image_url?: string | { url: string } }
 interface ModelInput {
@@ -70,7 +72,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
         return;
       }
       const messages = input.messages!;
-      const tools = input.tools!.map(tool => tool.function.name);
+      const tools = input.tools?.map(tool => tool.function.name) ?? [];
       const userIndex = messages.findLastIndex(message => message.role === 'user');
       const user = messages[userIndex]?.content;
       const scenario = typeof user === 'string' ? /CASE:([\w-]+)/.exec(user)?.[1] : undefined;
@@ -137,10 +139,10 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
     });
   });
   const approvals = () => page.evaluate(() => (window as unknown as { approvals: ApprovalRequest[] }).approvals);
-  const configureVision = (protocol: 'chat-completions' | 'responses') => page.evaluate(async ({ origin, protocol }) => {
+  const configureVision = (protocol: 'chat-completions' | 'responses') => page.evaluate(async ({ origin, protocol, capabilities }) => {
     await window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'offline-vision', displayName: '离线 Vision', apiKey: 'offline-vision-secret', baseUrl: `${origin}/vision`, protocol,
-      models: [{ id: 'vision-fixture', displayName: '离线图片模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' }, maxOutputTokens: 2048 }] }, fallbackVisionModel: { providerId: 'offline-vision', modelId: 'vision-fixture' }, fallbackVisionEnabled: true });
-  }, { origin, protocol });
+      models: [{ id: 'vision-fixture', displayName: '离线图片模型', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' }, maxOutputTokens: 2048 }] }, fallbackVisionModel: { providerId: 'offline-vision', modelId: 'vision-fixture' }, fallbackVisionEnabled: true });
+  }, { origin, protocol, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, streaming: 'supported' as const, chatCompletions: 'supported' as const, responses: 'supported' as const } });
   const start = async (scenario: string, video?: string) => {
     await page.getByRole('button', { name: '对话', exact: true }).click();
     await page.getByRole('button', { name: '新会话', exact: true }).click();
@@ -172,28 +174,29 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
   };
   try {
     app = await launch(); page = await app.firstWindow(); await page.waitForLoadState(); await observeApprovals();
-    await page.evaluate(async origin => {
+    await page.evaluate(async ({ origin, capabilities }) => {
       await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, modelProvider: { id: 'offline-text', displayName: '离线对话', apiKey: 'offline-text-secret', baseUrl: `${origin}/conversation`, protocol: 'chat-completions',
-        models: [{ id: 'text-fixture', displayName: '离线对话模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }, conversationModel: { providerId: 'offline-text', modelId: 'text-fixture' }, fallbackVisionModel: null, fallbackVisionEnabled: false });
+        models: [{ id: 'text-fixture', displayName: '离线对话模型', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }, conversationModel: { providerId: 'offline-text', modelId: 'text-fixture' }, fallbackVisionModel: null, fallbackVisionEnabled: false });
       for (const plugin of (await window.agentDesktop.extensions.list()).plugins) if (plugin.installed && plugin.enabled) await window.agentDesktop.extensions.setEnabled(plugin.id, false);
-    }, origin);
+    }, { origin, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
     expect((await run('missing')).tools).not.toContain('analyze_images');
     const existing = (await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:vision');
     if (existing?.installed) await page.evaluate(() => window.agentDesktop.extensions.uninstall('plugin:vision'));
     await page.getByRole('button', { name: '插件和技能', exact: true }).click();
     await page.getByRole('button', { name: '安装 Vision', exact: true }).click();
-    await expect(page.locator('.extension-toast')).toContainText('Vision 插件已安装', { timeout: 60_000 });
+    await expect(page.locator('.extension-toast').filter({ hasText: 'Vision 插件已安装' })).toBeVisible({ timeout: 60_000 });
     expect((await page.evaluate(() => window.agentDesktop.extensions.list())).plugins.find(plugin => plugin.id === 'plugin:vision')).toMatchObject({ installed: true, enabled: true });
     expect((await run('missing-model')).tools).not.toContain('analyze_images');
-    await page.evaluate(async origin => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'offline-no-key', displayName: '未配置密钥', baseUrl: `${origin}/vision`, protocol: 'chat-completions',
-      models: [{ id: 'vision-fixture', displayName: '离线图片模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] }, fallbackVisionModel: { providerId: 'offline-no-key', modelId: 'vision-fixture' }, fallbackVisionEnabled: false }), origin);
+    await page.evaluate(async ({ origin, capabilities }) => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'offline-no-key', displayName: '未配置密钥', baseUrl: `${origin}/vision`, protocol: 'chat-completions',
+      models: [{ id: 'vision-fixture', displayName: '离线图片模型', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] }, fallbackVisionModel: { providerId: 'offline-no-key', modelId: 'vision-fixture' }, fallbackVisionEnabled: false }), { origin, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, chatCompletions: 'supported' as const } });
     expect((await run('missing-key')).tools).not.toContain('analyze_images');
     expect(uploads).toHaveLength(0);
     await configureVision('chat-completions');
     await page.evaluate(() => { (window as unknown as { decision: string }).decision = 'hold'; });
     await start('chat');
     const approval = page.getByRole('region', { name: '操作审批' });
-    await expect(approval).toContainText(origin);
+    // 首次准备须验证随包资源并组装工具；并行实机媒体负载下仍等待真实审批入口出现。
+    await expect(approval).toContainText(origin, { timeout: 30_000 });
     await expect(approval).toContainText('analyze_images');
     await expect(approval).toContainText(JSON.stringify(image).slice(1, -1));
     expect(await approval.innerText()).not.toContain('offline-vision-secret');
@@ -241,7 +244,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
       const semantic = await run('semantic', video);
       expect(JSON.parse(semantic.results[3]!)).toMatchObject({ coverage: 'all-frames-and-transcript', frameCount: 3, checks: [{ outcome: 'passed' }] });
       expect(JSON.parse(semantic.results[4]!).validation.checks.every((check: { outcome: string }) => check.outcome === 'passed')).toBe(true);
-      const published = (JSON.parse(semantic.results[5]!) as { output: { path: string } }).output.path;
+      const published = (JSON.parse(semantic.results[5]!) as { output: { output: { path: string } } }).output.output.path;
       expect((await stat(published)).size).toBeGreaterThan(0);
       const pixels = execFileSync(ffmpeg, ['-v', 'error', '-i', published, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { windowsHide: true });
       expect(pixels[0]).toBeGreaterThan(240); expect(pixels[1]).toBeLessThan(10); expect(pixels[2]).toBeLessThan(10);
@@ -269,7 +272,7 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
         expect(JSON.parse(full.results[4]!)).toMatchObject({ coverage: 'all-frames-and-transcript', checks: [{ outcome: 'passed' }] });
         expect(JSON.parse(full.results[4]!).evidence.transcript.text.trim()).toBeTruthy();
         expect(JSON.parse(full.results[5]!).validation.checks.every((check: { outcome: string }) => check.outcome === 'passed')).toBe(true);
-        expect((await stat((JSON.parse(full.results[6]!) as { output: { path: string } }).output.path)).size).toBeGreaterThan(0);
+        expect((await stat((JSON.parse(full.results[6]!) as { output: { output: { path: string } } }).output.output.path)).size).toBeGreaterThan(0);
         expect((await approvals()).some(request => request.kind === 'plugin-tool' && request.serverName === 'whisper')).toBe(true);
         chainStatus.push({ scenario: 'Skill + FFmpeg + Vision + Whisper', status: 'PASS' });
       }
@@ -312,6 +315,9 @@ test('real Windows Vision installation, local protocols, approvals and lifecycle
       approvals: [...allApprovals, ...await approvals()], remoteApiSpend: false }, null, 2));
   } finally {
     await writeFile(resolve(evidence, 'requests.json'), JSON.stringify({ records, uploads, fixtureErrors, chainStatus }, null, 2));
-    try { await app?.close(); } finally { await new Promise<void>(done => server.close(() => done())); }
+    try { await app?.close(); } finally {
+      try { await new Promise<void>(done => server.close(() => done())); }
+      finally { await cleanupDesktopAcceptance(evidence, profile, process.env.DESKTOP_ACCEPTANCE_PROFILE === undefined, [unselected]); }
+    }
   }
 });

@@ -78,7 +78,7 @@ it.each(['chat-completions', 'responses'] as const)('uses separate summary and n
   await model.complete(request);
   const field = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
   expect(received.map(body => body[field])).toEqual([192, 768, 4096]);
-  expect(received[0]?.tools).toEqual([]);
+  expect(received[0]).not.toHaveProperty('tools');
   expect(received[1]?.tools).toHaveLength(1);
   for (const body of received) expect(body).not.toHaveProperty(protocol === 'responses' ? 'max_tokens' : 'max_output_tokens');
 });
@@ -121,4 +121,98 @@ it.each([429, 503, 401, 400])('keeps existing retry and authentication classific
   await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses' }).complete(request)).rejects.toMatchObject({
     kind: [429, 503].includes(status) ? 'transient-service' : status === 401 ? 'authentication' : 'invalid-request', statusCode: status, retryAfterMs: 2000,
   });
+});
+
+it.each(['chat-completions', 'responses'] as const)('reads complete JSON text, tool calls, and usage when streaming is unsupported: %s', async protocol => {
+  const baseUrl = await host((body, res) => {
+    expect(body.stream).toBe(false);
+    expect(body).not.toHaveProperty('stream_options');
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(protocol === 'responses'
+      ? { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: '检查中' }] },
+        { type: 'function_call', call_id: 'call-1', name: 'read_file', arguments: '{"path":"notes.txt"}' }], usage: { input_tokens: 30, output_tokens: 8 } }
+      : { choices: [{ finish_reason: 'tool_calls', message: { content: '检查中', tool_calls: [{ id: 'call-1', type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"notes.txt"}' } }] } }], usage: { prompt_tokens: 30, completion_tokens: 8 } }));
+  });
+  const onTextDelta = vi.fn();
+  await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol, supportsStreaming: false })
+    .complete({ ...request, onTextDelta })).resolves.toEqual({ text: '检查中',
+    toolCalls: [{ id: 'call-1', name: 'read_file', input: { path: 'notes.txt' } }], usage: { inputTokens: 30, outputTokens: 8 } });
+  expect(onTextDelta).not.toHaveBeenCalled();
+});
+
+it.each(['chat-completions', 'responses'] as const)('rejects tool exposure before network authorization when the model cannot call tools: %s', async protocol => {
+  const authorizeNetwork = vi.fn();
+  const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', protocol, supportsTools: false, authorizeNetwork });
+  await expect(model.complete(request)).rejects.toThrow('The selected model does not support tools');
+  expect(authorizeNetwork).not.toHaveBeenCalled();
+});
+
+it.each(['chat-completions', 'responses'] as const)('keeps reasoning on normal and summary requests and omits tool fields for empty sets: %s', async protocol => {
+  const received: Record<string, unknown>[] = [];
+  const baseUrl = await host((body, res) => {
+    received.push(body);
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(protocol === 'responses' ? { status: 'completed', output: [] }
+      : { choices: [{ finish_reason: 'stop', message: { content: null } }] }));
+  });
+  const model = new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol,
+    supportsStreaming: false, supportsParallelTools: true, reasoningEffort: 'high', maxOutputTokens: 4096 });
+  await model.complete(request);
+  await model.complete({ ...request, tools: [], maxOutputTokens: 128 });
+  await model.complete(request);
+  const outputField = protocol === 'responses' ? 'max_output_tokens' : 'max_tokens';
+  expect(received.map(body => body[outputField])).toEqual([4096, 128, 4096]);
+  for (const body of received) {
+    expect(body).toHaveProperty(protocol === 'responses' ? 'reasoning' : 'reasoning_effort', protocol === 'responses' ? { effort: 'high' } : 'high');
+    expect(body).not.toHaveProperty(protocol === 'responses' ? 'reasoning_effort' : 'reasoning');
+  }
+  expect(received[0]?.parallel_tool_calls).toBe(true);
+  expect(received[1]).not.toHaveProperty('tools');
+  expect(received[1]).not.toHaveProperty('parallel_tool_calls');
+  expect(received[2]?.parallel_tool_calls).toBe(true);
+});
+
+it.each(['chat-completions', 'responses'] as const)('sends parallel tool configuration only when explicitly supplied: %s', async protocol => {
+  const received: Record<string, unknown>[] = [];
+  const baseUrl = await host((body, res) => {
+    received.push(body);
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(protocol === 'responses' ? { status: 'completed', output: [] }
+      : { choices: [{ finish_reason: 'stop', message: { content: '' } }] }));
+  });
+  await new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol, supportsStreaming: false }).complete(request);
+  await new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol, supportsStreaming: false, supportsParallelTools: false }).complete(request);
+  await new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol, supportsStreaming: false, supportsTools: false, supportsParallelTools: true }).complete({ ...request, tools: [] });
+  expect(received[0]).not.toHaveProperty('parallel_tool_calls');
+  expect(received[0]).not.toHaveProperty('reasoning');
+  expect(received[0]).not.toHaveProperty('reasoning_effort');
+  expect(received[1]?.parallel_tool_calls).toBe(false);
+  expect(received[2]).not.toHaveProperty('parallel_tool_calls');
+  expect(received[2]).not.toHaveProperty('tools');
+});
+
+it.each(['length', 'content_filter', 'aborted', undefined])('rejects incomplete nonstreaming Chat results: %s', async finishReason => {
+  const baseUrl = await host((_body, res) => { res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ finish_reason: finishReason, message: { content: '部分内容' } }] })); });
+  await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, supportsStreaming: false })
+    .complete(request)).rejects.toThrow('Chat Completions API response terminated with finish_reason');
+});
+
+it.each(['incomplete', 'failed'])('rejects incomplete nonstreaming Responses results: %s', async status => {
+  const baseUrl = await host((_body, res) => { res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ status, output: [] })); });
+  await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses', supportsStreaming: false })
+    .complete(request)).rejects.toThrow('Responses API 未返回完整结果');
+});
+it.each([
+  { call_id: '', name: 'read_file' },
+  { call_id: 'call-1', name: '' },
+])('rejects Responses tool calls without a non-empty identity: %j', async identity => {
+  const baseUrl = await host((_body, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ status: 'completed', output: [{ type: 'function_call', ...identity, arguments: '{}' }] }));
+  });
+  await expect(new OpenAICompatibleModel({ ...modelOptions, apiKey: 'local-key', baseUrl, protocol: 'responses', supportsStreaming: false })
+    .complete(request)).rejects.toThrow('Responses API 工具调用缺少必要字段');
 });

@@ -1,15 +1,27 @@
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { _electron, expect, test, type ElectronApplication } from '@playwright/test';
 import type { ApprovalRequest } from '@agent-desktop/client';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 import type { PersistedDesktopState } from '../../../desktop/src/main/session-persistence.js';
 
 interface ModelInput {
   readonly messages: readonly { readonly role: string; readonly content: string; readonly tool_call_id?: string }[];
-  readonly tools: readonly { readonly function: { readonly name: string } }[];
+  readonly tools?: readonly { readonly function: { readonly name: string } }[];
+}
+
+// 只删除本用例创建且已核对归属的配置和文件目录；证据副本留在父目录。
+async function cleanAcceptanceDirectories(evidence: string, directories: readonly string[]): Promise<void> {
+  for (const directory of directories) {
+    const target = resolve(directory); const withinEvidence = relative(resolve(evidence), target);
+    if (!withinEvidence || isAbsolute(withinEvidence) || withinEvidence === '..' || withinEvidence.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+      throw new Error(`验收清理目录不属于本用例证据范围：${target}`);
+    }
+    await rm(target, { recursive: true, force: true });
+  }
 }
 
 // 仍读原始落盘文档；应用运行时在主进程同步查询，避免验收读锁与其提交竞争。
@@ -52,17 +64,17 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     for await (const chunk of request) body += chunk;
     const input = JSON.parse(body) as ModelInput;
     requests.push(input);
-    if (input.tools.length > 0) taskRequests.push(input);
+    if (input.tools !== undefined) taskRequests.push(input);
     // 首轮真实完成 read_file 后，第二次模型请求保持未完成，供进程强杀。
-    if (input.tools.length > 0 && taskRequests.length === 2) {
+    if (input.tools !== undefined && taskRequests.length === 2) {
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
       response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '未完成的流式文本不得写入磁盘' }, finish_reason: null }] })}\n\n`);
       return;
     }
-    const firstTaskRequest = input.tools.length > 0 && taskRequests.length === 1;
+    const firstTaskRequest = input.tools !== undefined && taskRequests.length === 1;
     const delta = firstTaskRequest
       ? { tool_calls: [{ index: 0, id: 'read-before-exit', function: { name: 'read_file', arguments: JSON.stringify({ filePath: source }) } }] }
-      : { content: input.tools.length === 0 ? '恢复验收任务' : '恢复后的任务已完成' };
+      : { content: input.tools === undefined ? '恢复验收任务' : '恢复后的任务已完成' };
     response.writeHead(200, { 'Content-Type': 'text/event-stream' });
     response.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: firstTaskRequest ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`);
   });
@@ -97,7 +109,12 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     databasePath = await app.evaluate(({ app }) => `${app.getPath('userData')}/agent-desktop.sqlite`);
     expect(resolve(databasePath)).toBe(resolve(profile, 'agent-desktop.sqlite'));
     // 模型密钥沿用原恢复测试的进程配置，只验收会话恢复，不覆盖系统密钥存储。
-    await page.evaluate(() => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false }));
+    await page.evaluate(({ baseUrl, capabilities }) => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false,
+      modelProvider: { id: 'deepseek', displayName: '恢复验收模型', baseUrl, protocol: 'chat-completions',
+        models: [{ id: 'recovery-fixture', displayName: '恢复验收模型', capabilities }] },
+      conversationModel: { providerId: 'deepseek', modelId: 'recovery-fixture' } }),
+    { baseUrl: env.DEEPSEEK_BASE_URL!, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported' as const, textOutput: 'supported' as const,
+      imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
 
     // 保留普通入口的未提交草稿；首次正式消息来自项目里的另一份输入草稿。
     await page.getByLabel('剪辑需求').fill(sparePrompt);
@@ -123,7 +140,7 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect.poll(() => taskRequests.length).toBe(2);
     await expect(page.getByText('未完成的流式文本不得写入磁盘', { exact: true })).toBeVisible();
-    expect(taskRequests[0]!.tools.some(tool => tool.function.name === 'read_file')).toBe(true);
+    expect(taskRequests[0]!.tools?.some(tool => tool.function.name === 'read_file')).toBe(true);
     expect(taskRequests[1]!.messages.find(message => message.role === 'tool')?.content).toContain('真实文件读取已经完成');
     const started = await saveSnapshot('02-started-before-kill');
     const session = started.sessions.find(item => item.id === sessionId)!;
@@ -208,17 +225,21 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     completed = true;
   } finally {
     if (app !== undefined) await app.close().catch(() => undefined);
-    if (completed) await copyFile(databasePath, resolve(evidence, '06-after-user-continue.sqlite'));
     server.closeAllConnections();
     await new Promise<void>(done => server.close(() => done()));
-    // Profile 和原始 SQLite 留在 logs，失败现场也不会被清理掉。
+    // 无论成功或失败，都先保存诊断所需的数据库副本，再清理可启动的测试配置与工作文件。
+    if (await stat(databasePath).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return false; throw error; })) {
+      await copyFile(databasePath, resolve(evidence, completed ? '06-after-user-continue.sqlite' : 'failed-state.sqlite'));
+    }
+    await cleanAcceptanceDirectories(evidence, [profile, workspace]);
     const manifest = resolve(evidence, 'evidence.json');
-    await writeFile(manifest, JSON.stringify({ completed, installedExecutable: packagedExecutable ?? null, profile, databasePath, killedProcessId, snapshots, taskRequestCount: taskRequests.length, requests }, null, 2));
+    await writeFile(manifest, JSON.stringify({ completed, installedExecutable: packagedExecutable ?? null, profile, workspace, databasePath,
+      cleanedDirectories: [profile, workspace], killedProcessId, snapshots, taskRequestCount: taskRequests.length, requests }, null, 2));
     await info.attach('真实 Electron 强杀连续恢复证据', { path: manifest, contentType: 'application/json' });
   }
 });
 
-test('runs workspace file changes, command approvals, plans and outcome verification before releasing a blocked writer', async ({}, info) => {
+test('runs workspace file changes, full-access commands, plans and outcome verification before releasing a blocked writer', async ({}, info) => {
   test.skip(info.project.name !== 'chromium-desktop' || process.platform !== 'win32', '普通工具链只在 Windows 真实 Electron 项目验证。');
   test.setTimeout(150_000);
   const root = resolve('../..');
@@ -228,10 +249,8 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
   const workspace = resolve(evidence, 'workspace');
   const databasePath = resolve(profile, 'agent-desktop.sqlite');
   const textPath = resolve(workspace, '普通 文件.txt');
-  const deniedPath = resolve(workspace, 'denied.txt');
   const markerPath = resolve(workspace, 'command-marker.txt');
   const blockedPath = resolve(workspace, 'after-verification.txt');
-  const deniedCommand = "[System.IO.File]::WriteAllText('denied.txt', 'must-not-exist')";
   const command = "[System.IO.File]::WriteAllText('command-marker.txt', 'actual-command-effect'); exit 7";
   await mkdir(profile, { recursive: true }); await mkdir(workspace, { recursive: true });
   let sessionId: string;
@@ -269,27 +288,25 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
       const results = input.messages.slice(userIndex + 1).filter(message => message.role === 'tool');
       const recovery = input.messages[userIndex]?.content.startsWith('继续未完成任务\n') === true;
       let action: { name: string; input: object; id: string } | undefined;
-      if (input.tools.length > 0) {
+      if (input.tools !== undefined) {
         const step = results.length;
         if (recovery) {
           action = step === 0 ? { name: 'update_plan', input: await plan('verified'), id: 'core-plan-verified' }
             : step === 1 ? { name: 'write_text_file', input: { filePath: blockedPath, content: 'written-after-manual-verification' }, id: 'core-released' }
               : step === 2 ? { name: 'update_plan', input: await plan('released'), id: 'core-plan-released' } : undefined;
         } else {
-          const denied = { command: deniedCommand, timeoutMs: 10_000 };
           if (step === 0) action = { name: 'update_plan', input: await plan('initial'), id: 'core-plan-initial' };
-          else if (step === 1 || step === 2) action = { name: 'run_command', input: denied, id: `core-denied-${step}` };
-          else if (step === 3) action = { name: 'write_text_file', input: { filePath: textPath, content: 'before-edit\n' }, id: 'core-create' };
-          else if (step === 4) action = { name: 'read_file', input: { filePath: textPath }, id: 'core-read' };
-          else if (step === 5) action = { name: 'edit_text_file', input: { filePath: textPath,
-            expectedSha256: (JSON.parse(results[4]!.content) as { sha256: string }).sha256, oldText: 'before-edit', newText: 'after-edit' }, id: 'core-edit' };
-          else if (step === 6) action = { name: 'update_plan', input: await plan('files'), id: 'core-plan-files' };
-          else if (step === 7) action = { name: 'run_command', input: { command, timeoutMs: 10_000 }, id: 'core-command' };
-          else if (step === 8) action = { name: 'write_text_file', input: { filePath: blockedPath, content: 'written-after-manual-verification' }, id: 'core-blocked' };
-          else if (step === 9) action = { name: 'update_plan', input: await plan('unknown'), id: 'core-plan-unknown' };
+          else if (step === 1) action = { name: 'write_text_file', input: { filePath: textPath, content: 'before-edit\n' }, id: 'core-create' };
+          else if (step === 2) action = { name: 'read_file', input: { filePath: textPath }, id: 'core-read' };
+          else if (step === 3) action = { name: 'edit_text_file', input: { filePath: textPath,
+            expectedSha256: (JSON.parse(results[2]!.content) as { sha256: string }).sha256, oldText: 'before-edit', newText: 'after-edit' }, id: 'core-edit' };
+          else if (step === 4) action = { name: 'update_plan', input: await plan('files'), id: 'core-plan-files' };
+          else if (step === 5) action = { name: 'run_command', input: { command, timeoutMs: 10_000 }, id: 'core-command' };
+          else if (step === 6) action = { name: 'write_text_file', input: { filePath: blockedPath, content: 'written-after-manual-verification' }, id: 'core-blocked' };
+          else if (step === 7) action = { name: 'update_plan', input: await plan('unknown'), id: 'core-plan-unknown' };
         }
       }
-      const delta = action === undefined ? { content: input.tools.length === 0 ? '普通工具验收' : recovery ? '人工核验后的剩余任务完成' : '普通工具链完成，命令实际效果待人工核验' }
+      const delta = action === undefined ? { content: input.tools === undefined ? '普通工具验收' : recovery ? '人工核验后的剩余任务完成' : '普通工具链完成，命令实际效果待人工核验' }
         : { tool_calls: [{ index: 0, id: action.id, function: { name: action.name, arguments: JSON.stringify(action.input) } }] };
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
       response.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: action === undefined ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
@@ -309,24 +326,28 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
     app = await launch(); let page = await app.firstWindow();
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     expect(resolve(await app.evaluate(({ app }) => app.getPath('userData')))).toBe(profile);
-    await page.evaluate(() => {
+    await page.evaluate(async ({ baseUrl, capabilities }) => {
       (window as unknown as { coreApprovals: ApprovalRequest[] }).coreApprovals = [];
       window.agentDesktop.onAgentEvent(event => { if (event.type === 'approval.requested') (window as unknown as { coreApprovals: ApprovalRequest[] }).coreApprovals.push(event.request); });
-      return window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false });
-    });
+      await window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false,
+        modelProvider: { id: 'deepseek', displayName: '普通工具验收模型', baseUrl, protocol: 'chat-completions',
+          models: [{ id: 'ordinary-fixture', displayName: '普通工具验收模型', capabilities }] },
+        conversationModel: { providerId: 'deepseek', modelId: 'ordinary-fixture' } });
+    }, { baseUrl: env.DEEPSEEK_BASE_URL!, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported' as const, textOutput: 'supported' as const,
+      imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
     await app.evaluate(({ dialog }, directory) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] }); }, workspace);
     await page.getByRole('button', { name: '添加项目', exact: true }).click();
     await page.getByRole('button', { name: '在 workspace 中新建会话', exact: true }).click();
     sessionId = await page.evaluate(() => window.agentDesktop.getActiveSessionId());
     await page.getByLabel('剪辑需求').fill('真实创建和读取普通文本、精确修改、更新计划并核验命令副作用');
+    await expect(async () => expect((await readState(databasePath, app)).clientState.drafts?.find(item => item.id === sessionId)?.prompt)
+      .toBe('真实创建和读取普通文本、精确修改、更新计划并核验命令副作用')).toPass({ timeout: 5_000 });
+    // 当前 Windows 无法隔离任意 Shell；只在本次隔离配置中通过真实菜单显式授权完全访问。
+    await page.getByRole('button', { name: '选择操作权限：请求批准', exact: true }).click();
+    await page.getByRole('menuitemradio', { name: /^完全访问权限/ }).click();
+    await expect(page.getByRole('button', { name: '选择操作权限：完全访问权限', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    const approval = page.getByRole('region', { name: '操作审批' });
-    await expect(approval).toContainText(deniedCommand);
-    await approval.getByRole('button', { name: '拒绝', exact: true }).click();
-    // 同轮重复命令不再审批；工作区文本创建和精确编辑直接完成，下一个待批操作是新命令。
-    await expect(approval).toContainText(command); await expect(approval).toContainText(workspace);
-    await approval.getByRole('button', { name: '允许', exact: true }).click();
-    await expect(page.getByText('普通工具链完成，命令实际效果待人工核验', { exact: true })).toBeVisible();
+    await expect(page.getByText('普通工具链完成，命令实际效果待人工核验', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     await page.screenshot({ path: resolve(evidence, '00-final-text-before-snapshot.png') });
     await writeFile(resolve(evidence, '00-final-text-before-snapshot.json'), JSON.stringify(await readState(databasePath, app), null, 2));
@@ -334,13 +355,10 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
     await expect.poll(savedTaskStatus).toBe('blocked');
     expect(await readFile(textPath, 'utf8')).toBe('after-edit\n');
     expect(await readFile(markerPath, 'utf8')).toBe('actual-command-effect');
-    await expect(stat(deniedPath)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(blockedPath)).rejects.toMatchObject({ code: 'ENOENT' });
     const beforeVerification = await readState(databasePath, app); await writeFile(resolve(evidence, '01-before-manual-verification.json'), JSON.stringify(beforeVerification, null, 2));
     const events = (await session()).events;
-    expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-denied-1')).toMatchObject({ result: { status: 'error', failureKind: 'denied' } });
-    expect(events.find(event => event.type === 'tool.called' && event.toolCallId === 'core-denied-2')).toMatchObject({ boundary: 'not-executed' });
-    expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-denied-2')).toMatchObject({ result: { failureKind: 'permanent', message: '用户已拒绝本轮相同调用，不重复请求审批。' } });
+    expect(requests.find(input => input.tools !== undefined)?.tools?.some(tool => tool.function.name === 'run_command')).toBe(true);
     const commandIndex = events.findIndex(event => event.type === 'tool.called' && event.toolCallId === 'core-command');
     expect(events.find(event => event.type === 'tool.effect.prepared' && event.sourceEventIndex === commandIndex)).toMatchObject({ data: { kind: 'command', command, workingDirectory: workspace } });
     expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-command')).toMatchObject({ result: { status: 'error', failureKind: 'unknown-outcome', output: { exitCode: 7, termination: 'exited' } } });
@@ -350,7 +368,7 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
     expect(conversation.messages.at(-1)).toMatchObject({ taskState: { status: 'blocked', unknownEffects: [{ sourceEventIndex: commandIndex, label: 'run_command' }],
       plan: { revision: 3, steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'blocked' }] } } });
     approvals = await page.evaluate(() => (window as unknown as { coreApprovals: ApprovalRequest[] }).coreApprovals);
-    expect(approvals.map(request => request.kind)).toEqual(['command', 'command']);
+    expect(approvals).toEqual([]);
     await expect(page.getByRole('button', { name: '确认已完成', exact: true })).toBeDisabled();
     await page.screenshot({ path: resolve(evidence, '01-before-manual-verification.png') });
     const description = '已读取 command-marker.txt，字节为 actual-command-effect；进程退出码为 7，确认该命令实际写入已完成。';
@@ -360,17 +378,17 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
     const verification = (await session()).events.find(event => event.type === 'effect.outcome.verified' && event.sourceEventIndex === commandIndex);
     expect(verification).toMatchObject({ scope: 'entire-call', outcome: 'completed', evidence: { source: 'user', description } });
     await page.getByRole('button', { name: '继续未完成任务', exact: true }).click();
-    await expect(page.getByText('人工核验后的剩余任务完成', { exact: true })).toBeVisible();
+    await expect(page.getByText('人工核验后的剩余任务完成', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     await expect.poll(savedTaskStatus).toBe('completed');
     expect(await readFile(blockedPath, 'utf8')).toBe('written-after-manual-verification');
-    expect((await session()).events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(3);
+    expect((await session()).events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(1);
     const finished = await readState(databasePath, app); await writeFile(resolve(evidence, '02-after-manual-continue.json'), JSON.stringify(finished, null, 2));
     expect(finished.clientState.conversations.find(item => item.id === sessionId)!.messages.at(-1)).toMatchObject({ taskState: { status: 'completed', plan: { revision: 5,
       steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'completed' }, { status: 'completed' }] } } });
     await page.screenshot({ path: resolve(evidence, '02-after-manual-continue.png') });
     approvals = await page.evaluate(() => (window as unknown as { coreApprovals: ApprovalRequest[] }).coreApprovals);
-    expect(approvals.map(request => request.kind)).toEqual(['command', 'command']);
+    expect(approvals).toEqual([]);
     await app.close(); app = undefined;
     const requestCount = requests.length;
     app = await launch(); page = await app.firstWindow();
@@ -381,11 +399,15 @@ test('runs workspace file changes, command approvals, plans and outcome verifica
     await page.screenshot({ path: resolve(evidence, '03-restart-with-plan.png') });
     completed = true;
   } finally {
-    const manifest = resolve(evidence, 'evidence.json');
-    await writeFile(manifest, JSON.stringify({ completed, installedExecutable: packagedExecutable ?? null, profile, workspace, databasePath, command, approvals, requests }, null, 2));
-    await info.attach('真实普通文件、计划与人工核验证据', { path: manifest, contentType: 'application/json' });
     if (app !== undefined) await app.close().catch(() => undefined);
     server.closeAllConnections(); await new Promise<void>(done => server.close(() => done()));
-    if (completed) await copyFile(databasePath, resolve(evidence, '03-restart.sqlite'));
+    if (await stat(databasePath).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return false; throw error; })) {
+      await copyFile(databasePath, resolve(evidence, completed ? '03-restart.sqlite' : 'failed-state.sqlite'));
+    }
+    await cleanAcceptanceDirectories(evidence, [profile, workspace]);
+    const manifest = resolve(evidence, 'evidence.json');
+    await writeFile(manifest, JSON.stringify({ completed, installedExecutable: packagedExecutable ?? null, profile, workspace, databasePath,
+      cleanedDirectories: [profile, workspace], command, approvals, requests }, null, 2));
+    await info.attach('真实普通文件、计划与人工核验证据', { path: manifest, contentType: 'application/json' });
   }
 });

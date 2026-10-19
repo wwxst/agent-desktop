@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentRuntimeEvent, AgentTaskStartRequest, RuntimeModelProviderUpdate } from '@agent-desktop/client';
 import { createWebClientApi } from '../src/webClientApi.js';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { loadWebRuntimeSettings } from '../src/runtime-settings-storage.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
 const visualProvider = (id = 'custom-web'): RuntimeModelProviderUpdate => ({
   id, displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret',
-  models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }],
+  models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported', chatCompletions: 'supported', textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }],
 });
 const taskRequest = (prompt: string): AgentTaskStartRequest => ({ sessionId: 'web-session-1', prompt,
   userMessageId: 1, assistantMessageId: 2, clientState: { activeSessionId: 'web-session-1', conversations: [], drafts: [] } });
@@ -76,7 +78,7 @@ describe('Web Dev API', () => {
   it('keeps runtime settings in memory and returns only secret status', async () => {
     const api = createWebClientApi();
     const saved = await api.saveRuntimeSettings({
-      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] },
+      modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported', chatCompletions: 'supported', textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] },
     });
 
     expect(saved.modelProviders.find(provider => provider.id === 'custom-web')).toMatchObject({
@@ -91,7 +93,7 @@ describe('Web Dev API', () => {
     const setItem = vi.fn((key: string, value: string) => { documents.set(key, value); if (key === 'agent-desktop:web-runtime-settings') persisted = value; });
     vi.stubGlobal('localStorage', { getItem: (key: string) => documents.get(key) ?? null, setItem });
     const api = createWebClientApi();
-    await api.saveRuntimeSettings({ modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unknown', imageUnderstanding: 'unknown' } }] },
+    await api.saveRuntimeSettings({ modelProvider: { id: 'custom-web', displayName: 'Web', baseUrl: 'https://example.com/v1', protocol: 'chat-completions', apiKey: 'web-only-secret', models: [{ id: 'web-model', displayName: 'Web Model', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported', chatCompletions: 'supported', textInput: 'supported', textOutput: 'supported', imageInput: 'unknown', imageUnderstanding: 'unknown' } }] },
       conversationModel: { providerId: 'custom-web', modelId: 'web-model' } });
     expect(persisted).not.toContain('web-only-secret');
     await api.saveClientState({ activeSessionId: 'web-session-1', conversations: [], drafts: [{ id: 'web-session-1', title: '新聊天', titleManuallyRenamed: false, messages: [], prompt: '保留权限草稿', attachments: [] }] });
@@ -110,6 +112,56 @@ describe('Web Dev API', () => {
     await restored.saveRuntimeSettings({ theme: 'dark' });
     expect(persisted).not.toContain('builtin');
     expect((await createWebClientApi().loadRuntimeSettings()).modelProviders).toEqual(before.modelProviders);
+  });
+  it('preserves confirmed model reasoning and capability metadata in browser storage', async () => {
+    let persisted: string | null = null;
+    vi.stubGlobal('localStorage', { getItem: () => persisted, setItem: (_key: string, value: string) => { persisted = value; } });
+    const api = createWebClientApi();
+    const provider = visualProvider();
+    const model = provider.models[0]!;
+    await api.saveRuntimeSettings({ modelProvider: { ...provider, models: [{ ...model,
+      capabilities: { ...model.capabilities, reasoning: 'supported' }, reasoningEfforts: ['low', 'high'], reasoningEffort: 'high' }] } });
+    expect(loadWebRuntimeSettings()?.modelProviders.find(item => item.id === provider.id)?.models[0]).toMatchObject({
+      capabilities: { reasoning: 'supported', responses: 'supported', chatCompletions: 'supported' },
+      reasoningEfforts: ['low', 'high'], reasoningEffort: 'high',
+    });
+  });
+  it.each([
+    { capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: undefined } },
+    { capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, streaming: 'sometimes' } },
+    { id: '' },
+    { displayName: '  ' },
+    { reasoningEfforts: ['low', 'low'] },
+    { reasoningEfforts: [''] },
+    { reasoningEfforts: 'high' },
+    { reasoningEfforts: ['high'], reasoningEffort: 'high' },
+    { capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, reasoning: 'supported' }, reasoningEfforts: ['low'], reasoningEffort: 'high' },
+  ])('rejects invalid persisted model capabilities or reasoning without restoring defaults: %j', async invalid => {
+    const settings = await createWebClientApi().loadRuntimeSettings();
+    const provider = settings.modelProviders[0]!;
+    const model = provider.models[0]!;
+    const persisted = JSON.stringify({ ...settings, modelProviders: [{ ...provider, models: [{ ...model, ...invalid }] }] });
+    vi.stubGlobal('localStorage', { getItem: () => persisted });
+    expect(() => loadWebRuntimeSettings()).toThrow(/网页模型/);
+  });
+  it.each([
+    { id: '' },
+    { displayName: '  ' },
+  ])('rejects invalid persisted provider identity: %j', async invalid => {
+    const settings = await createWebClientApi().loadRuntimeSettings();
+    const provider = settings.modelProviders[0]!;
+    const persisted = JSON.stringify({ ...settings, modelProviders: [{ ...provider, ...invalid }] });
+    vi.stubGlobal('localStorage', { getItem: () => persisted });
+    expect(() => loadWebRuntimeSettings()).toThrow('网页供应商配置无效');
+  });
+  it.each([
+    { providerId: '' },
+    { modelId: '  ' },
+  ])('rejects invalid persisted model reference: %j', async invalid => {
+    const settings = await createWebClientApi().loadRuntimeSettings();
+    const persisted = JSON.stringify({ ...settings, conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro', ...invalid } });
+    vi.stubGlobal('localStorage', { getItem: () => persisted });
+    expect(() => loadWebRuntimeSettings()).toThrow('网页模型选择无效');
   });
   it('deletes supplied providers through the last model without restoring them in a new Web host', async () => {
     let persisted: string | null = null;

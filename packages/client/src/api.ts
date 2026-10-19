@@ -308,6 +308,12 @@ export interface RuntimeModelCapabilities {
   readonly textOutput: ModelCapabilityStatus;
   readonly imageInput: ModelCapabilityStatus;
   readonly imageUnderstanding: ModelCapabilityStatus;
+  readonly tools: ModelCapabilityStatus;
+  readonly streaming: ModelCapabilityStatus;
+  readonly reasoning: ModelCapabilityStatus;
+  readonly parallelTools: ModelCapabilityStatus;
+  readonly responses: ModelCapabilityStatus;
+  readonly chatCompletions: ModelCapabilityStatus;
 }
 export interface RuntimeModelDefinition {
   readonly id: string;
@@ -315,6 +321,9 @@ export interface RuntimeModelDefinition {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly capabilities: RuntimeModelCapabilities;
+  /** 用户确认的供应商允许值与当前选择；未选择时不发送推理参数。 */
+  readonly reasoningEfforts?: readonly string[];
+  readonly reasoningEffort?: string;
 }
 export interface RuntimeModelProvider {
   readonly id: string;

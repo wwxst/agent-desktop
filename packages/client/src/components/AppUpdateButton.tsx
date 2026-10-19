@@ -20,16 +20,17 @@ export function AppUpdateButton({ api, isProcessing }: { readonly api: AppUpdate
   }, [api]);
 
   const feedback = error === '' ? null : <ExtensionToast notice={{ variant: 'error', message: error }} onClose={() => setError('')} />;
-  if (state.status === 'idle' || state.status === 'checking') return feedback;
+  if (state.status === 'checking') return feedback;
   if (state.status === 'unavailable') return <p className="app-update-error unavailable" role="status">暂未提供在线更新</p>;
   const waiting = state.status === 'downloading' || state.status === 'installing';
   const label = state.status === 'error' ? '重试更新'
+    : state.status === 'idle' ? '检查更新'
     : state.status === 'downloading' ? `正在下载更新 ${Math.round(state.percent)}%`
     : state.status === 'installing' ? '正在安装更新' : '安装更新';
   const message = error || (state.status === 'error' ? state.message : '');
   const run = async () => {
     setBusy(true); setError('');
-    try { if (state.status === 'error') await api.retry(); else await api.install(); }
+    try { if (state.status === 'error' || state.status === 'idle') await api.retry(); else await api.install(); }
     catch (failure) { if (!(failure instanceof Error)) throw failure; setError(failure.message); }
     finally { setBusy(false); }
   };

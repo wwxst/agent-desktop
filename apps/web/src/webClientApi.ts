@@ -131,12 +131,12 @@ export function createWebClientApi(): AgentClientApi {
         nextSettings.fallbackVisionModel = null;
         nextSettings.fallbackVisionEnabled = false;
       }
-      if (nextSettings.conversationModel !== null && getConversationCapability(resolveCatalogModel(providers, nextSettings.conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
+      if (nextSettings.conversationModel !== null && (() => { const selected = resolveCatalogModel(providers, nextSettings.conversationModel!); return getConversationCapability(selected.model, selected.provider.protocol) !== 'supported'; })()) throw new Error('对话模型必须确认支持文本输入和输出及所选 API 协议。');
       if (nextSettings.fallbackVisionModel !== null) resolveCatalogModel(providers, nextSettings.fallbackVisionModel);
       if (nextSettings.fallbackVisionEnabled) {
         if (nextSettings.fallbackVisionModel === null) throw new Error('请先配置备用视觉模型。');
         const fallback = resolveCatalogModel(providers, nextSettings.fallbackVisionModel);
-        if (!fallback.provider.apiKey.configured || getVisionCapability(fallback.model) !== 'supported') throw new Error('备用视觉模型配置无效。');
+        if (!fallback.provider.apiKey.configured || getVisionCapability(fallback.model, fallback.provider.protocol) !== 'supported') throw new Error('备用视觉模型配置无效。');
       }
       if (update.memoryEnabled !== undefined) nextSettings.memoryEnabled = update.memoryEnabled;
       if (update.memoryFromToolChatsEnabled !== undefined) nextSettings.memoryFromToolChatsEnabled = update.memoryFromToolChatsEnabled;

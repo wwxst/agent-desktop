@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ClientStateSnapshot } from '@agent-desktop/client';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model, ModelRequest, ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import { InMemorySession, projectRecoveryFacts, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
 import {
   loadDesktopState,
   parseDesktopState,
@@ -350,6 +350,33 @@ describe('desktop session persistence', () => {
           detail: { kind: 'command', ...commandOutput } },
       ]),
     });
+  });
+
+  it('restores host evidence that an opaque operation never entered execution', async () => {
+    const filePath = await temporaryStatePath(); const state = persistedState();
+    const event: SessionEvent = { type: 'tool.result', turnId: 'turn-731' as TurnId, stepId: 'step-731' as StepId,
+      toolCallId: 'approval-timeout' as never, executionBoundary: 'not-executed',
+      result: { status: 'error', failureKind: 'transient', message: '审批超时，未执行。' } };
+    await saveDesktopState(filePath, { ...state, sessions: state.sessions.map((session, index) => index === 0
+      ? { ...session, events: [...session.events, event] } : session) });
+    expect((await loadDesktopState(filePath))?.sessions[0]?.events.at(-1)).toEqual(event);
+  });
+
+  it('restores Router proof that an opaque approval was cancelled before execution without a tool result', async () => {
+    const filePath = await temporaryStatePath(); const state = persistedState();
+    const turnId = 'turn-approval-cancelled' as TurnId;
+    const events: readonly SessionEvent[] = [
+      { type: 'turn.started', turnId },
+      { type: 'tool.called', turnId, stepId: 'step-approval' as StepId, toolCallId: 'approval' as ToolCallId,
+        name: 'opaque_write', input: {}, boundary: 'opaque' },
+      { type: 'effect.outcome.verified', turnId, sourceEventIndex: 1, scope: 'entire-call', outcome: 'not-applied',
+        evidence: { source: 'host', reference: 'tool-router:before-execution', description: '工具在准备或审批阶段取消，未进入执行闭包。' } },
+      { type: 'turn.cancelled', turnId, reason: 'user' },
+    ];
+    await saveDesktopState(filePath, { ...state, sessions: [{ ...state.sessions[0]!, events }, state.sessions[1]!] });
+    const restored = (await loadDesktopState(filePath))!.sessions[0]!.events;
+    expect(restored).toEqual(events);
+    expect(projectRecoveryFacts(restored).unknownEffects).toEqual([]);
   });
 
   it('reads a failed or cancelled reply without artifacts as having none', async () => {
@@ -708,32 +735,6 @@ describe('desktop session persistence', () => {
       .toEqual([{ path: 'D:\\audio\\背景音乐.mp3', name: '背景音乐.mp3', role: 'audio' }]);
   });
 
-  it('converts the legacy video-only attachment list to the video role', async () => {
-    const filePath = await temporaryStatePath();
-    const state = persistedState();
-    // Commit 37 之前的真实格式：会话只存一组视频路径，没有角色字段；换算后必须是 video。
-    await writeStoredJson(filePath, JSON.stringify({
-      ...state,
-      sessions: [
-        { id: 'session-a', selectedVideoPaths: ['D:\\videos\\input-a.mp4'], events: sessionEvents('731') },
-        { id: 'session-b', selectedVideoPaths: [], events: sessionEvents('952') },
-      ],
-      clientState: {
-        ...state.clientState,
-        conversations: [{
-          ...state.clientState.conversations[0]!,
-          selectedVideos: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4' }],
-        }, state.clientState.conversations[1]!],
-      },
-    }));
-
-    const restored = await loadDesktopState(filePath);
-
-    expect(restored?.sessions[0]?.attachments).toEqual([{ path: 'D:\\videos\\input-a.mp4', role: 'video' }]);
-    expect(restored?.clientState.conversations[0]?.attachments)
-      .toEqual([{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }]);
-  });
-
   it('keeps the artifacts reported by a successful result across a restart', async () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
@@ -874,86 +875,6 @@ describe('desktop session persistence', () => {
     }));
 
     await expect(loadDesktopState(filePath)).rejects.toThrowError(/artifacts/);
-  });
-
-  it('restores artifact cards from the legacy per-file name table', async () => {
-    const filePath = await temporaryStatePath();
-    // Commit 35 之前的真实格式：产物路径存在会话的 outputFilePaths 表里，消息只记 outputFileName。
-    const [userMessage, replyMessage] = clientState().conversations[0]!.messages;
-    await writeStoredJson(filePath, JSON.stringify({
-      activeSessionId: 'session-a',
-      outputSequence: 3,
-      sessions: [{
-        id: 'session-a',
-        attachments: [{ path: 'D:\\videos\\input-a.mp4', role: 'video' }],
-        outputFilePaths: { 'input-a-edited.mp4': 'D:/videos/input-a-edited.mp4' },
-        events: sessionEvents('731'),
-      }],
-      clientState: {
-        activeSessionId: 'session-a',
-        conversations: [{
-          id: 'session-a',
-          title: '记住 731',
-          titleManuallyRenamed: true,
-          prompt: '',
-          attachments: [{ path: 'D:\\videos\\input-a.mp4', name: 'input-a.mp4', role: 'video' }],
-          messages: [
-            userMessage,
-            {
-              ...replyMessage,
-              result: { responseText: '已经记住。', traceId: 'trace-a', outputFileName: 'input-a-edited.mp4' },
-            },
-          ],
-        }],
-      },
-    }));
-
-    const restored = await loadDesktopState(filePath);
-    expect(restored?.clientState.conversations[0]?.messages[1]).toMatchObject({
-      status: 'completed',
-      result: {
-        responseText: '已经记住。',
-        traceId: 'trace-a',
-        outputFiles: [{ path: 'D:/videos/input-a-edited.mp4', fileName: 'input-a-edited.mp4' }],
-      },
-    });
-  });
-
-  it('keeps a legacy reply without a matching path as a reply with no artifact', async () => {
-    const filePath = await temporaryStatePath();
-    const [userMessage, replyMessage] = clientState().conversations[0]!.messages;
-    await writeStoredJson(filePath, JSON.stringify({
-      activeSessionId: 'session-a',
-      outputSequence: 3,
-      sessions: [{
-        id: 'session-a',
-        attachments: [],
-        // 产物表里没有这个名字：宁可少一张卡，也不编造路径。
-        outputFilePaths: {},
-        events: sessionEvents('731'),
-      }],
-      clientState: {
-        activeSessionId: 'session-a',
-        conversations: [{
-          id: 'session-a',
-          title: '记住 731',
-          titleManuallyRenamed: false,
-          prompt: '',
-          attachments: [],
-          messages: [
-            userMessage,
-            {
-              ...replyMessage,
-              result: { responseText: '已经记住。', traceId: 'trace-a', outputFileName: 'missing.mp4' },
-            },
-          ],
-        }],
-      },
-    }));
-
-    const restored = await loadDesktopState(filePath);
-    const reply = restored?.clientState.conversations[0]?.messages[1];
-    expect(reply?.role === 'assistant' && reply.status === 'completed' && reply.result.outputFiles).toBeUndefined();
   });
 
   it('serializes only explicit session state and never reads API keys from the environment', async () => {

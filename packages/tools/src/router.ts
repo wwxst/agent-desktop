@@ -1,5 +1,6 @@
 import type { ModelToolDefinition, ToolCall, ToolResult } from '@agent-desktop/model';
-import { executePreparedAction, ToolExecutionError, type Tool, type ToolContract, type ToolExecutionContext, type ToolRegistry } from './contract.js';
+import { SessionPersistenceError } from '@agent-desktop/session';
+import { executePreparedAction, ToolExecutionError, ToolNotExecutedCancellationError, ToolNotExecutedError, type Tool, type ToolContract, type ToolExecutionContext, type ToolRegistry } from './contract.js';
 
 /** 未声明的能力不伪装成本地工具；并行与免审批都必须有显式合约。 */
 export function resolveToolContract(tool: Tool): ToolContract {
@@ -60,10 +61,11 @@ export class ToolRouter {
     const controller = new AbortController();
     const signal = context.signal === undefined ? controller.signal : AbortSignal.any([context.signal, controller.signal]);
     let timedOut = false;
+    let executionStarted = false;
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort(new ToolExecutionError(`工具 ${call.name} 执行超时。`,
-        tool.executionBoundary === 'read-only' ? 'transient' : 'unknown-outcome'));
+        !executionStarted || tool.executionBoundary === 'read-only' ? 'transient' : 'unknown-outcome'));
     }, contract.timeoutMs);
     try {
       signal.throwIfAborted();
@@ -85,14 +87,44 @@ export class ToolRouter {
           },
         }),
       };
-      return tool.prepare === undefined
-        ? await tool.execute(call.input, executionContext)
-        : await executePreparedAction(await tool.prepare(call.input, executionContext), executionContext);
-    } catch (error) {
-      if (timedOut && context.signal?.aborted !== true && error instanceof Error && error.name === 'AbortError') {
-        throw controller.signal.reason;
+      let result: ToolResult;
+      if (tool.prepare === undefined) {
+        executionStarted = true;
+        result = await tool.execute(call.input, executionContext);
+      } else {
+        const prepared = await tool.prepare(call.input, executionContext);
+        result = await executePreparedAction('status' in prepared ? prepared : {
+          requestApproval: () => prepared.requestApproval(),
+          execute: () => {
+            executionStarted = true;
+            return prepared.execute();
+          },
+        }, executionContext);
       }
-      throw error;
+      if (!executionStarted && result.status === 'error') throw new ToolNotExecutedError(result);
+      return result;
+    } catch (error) {
+      // 保存失败必须原样终止；不能把无法保存的检查点伪装成普通未执行结果。
+      if (error instanceof SessionPersistenceError || !(error instanceof Error)) throw error;
+      const failure = timedOut && context.signal?.aborted !== true && error.name === 'AbortError'
+        ? controller.signal.reason as ToolExecutionError : error;
+      // 轮次取消仍由 Loop 直接收尾；不能把取消等待中的审批保存成普通工具结果。
+      if (context.signal?.aborted === true) {
+        // 取消仍向上抛 AbortError；Loop 另存未执行事实，不制造一个普通工具结果。
+        if (!executionStarted && failure.name === 'AbortError') {
+          throw failure instanceof ToolNotExecutedCancellationError ? failure : new ToolNotExecutedCancellationError(failure);
+        }
+        // 已开始的父工具不能继承子工具的未执行证明。
+        throw failure instanceof ToolNotExecutedCancellationError ? failure.cancellation : failure;
+      }
+      if (!executionStarted) {
+        if (failure instanceof ToolNotExecutedError) throw failure;
+        throw new ToolNotExecutedError({ status: 'error', message: failure.message,
+          failureKind: failure instanceof ToolExecutionError ? failure.failureKind : 'permanent' }, { cause: failure });
+      }
+      // 子工具未执行不能证明已进入执行闭包的父工具没有产生效果。
+      if (failure instanceof ToolNotExecutedError) throw new ToolExecutionError(failure.message, failure.failureKind, { cause: failure });
+      throw failure;
     } finally {
       clearTimeout(timer);
     }

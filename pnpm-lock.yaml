@@ -172,6 +172,10 @@ importers:
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../../packages/tools
+    devDependencies:
+      esbuild:
+        specifier: 0.27.4
+        version: 0.27.4
 
   examples/echo-agent:
     dependencies:
@@ -193,6 +197,10 @@ importers:
       '@agent-desktop/tools':
         specifier: workspace:*
         version: link:../../packages/tools
+    devDependencies:
+      esbuild:
+        specifier: 0.27.4
+        version: 0.27.4
 
   examples/ffmpeg-agent:
     dependencies:

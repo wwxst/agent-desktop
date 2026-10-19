@@ -47,7 +47,11 @@ export interface AssistantMessageEvent { readonly type: 'assistant.message'; rea
 /** 在执行前记录工具调用，确保后续成功或失败结果都有可追踪的起点。 */
 export interface ToolCalledEvent { readonly type: 'tool.called'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly name: string; readonly input: unknown; readonly boundary?: ExecutionBoundary; }
 /** 保存工具执行事实，并通过 ToolCallId 与调用事件建立关联。 */
-export interface ToolResultEvent { readonly type: 'tool.result'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly result: ToolResult; }
+export interface ToolResultEvent {
+  readonly type: 'tool.result'; readonly turnId: TurnId; readonly stepId: StepId; readonly toolCallId: ToolCallId; readonly result: ToolResult;
+  /** 仅由宿主在准备/审批失败时填写，证明未进入执行闭包；模型结果不能提供该字段。 */
+  readonly executionBoundary?: 'not-executed';
+}
 /** 记录当前 Step 的所有模型输出和工具结果已经处理完成。 */
 export interface StepCompletedEvent { readonly type: 'step.completed'; readonly turnId: TurnId; readonly stepId: StepId; }
 /** 记录 Turn 已经自然结束。 */

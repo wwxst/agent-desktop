@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model } from '@agent-desktop/model';
 import { InMemorySession, SessionPersistenceError, TurnCancellationError, projectRecoveryFacts } from '@agent-desktop/session';
-import { InMemoryToolRegistry, ToolExecutionError, type Tool } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolExecutionError, ToolRouter, type Tool } from '@agent-desktop/tools';
 import { prepareExtensions, selectSkills } from '../src/main/extension-runtime.js';
 import { adaptWhisperTool } from '../src/main/whisper-tool.js';
 import { adaptVisionTool } from '../src/main/vision-tool.js';
@@ -102,6 +102,24 @@ describe('actual extension runtime tool chain', () => {
       expect(approve).not.toHaveBeenCalled();
       expect(authorizeNetwork).not.toHaveBeenCalled();
     } finally { await runtime.close(); }
+  });
+
+  it.each(['ffmpeg', 'whisper', 'vision'] as const)('rebuilds bundled %s recovery definitions without approval or a connection', async name => {
+    const files = await plugin();
+    const builtin = { ...files, item: { ...files.item, id: `plugin:${name}`, name, source: 'builtin' as const },
+      servers: files.servers.map(server => ({ ...server, name })) };
+    const approve = vi.fn(async () => true); const authorizeNetwork = vi.fn(async () => true);
+    const connect = vi.spyOn(Client.prototype, 'connect');
+    const options = { authorizeNetwork, whisperEnvironment: { WHISPER_CLI_PATH: process.execPath, WHISPER_MODEL_PATH: join(files.directory, 'fixture.bin') },
+      visionConfiguration: { visionApiKey: 'fixture', visionBaseUrl: 'https://vision.example/v1' } };
+    const normal = await prepareExtensions({ plugins: [builtin], skills: [] }, approve, undefined, undefined, options);
+    const recovery = await prepareExtensions({ plugins: [builtin], skills: [] }, approve, undefined, undefined, { ...options, skipRemoteServers: true });
+    try {
+      expect(recovery.tools.length).toBeGreaterThan(0);
+      expect(recovery.tools.map(tool => ({ name: tool.name, inputSchema: tool.inputSchema })))
+        .toEqual(normal.tools.map(tool => ({ name: tool.name, inputSchema: tool.inputSchema })));
+      expect(approve).not.toHaveBeenCalled(); expect(authorizeNetwork).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
+    } finally { await Promise.all([normal.close(), recovery.close()]); }
   });
 
   it('blocks legacy bundled servers and reports dependencies whose startup was denied', async () => {
@@ -415,6 +433,53 @@ describe('actual extension runtime tool chain', () => {
       await expect(runtime.tools[0]!.execute(input, { toolCallId: 'lazy-start' as never, reportProgress: () => {} })).rejects.toBe(error);
       expect(approve).toHaveBeenCalledOnce();
       expect(connect).not.toHaveBeenCalled();
+    } finally { await runtime.close(); }
+  });
+
+  it('revokes lazy startup approval when only the routed tool timeout aborts', async () => {
+    const files = await plugin();
+    const builtin = { ...files, item: { ...files.item, id: 'plugin:whisper', name: 'whisper', source: 'builtin' as const },
+      servers: files.servers.map(server => ({ ...server, name: 'whisper' })) };
+    const path = join(files.directory, 'fixture.wav'); await writeFile(path, 'authorized fixture');
+    const publish = vi.fn(); const gate = new ToolApprovalGate(publish); const turn = new AbortController();
+    const connect = vi.spyOn(Client.prototype, 'connect'); const callTool = vi.spyOn(Client.prototype, 'callTool');
+    const runtime = await prepareExtensions({ plugins: [builtin], skills: [] },
+      (request, signal) => request.kind === 'plugin-start' ? gate.request(request, signal) : Promise.resolve(true), turn.signal, undefined,
+      { whisperEnvironment: { WHISPER_CLI_PATH: process.execPath, WHISPER_MODEL_PATH: path },
+        whisperAccess: { workspace: { confirmedDirectory: () => files.directory }, attachments: () => [], events: () => [] } });
+    const registry = new InMemoryToolRegistry(); const tool = runtime.tools[0]!;
+    registry.register({ ...tool, contract: { ...tool.contract, timeoutMs: 100 } });
+    try {
+      await expect(new ToolRouter(registry).execute({ id: 'lazy-timeout' as never, name: tool.name, input: { audioPath: path } },
+        { signal: turn.signal, toolCallId: 'lazy-timeout' as never, reportProgress: () => {} })).rejects.toMatchObject({ failureKind: 'unknown-outcome' });
+      expect(publish).toHaveBeenCalledOnce();
+      const requestId = (publish.mock.calls[0]![0] as { requestId: string }).requestId;
+      expect(() => gate.decide(requestId, true)).toThrow('失效');
+      expect(turn.signal.aborted).toBe(false);
+      expect(connect).not.toHaveBeenCalled(); expect(callTool).not.toHaveBeenCalled();
+    } finally { await runtime.close(); }
+  });
+
+  it('ends a lazy service process when its individual tool is cancelled during handshake', async () => {
+    const files = await plugin(); const marker = join(files.directory, 'handshake-pid');
+    const script = join(files.directory, 'silent.mjs');
+    await writeFile(script, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], String(process.pid)); process.stdin.resume();");
+    const builtin = { ...files, item: { ...files.item, id: 'plugin:whisper', name: 'whisper', source: 'builtin' as const },
+      servers: files.servers.map(server => ({ ...server, name: 'whisper', args: [script, marker] })) };
+    const path = join(files.directory, 'fixture.wav'); await writeFile(path, 'authorized fixture');
+    const runtime = await prepareExtensions({ plugins: [builtin], skills: [] }, async () => true, undefined, undefined,
+      { whisperEnvironment: { WHISPER_CLI_PATH: process.execPath, WHISPER_MODEL_PATH: path },
+        whisperAccess: { workspace: { confirmedDirectory: () => files.directory }, attachments: () => [], events: () => [] } });
+    const controller = new AbortController(); const checkpoint = vi.fn();
+    try {
+      const pending = runtime.tools[0]!.execute({ audioPath: path }, { signal: controller.signal,
+        toolCallId: 'handshake-cancel' as never, reportProgress: () => {}, checkpoint });
+      const observed = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(async () => expect(Number(await readFile(marker, 'utf8'))).toBeGreaterThan(0));
+      const pid = Number(await readFile(marker, 'utf8'));
+      controller.abort(); await observed;
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(checkpoint).not.toHaveBeenCalled();
     } finally { await runtime.close(); }
   });
 

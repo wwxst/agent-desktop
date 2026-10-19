@@ -1,6 +1,6 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
 import { DEFAULT_MODEL_PROVIDERS, usesDefaultModelEndpoint } from '@agent-desktop/client/model-defaults';
-import { findFirstConversationModel, getConversationCapability, getVisionCapability, resolveVisionModel, UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { findFirstConversationModel, getConversationCapability, getVisionCapability, resolveVisionModel, MODEL_CAPABILITY_LABELS, UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 import { encryptSecret, type SafeStoragePort } from './safe-storage.js';
 import type { ModelApiProtocol, RuntimeModelDefinition, RuntimeModelProvider,
   RuntimeModelProviderUpdate, RuntimeModelReference, RuntimeModelCapabilities, RuntimeSettings, RuntimeSettingsUpdate } from '@agent-desktop/client';
@@ -19,7 +19,8 @@ interface PersistedRuntimeSecrets { readonly providerApiKeys?: Readonly<Record<s
 export interface RuntimeConfiguration {
   readonly conversationModel: RuntimeModelReference;
   /** 当前对话模型的显式能力快照，供 Tool Exposure 在本轮固定使用。 */
-  readonly modelCapabilities?: RuntimeModelCapabilities;
+  readonly modelCapabilities: RuntimeModelCapabilities;
+  readonly modelReasoningEffort?: string;
   readonly modelApiKey?: string;
   readonly modelBaseUrl: string;
   readonly modelId: string;
@@ -69,7 +70,7 @@ export function parseModelDefinitions(value: unknown): readonly RuntimeModelDefi
     const displayName = text(model.displayName, `模型 ${index + 1}: 显示名称`);
     if (!record(model.capabilities)) throw new Error(`模型 ${id} 的能力配置无效。`);
     const capabilities = { ...UNKNOWN_MODEL_CAPABILITIES };
-    for (const field of ['textInput', 'textOutput', 'imageInput', 'imageUnderstanding'] as const) {
+    for (const [field] of MODEL_CAPABILITY_LABELS) {
       const status = model.capabilities[field];
       if (status !== 'supported' && status !== 'unsupported' && status !== 'unknown') throw new Error(`模型 ${id} 的 ${field} 能力无效。`);
       capabilities[field] = status;
@@ -82,7 +83,16 @@ export function parseModelDefinitions(value: unknown): readonly RuntimeModelDefi
       limits[field] = amount;
     }
     if (limits.contextWindow !== undefined && limits.maxOutputTokens !== undefined && limits.maxOutputTokens > limits.contextWindow) throw new Error(`模型 ${id} 的输出上限不能超过上下文窗口。`);
-    return { id, displayName, capabilities, ...limits };
+    let reasoningEfforts: string[] | undefined;
+    if (model.reasoningEfforts !== undefined) {
+      if (!Array.isArray(model.reasoningEfforts) || model.reasoningEfforts.some(item => typeof item !== 'string' || !item.trim())) throw new Error(`模型 ${id} 的推理强度列表无效。`);
+      reasoningEfforts = model.reasoningEfforts.map(item => (item as string).trim());
+      if (new Set(reasoningEfforts).size !== reasoningEfforts.length) throw new Error(`模型 ${id} 的推理强度不能重复。`);
+    }
+    const reasoningEffort = model.reasoningEffort === undefined ? undefined : text(model.reasoningEffort, '推理强度');
+    if (reasoningEffort !== undefined && (capabilities.reasoning !== 'supported' || !reasoningEfforts?.includes(reasoningEffort))) throw new Error(`模型 ${id} 不支持所选推理强度。`);
+    return { id, displayName, capabilities, ...limits,
+      ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }), ...(reasoningEffort === undefined ? {} : { reasoningEffort }) };
   });
 }
 function reference(value: unknown): RuntimeModelReference {
@@ -177,8 +187,8 @@ function decrypt(value: string | undefined, storage: SafeStoragePort, providerNa
 /** 官方容量和图片能力仅适用于官方端点；环境变量改为中转地址后不继承这些事实。 */
 function inheritedProviderMetadata(provider: ProviderConfig): ProviderConfig {
   return usesDefaultModelEndpoint(provider) ? provider : { ...provider, models: provider.models.map(model => {
-    const { contextWindow: _window, maxOutputTokens: _output, ...definition } = model;
-    return { ...definition, capabilities: { ...model.capabilities, imageInput: 'unknown', imageUnderstanding: 'unknown' } };
+    const { contextWindow: _window, maxOutputTokens: _output, reasoningEfforts: _efforts, reasoningEffort: _effort, ...definition } = model;
+    return { ...definition, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: model.capabilities.textInput, textOutput: model.capabilities.textOutput } };
   }) };
 }
 function providerConfigs(saved: PersistedRuntimeSettings, environment: RuntimeEnvironment): readonly ProviderConfig[] {
@@ -188,8 +198,13 @@ function providerConfigs(saved: PersistedRuntimeSettings, environment: RuntimeEn
     models: provider.id === 'deepseek' && envValue(environment, 'DEEPSEEK_MODEL') ? [provider.models.find(model => model.id === environment.DEEPSEEK_MODEL!.trim())
       ?? { id: environment.DEEPSEEK_MODEL!.trim(), displayName: environment.DEEPSEEK_MODEL!.trim(), capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported' } }] : provider.models }));
 }
-function selections(saved: PersistedRuntimeSettings, providers: readonly ProviderConfig[]) {
-  return { conversationModel: saved.conversationModel === undefined ? findFirstConversationModel(providers) : saved.conversationModel,
+function selections(saved: PersistedRuntimeSettings, providers: readonly ProviderConfig[], environment: RuntimeEnvironment = {}) {
+  // 环境变量明确指定模型时固定到该模型；未知能力应在配置门禁处失败，不能静默跳到另一个供应商。
+  const environmentModel = envValue(environment, 'DEEPSEEK_MODEL');
+  const environmentChoice = saved.modelProviders === undefined && saved.conversationModel === undefined && environmentModel !== undefined
+    && providers.some(provider => provider.id === 'deepseek' && provider.models.some(model => model.id === environmentModel))
+    ? { providerId: 'deepseek', modelId: environmentModel } : undefined;
+  return { conversationModel: saved.conversationModel === undefined ? environmentChoice ?? findFirstConversationModel(providers) : saved.conversationModel,
     fallbackVisionModel: saved.fallbackVisionModel ?? null, fallbackVisionEnabled: saved.fallbackVisionEnabled ?? false };
 }
 function selectedModel(providers: readonly ProviderConfig[], choice: RuntimeModelReference) {
@@ -201,7 +216,7 @@ function selectedModel(providers: readonly ProviderConfig[], choice: RuntimeMode
 export async function loadRuntimeSettings(path: string, environment: RuntimeEnvironment = process.env): Promise<RuntimeSettings> {
   const saved = savedSettings(path); const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
   return { ...(saved.theme === undefined ? {} : { theme: saved.theme }),
-    modelProviders: providers.map(provider => ({ ...provider, apiKey: apiKeyStatus(provider.id, secrets, environment) })), ...selections(saved, providers),
+    modelProviders: providers.map(provider => ({ ...provider, apiKey: apiKeyStatus(provider.id, secrets, environment) })), ...selections(saved, providers, environment),
     memoryEnabled: saved.memoryEnabled ?? true,
     memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
@@ -209,7 +224,7 @@ export async function loadRuntimeSettings(path: string, environment: RuntimeEnvi
 export function snapshotRuntimeSettings(path: string, environment: RuntimeEnvironment = process.env): PersistedRuntimeSettings {
   const saved = savedSettings(path);
   const providers = providerConfigs(saved, environment);
-  return { modelProviders: providers, ...selections(saved, providers),
+  return { modelProviders: providers, ...selections(saved, providers, environment),
     memoryEnabled: saved.memoryEnabled ?? true, memoryFromToolChatsEnabled: saved.memoryFromToolChatsEnabled ?? true };
 }
 
@@ -217,21 +232,27 @@ export async function loadRuntimeConfiguration(path: string, storage: SafeStorag
   snapshot?: unknown): Promise<RuntimeConfiguration> {
   const saved = snapshot === undefined ? savedSettings(path) : parseStoredSettings(snapshot);
   const secrets = savedSecrets(path); const providers = providerConfigs(saved, environment);
-  const choice = selections(saved, providers);
+  const choice = selections(saved, providers, environment);
   if (choice.conversationModel === null) throw new Error('尚未配置对话模型，请在设置 → 模型中添加供应商并选择模型。');
   const conversation = selectedModel(providers, choice.conversationModel);
   const keyFor = (provider: ProviderConfig) => decrypt(secrets.providerApiKeys?.[provider.id], storage, provider.displayName) ?? environmentKey(provider.id, environment);
   const conversationKey = keyFor(conversation.provider);
-  if (getConversationCapability(conversation.model) !== 'supported') throw new Error('当前模型的文本对话能力未确认支持。');
+  if (getConversationCapability(conversation.model, conversation.provider.protocol) !== 'supported') throw new Error('当前模型的文本对话能力或协议能力未确认支持。');
+  const protocolCapability = conversation.provider.protocol === 'responses' ? 'responses' : 'chatCompletions';
+  if (conversation.model.capabilities[protocolCapability] !== 'supported') throw new Error('当前模型的 API 协议能力未确认支持，请在模型设置中确认。');
+  // DeepSeek Chat 的思考工具链还要求逐条保留 reasoning_content；当前 Core 不保存它，不能假装支持。
+  const deepseekChat = conversation.provider.protocol === 'chat-completions' && new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com';
+  if (deepseekChat && conversation.model.reasoningEffort !== undefined) throw new Error('当前 DeepSeek Chat 工具链尚不支持推理上下文，请清除推理强度或使用 Responses 协议。');
   // 本次调用形成不可变快照，后续保存模型选择不会回写已经创建的 Agent。
   const route = resolveVisionModel({ ...choice, modelProviders: providers.map(provider => ({ ...provider, apiKey: apiKeyStatus(provider.id, secrets, environment) })) });
   const vision = route.available ? route : undefined;
   const visionKey = vision === undefined ? undefined : vision.provider.id === conversation.provider.id ? conversationKey : keyFor(vision.provider);
   return { conversationModel: choice.conversationModel, modelCapabilities: conversation.model.capabilities,
+    ...(conversation.model.reasoningEffort === undefined ? {} : { modelReasoningEffort: conversation.model.reasoningEffort }),
     ...(conversationKey === undefined ? {} : { modelApiKey: conversationKey }),
     modelBaseUrl: conversation.provider.baseUrl, modelId: conversation.model.id, modelProtocol: conversation.provider.protocol,
     // 禁用思考是官方 Chat 入口的有效配置，不把专用参数发送给其它兼容服务。
-    ...(conversation.provider.protocol === 'chat-completions' && new URL(conversation.provider.baseUrl).hostname === 'api.deepseek.com'
+    ...(deepseekChat
       ? { modelDisableThinking: true } : {}),
     ...(conversation.model.contextWindow === undefined ? {} : { modelContextWindow: conversation.model.contextWindow }),
     ...(conversation.model.maxOutputTokens === undefined ? {} : { modelMaxOutputTokens: conversation.model.maxOutputTokens }),
@@ -258,7 +279,7 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
     saved = next;
   }
   if (update.modelProvider !== undefined || update.deleteModelProviderId !== undefined || update.conversationModel !== undefined || update.fallbackVisionModel !== undefined || update.fallbackVisionEnabled !== undefined) {
-    let providers = [...providerConfigs(saved, process.env)]; const choices = selections(saved, providers);
+    let providers = [...providerConfigs(saved, process.env)]; const choices = selections(saved, providers, process.env);
     if (update.modelProvider !== undefined) {
       const item = update.modelProvider;
       const provider: ProviderConfig = { id: item.id, displayName: item.displayName, baseUrl: item.baseUrl, protocol: item.protocol, models: item.models };
@@ -291,12 +312,15 @@ export async function saveRuntimeSettings(path: string, update: RuntimeSettingsU
       fallbackVisionModel = null;
       fallbackVisionEnabled = false;
     }
-    if (conversationModel !== null && getConversationCapability(selectedModel(providers, conversationModel).model) !== 'supported') throw new Error('对话模型必须确认支持文本输入和输出。');
+    if (conversationModel !== null) {
+      const selected = selectedModel(providers, conversationModel);
+      if (getConversationCapability(selected.model, selected.provider.protocol) !== 'supported') throw new Error('对话模型必须确认支持文本输入、输出及所选 API 协议。');
+    }
     if (fallbackVisionModel !== null) selectedModel(providers, fallbackVisionModel);
     if (fallbackVisionEnabled) {
       if (fallbackVisionModel === null) throw new Error('请先配置备用视觉模型。');
       const fallback = selectedModel(providers, fallbackVisionModel);
-      if (getVisionCapability(fallback.model) !== 'supported') throw new Error('备用视觉模型必须确认支持图片输入与视觉理解。');
+      if (getVisionCapability(fallback.model, fallback.provider.protocol) !== 'supported') throw new Error('备用视觉模型必须确认支持图片输入、视觉理解与所选 API 协议。');
       if (!apiKeyStatus(fallback.provider.id, secrets, process.env).configured) throw new Error('备用视觉模型未配置 API 密钥。');
     }
     saved = { ...saved, modelProviders: providers, conversationModel, fallbackVisionModel, fallbackVisionEnabled };
@@ -327,7 +351,7 @@ export async function listProviderModels(path: string, query: Pick<RuntimeModelP
     const imageInput = modality('input_modalities', 'image');
     const textOutput = modality('output_modalities', 'text');
     return { id, displayName: typeof item.name === 'string' && item.name.trim() ? item.name : id,
-      capabilities: { textInput: modality('input_modalities', 'text'), textOutput, imageInput,
+      capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: modality('input_modalities', 'text'), textOutput, imageInput,
         imageUnderstanding: imageInput === 'unsupported' ? 'unsupported' : imageInput === 'supported' && textOutput === 'supported' ? 'supported' : 'unknown' } };
   });
 }

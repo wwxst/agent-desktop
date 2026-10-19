@@ -32,7 +32,7 @@ export interface PersistedDesktopSession {
   readonly subagentHistory?: readonly SubagentRecord[];
   readonly id: string;
   readonly attachments: readonly PersistedAttachment[];
-  /** 会话工作目录；旧快照没有这个字段时按「尚未确认目录」读取。 */
+  /** 会话已确认的工作目录；未确认时省略。 */
   readonly workingDirectory?: string;
   readonly permissionMode?: PermissionMode;
   readonly events: readonly SessionEvent[];
@@ -52,12 +52,7 @@ export interface PersistedAttachment {
   readonly role: AttachmentRole;
 }
 
-/**
- * 桌面持久化状态。
- *
- * 旧快照里的 `outputSequence` 不再参与任何命名：新命名只依赖发布时的真实磁盘占用，
- * 因此读取时直接忽略该字段，不保留第二套「名字起点」事实。
- */
+/** 桌面持久化状态，保留当前会话事实与展示快照。 */
 export interface PersistedDesktopState {
   readonly activeSessionId: string;
   readonly sessions: readonly PersistedDesktopSession[];
@@ -274,8 +269,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
       const source = readChoice(value.evidence.source, ['tool', 'user', 'host'], `${field}.evidence.source`);
       const scope = readChoice(value.scope, ['file-effect', 'entire-call'], `${field}.scope`);
       const outcome = readChoice(value.outcome, ['completed', 'not-applied', 'unresolved'], `${field}.outcome`);
-      // 宿主观察只报告未确认的整次调用；磁盘不能伪造宿主已证明效果完成。
-      if (source === 'host' && (scope !== 'entire-call' || outcome !== 'unresolved')) invalid(`${field}.evidence.source`);
+      // 宿主可报告整次调用未确认，或 Router 已证明未执行；不能伪造宿主已证明效果完成。
+      if (source === 'host' && (scope !== 'entire-call' || outcome === 'completed')) invalid(`${field}.evidence.source`);
       return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
         scope, outcome, evidence: { source,
           reference: readString(value.evidence.reference, `${field}.evidence.reference`),
@@ -352,6 +347,8 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
         stepId: readString(value.stepId, `${field}.stepId`),
         toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
         result,
+        ...(value.executionBoundary === undefined ? {} : { executionBoundary: readChoice(value.executionBoundary,
+          ['not-executed'], `${field}.executionBoundary`) }),
       } as SessionEvent;
     }
     default:
@@ -431,24 +428,6 @@ function readSessionEvents(value: unknown, field: string): readonly SessionEvent
     }
   }
   return events;
-}
-
-function readToolActivity(value: unknown, field: string): AgentActivityItem {
-  if (!isRecord(value)) invalid(field);
-  const status = readString(value.status, `${field}.status`);
-  if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') invalid(`${field}.status`);
-  const durationMs = value.durationMs;
-  if (durationMs !== undefined
-    && (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs < 0)) {
-    invalid(`${field}.durationMs`);
-  }
-  return {
-    id: readString(value.toolCallId, `${field}.toolCallId`),
-    kind: 'tool',
-    status,
-    toolName: readString(value.toolName, `${field}.toolName`),
-    ...(durationMs === undefined ? {} : { durationMs }),
-  };
 }
 
 function readActivityFile(value: unknown, field: string): AgentActivityFile {
@@ -616,17 +595,7 @@ function readActivityItem(value: unknown, field: string): AgentActivityItem {
   };
 }
 
-/**
- * 活动轨迹在 Commit 31 之前只保存工具活动（toolCallId/toolName/status/durationMs）。
- * 已有本机快照仍然原样恢复为 tool 活动，避免升级后拒绝启动；新快照只写 activity。
- */
-function readLegacyActivity(value: unknown, field: string): readonly AgentActivityItem[] {
-  if (!Array.isArray(value)) invalid(field);
-  return value.map((item, index) => readToolActivity(item, `${field}[${index}]`));
-}
-
-function readActivity(value: unknown, field: string, legacyValue: unknown, legacyField: string): readonly AgentActivityItem[] {
-  if (value === undefined) return readLegacyActivity(legacyValue, legacyField);
+function readActivity(value: unknown, field: string): readonly AgentActivityItem[] {
   if (!Array.isArray(value)) invalid(field);
   return value.map((item, index) => readActivityItem(item, `${field}[${index}]`));
 }
@@ -683,66 +652,24 @@ function readOptionalOutputResults(
   return value.map((item, index) => readOutputItemResult(item, `${field}[${index}]`));
 }
 
-/**
- * 旧版产物表：按文件名索引的 `Record<fileName, path>`，随会话保存。
- * 它保存了 Commit 35 之前唯一可用的产物关系，读取时要用来还原历史产物卡。
- */
-function readLegacyOutputFilePaths(value: unknown, field: string): Readonly<Record<string, string>> {
+/** 读取当前任务结果；没有可选产物列表表示本轮未产出文件。 */
+function readTaskResult(value: unknown, field: string): AgentTaskResult {
   if (!isRecord(value)) invalid(field);
-  return Object.fromEntries(Object.entries(value).map(
-    ([fileName, outputPath]) => [fileName, readString(outputPath, `${field}.${fileName}`)],
-  ));
-}
-
-/**
- * 读取一轮任务结果。
- * 新快照直接带 `outputFiles`；旧快照只有 `outputFileName`，路径要从所属会话的产物表里查。
- * 查不到时按「本轮没有产物」处理：宁可少一张卡，也不编造一个不存在的路径。
- */
-function readTaskResult(
-  value: unknown,
-  field: string,
-  legacyOutputFilePaths: Readonly<Record<string, string>>,
-): AgentTaskResult {
-  if (!isRecord(value)) invalid(field);
-  const outputFiles = value.outputFiles;
-  if (outputFiles !== undefined && !Array.isArray(outputFiles)) invalid(`${field}.outputFiles`);
+  const outputFiles = readOptionalOutputFiles(value.outputFiles, `${field}.outputFiles`);
   const outputs = readOptionalOutputResults(value.outputs, `${field}.outputs`);
-  const titleFields = {
-    ...(value.conversationTitle === undefined ? {} : { conversationTitle: readString(value.conversationTitle, `${field}.conversationTitle`) }),
-    ...(value.conversationTitleError === undefined ? {} : { conversationTitleError: readString(value.conversationTitleError, `${field}.conversationTitleError`) }),
-  };
-  if (outputFiles !== undefined) {
-    return {
-      responseText: readString(value.responseText, `${field}.responseText`),
-      traceId: readString(value.traceId, `${field}.traceId`),
-      ...titleFields,
-      ...(outputFiles.length === 0 ? {} : {
-        outputFiles: outputFiles.map((item, index) => readOutputFile(item, `${field}.outputFiles[${index}]`)),
-      }),
-      ...(outputs === undefined ? {} : { outputs }),
-    };
-  }
-
-  const base = {
+  return {
     responseText: readString(value.responseText, `${field}.responseText`),
     traceId: readString(value.traceId, `${field}.traceId`),
-    ...titleFields,
+    ...(value.conversationTitle === undefined ? {} : { conversationTitle: readString(value.conversationTitle, `${field}.conversationTitle`) }),
+    ...(value.conversationTitleError === undefined ? {} : { conversationTitleError: readString(value.conversationTitleError, `${field}.conversationTitleError`) }),
+    ...(outputFiles === undefined ? {} : { outputFiles }),
     ...(outputs === undefined ? {} : { outputs }),
   };
-  const outputFileName = value.outputFileName;
-  if (outputFileName === undefined) return base;
-  if (typeof outputFileName !== 'string') invalid(`${field}.outputFileName`);
-
-  const path = legacyOutputFilePaths[outputFileName];
-  if (path === undefined) return base;
-  return { ...base, outputFiles: [{ path, fileName: outputFileName }] };
 }
 
 function readClientMessage(
   value: unknown,
   field: string,
-  legacyOutputFilePaths: Readonly<Record<string, string>>,
   events: readonly SessionEvent[],
   bindings: readonly TurnMessageBinding[],
 ): ClientConversationMessage {
@@ -791,10 +718,8 @@ function readClientMessage(
     id,
     role,
     ...(taskState === undefined ? {} : { taskState }),
-    activity: readActivity(value.activity, `${field}.activity`, value.tools, `${field}.tools`),
-    activityExpanded: value.activityExpanded === undefined
-      ? readBoolean(value.toolsExpanded, `${field}.toolsExpanded`)
-      : readBoolean(value.activityExpanded, `${field}.activityExpanded`),
+    activity: readActivity(value.activity, `${field}.activity`),
+    activityExpanded: readBoolean(value.activityExpanded, `${field}.activityExpanded`),
   } as const;
   const status = readString(value.status, `${field}.status`);
   if (status === 'processing' && binding !== undefined) {
@@ -805,7 +730,7 @@ function readClientMessage(
     return {
       ...base,
       status,
-      result: readTaskResult(value.result, `${field}.result`, legacyOutputFilePaths),
+      result: readTaskResult(value.result, `${field}.result`),
     };
   }
   // 失败与取消分支可以带已成功的产物与逐项交付结果；字段缺失表示本轮没有产出。
@@ -831,33 +756,16 @@ function readClientMessage(
   return invalid(`${field}.status`);
 }
 
-/**
- * 会话的输入附件展示状态。
- * 新格式带 path 与 role；旧快照只有 selectedVideos（那时唯一的附件语义就是视频），
- * 没有可还原的路径，因此用空 path 表示「只有名称可展示」，不编造一个磁盘位置。
- */
+/** 会话输入附件的展示状态，与宿主持久附件使用相同的路径和角色。 */
 function readClientAttachments(value: Record<string, unknown>, field: string): readonly Attachment[] {
   const attachments = value.attachments;
-  if (attachments !== undefined) {
-    if (!Array.isArray(attachments)) invalid(`${field}.attachments`);
-    return attachments.map((item, index) => {
-      if (!isRecord(item)) invalid(`${field}.attachments[${index}]`);
-      return {
-        path: readString(item.path, `${field}.attachments[${index}].path`),
-        name: readString(item.name, `${field}.attachments[${index}].name`),
-        role: readAttachmentRole(item.role, `${field}.attachments[${index}].role`),
-      };
-    });
-  }
-
-  const legacyVideos = value.selectedVideos;
-  if (!Array.isArray(legacyVideos)) return [];
-  return legacyVideos.map((item, index) => {
-    if (!isRecord(item)) invalid(`${field}.selectedVideos[${index}]`);
+  if (!Array.isArray(attachments)) invalid(`${field}.attachments`);
+  return attachments.map((item, index) => {
+    if (!isRecord(item)) invalid(`${field}.attachments[${index}]`);
     return {
-      path: '',
-      name: readString(item.name, `${field}.selectedVideos[${index}].name`),
-      role: 'video' as const,
+      path: readString(item.path, `${field}.attachments[${index}].path`),
+      name: readString(item.name, `${field}.attachments[${index}].name`),
+      role: readAttachmentRole(item.role, `${field}.attachments[${index}].role`),
     };
   });
 }
@@ -886,7 +794,6 @@ function readContextUsage(value: unknown, field: string): ConversationContextUsa
 function readClientConversation(
   value: unknown,
   field: string,
-  legacyOutputFilePaths: Readonly<Record<string, string>>,
   events: readonly SessionEvent[],
   bindings: readonly TurnMessageBinding[] = [],
 ): ClientConversation {
@@ -910,7 +817,7 @@ function readClientConversation(
         ? value.titleManuallyRenamed
         : invalid(`${field}.titleManuallyRenamed`),
     messages: value.messages.map((item, index) => (
-      readClientMessage(item, `${field}.messages[${index}]`, legacyOutputFilePaths, events, bindings)
+      readClientMessage(item, `${field}.messages[${index}]`, events, bindings)
     )),
     prompt: readString(value.prompt, `${field}.prompt`),
     attachments: readClientAttachments(value, field),
@@ -921,10 +828,6 @@ function readClientConversation(
   };
 }
 
-/**
- * IPC 与磁盘都属于外部边界，进入应用状态前只校验当前真实使用的字段。
- * 传入按会话查询旧产物表的函数：旧快照的产物路径存在会话侧，客户端消息只记文件名。
- */
 /** 只解析实际使用的侧栏字段；项目归属与会话工作目录是独立事实。 */
 function readSidebar(value: unknown): ClientSidebarState {
   if (!isRecord(value) || !Array.isArray(value.projects)) invalid('clientState.sidebar');
@@ -947,9 +850,9 @@ function readSidebar(value: unknown): ClientSidebarState {
   };
 }
 
+/** IPC 与磁盘都属于外部边界，按宿主原始事件和消息绑定重建界面状态。 */
 export function parseClientState(
   value: unknown,
-  legacyOutputFilePathsFor: (sessionId: string) => Readonly<Record<string, string>> = () => ({}),
   eventsFor: (sessionId: string) => readonly SessionEvent[] = () => [],
   bindingsFor: (sessionId: string) => readonly TurnMessageBinding[] = () => [],
 ): ClientStateSnapshot {
@@ -961,14 +864,13 @@ export function parseClientState(
     readClientConversation(
       item,
       `clientState.conversations[${index}]`,
-      isRecord(item) && typeof item.id === 'string' ? legacyOutputFilePathsFor(item.id) : {},
       isRecord(item) && typeof item.id === 'string' ? eventsFor(item.id) : [],
       isRecord(item) && typeof item.id === 'string' ? bindingsFor(item.id) : [],
     )
   ));
   if (value.drafts !== undefined && !Array.isArray(value.drafts)) invalid('clientState.drafts');
   const drafts = value.drafts === undefined ? [] : (value.drafts as unknown[]).map((item, index) => (
-    readClientConversation(item, `clientState.drafts[${index}]`, {}, [])
+    readClientConversation(item, `clientState.drafts[${index}]`, [])
   ));
   if (drafts.some(draft => draft.messages.length > 0 || draft.archived || draft.pinned || draft.titleManuallyRenamed)) invalid('clientState.drafts');
   const allConversations = [...conversations, ...drafts];
@@ -989,34 +891,23 @@ function readAttachmentRole(value: unknown, field: string): AttachmentRole {
   return role;
 }
 
-/**
- * 会话输入附件。
- * 新格式直接带 role；Commit 37 之前的快照只有 selectedVideoPaths，那时唯一的附件语义就是视频，
- * 因此全部按 video 换算。两者都不存在时按空附件读取。
- */
+/** 宿主持有输入附件的确切路径和用途，不从界面名称推断身份。 */
 function readAttachments(value: Record<string, unknown>, field: string): readonly PersistedAttachment[] {
   const attachments = value.attachments;
-  if (attachments !== undefined) {
-    if (!Array.isArray(attachments)) invalid(`${field}.attachments`);
-    return attachments.map((item, index) => {
-      if (!isRecord(item)) invalid(`${field}.attachments[${index}]`);
-      return {
-        path: readString(item.path, `${field}.attachments[${index}].path`),
-        role: readAttachmentRole(item.role, `${field}.attachments[${index}].role`),
-      };
-    });
-  }
-
-  const legacyVideoPaths = value.selectedVideoPaths;
-  if (legacyVideoPaths === undefined) return [];
-  return readStringArray(legacyVideoPaths, `${field}.selectedVideoPaths`)
-    .map((path) => ({ path, role: 'video' as const }));
+  if (!Array.isArray(attachments)) invalid(`${field}.attachments`);
+  return attachments.map((item, index) => {
+    if (!isRecord(item)) invalid(`${field}.attachments[${index}]`);
+    return {
+      path: readString(item.path, `${field}.attachments[${index}].path`),
+      role: readAttachmentRole(item.role, `${field}.attachments[${index}].role`),
+    };
+  });
 }
 
 function parseDesktopSession(
   value: unknown,
   field: string,
-): { readonly session: PersistedDesktopSession; readonly legacyOutputFilePaths: Readonly<Record<string, string>> } {
+): PersistedDesktopSession {
   if (!isRecord(value)) invalid(field);
   if (!Array.isArray(value.events)) invalid(`${field}.events`);
   const workingDirectory = value.workingDirectory;
@@ -1042,20 +933,14 @@ function parseDesktopSession(
       || new Set(messageIds).size !== messageIds.length) invalid(`${field}.turnMessageBindings`);
   }
   return {
-    session: {
-      id: readString(value.id, `${field}.id`),
-      attachments: readAttachments(value, field),
-      ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
-      ...(workingDirectory === undefined ? {} : { workingDirectory }),
-      ...(value.permissionMode === undefined ? {} : { permissionMode: parsePermissionMode(value.permissionMode, `${field}.permissionMode`) }),
-      events,
-      ...(turnMessageBindings === undefined ? {} : { turnMessageBindings }),
-      ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),
-    },
-    // 旧快照带按文件名索引的产物表；新快照没有，用空表表示「没有可还原的旧关联」。
-    legacyOutputFilePaths: value.outputFilePaths === undefined
-      ? {}
-      : readLegacyOutputFilePaths(value.outputFilePaths, `${field}.outputFilePaths`),
+    id: readString(value.id, `${field}.id`),
+    attachments: readAttachments(value, field),
+    ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
+    ...(workingDirectory === undefined ? {} : { workingDirectory }),
+    ...(value.permissionMode === undefined ? {} : { permissionMode: parsePermissionMode(value.permissionMode, `${field}.permissionMode`) }),
+    events,
+    ...(turnMessageBindings === undefined ? {} : { turnMessageBindings }),
+    ...(value.subagentHistory === undefined ? {} : { subagentHistory: readSubagentHistory(value.subagentHistory, `${field}.subagentHistory`) }),
   };
 }
 
@@ -1086,19 +971,13 @@ function readTerminalHistory(value: unknown, field: string): TerminalSnapshot {
 export function parseDesktopState(value: unknown): PersistedDesktopState {
   if (!isRecord(value)) invalid('root');
   if (!Array.isArray(value.sessions) || value.sessions.length === 0) invalid('sessions');
-  const parsedSessions = value.sessions.map((item, index) => parseDesktopSession(item, `sessions[${index}]`));
-  const sessions = parsedSessions.map((parsed) => parsed.session);
+  const sessions = value.sessions.map((item, index) => parseDesktopSession(item, `sessions[${index}]`));
   const sessionIds = sessions.map((session) => session.id);
   if (new Set(sessionIds).size !== sessionIds.length) invalid('sessions.id');
 
   const activeSessionId = readString(value.activeSessionId, 'activeSessionId');
-  // 会话先于 Client 状态解析：旧快照把产物路径存在会话的产物表里，客户端消息要用它还原历史产物卡。
-  const legacyOutputFilePathsBySession = new Map(
-    parsedSessions.map((parsed) => [parsed.session.id, parsed.legacyOutputFilePaths]),
-  );
   const clientState = parseClientState(
     value.clientState,
-    (sessionId) => legacyOutputFilePathsBySession.get(sessionId) ?? {},
     (sessionId) => sessions.find(session => session.id === sessionId)?.events ?? [],
     (sessionId) => sessions.find(session => session.id === sessionId)?.turnMessageBindings ?? [],
   );

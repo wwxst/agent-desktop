@@ -8,7 +8,9 @@ export function collectToolCapabilities(
   tools: readonly Tool[],
   visionTool: Tool | undefined,
   visionUnavailableReason: string | undefined,
+  modelSupportsTools: boolean,
 ): readonly string[] {
+  if (!modelSupportsTools) return [];
   const capabilities = new Set(tools.map(tool => resolveToolContract(tool).capability));
   if (visionTool === undefined || visionUnavailableReason !== undefined) capabilities.delete('vision');
   return [...capabilities];

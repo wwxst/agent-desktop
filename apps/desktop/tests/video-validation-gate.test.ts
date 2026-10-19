@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -12,7 +12,7 @@ import { taskToolGate } from '../src/main/agent-task-state.js';
 
 describe('video validation through the Desktop recovery gate', () => {
   it('allows a blocked publish to be retried after real checks validate the same candidate', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'video-validation-gate-'));
+    const directory = await realpath(await mkdtemp(join(tmpdir(), 'video-validation-gate-')));
     try {
       const source = join(directory, 'source.mp4');
       const target = join(directory, 'delivered.mp4');

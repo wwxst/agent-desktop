@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installFFmpegRuntime } from '../src/main/ffmpeg-runtime.js';
 
 const boundary = vi.hoisted(() => ({ execute: vi.fn(), platform: vi.fn(() => 'win32'), arch: vi.fn(() => 'x64'), failRuntimeRename: false, runtimeRenameAttempts: 0 }));
-vi.mock('electron', () => ({ net: { fetch: (...args: Parameters<typeof fetch>) => fetch(...args) } }));
+vi.mock('electron', async () => {
+  const { fetchSessionFixture } = await import('./electron-session-fixture.js');
+  return { net: { fetch: (...args: Parameters<typeof fetch>) => fetch(...args) }, session: { fromPartition: () => fetchSessionFixture((url, init) => fetch(url, init)) } };
+});
 vi.mock('node:fs/promises', async original => {
   const actual = await original<typeof import('node:fs/promises')>();
   return { ...actual, rename: async (source: string, destination: string) => {
@@ -46,6 +49,12 @@ async function fixture() {
 }
 
 describe('controlled FFmpeg runtime installation boundary', () => {
+  it('requires network admission before downloading a missing runtime', async () => {
+    const { staging, cache, fetcher, lock } = await fixture(); const authorize = vi.fn(async () => false);
+    await expect(installFFmpegRuntime(staging, cache, undefined, authorize)).rejects.toThrow('网络策略拒绝');
+    expect(authorize).toHaveBeenCalledExactlyOnceWith({ url: lock.url, method: 'GET', resourceType: 'ffmpeg-runtime' });
+    expect(fetcher).not.toHaveBeenCalled(); expect(boundary.execute).not.toHaveBeenCalled();
+  });
   it.skipIf(process.platform !== 'win32')('retries a transient Windows lock on the extracted runtime directory', async () => {
     const { staging, cache } = await fixture(); boundary.failRuntimeRename = true;
     await installFFmpegRuntime(staging, cache);

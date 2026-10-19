@@ -7,8 +7,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { net } from 'electron';
 import { renameDirectory } from './rename-directory.js';
+import { downloadManagedResource, type ManagedDownloadAuthorization } from './managed-resource-download.js';
 
 const execute = promisify(execFile);
 interface RuntimeLock {
@@ -23,7 +23,8 @@ async function digest(path: string): Promise<string> {
 }
 
 /** 只用于受控 FFmpeg 内置资源，复用安装暂存和版本目录，不建立通用资产平台。 */
-export async function installFFmpegRuntime(staging: string, archiveDirectory: string, bundledArchive?: string): Promise<void> {
+export async function installFFmpegRuntime(staging: string, archiveDirectory: string, bundledArchive?: string,
+  authorizeNetwork: ManagedDownloadAuthorization = async () => true): Promise<void> {
   const lock = JSON.parse(await readFile(join(staging, 'runtime.lock.json'), 'utf8')) as RuntimeLock;
   if (lock.platform !== 'win32' || lock.arch !== 'x64' || platform() !== lock.platform || arch() !== lock.arch) throw new Error('FFmpeg 正式插件目前仅支持 Windows x64。');
   if (!/^\d+\.\d+\.\d+$/.test(lock.version) || !/^[a-z0-9._-]+$/i.test(lock.archiveRoot)
@@ -47,7 +48,7 @@ export async function installFFmpegRuntime(staging: string, archiveDirectory: st
       const partial = `${archive}.partial`;
       try {
         // 使用桌面网络栈，遵守 Windows 系统代理；Node fetch 不读取系统代理。
-        const response = await net.fetch(lock.url, { signal: AbortSignal.timeout(300_000) });
+        const response = await downloadManagedResource(lock.url, 'ffmpeg-runtime', authorizeNetwork, AbortSignal.timeout(300_000));
         if (!response.ok || response.body === null) throw new Error(`FFmpeg 下载失败：HTTP ${response.status}`);
         await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(partial));
         if (await digest(partial) !== lock.sha256) throw new Error('FFmpeg 下载的 SHA-256 校验失败。');

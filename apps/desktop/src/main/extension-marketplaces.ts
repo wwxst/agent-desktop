@@ -21,6 +21,12 @@ function gitUrl(source: string): string {
   if (url.password || (url.username && url.protocol !== 'ssh:')) throw new Error('仓库地址不能包含凭据，请使用 Git 的本机凭据管理。');
   return url.href;
 }
+/** SSH 来源只将目标主机交给统一准入，Git 仍使用用户选择的原始传输地址。 */
+function gitNetworkTarget(source: string): string {
+  if (source.startsWith('git@')) return `https://${source.slice(4, source.indexOf(':'))}/`;
+  const url = new URL(source);
+  return url.protocol === 'ssh:' ? `https://${url.host}${url.pathname}` : url.href;
+}
 /** 第三方市场的资源只能取自该市场根目录，包含符号链接的真实路径也需要核对。 */
 export async function marketPath(root: string, path: string): Promise<string> {
   if (isAbsolute(path)) throw new Error('市场资源必须使用相对路径。');
@@ -42,7 +48,8 @@ async function manifest(root: string): Promise<Record<string, unknown>> {
 
 /** Desktop 使用的市场来源、检出与目录；安装包激活仍由 DesktopExtensions 负责。 */
 export class ExtensionMarketplaces {
-  constructor(private readonly database: string, private readonly root: string) {}
+  constructor(private readonly database: string, private readonly root: string,
+    private readonly authorizeNetwork: (request: { readonly url: string; readonly method: string; readonly resourceType: string }) => Promise<boolean> = async () => true) {}
   records(): MarketRecord[] {
     const value = readDesktopDocument(this.database, 'extension-marketplaces');
     if (value === null) return [];
@@ -78,7 +85,8 @@ export class ExtensionMarketplaces {
       if (isAbsolute(source)) await cp(source, staging, { recursive: true });
       else {
         source = gitUrl(source);
-        await run('git', ['-c', 'core.hooksPath=NUL', '-c', 'core.longpaths=true', 'clone', '--depth', '1', '--', source, staging], { timeout: 120_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+        if (!await this.authorizeNetwork({ url: gitNetworkTarget(source), method: 'GET', resourceType: 'plugin-marketplace' })) throw new Error('网络策略拒绝访问插件市场。');
+        await run('git', ['-c', 'core.hooksPath=NUL', '-c', 'core.longpaths=true', '-c', 'http.followRedirects=false', 'clone', '--depth', '1', '--', source, staging], { timeout: 120_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
         revision = (await run('git', ['-C', staging, 'rev-parse', 'HEAD'], { windowsHide: true })).stdout.trim();
       }
       const data = await manifest(staging); const id = safeName(data.name);
@@ -115,21 +123,26 @@ export class ExtensionMarketplaces {
       if (source.source === 'url' || source.source === 'git-subdir') {
         const ref = typeof source.ref === 'string' ? source.ref : undefined;
         if (ref?.startsWith('-')) throw new Error('Git 引用不能以连字符开头。');
-        await run('git', ['-c', 'core.hooksPath=NUL', '-c', 'core.longpaths=true', 'clone', ...(source.sha === undefined ? ['--depth', '1'] : []), ...(ref === undefined ? [] : ['--branch', ref]), '--', gitUrl(required(source.url, '仓库地址')), staging], { timeout: 120_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+        const repository = gitUrl(required(source.url, '仓库地址'));
+        if (!await this.authorizeNetwork({ url: gitNetworkTarget(repository), method: 'GET', resourceType: 'plugin' })) throw new Error('网络策略拒绝下载插件。');
+        await run('git', ['-c', 'core.hooksPath=NUL', '-c', 'core.longpaths=true', '-c', 'http.followRedirects=false', 'clone', ...(source.sha === undefined ? ['--depth', '1'] : []), ...(ref === undefined ? [] : ['--branch', ref]), '--', repository, staging], { timeout: 120_000, windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
         if (typeof source.sha === 'string') { if (!/^[a-f0-9]{7,40}$/i.test(source.sha)) throw new Error('Git SHA 格式无效。'); await run('git', ['-C', staging, '-c', 'core.hooksPath=NUL', 'checkout', '--detach', source.sha], { windowsHide: true }); }
         return { directory: typeof source.path === 'string' ? await marketPath(staging, source.path) : staging, cleanup };
       }
       if (source.source === 'npm') {
         const packageName = required(source.package, 'npm 包名'); const registry = new URL(typeof source.registry === 'string' ? source.registry : 'https://registry.npmjs.org/');
-        if (registry.protocol !== 'https:') throw new Error('npm 仓库需要 HTTPS。');
-        const response = await fetch(new URL(encodeURIComponent(packageName), registry), { signal: AbortSignal.timeout(60_000) });
+        if (registry.protocol !== 'https:' || registry.username || registry.password) throw new Error('npm 仓库需要不含凭据的 HTTPS 地址。');
+        const metadataUrl = new URL(encodeURIComponent(packageName), registry);
+        if (!await this.authorizeNetwork({ url: metadataUrl.href, method: 'GET', resourceType: 'plugin' })) throw new Error('网络策略拒绝访问 npm 仓库。');
+        const response = await fetch(metadataUrl, { signal: AbortSignal.timeout(60_000), redirect: 'error' });
         if (!response.ok) throw new Error(`npm 查询失败：${response.status}`);
         const metadata: unknown = await response.json();
         if (!object(metadata) || !object(metadata.versions) || !object(metadata['dist-tags'])) throw new Error('npm 元数据无效。');
         const version = typeof source.version === 'string' ? source.version : required(metadata['dist-tags'].latest, 'npm 版本');
         const selected = metadata.versions[version]; if (!object(selected) || !object(selected.dist)) throw new Error('找不到 npm 版本。');
-        const tarball = new URL(required(selected.dist.tarball, 'npm 下载地址')); if (tarball.protocol !== 'https:') throw new Error('npm 下载需要 HTTPS。');
-        const download = await fetch(tarball, { signal: AbortSignal.timeout(60_000) }); if (!download.ok) throw new Error(`npm 下载失败：${download.status}`);
+        const tarball = new URL(required(selected.dist.tarball, 'npm 下载地址')); if (tarball.protocol !== 'https:' || tarball.username || tarball.password) throw new Error('npm 下载需要不含凭据的 HTTPS 地址。');
+        if (!await this.authorizeNetwork({ url: tarball.href, method: 'GET', resourceType: 'plugin' })) throw new Error('网络策略拒绝下载 npm 包。');
+        const download = await fetch(tarball, { signal: AbortSignal.timeout(60_000), redirect: 'error' }); if (!download.ok) throw new Error(`npm 下载失败：${download.status}`);
         await mkdir(staging); const archive = join(staging, 'package.tgz'); const bytes = Buffer.from(await download.arrayBuffer());
         if (typeof selected.dist.integrity === 'string') {
           const integrity = /^sha512-([A-Za-z0-9+/=]+)$/.exec(selected.dist.integrity);

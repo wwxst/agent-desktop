@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { AgentClientApi, RuntimeModelDefinition, RuntimeModelProvider, RuntimeModelReference, RuntimeSettings, RuntimeSettingsUpdate } from '../api.js';
-import { getConversationCapability, getVisionCapability, UNKNOWN_MODEL_CAPABILITIES } from '../model-capabilities.js';
+import { getConversationCapability, getVisionCapability, MODEL_CAPABILITY_LABELS, UNKNOWN_MODEL_CAPABILITIES } from '../model-capabilities.js';
 import { DeleteConfirmationDialog } from './DeleteConfirmationDialog.js';
 import { ExtensionToast, type ExtensionNotice } from './ExtensionFeedback.js';
 
 // 固定长度的显示掩码，不读取真实密钥及其长度，也不写入供应商草稿。
 const MASKED_API_KEY = '*'.repeat(64);
 
-type ModelDraft = Omit<RuntimeModelDefinition, 'contextWindow' | 'maxOutputTokens'> & { contextWindow: string; maxOutputTokens: string };
+type ModelDraft = Omit<RuntimeModelDefinition, 'contextWindow' | 'maxOutputTokens' | 'reasoningEfforts' | 'reasoningEffort'> & {
+  contextWindow: string; maxOutputTokens: string; reasoningEfforts: string; reasoningEffort: string;
+};
 interface ProviderDraft {
   id: string; displayName: string; baseUrl: string; protocol: RuntimeModelProvider['protocol']; apiKey?: string; models: ModelDraft[];
 }
 function modelDraft(model: RuntimeModelDefinition): ModelDraft {
   return { id: model.id, displayName: model.displayName, capabilities: { ...model.capabilities },
+    reasoningEfforts: model.reasoningEfforts?.join(', ') ?? '', reasoningEffort: model.reasoningEffort ?? '',
     contextWindow: model.contextWindow?.toString() ?? '', maxOutputTokens: model.maxOutputTokens?.toString() ?? '' };
 }
 function tokenCount(value: string): number | undefined {
@@ -24,6 +27,8 @@ function tokenCount(value: string): number | undefined {
 }
 function modelsFromDraft(models: readonly ModelDraft[]): RuntimeModelDefinition[] {
   return models.map(model => ({ id: model.id.trim(), displayName: model.displayName.trim(), capabilities: model.capabilities,
+    ...(model.reasoningEfforts.trim() ? { reasoningEfforts: model.reasoningEfforts.split(',').map(value => value.trim()).filter(Boolean) } : {}),
+    ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
     ...(model.contextWindow.trim() ? { contextWindow: tokenCount(model.contextWindow)! } : {}),
     ...(model.maxOutputTokens.trim() ? { maxOutputTokens: tokenCount(model.maxOutputTokens)! } : {}) }));
 }
@@ -41,6 +46,7 @@ function draftError(draft: ProviderDraft): string | null {
     const context = tokenCount(model.contextWindow); const output = tokenCount(model.maxOutputTokens);
     if ([context, output].some(value => value !== undefined && (!Number.isSafeInteger(value) || value < 1))) return `模型 ${index + 1}: token 数必须是正整数，可使用 K 或 M。`;
     if (context !== undefined && output !== undefined && output > context) return `模型 ${index + 1}: 输出上限不能超过上下文窗口。`;
+    if (model.reasoningEffort && (model.capabilities.reasoning !== 'supported' || !model.reasoningEfforts.split(',').map(value => value.trim()).includes(model.reasoningEffort))) return `模型 ${index + 1}: 请确认所选推理强度仍受支持。`;
   }
   return null;
 }
@@ -58,8 +64,8 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
   useEffect(() => { if (!isOpen) { setDraft(null); setExpandedModel(null); setDeleting(null); setNotice(null); } }, [isOpen]);
   const disabled = busy || isProcessing;
   const conversationDraftError = draft !== null && settings.conversationModel?.providerId === draft.id
-    && !draft.models.some(model => model.id.trim() === settings.conversationModel?.modelId && getConversationCapability(model) === 'supported')
-    && !draft.models.some(model => getConversationCapability(model) === 'supported')
+    && !draft.models.some(model => model.id.trim() === settings.conversationModel?.modelId && getConversationCapability(model, draft.protocol) === 'supported')
+    && !draft.models.some(model => getConversationCapability(model, draft.protocol) === 'supported')
     ? '该供应商没有已确认支持对话的模型，请先在聊天输入框切换当前对话模型。' : null;
   const openEditor = (provider: RuntimeModelProvider) => {
     setDraft({ id: provider.id, displayName: provider.displayName, baseUrl: provider.baseUrl, protocol: provider.protocol, models: provider.models.map(modelDraft) });
@@ -77,15 +83,15 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
     if (draft === null || draftError(draft) !== null || conversationDraftError !== null) return;
     const models = modelsFromDraft(draft.models);
     // 用户删除正在使用的目录项时，在同一保存里改用该供应商的首个有效模型。
-    const conversationModel = settings.conversationModel?.providerId === draft.id && !models.some(model => model.id === settings.conversationModel?.modelId && getConversationCapability(model) === 'supported')
-      ? { providerId: draft.id, modelId: models.find(model => getConversationCapability(model) === 'supported')!.id } : undefined;
+    const conversationModel = settings.conversationModel?.providerId === draft.id && !models.some(model => model.id === settings.conversationModel?.modelId && getConversationCapability(model, draft.protocol) === 'supported')
+      ? { providerId: draft.id, modelId: models.find(model => getConversationCapability(model, draft.protocol) === 'supported')!.id } : undefined;
     // 仅删除目录项才调整备用候选；未知能力仍保留候选，供用户确认，不能擅自换模型。
-    const imageModel = models.find(model => getVisionCapability(model) === 'supported');
+    const imageModel = models.find(model => getVisionCapability(model, draft.protocol) === 'supported');
     const fallbackVisionModel = settings.fallbackVisionModel?.providerId === draft.id && !models.some(model => model.id === settings.fallbackVisionModel?.modelId)
       ? imageModel === undefined ? null : { providerId: draft.id, modelId: imageModel.id } : undefined;
     const fallbackReference = fallbackVisionModel === undefined ? settings.fallbackVisionModel : fallbackVisionModel;
     const disableFallback = settings.fallbackVisionEnabled && fallbackReference?.providerId === draft.id
-      && !models.some(model => model.id === fallbackReference.modelId && getVisionCapability(model) === 'supported');
+      && !models.some(model => model.id === fallbackReference.modelId && getVisionCapability(model, draft.protocol) === 'supported');
     await save({ modelProvider: { id: draft.id, displayName: draft.displayName.trim(), baseUrl: draft.baseUrl.trim().replace(/\/+$/, ''), protocol: draft.protocol, models,
       ...(draft.apiKey === undefined || draft.apiKey === '' ? {} : { apiKey: draft.apiKey }) },
       ...(conversationModel === undefined ? {} : { conversationModel }), ...(fallbackVisionModel === undefined ? {} : { fallbackVisionModel }),
@@ -122,20 +128,22 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
       onChange={event => setDraft({ ...draft, apiKey: event.target.value })} /></label>
     <details className="model-provider-custom" open><summary>自定义设置</summary>
       <label className="model-provider-field"><span>显示名称</span><input value={draft.displayName} disabled={disabled} onChange={event => setDraft({ ...draft, displayName: event.target.value })} /></label>
-      <label className="model-provider-field"><span>API 地址</span><input value={draft.baseUrl} placeholder="https://example.com/v1" disabled={disabled} onChange={event => setDraft({ ...draft, baseUrl: event.target.value, models: draft.models.map(model => ({ ...model, capabilities: UNKNOWN_MODEL_CAPABILITIES })) })} /></label>
-      <label className="model-provider-field"><span>API 协议</span><select aria-label="API 协议" value={draft.protocol} disabled={disabled} onChange={event => setDraft({ ...draft, protocol: event.target.value as ProviderDraft['protocol'], models: draft.models.map(model => ({ ...model, capabilities: UNKNOWN_MODEL_CAPABILITIES })) })}><option value="chat-completions">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option></select></label>
+      <label className="model-provider-field"><span>API 地址</span><input value={draft.baseUrl} placeholder="https://example.com/v1" disabled={disabled} onChange={event => setDraft({ ...draft, baseUrl: event.target.value, models: draft.models.map(model => ({ ...model, capabilities: UNKNOWN_MODEL_CAPABILITIES, reasoningEfforts: '', reasoningEffort: '' })) })} /></label>
+      <label className="model-provider-field"><span>API 协议</span><select aria-label="API 协议" value={draft.protocol} disabled={disabled} onChange={event => setDraft({ ...draft, protocol: event.target.value as ProviderDraft['protocol'], models: draft.models.map(model => ({ ...model, capabilities: UNKNOWN_MODEL_CAPABILITIES, reasoningEfforts: '', reasoningEffort: '' })) })}><option value="chat-completions">OpenAI Chat Completions</option><option value="responses">OpenAI Responses</option></select></label>
     </details>
     <div className="model-catalog-heading"><div><span>模型目录</span><small>模型 ID 和能力按供应商实际支持填写</small></div><div>
       <button type="button" disabled={disabled || !draft.baseUrl.trim()} onClick={() => void fetchModels()}>获取可用模型</button>
     </div></div>
     <div className="model-catalog">{draft.models.map((model, index) => <div className="model-catalog-entry" key={index}>
-      <div className="model-catalog-row"><input aria-label={`模型 ${index + 1} ID`} placeholder="模型 ID" value={model.id} disabled={disabled} onChange={event => updateModel(index, { id: event.target.value, capabilities: UNKNOWN_MODEL_CAPABILITIES })} /><input aria-label={`模型 ${index + 1} 显示名称`} placeholder="显示名称" value={model.displayName} disabled={disabled} onChange={event => updateModel(index, { displayName: event.target.value })} />
+      <div className="model-catalog-row"><input aria-label={`模型 ${index + 1} ID`} placeholder="模型 ID" value={model.id} disabled={disabled} onChange={event => updateModel(index, { id: event.target.value, capabilities: UNKNOWN_MODEL_CAPABILITIES, reasoningEfforts: '', reasoningEffort: '' })} /><input aria-label={`模型 ${index + 1} 显示名称`} placeholder="显示名称" value={model.displayName} disabled={disabled} onChange={event => updateModel(index, { displayName: event.target.value })} />
         <button type="button" className="icon-button" aria-label={`模型 ${index + 1} 参数`} aria-expanded={expandedModel === index} onClick={() => setExpandedModel(expandedModel === index ? null : index)}>{expandedModel === index ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</button>
         <button type="button" className="icon-button" aria-label={`删除模型 ${index + 1}`} disabled={disabled} onClick={() => { setNotice(null); setDeleting({ kind: 'model', index, name: model.displayName || model.id || `模型 ${index + 1}` }); }}><Trash2 size={15} /></button>
       </div>
       {expandedModel === index && <div className="model-catalog-parameters"><label className="model-provider-field"><span>上下文窗口</span><input aria-label={`模型 ${index + 1} 上下文窗口`} placeholder="256K" value={model.contextWindow} disabled={disabled} onChange={event => updateModel(index, { contextWindow: event.target.value })} /></label><label className="model-provider-field"><span>最大输出 token 数</span><input aria-label={`模型 ${index + 1} 最大输出 token 数`} placeholder="32K" value={model.maxOutputTokens} disabled={disabled} onChange={event => updateModel(index, { maxOutputTokens: event.target.value })} /></label>
-        {([['textInput', '文本输入'], ['textOutput', '文本输出'], ['imageInput', '图片输入'], ['imageUnderstanding', '视觉理解']] as const).map(([capability, label]) => <label className="model-provider-field" key={capability}><span>{label}</span><select aria-label={`模型 ${index + 1} ${label}`} value={model.capabilities[capability]} disabled={disabled} onChange={event => updateModel(index, { capabilities: { ...model.capabilities, [capability]: event.target.value } as RuntimeModelDefinition['capabilities'] })}><option value="unknown">未知（未验证）</option><option value="supported">已确认支持</option><option value="unsupported">明确不支持</option></select></label>)}
-        <p className="model-settings-description">按此模型与 API 协议的实际支持情况填写。未知能力不会用于自动视觉调用。</p>
+        {MODEL_CAPABILITY_LABELS.map(([capability, label]) => <label className="model-provider-field" key={capability}><span>{label}</span><select aria-label={`模型 ${index + 1} ${label}`} value={model.capabilities[capability]} disabled={disabled} onChange={event => updateModel(index, { capabilities: { ...model.capabilities, [capability]: event.target.value } as RuntimeModelDefinition['capabilities'] })}><option value="unknown">未知（未验证）</option><option value="supported">已确认支持</option><option value="unsupported">明确不支持</option></select></label>)}
+        <label className="model-provider-field"><span>支持的推理强度</span><input aria-label={`模型 ${index + 1} 支持的推理强度`} placeholder="low, medium, high" value={model.reasoningEfforts} disabled={disabled} onChange={event => updateModel(index, { reasoningEfforts: event.target.value })} /></label>
+        <label className="model-provider-field"><span>本模型推理强度</span><select aria-label={`模型 ${index + 1} 推理强度`} value={model.reasoningEffort} disabled={disabled} onChange={event => updateModel(index, { reasoningEffort: event.target.value })}><option value="">供应商默认（不发送参数）</option>{[...new Set(model.reasoningEfforts.split(',').map(value => value.trim()).filter(Boolean))].map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+        <p className="model-settings-description">仅填写已确认的能力和推理值。工具与视觉能力未知时不调用，流式未知时使用完整响应，协议须确认后才能发起任务。</p>
       </div>}
     </div>)}</div>
     <button type="button" className="model-small-button" disabled={disabled} onClick={() => { setDraft({ ...draft, models: [...draft.models, modelDraft({ id: '', displayName: '', capabilities: UNKNOWN_MODEL_CAPABILITIES })] }); setExpandedModel(null); }}><Plus size={14} />添加模型</button>
@@ -161,8 +169,8 @@ export function ModelProvidersSettings({ api, settings, isProcessing, isOpen, on
         <label className="model-provider-field"><span>备用视觉模型</span><select aria-label="备用视觉模型" value={settings.fallbackVisionEnabled ? choiceValue(settings.fallbackVisionModel) : ''} disabled={disabled} onChange={event => {
           // 选择模型才显式启用；关闭保留旧候选，两者都以保存成功后的配置显示。
           void save(event.target.value ? { fallbackVisionModel: JSON.parse(event.target.value) as RuntimeModelReference, fallbackVisionEnabled: true } : { fallbackVisionEnabled: false });
-        }}><option value="">关闭</option>{modelOptions.filter(({ provider, model, reference }) => (provider.apiKey.configured && getVisionCapability(model) === 'supported') || choiceValue(reference) === choiceValue(settings.fallbackVisionModel)).map(({ provider, model, reference }) => {
-          const capability = getVisionCapability(model);
+        }}><option value="">关闭</option>{modelOptions.filter(({ provider, model, reference }) => (provider.apiKey.configured && getVisionCapability(model, provider.protocol) === 'supported') || choiceValue(reference) === choiceValue(settings.fallbackVisionModel)).map(({ provider, model, reference }) => {
+          const capability = getVisionCapability(model, provider.protocol);
           const reason = !provider.apiKey.configured ? '未配置 API 密钥' : capability === 'unknown' ? '视觉能力未知' : capability === 'unsupported' ? '不支持视觉理解' : '';
           return <option key={choiceValue(reference)} value={choiceValue(reference)} disabled={!!reason}>{provider.displayName} · {model.displayName}{reason && `（${reason}）`}</option>;
         })}</select></label>

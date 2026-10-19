@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { assertTurnToolNames, parseTurnConfiguration } from '../src/main/turn-configuration.js';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
 const settings = {
   modelProviders: [{
     id: 'test-provider', displayName: 'Test Provider', baseUrl: 'https://models.test/v1', protocol: 'chat-completions',
     models: [{ id: 'test-model', displayName: 'Test Model', capabilities: {
+      ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported', streaming: 'supported', chatCompletions: 'supported',
       textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported',
     } }],
   }],

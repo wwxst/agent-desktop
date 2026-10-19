@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SessionPersistenceError } from '@agent-desktop/session';
 import { SessionComputer } from '../src/main/computer-host.js';
 
 describe('SessionComputer boundary', () => {
@@ -33,5 +38,23 @@ describe('SessionComputer boundary', () => {
     await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
     await computer.close();
     await expect(wait.execute({ milliseconds: 0 }, context)).rejects.toMatchObject({ message: expect.stringContaining('已关闭') });
+  });
+
+  it('persists the screenshot checkpoint before creating any output file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'computer-checkpoint-'));
+    const approve = vi.fn(async () => true);
+    const computer = new SessionComputer({ approve, outputDirectory: () => directory });
+    // 固定已观察窗口身份，聚焦截图写入顺序，不启动 Windows helper。
+    const state = { identity: { runtimeId: [1], processId: 1, handle: '1', name: 'fixture', automationId: '',
+      className: '', controlType: 'window', enabled: true, offscreen: false, password: false, focusable: true, processName: 'fixture' } };
+    (computer as unknown as { windows: Map<string, typeof state> }).windows.set('window', state);
+    const failure = new SessionPersistenceError(new Error('checkpoint failed'));
+    const checkpoint = vi.fn(() => { expect(readdirSync(directory)).toEqual([]); throw failure; });
+    try {
+      await expect(computer.tools().find(tool => tool.name === 'computer_screenshot')!.execute({ windowId: 'window' },
+        { toolCallId: 'screenshot' as never, reportProgress: () => {}, checkpoint })).rejects.toBe(failure);
+      expect(approve).toHaveBeenCalledOnce(); expect(checkpoint).toHaveBeenCalledOnce();
+      expect(await readdir(directory)).toEqual([]);
+    } finally { await computer.close(); await rm(directory, { recursive: true, force: true }); }
   });
 });

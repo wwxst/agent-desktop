@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WhisperModels } from '../src/main/whisper-models.js';
 
 const network = vi.hoisted(() => ({ fetch: vi.fn() }));
-vi.mock('electron', () => ({ net: { fetch: network.fetch } }));
+vi.mock('electron', async () => {
+  const { fetchSessionFixture } = await import('./electron-session-fixture.js');
+  return { net: { fetch: network.fetch }, session: { fromPartition: () => fetchSessionFixture(network.fetch) } };
+});
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return { ...actual, statfs: vi.fn(actual.statfs) };
@@ -26,6 +29,36 @@ async function setup() {
 afterEach(async () => { vi.restoreAllMocks(); network.fetch.mockReset(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 describe('managed Whisper model boundary', () => {
+  it('denies remote downloads and redirect targets before contacting them while bundled installs stay offline', async () => {
+    const { root, directory, lockPath, changed } = await setup();
+    const authorize = vi.fn(async () => false);
+    const models = new WhisperModels(directory, lockPath, changed, undefined, authorize);
+    await expect(models.install()).rejects.toThrow('网络策略拒绝'); expect(network.fetch).not.toHaveBeenCalled();
+    authorize.mockResolvedValueOnce(true);
+    network.fetch.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://cdn.example.test/model.bin' } }));
+    await expect(models.install()).rejects.toThrow('网络策略拒绝');
+    expect(network.fetch).toHaveBeenCalledOnce();
+    expect(network.fetch.mock.calls[0]![1]).toMatchObject({ redirect: 'follow' });
+    expect(authorize).toHaveBeenLastCalledWith({ url: 'https://cdn.example.test/model.bin', method: 'GET', resourceType: 'whisper-model' });
+    const bundled = join(root, 'bundled.bin'); await writeFile(bundled, bytes);
+    authorize.mockClear();
+    await new WhisperModels(directory, lockPath, changed, bundled, authorize).install();
+    expect(authorize).not.toHaveBeenCalled(); expect(network.fetch).toHaveBeenCalledOnce();
+  });
+
+  it('downloads authorized CDN redirects with the same cancellation signal and rejects nonweb or credential targets', async () => {
+    const { directory, lockPath, changed } = await setup(); const authorize = vi.fn(async () => true);
+    const models = new WhisperModels(directory, lockPath, changed, undefined, authorize);
+    network.fetch.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://cdn.example.test/model.bin' } })).mockResolvedValueOnce(new Response(bytes));
+    await models.install(); expect(await models.status()).toMatchObject({ status: 'ready' });
+    expect(network.fetch.mock.calls[1]![1].signal).toBe(network.fetch.mock.calls[0]![1].signal);
+    await models.delete(); network.fetch.mockClear(); authorize.mockClear();
+    for (const target of ['file:///C:/model.bin', 'https://secret:token@cdn.example.test/model.bin']) {
+      network.fetch.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: target } }));
+      await expect(models.install()).rejects.toThrow('下载地址无效');
+    }
+    expect(network.fetch).toHaveBeenCalledTimes(2); expect(authorize).toHaveBeenCalledTimes(2);
+  });
   it('downloads, verifies, reuses and restores the controlled file without exposing a partial model', async () => {
     const { models, directory, lockPath, changed } = await setup();
     network.fetch.mockResolvedValue(new Response(bytes));

@@ -3,8 +3,8 @@ import { copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, statfs } 
 import { dirname, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { net } from 'electron';
 import type { ExtensionSnapshot } from '@agent-desktop/client';
+import { downloadManagedResource } from './managed-resource-download.js';
 import { whisperFileDigest } from './whisper-runtime.js';
 
 interface ModelLock { id: string; name: string; file: string; revision: string; url: string; size: number; sha256: string }
@@ -14,7 +14,9 @@ type ModelStatus = NonNullable<ExtensionSnapshot['whisperModel']>;
 export class WhisperModels {
   private operation: ModelStatus | undefined;
   private verified: { signature: string; path: string } | undefined;
-  constructor(private readonly directory: string, private readonly lockPath: string, private readonly changed: () => void, private readonly bundledModel?: string) {}
+  constructor(private readonly directory: string, private readonly lockPath: string, private readonly changed: () => void,
+    private readonly bundledModel?: string,
+    private readonly authorizeNetwork: (request: { readonly url: string; readonly method: string; readonly resourceType: string }) => Promise<boolean> = async () => true) {}
 
   private async lock(): Promise<ModelLock> {
     const lock = JSON.parse(await readFile(this.lockPath, 'utf8')) as ModelLock;
@@ -96,7 +98,7 @@ export class WhisperModels {
         if (!info.isFile() || info.size !== lock.size || await whisperFileDigest(source) !== lock.sha256) throw new Error('请选择来源匹配且完整的 ggml-small.bin 模型。');
         await copyFile(source, partial, constants.COPYFILE_EXCL);
       } else {
-        const response = await net.fetch(lock.url, { signal: AbortSignal.timeout(1_800_000) });
+        const response = await downloadManagedResource(lock.url, 'whisper-model', this.authorizeNetwork, AbortSignal.timeout(1_800_000));
         if (!response.ok || response.body === null) throw new Error(`Whisper 模型下载失败：HTTP ${response.status}`);
         let downloadedBytes = 0; let lastNotice = 0;
         const progress = new Transform({ transform: (chunk: Buffer, _encoding, done) => {

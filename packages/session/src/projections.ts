@@ -163,7 +163,7 @@ export function projectRecoveryFacts(events: readonly SessionEvent[]): RecoveryF
     if (result?.result.status === 'error' && result.result.failureKind === 'denied') deniedCalls.push(fact);
     const boundary = call.boundary ?? 'opaque';
     // 未执行/裸读取不制造副作用；未知旧边界保守按 opaque，不能据此猜退出原因。
-    if (boundary === 'not-executed' || boundary === 'read-only') continue;
+    if (boundary === 'not-executed' || boundary === 'read-only' || result?.executionBoundary === 'not-executed') continue;
     let unknown = boundary === 'opaque'
       ? result?.result.status !== 'success'
       : result?.result.status === 'error' && result.result.failureKind === 'unknown-outcome';

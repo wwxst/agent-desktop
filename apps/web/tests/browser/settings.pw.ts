@@ -1,9 +1,10 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { _electron, expect, test } from '@playwright/test';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
 test('automatically saves full-page settings with themes and extension navigation', async ({ page }, info) => {
   await page.goto('/');
@@ -24,6 +25,7 @@ test('automatically saves full-page settings with themes and extension navigatio
     await page.getByLabel('模型 1 参数').click();
     await page.getByLabel('模型 1 文本输入').selectOption('supported');
     await page.getByLabel('模型 1 文本输出').selectOption('supported');
+    await page.getByLabel('模型 1 Chat Completions 协议').selectOption('supported');
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.locator('.model-provider-editor')).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem('agent-desktop:web-runtime-settings'))).not.toContain('"builtin"');
@@ -239,7 +241,11 @@ test('manages installed plugins, MCP and markets from Desktop settings', async (
     await expect(page.getByRole('tab', { name: '市场 0' })).toBeVisible();
     await page.getByRole('tab', { name: pluginTab }).click();
     await expect(page.getByRole('switch', { name: '启用 代码审查' })).toBeChecked();
-  } finally { await app.close(); }
+  } finally {
+    await app.close();
+    expect(resolve(profile, '..')).toBe(evidence);
+    await rm(profile, { recursive: true, force: true });
+  }
 });
 
 test('persists providers and encrypted credentials and executes both protocols through real Desktop IPC', async ({}, info) => {
@@ -295,7 +301,7 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByLabel('模型 1 参数', { exact: true }).click();
     await page.getByLabel('模型 1 上下文窗口').fill('128K');
     await page.getByLabel('模型 1 最大输出 token 数').fill('4K');
-    for (const label of ['文本输入', '文本输出', '图片输入', '视觉理解']) await page.getByLabel(`模型 1 ${label}`).selectOption('supported');
+    for (const label of ['文本输入', '文本输出', '图片输入', '视觉理解', '流式输出', 'Chat Completions 协议', 'Responses 协议']) await page.getByLabel(`模型 1 ${label}`).selectOption('supported');
     // 先保存密钥，重新编辑时只显示配置状态，截图不包含新密钥草稿。
     await page.getByRole('button', { name: '保存', exact: true }).click();
     // 此目录首次保存密钥，覆盖生产二十秒持久化期限，不改变其他操作的断言预算。
@@ -359,7 +365,7 @@ test('persists providers and encrypted credentials and executes both protocols t
     await page.getByRole('region', { name: '本地测试供应商供应商' }).getByRole('button', { name: '编辑', exact: true }).click();
     await page.getByLabel('API 协议', { exact: true }).selectOption('responses');
     await page.getByLabel('模型 1 参数').click();
-    for (const label of ['文本输入', '文本输出', '图片输入', '视觉理解']) await page.getByLabel(`模型 1 ${label}`).selectOption('supported');
+    for (const label of ['文本输入', '文本输出', '图片输入', '视觉理解', '流式输出', 'Chat Completions 协议', 'Responses 协议']) await page.getByLabel(`模型 1 ${label}`).selectOption('supported');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.locator('.model-provider-editor')).toHaveCount(0);
     await page.getByRole('button', { name: '外观', exact: true }).click();
@@ -408,7 +414,13 @@ test('persists providers and encrypted credentials and executes both protocols t
     await models();
     await expect(page.locator('.model-provider-card')).toHaveCount(0);
     expect(await page.evaluate(() => window.agentDesktop.loadRuntimeSettings())).toMatchObject({ modelProviders: [], conversationModel: null });
-  } finally { if (app) await app.close(); await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); }
+  } finally {
+    if (app) await app.close();
+    await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
+    // 仅清理本用例的一次性配置；截图继续保存在外层证据目录。
+    expect(resolve(profile, '..')).toBe(evidence);
+    await rm(profile, { recursive: true, force: true });
+  }
 });
 
 test('adds standalone MCP through settings and runs its real tool after restart', async ({}, info) => {
@@ -425,8 +437,8 @@ test('adds standalone MCP through settings and runs its real tool after restart'
   let serverPid = 0; let toolCalled = false;
   const modelServer = createServer(async (request, response) => {
     let raw = ''; for await (const chunk of request) raw += String(chunk);
-    const input = JSON.parse(raw) as { tools: { function: { name: string; description: string } }[]; messages: { role: string; content: string }[] };
-    const tool = input.tools.find(item => item.function.description.endsWith('Return text and server PID'));
+    const input = JSON.parse(raw) as { tools?: { function: { name: string; description: string } }[]; messages: { role: string; content: string }[] };
+    const tool = input.tools?.find(item => item.function.description.endsWith('Return text and server PID'));
     const result = input.messages.find(message => message.role === 'tool');
     if (result !== undefined) {
       const output = JSON.parse(result.content) as { content: { text: string }[] };
@@ -490,14 +502,13 @@ test('adds standalone MCP through settings and runs its real tool after restart'
     await page.getByRole('button', { name: '添加插件' }).click();
     await page.screenshot({ path: resolve(evidence, 'add-menu-dark.png') });
     await page.keyboard.press('Escape');
-    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'local-test-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'Test', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), `http://127.0.0.1:${address.port}`);
+    await page.evaluate(({ baseUrl, capabilities }) => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'local-test-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'Test', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), { baseUrl: `http://127.0.0.1:${address.port}`, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
+    // 独立 stdio MCP 在当前 Windows 宿主没有 OS 级进程/网络隔离，只能在用户明确选择完全访问后运行。
     await page.getByRole('button', { name: '关闭设置' }).click();
+    await page.getByRole('button', { name: '选择操作权限：请求批准', exact: true }).click();
+    await page.getByRole('menuitemradio', { name: /^完全访问权限/ }).click();
     await page.getByRole('textbox', { name: '剪辑需求' }).fill('调用独立 MCP echo 工具');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect(page.getByText('允许启动这个插件服务吗？')).toBeVisible();
-    await page.getByRole('button', { name: '允许', exact: true }).click();
-    await expect(page.getByText('允许插件执行这个工具调用吗？')).toBeVisible();
-    await page.getByRole('button', { name: '允许', exact: true }).click();
     await expect(page.getByRole('article', { name: 'Agent 回复' }).last()).toContainText('独立 MCP 调用完成');
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     expect(toolCalled).toBe(true);
@@ -515,5 +526,7 @@ test('adds standalone MCP through settings and runs its real tool after restart'
   } finally {
     await app?.close();
     await new Promise<void>(resolve => { modelServer.closeAllConnections(); modelServer.close(() => resolve()); });
+    expect(resolve(profile, '..')).toBe(evidence);
+    await rm(profile, { recursive: true, force: true });
   }
 });

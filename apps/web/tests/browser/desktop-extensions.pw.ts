@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
 test('persists real Desktop extension installation and enabled state across restart', async ({}, testInfo) => {
   // 真实 Electron 往返包含插件安装、重启、文件通知和本地 MCP 进程，默认 30 秒不足以覆盖这条链路。
@@ -13,7 +14,7 @@ test('persists real Desktop extension installation and enabled state across rest
   const profile = resolve(evidence, `electron-profile-${Date.now()}`);
   await mkdir(profile, { recursive: true });
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
-  const modelRequests: Array<{ messages: { role: string; content: string }[]; tools: { function: { name: string } }[] }> = [];
+  const modelRequests: Array<{ messages: { role: string; content: string }[]; tools?: { function: { name: string } }[] }> = [];
   // 用本地确定性 SSE 响应选择工具；Desktop、Provider、Loop、SDK 和 IPC 保持真实实现。
   const modelServer = createServer(async (request, response) => {
     request.setEncoding('utf8');
@@ -22,7 +23,7 @@ test('persists real Desktop extension installation and enabled state across rest
     const input = JSON.parse(body) as (typeof modelRequests)[number];
     modelRequests.push(input);
     const count = input.messages.filter(message => message.role === 'tool').length;
-    const naming = input.tools.length === 0;
+    const naming = input.tools === undefined;
     const delta = naming ? { content: '检查本地文件与插件' } : count === 0 ? { tool_calls: [{ index: 0, id: 'skill-load', function: { name: 'load_skill', arguments: '{"id":"skill:local-file-review"}' } }] }
       : count === 1 ? { tool_calls: [{ index: 0, id: 'plugin-echo', function: { name: 'p_fixture_local_echo', arguments: '{"text":"extension-e2e"}' } }] }
       : { content: '技能和插件实际调用完成' };
@@ -208,7 +209,7 @@ test('persists real Desktop extension installation and enabled state across rest
     await page.getByRole('button', { name: '技能', exact: true }).click();
     await page.getByRole('switch', { name: '启用 local-file-review' }).click();
     await expect(page.getByRole('switch', { name: '启用 local-file-review' })).toBeChecked();
-    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'test-fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'DeepSeek', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), `http://127.0.0.1:${address.port}`);
+    await page.evaluate(({ baseUrl, capabilities }) => window.agentDesktop.saveRuntimeSettings({ modelProvider: { id: 'deepseek', displayName: 'DeepSeek', apiKey: 'test-fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'deepseek-v4-pro', displayName: 'DeepSeek', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] } }), { baseUrl: `http://127.0.0.1:${address.port}`, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
     // 本用例只验收 fixture 服务；Probe 的启动、调用和语义交付由真实媒体用例覆盖。
     await page.evaluate(() => window.agentDesktop.extensions.setEnabled('plugin:video-editing', false));
     await page.getByRole('button', { name: '对话', exact: true }).click();
@@ -222,9 +223,9 @@ test('persists real Desktop extension installation and enabled state across rest
     await expect(page.getByText('技能和插件实际调用完成', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     expect(modelRequests).toHaveLength(4);
-    expect(modelRequests[3]?.tools).toEqual([]);
+    expect(modelRequests[3]).not.toHaveProperty('tools');
     await expect(page.locator('section[aria-label="最近"]').getByRole('button', { name: '检查本地文件与插件', exact: true })).toBeVisible();
-    expect(modelRequests[0]?.tools.some(tool => tool.function.name === 'p_fixture_local_echo')).toBe(true);
+    expect(modelRequests[0]?.tools?.some(tool => tool.function.name === 'p_fixture_local_echo')).toBe(true);
     expect(modelRequests[1]?.messages.some(message => message.role === 'tool' && message.content.includes('delegate_tasks'))).toBe(true);
     const resultMessage = modelRequests[2]!.messages.filter(message => message.role === 'tool')[1]!;
     expect(resultMessage.content).toContain('extension-e2e');

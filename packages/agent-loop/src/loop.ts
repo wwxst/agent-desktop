@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelResponse, ModelUsage, ToolCall, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, TurnCancellationError, projectTurnState,
   type ExecutionBoundary, type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type ToolCalledEvent, type TurnId } from '@agent-desktop/session';
-import { ToolExecutionError, ToolRouter, type Tool, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
+import { ToolExecutionError, ToolNotExecutedCancellationError, ToolNotExecutedError, ToolRouter, type Tool, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
 import { prepareModelContext, type ContextBudget } from './context.js';
 
 export { ContextBudgetError, estimateContextTokens, createContextSourceDigest, validateContextCompactedEvent,
@@ -163,6 +163,7 @@ async function executeToolCall(
 
   let result: ToolResult;
   let errorName: string | undefined;
+  let notExecuted = false;
 
   try {
       // 执行上下文把取消信号、调用身份和进度上报收在一个值里；
@@ -179,10 +180,18 @@ async function executeToolCall(
       result = await router.execute(toolCall, context);
   } catch (error) {
     if (error instanceof SessionPersistenceError) throw error;
+    if (error instanceof ToolNotExecutedCancellationError) {
+      // 审批取消不是工具结果；宿主证明未跨执行边界，恢复时不能把 pending opaque 当成未知效果。
+      agent.session.append({ type: 'effect.outcome.verified', turnId, sourceEventIndex,
+        scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'host', reference: 'tool-router:before-execution',
+          description: '工具在准备或审批阶段取消，未进入执行闭包。' } });
+      throw error.cancellation;
+    }
     if (error instanceof Error && error.name === 'AbortError') throw error;
     if (!(error instanceof Error)) throw error;
     errorName = error.name;
-    result = { status: 'error', message: error.message,
+    notExecuted = error instanceof ToolNotExecutedError;
+    result = error instanceof ToolNotExecutedError ? error.result : { status: 'error', message: error.message,
       ...(error instanceof ToolExecutionError ? { failureKind: error.failureKind } : {}) };
   }
 
@@ -195,6 +204,7 @@ async function executeToolCall(
     stepId,
     toolCallId: toolCall.id,
     result,
+    ...(notExecuted ? { executionBoundary: 'not-executed' as const } : {}),
   });
 
   const durationMs = Date.now() - startedAt;
@@ -267,6 +277,8 @@ export interface RunTurnOptions {
   readonly qualifyToolEvidence?: QualifyToolEvidence;
   /** 按本轮真实可用能力选择工具；省略时暴露注册表已组装的完整工具集。 */
   readonly toolCapabilities?: readonly string[];
+  /** 模型支持只是并行的必要条件；工具本身仍须声明只读且并行安全。 */
+  readonly parallelToolCalls?: boolean;
 }
 
 export class StepBudgetError extends Error {
@@ -405,7 +417,7 @@ export async function runStartedTurn(
       for (let callIndex = 0; callIndex < response.toolCalls.length;) {
         if (toolCallCount >= maxToolCalls) throw new ToolBudgetError();
         const call = response.toolCalls[callIndex]!;
-        if (!router.canParallel(call)) {
+        if (options.parallelToolCalls === false || !router.canParallel(call)) {
           toolCallCount += 1; callIndex += 1;
           await executeToolCall(agent, router, turnId, stepId, call, trace, signal, onToolResult, onToolProgress, beforeToolCall);
           continue;

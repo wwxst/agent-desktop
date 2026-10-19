@@ -1,12 +1,13 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
 import type { RuntimeModelDefinition, RuntimeSettings } from '@agent-desktop/client';
 import { DEFAULT_MODEL_PROVIDERS } from '@agent-desktop/client/model-defaults';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
-const textCapabilities: RuntimeModelDefinition['capabilities'] = { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' };
+const textCapabilities: RuntimeModelDefinition['capabilities'] = { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported', streaming: 'supported', chatCompletions: 'supported', textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' };
 test('keeps composer model selection synchronized, focused and contained across themes, widths and zoom', async ({ page }, info) => {
   await page.goto('/');
   const providers = structuredClone(DEFAULT_MODEL_PROVIDERS);
@@ -185,7 +186,7 @@ test('preserves a disabled Desktop visual candidate and active request model acr
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server port');
-  const models: RuntimeModelDefinition[] = [{ id: 'first-model', displayName: '第一模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }, { id: 'second-model', displayName: '第二模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }];
+  const models: RuntimeModelDefinition[] = [{ id: 'first-model', displayName: '第一模型', capabilities: textCapabilities }, { id: 'second-model', displayName: '第二模型', capabilities: { ...textCapabilities, imageInput: 'supported', imageUnderstanding: 'supported' } }];
   const executablePath = createRequire(resolve(root, 'apps/desktop/package.json'))('electron') as string;
   const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
   delete env.DESKTOP_RENDERER_URL; delete env.ELECTRON_RUN_AS_NODE;
@@ -269,5 +270,10 @@ test('preserves a disabled Desktop visual candidate and active request model acr
     await expect(fallback).toHaveValue('');
     await expect(fallback.locator('option:checked')).toHaveText('关闭');
     await page.screenshot({ path: resolve(evidence, 'desktop-vision-backup-disabled-restored.png') });
-  } finally { release?.(); if (app) await app.close(); await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); }
+  } finally {
+    release?.(); if (app) await app.close();
+    await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
+    expect(resolve(profile, '..')).toBe(evidence);
+    await rm(profile, { recursive: true, force: true });
+  }
 });

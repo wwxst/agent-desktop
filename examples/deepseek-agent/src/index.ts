@@ -77,6 +77,8 @@ async function runCli(apiKey: string): Promise<void> {
   };
   const runtime = new AgentRuntime(agent.session);
   const terminal = createInterface({ input, output });
+  let terminalClosed = false;
+  terminal.once('close', () => { terminalClosed = true; });
 
   output.write('Agent Desktop DeepSeek Agent\n\n');
   output.write('输入内容，输入 /exit 退出。\n\n');
@@ -97,7 +99,8 @@ async function runCli(apiKey: string): Promise<void> {
         output.write(`Agent > ${result.response.text}\n\n`);
       }
 
-      terminal.prompt();
+      // 云模型返回前可能已收到管道 EOF；关闭后的 readline 不再显示提示符。
+      if (!terminalClosed) terminal.prompt();
     }
   } finally {
     terminal.close();

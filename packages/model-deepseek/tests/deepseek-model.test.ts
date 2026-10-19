@@ -146,7 +146,6 @@ describe('OpenAICompatibleModel', () => {
         { role: 'system', content: 'Base system prompt.' },
         { role: 'user', content: 'hello' },
       ],
-      tools: [],
       thinking: { type: 'disabled' },
       stream: true,
       stream_options: { include_usage: true },

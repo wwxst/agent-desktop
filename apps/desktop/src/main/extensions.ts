@@ -323,14 +323,16 @@ export async function readPlugin(directory: string, id: string, source: Source):
 /** 固定本机安装目录由当前 userData 解析；数据库不保存原电脑的绝对安装路径。 */
 export class DesktopExtensions {
   readonly whisperModels: WhisperModels;
-  private marketStore: ExtensionMarketplaces | undefined;
+  private readonly marketStore: ExtensionMarketplaces;
   private watchedRoots: string[] = [];
   private watchers: FSWatcher[] = [];
   private changeTimer: ReturnType<typeof setTimeout> | undefined;
   private initializationError: string | undefined;
-  constructor(private readonly databasePath: string, private readonly root: string, private readonly resources: string, private readonly connections?: ExtensionConnections, changed: () => void = () => {}) {
+  constructor(private readonly databasePath: string, private readonly root: string, private readonly resources: string, private readonly connections?: ExtensionConnections,
+    changed: () => void = () => {}, private readonly authorizeNetwork?: (request: { readonly url: string; readonly method: string; readonly resourceType: string }) => Promise<boolean>) {
     this.whisperModels = new WhisperModels(join(root, 'models', 'whisper'), join(resources, 'plugins', 'whisper', 'models.lock.json'), changed,
-      platform() === 'win32' && arch() === 'x64' ? join(resources, '..', 'bundled-media', 'models', 'ggml-small.bin') : undefined);
+      platform() === 'win32' && arch() === 'x64' ? join(resources, '..', 'bundled-media', 'models', 'ggml-small.bin') : undefined, authorizeNetwork);
+    this.marketStore = new ExtensionMarketplaces(databasePath, root, authorizeNetwork);
   }
   /** 首次准备基础插件；已有记录（包括用户卸空的记录）保留原选择。 */
   async initializeDefaults(): Promise<void> {
@@ -382,8 +384,8 @@ export class DesktopExtensions {
     if (!bundledOnly) {
       try { await stat(archive); } catch (error) { if (!missing(error)) throw error; bundledArchive = undefined; }
     }
-    if (id === 'plugin:ffmpeg') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'), bundledArchive);
-    else await installWhisperRuntime(staging, join(this.root, '.whisper-archives'), bundledArchive);
+    if (id === 'plugin:ffmpeg') await installFFmpegRuntime(staging, join(this.root, '.ffmpeg-archives'), bundledArchive, this.authorizeNetwork);
+    else await installWhisperRuntime(staging, join(this.root, '.whisper-archives'), bundledArchive, this.authorizeNetwork);
   }
   /** 独立配置整体加密，一次提交；公开列表只投影变量名称。 */
   private mcpRecords(): StandaloneMcpRecord[] {
@@ -422,7 +424,7 @@ export class DesktopExtensions {
     if (!records.some(server => server.id === id)) throw new Error('找不到 MCP 服务器。');
     await this.writeMcpRecords(records.filter(server => server.id !== id));
   }
-  private markets(): ExtensionMarketplaces { return this.marketStore ??= new ExtensionMarketplaces(this.databasePath, this.root); }
+  private markets(): ExtensionMarketplaces { return this.marketStore; }
   /** 监视安装目录与当前项目；目录尚未创建时监视最近存在的父目录。 */
   async watchSkills(workingDirectory: string | undefined, changed: () => void, failed: (error: Error) => void): Promise<void> {
     await mkdir(this.root, { recursive: true });

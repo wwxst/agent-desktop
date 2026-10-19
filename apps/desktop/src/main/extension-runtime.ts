@@ -89,7 +89,7 @@ export async function prepareExtensions(
     /** 没有 OS 级网络隔离时，第三方进程在受限网络策略下必须拒绝启动。 */
     readonly executionBoundary?: WindowsExecutionBoundary;
     readonly allowUnrestrictedProcess?: () => boolean;
-    /** 恢复轮次先在本地比较能力快照；任何 MCP 服务都不能在比较前建立连接。 */
+    /** 恢复轮次先在本地比较能力快照；只保留无需连接就能重建定义的随包服务。 */
     readonly skipRemoteServers?: boolean;
     readonly whisperEnvironment?: { readonly WHISPER_MODEL_PATH: string; readonly WHISPER_CLI_PATH: string };
     readonly visionConfiguration?: Pick<RuntimeConfiguration, 'visionApiKey' | 'visionBaseUrl' | 'visionModel' | 'visionProtocol' | 'visionMaxOutputTokens'> },
@@ -205,7 +205,6 @@ export async function prepareExtensions(
     if (skills.length > 0) tools.push(new LoadSkillTool(skills));
     for (const plugin of plugins) {
       for (const server of plugin.servers) {
-        if (options?.skipRemoteServers === true) continue;
         // 旧版技能包的内含服务不能绕过独立插件的禁用、卸载和宿主授权。
         if (plugin.item.source === 'builtin' && plugin.item.id === 'plugin:video-editing' && server.name === 'ffmpeg-probe') continue;
         const isWhisper = plugin.item.source === 'builtin' && plugin.item.id === 'plugin:whisper' && server.name === 'whisper';
@@ -226,6 +225,8 @@ export async function prepareExtensions(
         const deferredDefinitions = isFFmpeg ? ffmpegTools()
           : isWhisper ? [new TranscribeAudioTool({ modelPath: options!.whisperEnvironment!.WHISPER_MODEL_PATH })]
           : isVision ? [new AnalyzeImagesTool({ apiKey: vision!.visionApiKey!, protocol: vision!.visionProtocol ?? 'responses' })] : undefined;
+        // 随包定义可纯本地重建；第三方仍需握手发现，必须在恢复集合比较前跳过。
+        if (options?.skipRemoteServers === true && deferredDefinitions === undefined) continue;
         const substitute = (value: string) => {
           const resolved = value.replaceAll('${PLUGIN_ROOT}', plugin.directory).replaceAll('${CODEX_PLUGIN_ROOT}', plugin.directory)
             .replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_match, name: string) => (isWhisper ? options?.whisperEnvironment?.[name as keyof NonNullable<NonNullable<typeof options>['whisperEnvironment']>] : undefined)
@@ -238,14 +239,15 @@ export async function prepareExtensions(
           ...Object.values(server.env ?? {}).map(substitute),
           ...(vision === undefined ? [] : [vision.visionApiKey]),
         ]);
-        const connect = async (): Promise<Client | undefined> => {
+        const connect = async (connectSignal?: AbortSignal): Promise<Client | undefined> => {
+          connectSignal?.throwIfAborted();
           const configuredCommand = substitute(server.command);
           // Electron 自带 Node 运行时供本地 Node 插件使用，避免用户额外安装 Node。
           const command = configuredCommand === 'node' ? process.execPath : configuredCommand.startsWith('.') ? resolve(plugin.directory, configuredCommand) : configuredCommand;
           const args = server.args.map(substitute);
           if (!await approve({ kind: 'plugin-start', pluginName: plugin.item.name, serverName: server.name,
-            command: server.url ?? JSON.stringify([server.command, ...server.args]), workingDirectory: plugin.directory }, signal)) return undefined;
-          signal?.throwIfAborted();
+            command: server.url ?? JSON.stringify([server.command, ...server.args]), workingDirectory: plugin.directory }, connectSignal)) return undefined;
+          connectSignal?.throwIfAborted();
           // 只有随包、固定用途的本地服务可以在受限网络策略下运行；
           // 第三方 stdio MCP 无法被宿主逐请求拦截，必须拒绝启动。
           const trustedLocal = isFFmpeg || isWhisper || isVision;
@@ -285,10 +287,23 @@ export async function prepareExtensions(
                   ...(vision.visionProtocol === undefined ? {} : { VISION_PROTOCOL: vision.visionProtocol }),
                   ...(vision.visionMaxOutputTokens === undefined ? {} : { VISION_MAX_OUTPUT_TOKENS: String(vision.visionMaxOutputTokens) }) }),
                 ...(configuredCommand === 'node' ? { ELECTRON_RUN_AS_NODE: '1' } : {}) } });
+          // 首次工具调用的取消也必须结束启动与握手，不能在本次调用超时后留下媒体进程。
+          connectSignal?.throwIfAborted();
+          let closing: Promise<void> | undefined;
+          const abortConnection = () => { closing = client.close(); };
+          connectSignal?.addEventListener('abort', abortConnection, { once: true });
           // SDK 的 HTTP sessionId 明确允许 undefined，与本仓库 exactOptionalPropertyTypes 的接口声明不一致。
-          try { await client.connect(transport as Parameters<Client['connect']>[0]); }
-          catch (error) { await client.close(); throw error; }
-          signal?.throwIfAborted();
+          try {
+            await client.connect(transport as Parameters<Client['connect']>[0], connectSignal === undefined ? {} : { signal: connectSignal });
+            connectSignal?.throwIfAborted();
+          } catch (error) {
+            await (closing ?? client.close());
+            connectSignal?.throwIfAborted();
+            throw error;
+          } finally {
+            connectSignal?.removeEventListener('abort', abortConnection);
+            await closing;
+          }
           if (provider !== undefined) {
             const tokens = await provider.tokens();
             rememberSecrets([tokens?.access_token, tokens?.refresh_token]);
@@ -296,12 +311,12 @@ export async function prepareExtensions(
           return client;
         };
         let connecting: Promise<Client | undefined> | undefined;
-        const getClient = () => connecting ??= connect();
+        const getClient = (connectSignal?: AbortSignal) => connecting ??= connect(connectSignal);
         const definitions: { name: string; description?: string | undefined; inputSchema: unknown }[] = [];
         if (deferredDefinitions !== undefined) definitions.push(...deferredDefinitions);
         else {
           let client: Client | undefined;
-          try { client = await getClient(); }
+          try { client = await getClient(signal); }
           catch (error) {
             // 受限网络策略下第三方 stdio 无法安全建立 OS 隔离；跳过该服务，
             // 让其它本地工具和不依赖它的普通任务继续运行。
@@ -343,7 +358,7 @@ export async function prepareExtensions(
                 }),
                 async execute(): Promise<ToolResult> {
                   let client: Client | undefined;
-                  try { client = await getClient(); }
+                  try { client = await getClient(context.signal); }
                   catch (error) {
                     if (error instanceof SessionPersistenceError || error instanceof ToolExecutionError) throw error;
                     context.signal?.throwIfAborted();
@@ -351,6 +366,7 @@ export async function prepareExtensions(
                     // 握手失败尚未调用媒体工具；保留本轮失败，不自动重连或影响其它服务。
                     return { status: 'error', failureKind: 'permanent', message: `${plugin.item.name} 连接失败：${redactMcpValue(error.message, mcpSecrets) as string}` };
                   }
+                  context.signal?.throwIfAborted();
                   if (client === undefined) return { status: 'error', failureKind: 'denied', message: '用户拒绝了插件服务启动。' };
                   // Vision 的真实外发发生在隔离子进程内；宿主须在已批准工具调用后核准固定供应商端点。
                   if (isVision && vision !== undefined && options?.authorizeNetwork !== undefined) {

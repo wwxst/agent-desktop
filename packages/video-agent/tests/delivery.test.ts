@@ -31,7 +31,8 @@ afterEach(async () => {
 });
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-delivery-'));
+  // Windows CI 的 TEMP 可能使用 8.3 短路径；夹具与发布事实统一使用真实路径。
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'agent-desktop-delivery-')));
   temporaryDirectories.push(directory);
   return directory;
 }

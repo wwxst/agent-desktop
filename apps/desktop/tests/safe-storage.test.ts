@@ -9,6 +9,7 @@ import * as secretStorage from '../src/main/safe-storage.js';
 import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
 import { saveRuntimeSettings } from '../src/main/runtime-settings.js';
 import { ExtensionConnections } from '../src/main/extension-connections.js';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const original = await importOriginal<typeof import('node:fs/promises')>();
@@ -95,7 +96,7 @@ describe('credential database commits await encryption durability', () => {
     let release!: (value: Buffer) => void;
     vi.spyOn(secretStorage, 'encryptSecret').mockImplementation(() => new Promise(resolve => { release = resolve; }));
     const pending = saveRuntimeSettings(database, { modelProvider: { id: 'custom', displayName: 'Custom', baseUrl: 'https://example.com/v1',
-      protocol: 'responses', models: [{ id: 'model', displayName: 'Model', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'supported' as const, imageUnderstanding: 'supported' as const } }], apiKey: 'test-secret' } }, storage);
+      protocol: 'responses', models: [{ id: 'model', displayName: 'Model', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'supported' as const, imageUnderstanding: 'supported' as const } }], apiKey: 'test-secret' } }, storage);
     await saveRuntimeSettings(database, { theme: 'light' }, storage);
     await saveRuntimeSettings(database, { memoryEnabled: false }, storage);
     expect(readDesktopDocument(database, 'runtime-settings')).toMatchObject({ theme: 'light', memoryEnabled: false });
@@ -113,7 +114,7 @@ describe('credential database commits await encryption durability', () => {
     let release!: (value: Buffer) => void;
     const encrypt = vi.spyOn(secretStorage, 'encryptSecret').mockImplementation(() => new Promise(resolve => { release = resolve; }));
     const update = { theme: 'light' as const, modelProvider: { id: 'custom', displayName: 'Custom', baseUrl: 'https://example.com/v1',
-      protocol: 'responses' as const, models: [{ id: 'model', displayName: 'Model', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'supported' as const, imageUnderstanding: 'supported' as const } }], apiKey: 'test-secret' } };
+      protocol: 'responses' as const, models: [{ id: 'model', displayName: 'Model', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'supported' as const, imageUnderstanding: 'supported' as const } }], apiKey: 'test-secret' } };
     const pending = saveRuntimeSettings(database, update, storage);
     expect(readDesktopDocument(database, 'runtime-settings')).toEqual(previous);
     expect(readDesktopDocument(database, 'runtime-secrets')).toEqual({});

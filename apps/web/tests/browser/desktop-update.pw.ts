@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -10,6 +10,8 @@ test('downloads with the real update SDK and flushes SQLite before the direct in
   test.skip(info.project.name !== 'chromium-desktop', '桌面更新握手只验收一次。');
   const root = resolve('../..');
   const evidence = resolve(root, 'logs/app-update-20261002', `desktop-${Date.now()}`);
+  const profile = resolve(evidence, 'profile');
+  const cache = resolve(evidence, 'cache');
   await mkdir(evidence, { recursive: true });
   // 使用无可执行内容的更新载荷，真实 SDK 验证 SHA512；只拦截最后的安装器边界。
   const payload = Buffer.from('offline update transport fixture\n'.repeat(1024));
@@ -41,6 +43,7 @@ test('downloads with the real update SDK and flushes SQLite before the direct in
     class FixtureUpdater extends sdk.NsisUpdater {
       constructor() {
         super({ provider: 'generic', url: 'http://127.0.0.1:${address.port}' });
+        Object.defineProperty(this.app, 'baseCachePath', { value: ${JSON.stringify(cache)} });
         this.updateConfigPath = ${JSON.stringify(config)};
         this.disableDifferentialDownload = true;
       }
@@ -60,8 +63,12 @@ test('downloads with the real update SDK and flushes SQLite before the direct in
   delete env.ELECTRON_RUN_AS_NODE;
   let app: Awaited<ReturnType<typeof _electron.launch>> | undefined;
   try {
-    app = await _electron.launch({ executablePath: hostRequire('electron') as string, args: [bootstrap, `--user-data-dir=${resolve(evidence, 'profile')}`], env });
+    app = await _electron.launch({ executablePath: hostRequire('electron') as string, args: [bootstrap, `--user-data-dir=${profile}`], env });
     const page = await app.firstWindow();
+    // 更新网络只能由用户点击入口发起；启动时保持 idle，不自动检查或下载。
+    await expect(page.getByRole('button', { name: '检查更新', exact: true })).toBeEnabled();
+    expect(await page.evaluate(() => window.agentDesktop.appUpdates!.getState())).toEqual({ status: 'idle' });
+    await page.getByRole('button', { name: '检查更新', exact: true }).click();
     const update = page.getByRole('button', { name: '安装更新', exact: true });
     await expect(update).toBeEnabled();
     const state = await page.evaluate(() => window.agentDesktop.appUpdates!.getState());
@@ -79,6 +86,10 @@ test('downloads with the real update SDK and flushes SQLite before the direct in
   } finally {
     if (app !== undefined) await app.close();
     await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done()));
+    for (const path of [profile, cache]) {
+      expect(resolve(path, '..')).toBe(evidence);
+      await rm(path, { recursive: true, force: true });
+    }
   }
 });
 
@@ -113,5 +124,9 @@ test('starts the packaged application with bundled search, terminal and update b
     expect(await page.evaluate(() => window.agentDesktop.appUpdates!.getState())).toHaveProperty('status');
     await writeFile(resolve(root, 'logs/app-update-20261002/packaged-resources.json'), JSON.stringify(resources, null, 2));
     await page.screenshot({ path: resolve(root, 'logs/app-update-20261002/packaged-desktop.png') });
-  } finally { await app.close(); }
+  } finally {
+    await app.close();
+    expect(resolve(profile, '..')).toBe(resolve(root, 'logs/app-update-20261002'));
+    await rm(profile, { recursive: true, force: true });
+  }
 });

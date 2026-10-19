@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppUpdateState } from '@agent-desktop/client';
 import { DesktopUpdater } from '../src/main/app-updater.js';
 
-const sdk = vi.hoisted(() => ({ check: vi.fn(), install: vi.fn(), instances: [] as EventEmitter[] }));
+const sdk = vi.hoisted(() => ({ check: vi.fn(), install: vi.fn(), instances: [] as EventEmitter[],
+  beforeRequest: undefined as ((details: { url: string; method: string }, callback: (result: { cancel: boolean }) => void) => void) | undefined }));
 vi.mock('electron-updater', () => ({
   NsisUpdater: class extends EventEmitter {
     autoDownload = false;
     autoInstallOnAppQuit = true;
+    netSession = { webRequest: { onBeforeRequest: (listener: typeof sdk.beforeRequest) => { sdk.beforeRequest = listener; } } };
     constructor() { super(); sdk.instances.push(this); }
     checkForUpdates() { return sdk.check(); }
     quitAndInstall(...args: unknown[]) { sdk.install(...args); }
@@ -21,11 +23,28 @@ describe('desktop application updates', () => {
   let directory: string;
   let logFilePath: string;
   beforeEach(() => {
-    sdk.check.mockReset(); sdk.install.mockReset(); sdk.instances.length = 0;
+    sdk.check.mockReset(); sdk.install.mockReset(); sdk.instances.length = 0; sdk.beforeRequest = undefined;
     directory = mkdtempSync(join(tmpdir(), 'app-updater-'));
     logFilePath = join(directory, 'logs', 'app-updater.log');
   });
   afterEach(() => rmSync(directory, { recursive: true, force: true }));
+
+  it('requires an explicit update operation and admits each SDK request including redirect targets', async () => {
+    const authorize = vi.fn(async (request: { url: string }) => new URL(request.url).hostname === 'github.com');
+    const host = new DesktopUpdater(() => {}, logFilePath, authorize);
+    expect(sdk.check).not.toHaveBeenCalled();
+    await host.check(false);
+    expect(authorize).not.toHaveBeenCalled(); expect(sdk.check).not.toHaveBeenCalled();
+    await host.check(); expect(sdk.check).toHaveBeenCalledOnce();
+    const denied = await new Promise(resolve => sdk.beforeRequest!({ url: 'https://other.test/update.exe', method: 'GET' }, resolve));
+    expect(denied).toEqual({ cancel: true });
+    const allowed = await new Promise(resolve => sdk.beforeRequest!({ url: 'https://github.com/wwxst/agent-desktop/releases', method: 'GET' }, resolve));
+    expect(allowed).toEqual({ cancel: false });
+    expect(authorize).toHaveBeenLastCalledWith({ url: 'https://github.com/wwxst/agent-desktop/releases', method: 'GET', resourceType: 'app-update' });
+    const rejected = new DesktopUpdater(() => {}, logFilePath, async () => false);
+    await rejected.check(); expect(sdk.check).toHaveBeenCalledOnce();
+    expect(rejected.state.status).toBe('error');
+  });
 
   it('downloads after discovery and waits for an explicit installation click', async () => {
     const states: AppUpdateState[] = [];

@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installWhisperRuntime, verifyWhisperRuntime } from '../src/main/whisper-runtime.js';
 
 const boundary = vi.hoisted(() => ({ execute: vi.fn(), fetch: vi.fn(), failRuntimeRename: false, runtimeRenameAttempts: 0 }));
-vi.mock('electron', () => ({ net: { fetch: boundary.fetch } }));
+vi.mock('electron', async () => {
+  const { fetchSessionFixture } = await import('./electron-session-fixture.js');
+  return { net: { fetch: boundary.fetch }, session: { fromPartition: () => fetchSessionFixture(boundary.fetch) } };
+});
 vi.mock('node:fs/promises', async original => {
   const actual = await original<typeof import('node:fs/promises')>();
   return { ...actual, rename: async (source: string, destination: string) => {
@@ -51,6 +54,12 @@ async function fixture() {
 }
 
 describe('controlled Whisper runtime installation', () => {
+  it('requires network admission before downloading a missing runtime', async () => {
+    const { staging, cache, lock } = await fixture(); const authorize = vi.fn(async () => false);
+    await expect(installWhisperRuntime(staging, cache, undefined, authorize)).rejects.toThrow('网络策略拒绝');
+    expect(authorize).toHaveBeenCalledExactlyOnceWith({ url: lock.url, method: 'GET', resourceType: 'whisper-runtime' });
+    expect(boundary.fetch).not.toHaveBeenCalled(); expect(boundary.execute).not.toHaveBeenCalled();
+  });
   it.skipIf(process.platform !== 'win32')('publishes and verifies the extracted runtime after a transient Windows directory lock', async () => {
     const { staging, cache } = await fixture(); boundary.failRuntimeRename = true;
     await installWhisperRuntime(staging, cache);

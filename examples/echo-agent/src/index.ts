@@ -27,6 +27,8 @@ function printTurnEvents(events: readonly SessionEvent[]): void {
 // CLI 启动时只创建一次 Agent，因此所有用户输入共享同一个内存 Session。
 const agent = createEchoAgent();
 const terminal = createInterface({ input, output });
+let terminalClosed = false;
+terminal.once('close', () => { terminalClosed = true; });
 
 output.write('Agent Desktop Echo Agent\n\n');
 output.write('输入内容，输入 /exit 退出。\n\n');
@@ -48,7 +50,8 @@ try {
       output.write(`Agent > ${result.response.text}\n\n`);
     }
 
-    terminal.prompt();
+    // 管道可在任务完成前抵达 EOF；已关闭的 readline 不能再次显示提示符。
+    if (!terminalClosed) terminal.prompt();
   }
 } finally {
   terminal.close();

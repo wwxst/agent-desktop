@@ -7,8 +7,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { net } from 'electron';
 import { renameDirectory } from './rename-directory.js';
+import { downloadManagedResource, type ManagedDownloadAuthorization } from './managed-resource-download.js';
 
 const execute = promisify(execFile);
 const runtimeFiles = ['whisper-cli.exe', 'ggml.dll', 'ggml-cpu.dll', 'ggml-base.dll', 'whisper.dll'] as const;
@@ -50,7 +50,8 @@ export async function verifyWhisperRuntime(root: string): Promise<string> {
 }
 
 /** 专用于 Whisper 内置插件，沿用已有暂存、归档缓存与版本回滚。 */
-export async function installWhisperRuntime(staging: string, archiveDirectory: string, bundledArchive?: string): Promise<void> {
+export async function installWhisperRuntime(staging: string, archiveDirectory: string, bundledArchive?: string,
+  authorizeNetwork: ManagedDownloadAuthorization = async () => true): Promise<void> {
   const lock = await runtimeLock(staging);
   let installed = false;
   try { installed = (await stat(join(staging, 'runtime'))).isDirectory(); }
@@ -71,7 +72,7 @@ export async function installWhisperRuntime(staging: string, archiveDirectory: s
       const partial = `${archive}.partial`;
       try {
         await rm(partial, { force: true });
-        const response = await net.fetch(lock.url, { signal: AbortSignal.timeout(300_000) });
+        const response = await downloadManagedResource(lock.url, 'whisper-runtime', authorizeNetwork, AbortSignal.timeout(300_000));
         if (!response.ok || response.body === null) throw new Error(`Whisper 下载失败：HTTP ${response.status}`);
         await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(partial, { flags: 'wx' }));
         const actualDigest = await whisperFileDigest(partial);

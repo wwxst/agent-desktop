@@ -40,13 +40,13 @@ describe('routed tool execution in a real Turn', () => {
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
 
-  it('waits for prepared approval and records a rejection without executing the action', async () => {
+  it.each(['checkpointed', 'opaque'] as const)('records a prepared %s rejection without executing the action', async executionBoundary => {
     const { agent, session } = fixture(['write']);
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'direct execution' }));
     const effect = vi.fn(async () => ({ status: 'success' as const, output: 'prepared execution' }));
     const requestApproval = vi.fn(async () => false);
     const prepare = vi.fn<NonNullable<Tool['prepare']>>(async () => ({ requestApproval, execute: effect }));
-    agent.tools.register({ name: 'write', description: '先审批再写入', inputSchema: {}, executionBoundary: 'checkpointed',
+    agent.tools.register({ name: 'write', description: '先审批再写入', inputSchema: {}, executionBoundary,
       contract: { approvalRequirement: 'policy' }, prepare, execute });
 
     await runTurn(agent, '拒绝这次写入');
@@ -56,19 +56,19 @@ describe('routed tool execution in a real Turn', () => {
     expect(requestApproval).toHaveBeenCalledOnce();
     expect(execute).not.toHaveBeenCalled();
     expect(effect).not.toHaveBeenCalled();
-    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'error', failureKind: 'denied' } });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ executionBoundary: 'not-executed', result: { status: 'error', failureKind: 'denied' } });
     expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
 
-  it('does not execute a late approval after the Turn was cancelled', async () => {
+  it.each(['checkpointed', 'opaque'] as const)('does not execute a late %s approval after the Turn was cancelled', async executionBoundary => {
     const { agent, session, requests } = fixture(['write']);
     const controller = new AbortController();
     let approve!: (approved: boolean) => void;
     const requestApproval = vi.fn(() => new Promise<boolean>(resolve => { approve = resolve; }));
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'direct execution' }));
     const effect = vi.fn(async () => ({ status: 'success' as const, output: 'prepared execution' }));
-    agent.tools.register({ name: 'write', description: '等待审批', inputSchema: {}, executionBoundary: 'checkpointed',
+    agent.tools.register({ name: 'write', description: '等待审批', inputSchema: {}, executionBoundary,
       contract: { approvalRequirement: 'policy' }, prepare: async () => ({ requestApproval, execute: effect }), execute });
 
     const task = runTurn(agent, '取消等待中的写入', { signal: controller.signal });
@@ -77,12 +77,57 @@ describe('routed tool execution in a real Turn', () => {
     controller.abort();
     approve(true);
 
-    await expect(task).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(task).rejects.toBe(controller.signal.reason);
     expect(execute).not.toHaveBeenCalled();
     expect(effect).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
     expect(session.events().some(event => event.type === 'tool.effect.prepared' || event.type === 'tool.result')).toBe(false);
+    expect(session.events().find(event => event.type === 'effect.outcome.verified')).toMatchObject({
+      sourceEventIndex: session.events().findIndex(event => event.type === 'tool.called'),
+      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'host', reference: 'tool-router:before-execution' } });
+    expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     expect(session.events().at(-1)?.type).toBe('turn.cancelled');
+  });
+
+  it('keeps an executing opaque parent unknown when its nested approval is cancelled', async () => {
+    const { agent, session } = fixture(['parent']);
+    const controller = new AbortController();
+    let approvalStarted!: () => void;
+    const ready = new Promise<void>(resolve => { approvalStarted = resolve; });
+    agent.tools.register({ name: 'nested', description: '等待审批的子工具', inputSchema: {}, executionBoundary: 'opaque',
+      contract: { approvalRequirement: 'policy' }, execute: vi.fn<Tool['execute']>(),
+      prepare: async (_input, context) => ({ requestApproval: () => new Promise((_resolve, reject) => {
+        context.signal!.addEventListener('abort', () => reject(context.signal!.reason), { once: true });
+        approvalStarted();
+      }), execute: async () => ({ status: 'success', output: 'must not run' }) }) });
+    agent.tools.register({ name: 'parent', description: '已开始的不透明组合工具', inputSchema: {}, executionBoundary: 'opaque',
+      contract: { approvalRequirement: 'none' }, nestedToolNames: ['nested'],
+      execute: async (_input, context) => context.invokeNestedTool!('nested', {}) });
+    const task = runTurn(agent, '取消父工具中的子审批', { signal: controller.signal });
+    await ready;
+    controller.abort();
+    await expect(task).rejects.toBe(controller.signal.reason);
+    expect(session.events().some(event => event.type === 'tool.result' || event.type === 'effect.outcome.verified')).toBe(false);
+    expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([
+      expect.objectContaining({ source: expect.objectContaining({ name: 'parent' }) }),
+    ]);
+    expect(session.events().at(-1)?.type).toBe('turn.cancelled');
+  });
+
+  it('continues after an opaque approval timeout using persisted not-executed evidence', async () => {
+    const { agent, session, requests } = fixture(['write']);
+    const effect = vi.fn(async () => ({ status: 'success' as const, output: 'must not run' }));
+    agent.tools.register({ name: 'write', description: '审批超时', inputSchema: {}, executionBoundary: 'opaque',
+      contract: { approvalRequirement: 'policy', timeoutMs: 5 }, execute: vi.fn<Tool['execute']>(),
+      prepare: async (_input, context) => ({ execute: effect, requestApproval: () => new Promise((_resolve, reject) => {
+        context.signal!.addEventListener('abort', () => reject(context.signal!.reason), { once: true });
+      }) }) });
+    await runTurn(agent, '等待批准');
+    expect(effect).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(2);
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ executionBoundary: 'not-executed',
+      result: { status: 'error', failureKind: 'transient' } });
+    expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
 
   it('runs only adjacent safe reads in parallel and commits results in model order around write barriers', async () => {
@@ -114,6 +159,24 @@ describe('routed tool execution in a real Turn', () => {
     for (const event of session.events()) if (event.type === 'tool.effect.prepared') {
       expect(session.events()[event.sourceEventIndex]).toMatchObject({ type: 'tool.called', toolCallId: (event.data as { id: string }).id });
     }
+  });
+
+  it('serializes safe reads when the selected model disables parallel tool calls', async () => {
+    const { agent, session } = fixture(['readA', 'readB']);
+    const order: string[] = []; let releaseFirst!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    agent.tools.register(reading('readA', async () => {
+      order.push('A-start'); await first; order.push('A-end'); return { status: 'success', output: 'A' };
+    }));
+    const second = vi.fn<Tool['execute']>(async () => { order.push('B'); return { status: 'success', output: 'B' }; });
+    agent.tools.register(reading('readB', second));
+    const task = runTurn(agent, '按模型能力串行读取', { parallelToolCalls: false });
+    await vi.waitFor(() => expect(order).toEqual(['A-start']));
+    expect(second).not.toHaveBeenCalled();
+    expect(session.events().filter(event => event.type === 'tool.called').map(event => event.name)).toEqual(['readA']);
+    releaseFirst(); await task;
+    expect(order).toEqual(['A-start', 'A-end', 'B']);
+    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.toolCallId)).toEqual(['readA', 'readB']);
   });
 
   it('preserves ordered denied results and checkpoint identities inside a parallel read group', async () => {

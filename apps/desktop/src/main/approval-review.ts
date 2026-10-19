@@ -18,7 +18,10 @@ export async function reviewApproval(target: ToolApprovalTarget, settings: Runti
   const model = new OpenAICompatibleModel({ apiKey: settings.modelApiKey,
     baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
     ...(authorizeNetwork === undefined ? {} : { authorizeNetwork }),
-    ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }) });
+    ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }),
+    supportsTools: false,
+    supportsStreaming: settings.modelCapabilities.streaming === 'supported',
+    ...(settings.modelReasoningEffort === undefined ? {} : { reasoningEffort: settings.modelReasoningEffort }) });
   // 审批只需用户意图和确切操作；历史 Tool 输出可能含私有文件内容或凭据，不能转发给外部模型。
   const taskRequest = events.findLast(event => event.type === 'user.message');
   const timeout = AbortSignal.timeout(30_000);

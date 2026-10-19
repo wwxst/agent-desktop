@@ -13,6 +13,9 @@ function tool(name: string, capability?: string): Tool {
 }
 
 describe('tool capability exposure', () => {
+  it('exposes no tools when the model has not confirmed tool support', () => {
+    expect(collectToolCapabilities([tool('read_file', 'code')], undefined, undefined, false)).toEqual([]);
+  });
   it('deduplicates registered contracts while retaining unknown legacy tools', () => {
     const vision = tool('analyze_images', 'vision');
     expect(collectToolCapabilities([
@@ -20,20 +23,20 @@ describe('tool capability exposure', () => {
       tool('probe_media', 'media'),
       tool('trim_video', 'media'),
       tool('publish_video_output'),
-    ], vision, undefined)).toEqual(['vision', 'media', 'unknown']);
+    ], vision, undefined, true)).toEqual(['vision', 'media', 'unknown']);
   });
 
   it('removes vision when the route is unavailable or the tool was not registered', () => {
     const vision = tool('analyze_images', 'vision');
-    expect(collectToolCapabilities([vision, tool('read_file')], vision, '视觉模型不可用。'))
+    expect(collectToolCapabilities([vision, tool('read_file')], vision, '视觉模型不可用。', true))
       .toEqual(['unknown']);
-    expect(collectToolCapabilities([vision, tool('read_file')], undefined, undefined))
+    expect(collectToolCapabilities([vision, tool('read_file')], undefined, undefined, true))
       .toEqual(['unknown']);
   });
 
   it('only reflects the already-filtered registry used by safe recovery', () => {
     const vision = tool('analyze_images', 'vision');
-    expect(collectToolCapabilities([tool('read_file'), tool('verify_tool_outcome')], vision, undefined))
+    expect(collectToolCapabilities([tool('read_file'), tool('verify_tool_outcome')], vision, undefined, true))
       .toEqual(['unknown']);
   });
 });

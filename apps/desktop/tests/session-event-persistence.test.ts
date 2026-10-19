@@ -231,7 +231,6 @@ describe('new Session event persistence', () => {
 
   it.each([
     { scope: 'entire-call', outcome: 'completed' },
-    { scope: 'entire-call', outcome: 'not-applied' },
     { scope: 'file-effect', outcome: 'unresolved' },
   ])('rejects a host observation claiming $scope/$outcome', fields => {
     const events = recoveryEvents();

@@ -223,9 +223,16 @@ export class SessionComputer {
     const path = join(root, `computer-${randomUUID()}.png`);
     const approval = { ...this.approval('screenshot', windowId, state), path };
     return { approval, execute: async () => {
-      const reserved = await open(path, 'wx'); await reserved.close();
+      // 创建占位文件也是写入，检查点保存失败时不得触碰截图目录。
+      context.checkpoint?.({ kind: 'computer', ...approval });
+      let reserved;
+      try { reserved = await open(path, 'wx'); }
+      catch (error) {
+        if (!(error instanceof Error)) throw error;
+        throw new ToolExecutionError(error.message, 'permanent', { cause: error });
+      }
       try {
-        context.checkpoint?.({ kind: 'computer', ...approval });
+        await reserved.close();
         await this.helper({ action: 'screenshot', window: state.identity, path }, context.signal, true);
         const bytes = await readFile(path);
         if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new ToolExecutionError('Windows 截图未产生有效 PNG。', 'unknown-outcome');

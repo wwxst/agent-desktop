@@ -6,8 +6,10 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
 import type { ApprovalRequest } from '@agent-desktop/client';
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
+import { cleanupDesktopAcceptance } from './desktop-acceptance-cleanup.js';
 
-interface Input { messages: { role: string; content: string | null; tool_calls?: { function: { name: string } }[] }[]; tools: { function: { name: string } }[] }
+interface Input { messages: { role: string; content: string | null; tool_calls?: { function: { name: string } }[] }[]; tools?: { function: { name: string } }[] }
 
 test('real Windows Whisper installation, model download, recognition and lifecycle', async ({}, testInfo) => {
   test.skip(process.platform !== 'win32' || testInfo.project.name !== 'chromium-desktop', 'Windows x64 原生验收。');
@@ -32,7 +34,8 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
   synthesize(chinese, 'Microsoft Huihui Desktop', '今天天气很好。我们准备出发去公园。请带上水和相机。');
   synthesize(english, 'Microsoft Zira Desktop', 'Today is a beautiful day. We are going to the park. Please bring water and a camera.');
   synthesize(mixed, 'Microsoft Huihui Desktop', '今天我们学习 English。请打开 camera，然后开始 recording。');
-  synthesize(longAudio, 'Microsoft Zira Desktop', Array.from({ length: 60 }, () => 'Today is a beautiful day. We are going to the park. Please bring water and a camera.').join(' '));
+  // 十段约 68 秒，与长音频场景一致；六十段实际超过六分钟，会触发另一个输出截断契约。
+  synthesize(longAudio, 'Microsoft Zira Desktop', Array.from({ length: 10 }, () => 'Today is a beautiful day. We are going to the park. Please bring water and a camera.').join(' '));
   const silent = resolve(evidence, '静音.wav');
   execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '3', silent]);
   const video = resolve(evidence, '中文 视频.mp4');
@@ -56,7 +59,7 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
       return;
     }
     const input = JSON.parse(body) as Input;
-    const names = input.tools.map(tool => tool.function.name);
+    const names = input.tools?.map(tool => tool.function.name) ?? [];
     if (names.includes('report_semantic_checks')) {
       const data = JSON.parse(input.messages.find(message => message.role === 'user')!.content!) as { requirements: { id: string }[]; transcript: { text: string } };
       expect(data.transcript.text.toLowerCase()).toContain('camera');
@@ -163,7 +166,7 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     modelScenarios.push({ scenario: 'default-bundled-model', status: 'PASS' });
     await page.screenshot({ path: resolve(evidence, 'initial.png') });
     await writeFile(resolve(evidence, 'initial.txt'), await page.locator('body').innerText());
-    await page.evaluate(baseUrl => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] }, conversationModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionEnabled: true }), `http://127.0.0.1:${address.port}`);
+    await page.evaluate(({ baseUrl, capabilities }) => window.agentDesktop.saveRuntimeSettings({ memoryEnabled: false, modelProvider: { id: 'fixture', displayName: '模型夹具', apiKey: 'fixture-key', baseUrl, protocol: 'chat-completions', models: [{ id: 'fixture', displayName: 'fixture', capabilities: { ...capabilities, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } }] }, conversationModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionModel: { providerId: 'fixture', modelId: 'fixture' }, fallbackVisionEnabled: true }), { baseUrl: `http://127.0.0.1:${address.port}`, capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, tools: 'supported' as const, streaming: 'supported' as const, chatCompletions: 'supported' as const } });
     const ordinaryDefaults = await run('model-ready');
     expect(ordinaryDefaults.tools).toEqual(expect.arrayContaining(['probe_media', 'transcribe_audio', 'analyze_images']));
     expect(await page.evaluate(() => (window as unknown as { approvals: ApprovalRequest[] }).approvals.filter(request => request.kind === 'plugin-start' || request.kind === 'plugin-tool'))).toEqual([]);
@@ -247,7 +250,7 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     expect(semantic.tools.filter(name => name === 'analyze_images')).toHaveLength(1);
     expect(JSON.parse(semantic.results[3]!)).toMatchObject({ coverage: 'all-frames-and-transcript', evidence: { transcript: { text: expect.stringMatching(/camera/i) } }, checks: [{ outcome: 'passed' }] });
     expect(JSON.parse(semantic.results[4]!)).toMatchObject({ validation: { checks: [{ outcome: 'passed' }, { outcome: 'passed' }] } });
-    expect((await stat((JSON.parse(semantic.results[5]!) as { output: { path: string } }).output.path)).size).toBeGreaterThan(0);
+    expect((await stat((JSON.parse(semantic.results[5]!) as { output: { output: { path: string } } }).output.output.path)).size).toBeGreaterThan(0);
     const semanticDirectory = (JSON.parse(semantic.results[0]!) as { items: { workingDirectory: string }[] }).items[0]!.workingDirectory;
     expect((await readdir(semanticDirectory)).some(name => name.startsWith('.semantic-'))).toBe(false);
     const duration = Number(JSON.parse(execFileSync(resolve(ffmpeg, '../ffprobe.exe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', longAudio], { encoding: 'utf8' })).format.duration);
@@ -318,7 +321,8 @@ test('real Windows Whisper installation, model download, recognition and lifecyc
     await writeFile(resolve(evidence, 'summary.json'), JSON.stringify({ records, modelScenarios, approvals: await page.evaluate(() => (window as unknown as { approvals: ApprovalRequest[] }).approvals), profile, installedExecutable: executable ?? null, speechSource: 'Windows System.Speech Huihui/Zira synthetic reference', modelBytes: 487601967 }, null, 2));
   } finally {
     try { await app?.close(); } finally {
-      await new Promise<void>(done => server.close(() => done()));
+      try { await new Promise<void>(done => server.close(() => done())); }
+      finally { await cleanupDesktopAcceptance(evidence, profile, process.env.DESKTOP_ACCEPTANCE_PROFILE === undefined); }
     }
   }
 });

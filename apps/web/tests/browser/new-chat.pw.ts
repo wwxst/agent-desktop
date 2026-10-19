@@ -40,13 +40,13 @@ test('restores empty history, project drafts and model-generated titles through 
   await mkdir(profile, { recursive: true });
   await mkdir(folder, { recursive: true });
   await writeFile(attachment, '仅用于附件保存验收，不用于媒体处理。');
-  const requests: Array<{ tools: unknown[]; messages: { role: string; content: string }[] }> = [];
+  const requests: Array<{ tools?: unknown[]; messages: { role: string; content: string }[] }> = [];
   const server = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
     const input = JSON.parse(body) as (typeof requests)[number];
     requests.push(input);
-    const content = input.tools.length === 0 ? '概括项目配置' : '任务完成';
+    const content = input.tools === undefined ? '概括项目配置' : '任务完成';
     response.writeHead(200, { 'Content-Type': 'text/event-stream' });
     response.end(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
   });
@@ -89,7 +89,7 @@ test('restores empty history, project drafts and model-generated titles through 
     const recent = page.locator('section[aria-label="最近"]');
     await expect(recent.getByRole('button', { name: '概括项目配置', exact: true })).toBeVisible();
     expect(requests).toHaveLength(2);
-    expect(requests[1]?.tools).toEqual([]);
+    expect(requests[1]).not.toHaveProperty('tools');
     expect(requests[1]?.messages.filter(message => message.role !== 'system')).toHaveLength(1);
     await page.screenshot({ path: resolve(evidence, 'desktop-generated-title.png') });
     await recent.getByRole('button', { name: '会话操作：概括项目配置' }).click();

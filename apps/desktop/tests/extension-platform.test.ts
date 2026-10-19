@@ -12,12 +12,17 @@ import { DesktopExtensions, readPlugin } from '../src/main/extensions.js';
 import { ExtensionConnections } from '../src/main/extension-connections.js';
 import { prepareExtensions, skillCatalog, selectSkills } from '../src/main/extension-runtime.js';
 import { readDesktopDocument, writeDesktopDocuments } from '../src/main/desktop-database.js';
+import { ExtensionMarketplaces } from '../src/main/extension-marketplaces.js';
 
 // 本套只测本地平台及回环 MCP；宿主运行时下载不应触发真实 Electron 或外网。
-vi.mock('electron', () => ({ net: { fetch: () => { throw new Error('Unexpected runtime download in extension platform test'); } } }));
+const network = vi.hoisted(() => ({ fetch: vi.fn(() => { throw new Error('Unexpected runtime download in extension platform test'); }) }));
+vi.mock('electron', async () => {
+  const { fetchSessionFixture } = await import('./electron-session-fixture.js');
+  return { net: { fetch: network.fetch }, session: { fromPartition: () => fetchSessionFixture(network.fetch) } };
+});
 
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllGlobals(); network.fetch.mockClear(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 async function temp() { const root = await mkdtemp(join(tmpdir(), 'extension-platform-')); directories.push(root);
   await writeFile(join(root, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: 'test-key' } })); return root; }
 async function market(root: string, name = 'test-market') {
@@ -33,6 +38,51 @@ async function listen(server: ReturnType<typeof createServer>) {
 const secureStorage = { isEncryptionAvailable: () => true, encryptString: (value: string) => Buffer.from(value.split('').reverse().join('')), decryptString: (value: Buffer) => value.toString().split('').reverse().join('') };
 
 describe('Desktop plugin platform boundaries', () => {
+  it.each([
+    ['https://example.test/market.git', 'https://example.test/market.git'],
+    ['git@example.test:team/market.git', 'https://example.test/'],
+    ['ssh://git@example.test:2222/team/market.git', 'https://example.test:2222/team/market.git'],
+  ])('denies Git market and plugin downloads before invoking Git (%s)', async (source, target) => {
+    const root = await temp(); const authorize = vi.fn(async () => false);
+    const store = new ExtensionMarketplaces(join(root, 'db.sqlite'), join(root, 'extensions'), authorize);
+    await expect(store.add(source)).rejects.toThrow('网络策略拒绝访问插件市场');
+    expect(authorize).toHaveBeenLastCalledWith({ url: target, method: 'GET', resourceType: 'plugin-marketplace' });
+    await expect(store.materialize({ id: 'plugin:test@market', name: 'test', marketplaceId: 'market', root,
+      source: { source: 'url', url: source }, metadata: {}, installable: true })).rejects.toThrow('网络策略拒绝下载插件');
+    expect(authorize).toHaveBeenLastCalledWith({ url: target, method: 'GET', resourceType: 'plugin' });
+  });
+
+  it('admits npm metadata and tarball independently and disallows automatic redirects', async () => {
+    const root = await temp(); let permitted = '';
+    const authorize = vi.fn(async (request: { url: string }) => request.url === permitted);
+    const store = new ExtensionMarketplaces(join(root, 'db.sqlite'), join(root, 'extensions'), authorize);
+    const entry = { id: 'plugin:test@market', name: 'test', marketplaceId: 'market', root,
+      source: { source: 'npm', package: 'test-package' }, metadata: {}, installable: true };
+    const tarball = 'https://cdn.example.test/test.tgz';
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { dist: { tarball } } } })));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(store.materialize(entry)).rejects.toThrow('网络策略拒绝访问 npm 仓库');
+    expect(fetcher).not.toHaveBeenCalled();
+    permitted = 'https://registry.npmjs.org/test-package';
+    await expect(store.materialize(entry)).rejects.toThrow('网络策略拒绝下载 npm 包');
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(authorize).toHaveBeenLastCalledWith({ url: tarball, method: 'GET', resourceType: 'plugin' });
+    expect(fetcher.mock.calls[0]).toEqual([new URL(permitted), expect.objectContaining({ redirect: 'error' })]);
+    authorize.mockResolvedValue(true); fetcher.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: tarball } }));
+    await expect(store.materialize(entry)).rejects.toThrow('npm 查询失败：302');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it.skipIf(process.platform !== 'win32')('keeps default media initialization offline when bundled resources are absent', async () => {
+    const root = await temp(); const resources = join(root, 'resources');
+    await cp(resolve('apps/desktop/resources'), resources, { recursive: true });
+    const authorize = vi.fn(async () => false);
+    const store = new DesktopExtensions(join(root, 'db.sqlite'), join(root, 'extensions'), resources, undefined, undefined, authorize);
+    await expect(store.initializeDefaults()).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(authorize).not.toHaveBeenCalled(); expect(network.fetch).not.toHaveBeenCalled();
+    expect(readDesktopDocument(join(root, 'db.sqlite'), 'extensions')).toBeNull();
+  });
+
   it('keeps a historical remote URL from replacing the managed built-in Whisper runtime', async () => {
     const root = await temp(); const database = join(root, 'db.sqlite'); const extensionRoot = join(root, 'extensions');
     await cp(resolve('apps/desktop/resources/plugins/whisper'), join(extensionRoot, 'plugins/whisper'), { recursive: true });

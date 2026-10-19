@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model, ToolResult } from '@agent-desktop/model';
 import { InMemorySession, projectRecoveryFacts, type SessionEvent } from '@agent-desktop/session';
-import { InMemoryToolRegistry, ToolRouter, type Tool } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolNotExecutedError, ToolRouter, type Tool } from '@agent-desktop/tools';
 import {
   DeclareVideoOutputsTool,
   PublishVideoOutputTool,
@@ -62,7 +62,8 @@ describe('video delivery authorization recovery gate', () => {
     await wrapped.prepare!({}, context);
     expect(requestApproval).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); expect(nestedExecute).not.toHaveBeenCalled();
 
-    expect(await router.execute({ id: context.toolCallId, name: wrapped.name, input: {} }, context)).toMatchObject({ status: 'error', failureKind: 'denied' });
+    await expect(router.execute({ id: context.toolCallId, name: wrapped.name, input: {} }, context))
+      .rejects.toBeInstanceOf(ToolNotExecutedError);
     expect(nestedExecute).not.toHaveBeenCalled();
     requestApproval.mockResolvedValue(true);
     const complete = vi.fn<Model['complete']>().mockResolvedValueOnce({ toolCalls: [{ id: 'publish' as never, name: wrapped.name, input: { credential: 'secret' } }] })

@@ -23,7 +23,7 @@ export function ModelSelector({ settings, settingsError, busy, disabled, onSelec
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const options = settings?.modelProviders.flatMap(provider => provider.models
-    .filter(model => getConversationCapability(model) !== 'unsupported')
+    .filter(model => getConversationCapability(model, provider.protocol) !== 'unsupported')
     .map(model => ({ provider, model, selected: provider.id === settings.conversationModel?.providerId && model.id === settings.conversationModel?.modelId }))) ?? [];
   const current = options.find(option => option.selected);
   const label = current?.model.displayName ?? (settings === null ? '加载模型…' : settings.conversationModel?.modelId ?? '未配置模型');
@@ -57,14 +57,14 @@ export function ModelSelector({ settings, settingsError, busy, disabled, onSelec
         buttons[next]?.focus();
       }}>
       <div className="composer-model-list">{options.map(({ provider, model, selected }) => {
-        const reason = !provider.apiKey.configured ? '未配置密钥' : getConversationCapability(model) === 'unknown' ? '对话能力未知' : '';
+        const reason = !provider.apiKey.configured ? '未配置密钥' : getConversationCapability(model, provider.protocol) === 'unknown' ? '对话或协议能力未知' : '';
         return <button key={`${provider.id}/${model.id}`} type="button" role="menuitemradio" aria-checked={selected} disabled={busy || !!reason}
           title={`${provider.displayName} · ${model.displayName}${reason ? ` · ${reason}` : ''}`} onClick={() => { setError(''); void onSelect({ providerId: provider.id, modelId: model.id })
             .then(() => close()).catch((failure: unknown) => { if (!(failure instanceof Error)) throw failure; setError(failure.message); }); }}>
           <span className={`model-provider-icon${providerIconPaths[provider.id] ? ' model-provider-brand' : ''}`} aria-label={provider.displayName}>
             {providerIconPaths[provider.id] ? <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={providerIconPaths[provider.id]} /></svg> : provider.displayName.slice(0, 1).toUpperCase()}
           </span>
-          <span className="composer-model-name">{model.displayName}<small>{provider.displayName}{reason ? ` · ${reason}` : getVisionCapability(model) === 'unknown' ? ' · 视觉能力未知' : ''}</small></span>
+          <span className="composer-model-name">{model.displayName}<small>{provider.displayName}{reason ? ` · ${reason}` : getVisionCapability(model, provider.protocol) === 'unknown' ? ' · 视觉能力未知' : ''}</small></span>
           {selected && <Check size={15} aria-label="已选中" />}
         </button>;
       })}</div>

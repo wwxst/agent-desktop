@@ -8,12 +8,24 @@ export class DesktopUpdater {
   private readonly updater = new NsisUpdater({ provider: 'github', owner: 'wwxst', repo: 'agent-desktop' });
   private current: AppUpdateState = { status: 'idle' };
 
-  constructor(private readonly publish: (state: AppUpdateState) => void, private readonly logFilePath: string) {
+  constructor(private readonly publish: (state: AppUpdateState) => void, private readonly logFilePath: string,
+    private readonly authorizeNetwork: (request: { readonly url: string; readonly method: string; readonly resourceType: string }) => Promise<boolean> = async () => true) {
     mkdirSync(dirname(logFilePath), { recursive: true });
-    // 发现新版本即后台下载；退出应用本身不构成安装授权，只有入口点击才安装。
+    // 检查和下载都必须由用户点击更新入口发起；应用启动不产生后台网络副作用。
     this.updater.autoDownload = true;
     this.updater.autoInstallOnAppQuit = false;
     this.updater.allowPrerelease = false;
+    // SDK 使用专用分区；每次请求及 CDN 重定向都经过相同网络准入。
+    this.updater.netSession.webRequest.onBeforeRequest((details, callback) => {
+      void this.authorizeNetwork({ url: details.url, method: details.method, resourceType: 'app-update' }).then(
+        allowed => callback({ cancel: !allowed }),
+        error => {
+          callback({ cancel: true });
+          if (!(error instanceof Error)) throw error;
+          this.reportError(error);
+        },
+      );
+    });
     this.updater.on('checking-for-update', () => this.setState({ status: 'checking' }));
     this.updater.on('update-available', () => this.setState({ status: 'downloading', percent: 0 }));
     this.updater.on('download-progress', progress => this.setState({ status: 'downloading', percent: progress.percent }));
@@ -46,8 +58,12 @@ export class DesktopUpdater {
     this.setState({ status: 'error', message });
   }
 
-  async check(): Promise<void> {
+  async check(userInitiated = true): Promise<void> {
     if (this.current.status !== 'idle' && this.current.status !== 'error' && this.current.status !== 'unavailable') return;
+    if (!userInitiated || !await this.authorizeNetwork({ url: 'https://github.com/wwxst/agent-desktop/releases/latest', method: 'GET', resourceType: 'app-update' })) {
+      this.setState({ status: 'error', message: '更新需要用户从更新入口发起网络操作。' });
+      return;
+    }
     this.setState({ status: 'checking' });
     try { await this.updater.checkForUpdates(); }
     catch (error) {

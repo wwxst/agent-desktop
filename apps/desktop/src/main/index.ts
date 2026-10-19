@@ -71,11 +71,10 @@ import { assertTurnToolNames, readTurnConfiguration, type TurnConfiguration } fr
 import { DESKTOP_DATABASE_FILE_NAME } from './desktop-database.js';
 import { deleteMemories, loadMemories } from './memory.js';
 import { SaveMemoryTool } from './memory-tool.js';
-import { migrateLegacyDesktopFiles } from './legacy-storage-migration.js';
 import { DesktopExtensions } from './extensions.js';
 import { prepareExtensions } from './extension-runtime.js';
 import { ExtensionConnections } from './extension-connections.js';
-import { InMemoryToolRegistry, UpdatePlanTool } from '@agent-desktop/tools';
+import { InMemoryToolRegistry, ToolRouter, UpdatePlanTool } from '@agent-desktop/tools';
 import { projectAgentTaskState, qualifyTaskToolEvidence, taskToolGate } from './agent-task-state.js';
 import { DesktopUpdater } from './app-updater.js';
 import { VerifyToolOutcomeTool } from './verify-tool.js';
@@ -300,7 +299,8 @@ function connectionStore(): ExtensionConnections {
     (request, signal) => activeSession().network.authorizeUserInitiated(request));
 }
 function extensionStore(): DesktopExtensions {
-  return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore(), () => mainWindow?.webContents.send(DESKTOP_CHANNELS.extensionsChanged));
+  return desktopExtensions ??= new DesktopExtensions(persistenceFilePath(), join(app.getPath('userData'), 'extensions'), join(app.getAppPath(), 'resources'), connectionStore(),
+    () => mainWindow?.webContents.send(DESKTOP_CHANNELS.extensionsChanged), request => activeSession().network.authorizeUserInitiated(request));
 }
 
 async function watchCurrentSkills(): Promise<void> {
@@ -648,7 +648,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(DESKTOP_CHANNELS.getUpdateState, () => desktopUpdater?.state ?? { status: 'idle' });
   ipcMain.handle(DESKTOP_CHANNELS.retryUpdate, async () => {
     if (desktopUpdater === undefined) throw new Error('开发模式不支持安装更新。');
-    await desktopUpdater.check();
+    await desktopUpdater.check(true);
   });
   ipcMain.handle(DESKTOP_CHANNELS.installUpdate, async () => {
     if (desktopUpdater === undefined) throw new Error('开发模式不支持安装更新。');
@@ -831,7 +831,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(DESKTOP_CHANNELS.saveClientState, async (_event, state: unknown) => {
     if (isTaskRunning) throw new Error('Agent 正在执行，无法保存未完成的会话状态。');
     if (persistenceFailure !== undefined) throw persistenceFailure;
-    const parsed = parseClientState(state, undefined, sessionId => sessions.get(sessionId)?.session.events() ?? [],
+    const parsed = parseClientState(state, sessionId => sessions.get(sessionId)?.session.events() ?? [],
       sessionId => sessions.get(sessionId)?.session.turnMessageBindings() ?? []);
     const snapshot = reconcileRecoveredClientState(parsed);
     const persisted = parseDesktopState(currentPersistedState(snapshot));
@@ -1122,7 +1122,11 @@ function registerIpcHandlers(): void {
           baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
           authorizeNetwork: (request, requestSignal) => session.network.requireProvider(request, requestSignal),
           ...(settings.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: settings.modelMaxOutputTokens }),
-          ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }) }),
+          ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }),
+          supportsTools: settings.modelCapabilities.tools === 'supported',
+          supportsStreaming: settings.modelCapabilities.streaming === 'supported',
+          ...(settings.modelCapabilities.parallelTools === 'unknown' ? {} : { supportsParallelTools: settings.modelCapabilities.parallelTools === 'supported' }),
+          ...(settings.modelReasoningEffort === undefined ? {} : { reasoningEffort: settings.modelReasoningEffort }) }),
         mediaTools,
         ...(settings.visionUnavailableReason === undefined ? {} : { visionUnavailableReason: settings.visionUnavailableReason }),
         ...(visionTool === undefined ? {} : { visionTool: extensions.wrapTool(visionTool) }),
@@ -1177,7 +1181,11 @@ function registerIpcHandlers(): void {
       // 媒体工具已注入且已包装钩子，只追加其他扩展工具。
       for (const tool of extensions.tools) if (!WHISPER_TOOLS.has(tool.name) && !FFMPEG_TOOLS.has(tool.name) && tool !== visionTool) agent.tools.register(tool);
       const authorizedTools = new InMemoryToolRegistry();
-      for (const tool of agent.tools.list()) authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
+      for (const tool of agent.tools.list()) {
+        // 当前宿主没有操作系统级进程隔离；受限模式既不暴露也不允许本机命令与终端写入。
+        if (permissionMode !== 'full-access' && ['run_command', 'open_terminal', 'write_terminal'].includes(tool.name)) continue;
+        authorizedTools.register(['declare_video_outputs', 'publish_video_output'].includes(tool.name) ? authorizeVideoDeliveryTool(tool, mediaAccess) : tool);
+      }
       agent = { ...agent, tools: authorizedTools };
       if (safeRecovery) {
         const safeTools = new InMemoryToolRegistry();
@@ -1198,7 +1206,9 @@ function registerIpcHandlers(): void {
       // 宿主计划工具在扩展包裹后注册，不让插件钩子变成计划事实的一部分。
       agent.tools.register(new UpdatePlanTool(session.session, qualifyTaskToolEvidence));
       agent.tools.register(new VerifyToolOutcomeTool(session.session, workspace));
-      const toolNames = agent.tools.list().map(tool => tool.name);
+      const toolCapabilities = collectToolCapabilities(agent.tools.list(), visionTool, settings.visionUnavailableReason,
+        settings.modelCapabilities.tools === 'supported');
+      const toolNames = new ToolRouter(agent.tools, toolCapabilities).definitions().map(tool => tool.name);
       // 恢复时使用原轮次实际暴露的集合；未知效果安全模式只能收紧到安全子集，
       // 普通恢复要求集合完全一致，避免插件/技能漂移后让模型继续使用不同能力。
       if (recovery !== undefined) assertTurnToolNames(configuration, toolNames, safeRecovery);
@@ -1258,7 +1268,8 @@ function registerIpcHandlers(): void {
           qualifyToolEvidence: qualifyTaskToolEvidence,
           beforeToolCall: input => taskToolGate(session.session.events(), input),
           // 能力集合来自安全恢复过滤后的最终注册表；未知能力保留，视觉按本轮路由和实际注册状态筛选。
-          toolCapabilities: collectToolCapabilities(agent.tools.list(), visionTool, settings.visionUnavailableReason),
+          toolCapabilities,
+          parallelToolCalls: settings.modelCapabilities.parallelTools === 'supported',
           ...(recovery === undefined ? {} : { maxSteps: 24, maxToolCalls: 48 }),
           // 动态扩展、用户指令与记忆已组装完；只有真实配置的两项限额齐全才启用预算。
           ...(settings.modelContextWindow === undefined || settings.modelMaxOutputTokens === undefined ? {}
@@ -1551,7 +1562,6 @@ function createWindow(): void {
 
 void app.whenReady().then(async () => {
   try {
-    await migrateLegacyDesktopFiles(persistenceFilePath());
     await restoreDesktopState();
   } catch (error) {
     const message = error instanceof Error ? error.message : '未知错误。';
@@ -1572,11 +1582,10 @@ void app.whenReady().then(async () => {
   if (app.isPackaged && process.platform === 'win32') {
     desktopUpdater = new DesktopUpdater(state => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_CHANNELS.updateState, state);
-    }, join(app.getPath('logs'), 'app-updater.log'));
+    }, join(app.getPath('logs'), 'app-updater.log'), request => activeSession().network.authorizeUserInitiated(request));
   }
   registerIpcHandlers();
   createWindow();
-  if (desktopUpdater !== undefined) void desktopUpdater.check();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

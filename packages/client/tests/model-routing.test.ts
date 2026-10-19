@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeSettings } from '../src/api.js';
 import { DEFAULT_MODEL_PROVIDERS } from '../src/model-defaults.js';
-import { getConversationCapability, resolveVisionModel } from '../src/model-capabilities.js';
+import { getConversationCapability, resolveVisionModel, UNKNOWN_MODEL_CAPABILITIES } from '../src/model-capabilities.js';
 
 const settings: RuntimeSettings = { modelProviders: DEFAULT_MODEL_PROVIDERS.map(provider => ({ ...provider, apiKey: { configured: true } })),
   conversationModel: { providerId: 'deepseek', modelId: 'deepseek-flash' }, fallbackVisionModel: { providerId: 'openai', modelId: 'gpt-5.6-luna' }, fallbackVisionEnabled: true,
@@ -26,7 +26,7 @@ describe('capability based vision routing', () => {
     const textOnly = { ...settings, conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' } };
     expect(resolveVisionModel({ ...textOnly, modelProviders: settings.modelProviders.map(provider => provider.id === 'openai' ? { ...provider, apiKey: { configured: false } } : provider) })).toMatchObject({ available: false });
     expect(resolveVisionModel({ ...textOnly, fallbackVisionModel: textOnly.conversationModel })).toMatchObject({ available: false });
-    expect(getConversationCapability({ capabilities: { textInput: 'supported', textOutput: 'unsupported', imageInput: 'unknown', imageUnderstanding: 'unknown' } })).toBe('unsupported');
+    expect(getConversationCapability({ capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'unsupported', imageInput: 'unknown', imageUnderstanding: 'unknown' } })).toBe('unsupported');
   });
   it.each(['unknown', 'unsupported'] as const)('requires the backup to support the textual image instructions: %s', textInput => {
     expect(resolveVisionModel({ ...settings, conversationModel: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },

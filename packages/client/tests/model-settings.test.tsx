@@ -28,6 +28,7 @@ function setup(save = vi.fn<AgentClientApi['saveRuntimeSettings']>(async () => i
 function confirmTextCapabilities() {
   fireEvent.change(screen.getByLabelText('模型 1 文本输入'), { target: { value: 'supported' } });
   fireEvent.change(screen.getByLabelText('模型 1 文本输出'), { target: { value: 'supported' } });
+  fireEvent.change(screen.getByLabelText('模型 1 Chat Completions 协议'), { target: { value: 'supported' } });
 }
 it('saves a complete provider explicitly, accepts token units and drops the secret after success', async () => {
   const { save } = setup();
@@ -180,7 +181,7 @@ it('adds custom models with unknown capabilities and saves only explicit capabil
   fireEvent.change(screen.getByLabelText('模型 1 文本输出'), { target: { value: 'supported' } });
   fireEvent.change(screen.getByLabelText('模型 1 图片输入'), { target: { value: 'supported' } });
   fireEvent.click(screen.getByRole('button', { name: '保存' }));
-  await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ modelProvider: expect.objectContaining({ models: [expect.objectContaining({ capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'unknown' } })] }) })));
+  await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ modelProvider: expect.objectContaining({ models: [expect.objectContaining({ capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'unknown' } })] }) })));
   expect(save.mock.calls[0]![0]).not.toHaveProperty('fallbackVisionEnabled');
 });
 it('retains a fallback candidate with unknown capability and disables its use in the same provider save', async () => {
@@ -246,7 +247,7 @@ it('confirms the last supplier deletion and keeps its card after a failed save',
 });
 it('keeps an unverified fallback candidate disabled and closed', () => {
   const settings: RuntimeSettings = { ...initial, fallbackVisionEnabled: false, fallbackVisionModel: { providerId: 'openai', modelId: 'unknown' },
-    modelProviders: initial.modelProviders.map(provider => provider.id === 'openai' ? { ...provider, apiKey: { configured: true, source: 'saved' }, models: [{ id: 'unknown', displayName: '未知模型', capabilities: UNKNOWN_MODEL_CAPABILITIES }, { id: 'image-only', displayName: '仅图片模型', capabilities: { textInput: 'unsupported', textOutput: 'unsupported', imageInput: 'supported', imageUnderstanding: 'supported' } }] } : provider) };
+    modelProviders: initial.modelProviders.map(provider => provider.id === 'openai' ? { ...provider, apiKey: { configured: true, source: 'saved' }, models: [{ id: 'unknown', displayName: '未知模型', capabilities: UNKNOWN_MODEL_CAPABILITIES }, { id: 'image-only', displayName: '仅图片模型', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'unsupported', textOutput: 'unsupported', imageInput: 'supported', imageUnderstanding: 'supported' } }] } : provider) };
   setup(undefined, undefined, settings, { openEditor: false, isProcessing: false });
   fireEvent.click(screen.getByText('高级设置'));
   const select = screen.getByLabelText('备用视觉模型');

@@ -62,7 +62,7 @@ function responseResult(value: unknown): ModelResponse {
         if (responseRecord(part) && part.type === 'refusal') throw new Error(typeof part.refusal === 'string' ? part.refusal : '模型拒绝了请求。');
       }
     } else if (item.type === 'function_call') {
-      if (typeof item.call_id !== 'string' || typeof item.name !== 'string' || typeof item.arguments !== 'string') throw new Error('Responses API 工具调用缺少必要字段。');
+      if (typeof item.call_id !== 'string' || item.call_id.length === 0 || typeof item.name !== 'string' || item.name.length === 0 || typeof item.arguments !== 'string') throw new Error('Responses API 工具调用缺少必要字段。');
       toolCalls.push({ id: item.call_id as ToolCallId, name: item.name, input: JSON.parse(item.arguments) as unknown });
     }
   }
@@ -71,7 +71,7 @@ function responseResult(value: unknown): ModelResponse {
 }
 
 /** Responses 的会话输入由供应商边界转换；Core 继续只保存完整文本和工具事实。 */
-async function completeResponses(request: ModelRequest, options: { apiKey: string; baseUrl: string; model: string; maxOutputTokens?: number; authorizeNetwork?: OpenAICompatibleModelOptions['authorizeNetwork'] }): Promise<ModelResponse> {
+async function completeResponses(request: ModelRequest, options: OpenAICompatibleModelOptions): Promise<ModelResponse> {
   const input = request.messages.flatMap<Record<string, unknown>>(message => {
     if (message.role === 'tool') return [{ type: 'function_call_output', call_id: message.toolCallId, output: message.content }];
     if (message.role === 'user') return [{ role: 'user', content: message.content }];
@@ -83,12 +83,20 @@ async function completeResponses(request: ModelRequest, options: { apiKey: strin
   await options.authorizeNetwork?.({ url: `${options.baseUrl}/responses`, method: 'POST' }, request.signal);
   const response = await fetch(`${options.baseUrl}/responses`, {
     method: 'POST', redirect: 'manual', headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: options.model, instructions: request.systemPrompt, input, stream: true, store: false,
-      tools: request.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })),
+    body: JSON.stringify({ model: options.model, instructions: request.systemPrompt, input, stream: options.supportsStreaming !== false, store: false,
+      ...(request.tools.length === 0 ? {} : { tools: request.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })) }),
+      ...(request.tools.length === 0 || options.supportsParallelTools === undefined ? {} : { parallel_tool_calls: options.supportsParallelTools }),
+      ...(options.reasoningEffort === undefined ? {} : { reasoning: { effort: options.reasoningEffort } }),
       ...(options.maxOutputTokens === undefined ? {} : { max_output_tokens: options.maxOutputTokens }) }),
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   }).catch((error: unknown) => { throw classifyConnectionError(error, false); });
   if (!response.ok) throw responseHttpError(response, 'Responses API');
+  // 不支持流式的模型直接读取同一协议的完整响应，不把 JSON 当作 SSE 解析。
+  if (options.supportsStreaming === false) {
+    const result = responseResult(await response.json().catch((error: unknown) => { throw classifyConnectionError(error, false); }));
+    request.signal?.throwIfAborted();
+    return result;
+  }
   if (response.body === null) throw new Error('Responses API 响应缺少 body。');
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let partial = false;
   try {
@@ -132,6 +140,13 @@ export interface OpenAICompatibleModelOptions {
   readonly protocol?: 'chat-completions' | 'responses';
   readonly maxOutputTokens?: number;
   readonly disableThinking?: boolean;
+  /** Desktop 传入协商结果；CLI 未配置时沿用工具与流式调用。 */
+  readonly supportsTools?: boolean;
+  readonly supportsStreaming?: boolean;
+  /** 仅显式配置时发送协议字段，避免给未知供应商添加可选参数。 */
+  readonly supportsParallelTools?: boolean;
+  /** 宿主已根据所选模型验证的推理强度，重试和摘要请求复用同一值。 */
+  readonly reasoningEffort?: string;
   /** 宿主网络策略；Provider 不自行决定是否允许外部请求。 */
   readonly authorizeNetwork?: (request: { readonly url: string; readonly method?: string }, signal?: AbortSignal) => Promise<void>;
 }
@@ -381,6 +396,36 @@ function isSuccessfulFinishReason(finishReason: string): boolean {
   return finishReason === 'stop' || finishReason === 'tool_calls';
 }
 
+/** 完整 Chat 响应与 SSE 使用相同的结束语义、工具身份和 JSON 参数约束。 */
+function readChatResponse(value: unknown): ModelResponse {
+  if (!isRecord(value) || !Array.isArray(value.choices) || !isRecord(value.choices[0])) {
+    throw new Error('Chat Completions API response is missing a choices entry');
+  }
+  const choice = value.choices[0];
+  if (typeof choice.finish_reason !== 'string' || !isSuccessfulFinishReason(choice.finish_reason)) {
+    throw new Error(`Chat Completions API response terminated with finish_reason ${String(choice.finish_reason)}`);
+  }
+  if (!isRecord(choice.message)) throw new Error('Chat Completions API response is missing a message');
+  const message = choice.message;
+  if (message.content !== undefined && message.content !== null && typeof message.content !== 'string') {
+    throw new Error('Chat Completions API response content must be text or null');
+  }
+  if (message.tool_calls !== undefined && !Array.isArray(message.tool_calls)) {
+    throw new Error('Chat Completions API response tool_calls must be an array');
+  }
+  const toolCalls: ToolCall[] = [];
+  for (const call of message.tool_calls ?? []) {
+    if (!isRecord(call) || typeof call.id !== 'string' || call.id.length === 0 || !isRecord(call.function)
+      || typeof call.function.name !== 'string' || call.function.name.length === 0 || typeof call.function.arguments !== 'string') {
+      throw new Error('Chat Completions API Tool Call is missing required fields');
+    }
+    toolCalls.push({ id: call.id as ToolCallId, name: call.function.name, input: mapToolArguments(call.function.name, call.function.arguments) });
+  }
+  const usage = readUsage(value.usage, 'prompt_tokens', 'completion_tokens');
+  return { ...(typeof message.content === 'string' && message.content.length > 0 ? { text: message.content } : {}),
+    toolCalls, ...(usage === undefined ? {} : { usage }) };
+}
+
 /**
  * 读取 SSE 流并拼装完整 Model Response。
  * 文本增量只通过 onTextDelta 实时上报；返回值始终是完整响应，
@@ -515,10 +560,14 @@ export class OpenAICompatibleModel implements Model {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    // 工具曝光由 Runtime 决定；若组装契约失配，在网络副作用之前直接失败。
+    if (this.options.supportsTools === false && request.tools.length > 0) {
+      throw new Error('The selected model does not support tools');
+    }
     // 摘要和正式请求各自使用本次额度；缺省时沿用实例配置，不修改后续请求的默认值。
     const maxOutputTokens = request.maxOutputTokens ?? this.options.maxOutputTokens;
-    if (this.options.protocol === 'responses') return completeResponses(request, { apiKey: this.apiKey, baseUrl: this.baseUrl,
-      model: this.model, ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }), ...(this.options.authorizeNetwork === undefined ? {} : { authorizeNetwork: this.options.authorizeNetwork }) });
+    if (this.options.protocol === 'responses') return completeResponses(request, { ...this.options, baseUrl: this.baseUrl,
+      ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) });
     await this.options.authorizeNetwork?.({ url: `${this.baseUrl}/chat/completions`, method: 'POST' }, request.signal);
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -530,14 +579,15 @@ export class OpenAICompatibleModel implements Model {
       body: JSON.stringify({
         model: this.model,
         messages: mapMessages(request),
-        tools: request.tools.map(mapToolDefinition),
+        ...(request.tools.length === 0 ? {} : { tools: request.tools.map(mapToolDefinition) }),
+        ...(request.tools.length === 0 || this.options.supportsParallelTools === undefined ? {} : { parallel_tool_calls: this.options.supportsParallelTools }),
+        ...(this.options.reasoningEffort === undefined ? {} : { reasoning_effort: this.options.reasoningEffort }),
         // 仅真实入口明确要求时发送此协议扩展，通用供应商不继承 DeepSeek 参数。
         ...(this.options.disableThinking === true ? { thinking: { type: 'disabled' } } : {}),
         ...(maxOutputTokens === undefined ? {} : { max_tokens: maxOutputTokens }),
-        // 始终使用 SSE 流式响应，让文本增量能在 Turn 执行期间实时展示。
-        stream: true,
-        // 请求协议原生的最终用量；未返回时保持未知，不从文本长度推算。
-        stream_options: { include_usage: true },
+        // 能力协商明确不支持流式时使用完整 JSON；流式时才请求协议原生尾帧用量。
+        stream: this.options.supportsStreaming !== false,
+        ...(this.options.supportsStreaming === false ? {} : { stream_options: { include_usage: true } }),
       }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     }).catch((error: unknown) => { throw classifyConnectionError(error, false); });
@@ -545,6 +595,11 @@ export class OpenAICompatibleModel implements Model {
     // HTTP 状态属于 Provider 边界；直接抛出清晰错误并交给现有调用链传播。
     if (!response.ok) {
       throw responseHttpError(response, 'Chat Completions API');
+    }
+    if (this.options.supportsStreaming === false) {
+      const result = readChatResponse(await response.json().catch((error: unknown) => { throw classifyConnectionError(error, false); }));
+      request.signal?.throwIfAborted();
+      return result;
     }
     // 200 响应必须带 body；缺失说明响应不符合 HTTP 契约，直接暴露程序错误。
     if (response.body === null) {

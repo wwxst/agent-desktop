@@ -50,10 +50,16 @@ export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecu
         baseUrl: settings.modelBaseUrl, model: settings.modelId, protocol: settings.modelProtocol,
         authorizeNetwork,
         ...(settings.modelMaxOutputTokens === undefined ? {} : { maxOutputTokens: settings.modelMaxOutputTokens }),
-        ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }) }),
+        ...(settings.modelDisableThinking === undefined ? {} : { disableThinking: settings.modelDisableThinking }),
+        supportsTools: settings.modelCapabilities.tools === 'supported',
+        supportsStreaming: settings.modelCapabilities.streaming === 'supported',
+        ...(settings.modelCapabilities.parallelTools === 'unknown' ? {} : { supportsParallelTools: settings.modelCapabilities.parallelTools === 'supported' }),
+        ...(settings.modelReasoningEffort === undefined ? {} : { reasoningEffort: settings.modelReasoningEffort }) }),
       systemPrompt: { build: () => `你是只读文件检查子智能体。只执行明确委派，不修改文件，不执行命令，不继续委派。${directory === undefined ? '尚未设置工作目录，读取时需要绝对路径。' : `工作目录：${directory}。`}${fileAccess === 'all' ? '宿主已授予全部本地文件的读取范围。' : '只读取已确认工作目录内的文件。'}返回有依据的简短结论和文件位置，不能把工具失败当作完成。` },
     }, task.instruction, {
       signal: controller.signal, maxSteps: 8,
+      toolCapabilities: settings.modelCapabilities.tools === 'supported' ? ['code'] : [],
+      parallelToolCalls: settings.modelCapabilities.parallelTools === 'supported',
       trace: (event) => {
         if (event.type === 'tool.started' || event.type === 'tool.completed' || event.type === 'tool.failed') {
           publish({ taskId, title: task.title, toolName: event.toolName,

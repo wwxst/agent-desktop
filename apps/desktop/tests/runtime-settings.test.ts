@@ -1,3 +1,4 @@
+import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 import { createServer } from 'node:http';
 import { DEFAULT_MODEL_PROVIDERS, type RuntimeModelProviderUpdate } from '@agent-desktop/client';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -11,6 +12,7 @@ import {
   loadRuntimeConfiguration,
   loadRuntimeSettings,
   saveRuntimeSettings,
+  snapshotRuntimeSettings,
 } from '../src/main/runtime-settings.js';
 import type { SafeStoragePort } from '../src/main/safe-storage.js';
 
@@ -39,9 +41,26 @@ afterEach(async () => {
 
 const provider = (changes: Partial<RuntimeModelProviderUpdate> = {}): RuntimeModelProviderUpdate => ({
   id: 'custom-test', displayName: '测试供应商', baseUrl: 'https://example.com/v1', protocol: 'responses',
-  models: [{ id: 'test-model', displayName: '测试模型', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' }, contextWindow: 128000, maxOutputTokens: 4000 }], ...changes,
+  models: [{ id: 'test-model', displayName: '测试模型', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' }, contextWindow: 128000, maxOutputTokens: 4000 }], ...changes,
 });
 describe('desktop runtime settings', () => {
+  it('pins protocol, supported reasoning and capabilities across saved turn configuration and later model changes', async () => {
+    const { database } = await paths();
+    const base = provider({ protocol: 'chat-completions' });
+    const model = { ...base.models[0]!, capabilities: { ...base.models[0]!.capabilities,
+      tools: 'supported' as const, streaming: 'unsupported' as const, parallelTools: 'unsupported' as const, reasoning: 'supported' as const },
+      reasoningEfforts: ['low', 'high'], reasoningEffort: 'high' };
+    const selected = { providerId: base.id, modelId: model.id };
+    await saveRuntimeSettings(database, { modelProvider: { ...base, models: [model] }, conversationModel: selected }, storage);
+    const snapshot = snapshotRuntimeSettings(database, {});
+    await saveRuntimeSettings(database, { modelProvider: { ...base, protocol: 'responses', models: [{ ...model, reasoningEffort: 'low' }] } }, storage);
+    expect(await loadRuntimeConfiguration(database, storage, {}, snapshot)).toMatchObject({
+      modelProtocol: 'chat-completions', modelReasoningEffort: 'high', modelCapabilities: { tools: 'supported', streaming: 'unsupported', parallelTools: 'unsupported' },
+    });
+    expect(await loadRuntimeConfiguration(database, storage, {})).toMatchObject({ modelProtocol: 'responses', modelReasoningEffort: 'low' });
+    expect(() => parseRuntimeSettingsUpdate({ modelProvider: { ...base, models: [{ ...model, reasoningEffort: 'invalid' }] } })).toThrow('不支持所选推理强度');
+    expect(() => parseRuntimeSettingsUpdate({ modelProvider: { ...base, models: [{ ...model, capabilities: { ...model.capabilities, reasoning: 'unknown' } }] } })).toThrow('不支持所选推理强度');
+  });
   it('preserves appearance independently of selected models', async () => {
     const { database } = await paths();
     await saveRuntimeSettings(database, { theme: 'dark' }, storage);
@@ -62,10 +81,8 @@ describe('desktop runtime settings', () => {
     const settings = await loadRuntimeSettings(database, env);
     expect(settings.modelProviders[0]).toMatchObject({ baseUrl: 'https://proxy.test/v1', apiKey: { configured: true, source: 'environment' }, models: [{ id: 'environment-model' }] });
     expect(JSON.stringify(settings)).not.toContain('environment-key');
-    const configuration = await loadRuntimeConfiguration(database, storage, env);
-    expect(configuration).toMatchObject({ conversationModel: { providerId: 'deepseek', modelId: 'environment-model' }, modelApiKey: 'environment-key', modelId: 'environment-model' });
-    expect(configuration).not.toHaveProperty('modelDisableThinking');
-    expect(configuration).not.toHaveProperty('whisperModelPath');
+    // 中转地址或自定义模型不继承官方协议能力；用户确认前不能发起任务。
+    await expect(loadRuntimeConfiguration(database, storage, env)).rejects.toThrow(/尚未配置|协议能力/);
   });
   it('saves encrypted credentials and drives both conversation and vision configuration after reload', async () => {
     const { database } = await paths();
@@ -99,14 +116,15 @@ describe('desktop runtime settings', () => {
     const official = { DEEPSEEK_API_KEY: 'environment-key', DEEPSEEK_MODEL: 'deepseek-flash' };
     expect(await loadRuntimeConfiguration(database, storage, official)).toMatchObject({ visionModel: 'deepseek-flash', modelContextWindow: 1048576 });
     const relay = { ...official, DEEPSEEK_BASE_URL: 'https://relay.test/v1' };
-    expect(await loadRuntimeConfiguration(database, storage, relay)).toMatchObject({ modelId: 'deepseek-flash', visionUnavailableReason: expect.stringContaining('未知') });
-    expect(await loadRuntimeConfiguration(database, storage, relay)).not.toHaveProperty('visionApiKey');
-    expect(await loadRuntimeConfiguration(database, storage, relay)).not.toHaveProperty('modelContextWindow');
+    const relaySettings = await loadRuntimeSettings(database, relay);
+    expect(relaySettings.modelProviders[0]!.models[0]!.capabilities).toMatchObject({ chatCompletions: 'unknown', tools: 'unknown', imageInput: 'unknown' });
+    expect(relaySettings.modelProviders[0]!.models[0]).not.toHaveProperty('contextWindow');
+    await expect(loadRuntimeConfiguration(database, storage, relay)).rejects.toThrow(/尚未配置|协议能力/);
   });
   it('keeps independently configured window and output limits without inventing the missing value', async () => {
     const { database } = await paths();
     const choice = { providerId: 'custom-test', modelId: 'test-model' };
-    const model = { id: 'test-model', displayName: '测试模型', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const } };
+    const model = { id: 'test-model', displayName: '测试模型', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const } };
     await saveRuntimeSettings(database, {
       modelProvider: provider({ models: [{ ...model, contextWindow: 64000 }] }), conversationModel: choice,
     }, storage);
@@ -128,9 +146,9 @@ describe('desktop runtime settings', () => {
     const { database } = await paths();
     await saveRuntimeSettings(database, {
       modelProvider: provider({ models: [
-        { id: 'large', displayName: '大窗口', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const }, contextWindow: 128000, maxOutputTokens: 4096 },
-        { id: 'small', displayName: '小窗口', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const }, contextWindow: 16000, maxOutputTokens: 1024 },
-        { id: 'unspecified', displayName: '未配置预算', capabilities: { textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const } },
+        { id: 'large', displayName: '大窗口', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const }, contextWindow: 128000, maxOutputTokens: 4096 },
+        { id: 'small', displayName: '小窗口', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const }, contextWindow: 16000, maxOutputTokens: 1024 },
+        { id: 'unspecified', displayName: '未配置预算', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported' as const, textOutput: 'supported' as const, imageInput: 'unsupported' as const, imageUnderstanding: 'unsupported' as const } },
       ] }),
       conversationModel: { providerId: 'custom-test', modelId: 'large' },
     }, storage);
@@ -256,10 +274,10 @@ describe('desktop runtime settings', () => {
     { modelProvider: provider({ models: [] }) },
     { modelProvider: provider({ baseUrl: 'file:///a' }) },
     { modelProvider: provider({ baseUrl: 'https://user:secret@example.com' }) },
-    { modelProvider: provider({ models: [{ id: '', displayName: 'name', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }) },
-    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' }, maxOutputTokens: -1 }] }) },
-    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' }, contextWindow: 10, maxOutputTokens: 20 }] }) },
-    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }, { id: 'a', displayName: 'a', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }) },
+    { modelProvider: provider({ models: [{ id: '', displayName: 'name', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }) },
+    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' }, maxOutputTokens: -1 }] }) },
+    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' }, contextWindow: 10, maxOutputTokens: 20 }] }) },
+    { modelProvider: provider({ models: [{ id: 'a', displayName: 'a', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }, { id: 'a', displayName: 'a', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, responses: 'supported' as const, chatCompletions: 'supported' as const, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } }] }) },
     { theme: 'purple' },
   ])('validates user configuration at IPC boundary: %j', value => {
     expect(() => parseRuntimeSettingsUpdate(value)).toThrow();
@@ -284,9 +302,9 @@ describe('desktop runtime settings', () => {
       const { apiKey: _key, ...savedQuery } = query;
       const authorizeNetwork = vi.fn(async () => true);
       expect(await listProviderModels(database, savedQuery, storage, authorizeNetwork)).toEqual([
-        { id: 'discovered-model', displayName: '供应商模型', capabilities: { textInput: 'unknown', textOutput: 'unknown', imageInput: 'unknown', imageUnderstanding: 'unknown' } },
-        { id: 'deepseek-flash', displayName: 'DeepSeek V4.1 Flash', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } },
-        { id: 'deepseek-v4-pro', displayName: 'deepseek-v4-pro', capabilities: { textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } },
+        { id: 'discovered-model', displayName: '供应商模型', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'unknown', textOutput: 'unknown', imageInput: 'unknown', imageUnderstanding: 'unknown' } },
+        { id: 'deepseek-flash', displayName: 'DeepSeek V4.1 Flash', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported', imageInput: 'supported', imageUnderstanding: 'supported' } },
+        { id: 'deepseek-v4-pro', displayName: 'deepseek-v4-pro', capabilities: { ...UNKNOWN_MODEL_CAPABILITIES, textInput: 'supported', textOutput: 'supported', imageInput: 'unsupported', imageUnderstanding: 'unsupported' } },
       ]);
       expect(authorizeNetwork).toHaveBeenCalledExactlyOnceWith({ url: `${query.baseUrl}/models`, method: 'GET' });
       expect(JSON.stringify(authorizeNetwork.mock.calls)).not.toContain('saved-key');
