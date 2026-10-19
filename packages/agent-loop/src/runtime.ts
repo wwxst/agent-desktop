@@ -15,7 +15,7 @@ export interface AgentRuntimeState {
 }
 export type AgentRuntimeEvent =
   | { readonly type: 'runtime.state'; readonly state: AgentRuntimeState }
-  | { readonly type: 'session.events'; readonly startIndex: number; readonly events: readonly SessionEvent[] };
+  | { readonly type: 'session.events'; readonly startSequence: number; readonly events: readonly SessionEvent[] };
 
 /** 宿主准备与收尾共用同一取消信号，只有 run 进入正式的模型/工具循环。 */
 export interface RuntimeTurnContext {
@@ -38,11 +38,11 @@ interface ActiveTurn {
 export class AgentRuntime {
   private active: ActiveTurn | undefined;
   private latestTurnId: TurnId | undefined;
-  private publishedEventCount: number;
+  private publishedSequence: number;
   private readonly listeners = new Set<(event: AgentRuntimeEvent) => void>();
 
   constructor(readonly session: Session) {
-    this.publishedEventCount = session.events().length;
+    this.publishedSequence = session.events().at(-1)?.sequence ?? 0;
     this.latestTurnId = session.events().findLast(event => event.type === 'turn.started')?.turnId;
   }
 
@@ -150,10 +150,9 @@ export class AgentRuntime {
       if (!(error instanceof SessionPersistenceError) && error instanceof Error && committed
         && projectTurnState(this.events(), start.turnId) === 'started') {
         this.session.append(error.name === 'AbortError'
-          ? { type: 'turn.cancelled', turnId: start.turnId,
-            reason: active.controller.signal.reason instanceof TurnCancellationError ? active.controller.signal.reason.reason
-              : error instanceof TurnCancellationError ? error.reason : 'external' }
-          : { type: 'turn.failed', turnId: start.turnId, errorName: error.name, errorMessage: error.message });
+          ? { type: 'turn.cancelled', turnId: start.turnId, payload: { reason: active.controller.signal.reason instanceof TurnCancellationError ? active.controller.signal.reason.reason
+              : error instanceof TurnCancellationError ? error.reason : 'external' } }
+          : { type: 'turn.failed', turnId: start.turnId, payload: { errorName: error.name, errorMessage: error.message } });
       }
       throw error;
     } finally {
@@ -166,10 +165,10 @@ export class AgentRuntime {
 
   private publish(): void {
     const events = this.events();
-    if (events.length > this.publishedEventCount) {
-      const event: AgentRuntimeEvent = { type: 'session.events', startIndex: this.publishedEventCount,
-        events: events.slice(this.publishedEventCount) };
-      this.publishedEventCount = events.length;
+    const pending = events.filter(event => event.sequence > this.publishedSequence);
+    if (pending.length > 0) {
+      const event: AgentRuntimeEvent = { type: 'session.events', startSequence: pending[0]!.sequence, events: pending };
+      this.publishedSequence = pending.at(-1)!.sequence;
       for (const listener of this.listeners) listener(event);
     }
     const event: AgentRuntimeEvent = { type: 'runtime.state', state: this.state() };

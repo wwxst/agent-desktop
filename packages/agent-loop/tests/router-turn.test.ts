@@ -33,9 +33,9 @@ describe('routed tool execution in a real Turn', () => {
 
     expect(execute).not.toHaveBeenCalled();
     expect(requests[0]!.tools).toEqual([]);
-    expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ boundary: 'not-executed', toolCallId: 'write' });
-    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ toolCallId: 'write',
-      result: { status: 'error', failureKind: 'permanent', message: 'Tool not found: write' } });
+    expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ payload: { boundary: 'not-executed', toolCallId: 'write' } });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { toolCallId: 'write',
+      result: { status: 'error', failureKind: 'permanent', message: 'Tool not found: write' } } });
     expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
@@ -56,7 +56,7 @@ describe('routed tool execution in a real Turn', () => {
     expect(requestApproval).toHaveBeenCalledOnce();
     expect(execute).not.toHaveBeenCalled();
     expect(effect).not.toHaveBeenCalled();
-    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ executionBoundary: 'not-executed', result: { status: 'error', failureKind: 'denied' } });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { executionBoundary: 'not-executed', result: { status: 'error', failureKind: 'denied' } } });
     expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
@@ -82,9 +82,9 @@ describe('routed tool execution in a real Turn', () => {
     expect(effect).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
     expect(session.events().some(event => event.type === 'tool.effect.prepared' || event.type === 'tool.result')).toBe(false);
-    expect(session.events().find(event => event.type === 'effect.outcome.verified')).toMatchObject({
+    expect(session.events().find(event => event.type === 'effect.outcome.verified')).toMatchObject({ payload: {
       sourceEventIndex: session.events().findIndex(event => event.type === 'tool.called'),
-      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'host', reference: 'tool-router:before-execution' } });
+      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'host', reference: 'tool-router:before-execution' } } });
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     expect(session.events().at(-1)?.type).toBe('turn.cancelled');
   });
@@ -109,7 +109,7 @@ describe('routed tool execution in a real Turn', () => {
     await expect(task).rejects.toBe(controller.signal.reason);
     expect(session.events().some(event => event.type === 'tool.result' || event.type === 'effect.outcome.verified')).toBe(false);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([
-      expect.objectContaining({ source: expect.objectContaining({ name: 'parent' }) }),
+      expect.objectContaining({ source: expect.objectContaining({ payload: expect.objectContaining({ name: 'parent' }) }) }),
     ]);
     expect(session.events().at(-1)?.type).toBe('turn.cancelled');
   });
@@ -125,8 +125,8 @@ describe('routed tool execution in a real Turn', () => {
     await runTurn(agent, '等待批准');
     expect(effect).not.toHaveBeenCalled();
     expect(requests).toHaveLength(2);
-    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ executionBoundary: 'not-executed',
-      result: { status: 'error', failureKind: 'transient' } });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { executionBoundary: 'not-executed',
+      result: { status: 'error', failureKind: 'transient' } } });
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
 
@@ -154,10 +154,10 @@ describe('routed tool execution in a real Turn', () => {
     await vi.waitFor(() => expect(order).toEqual(['readA-start', 'readB-start', 'readB-end']));
     expect(session.events().filter(event => event.type === 'tool.result')).toEqual([]);
     releaseFirst(); await task;
-    expect(session.events().filter(event => event.type === 'tool.called').map(event => event.toolCallId)).toEqual(['readA', 'readB', 'write', 'readC']);
-    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.toolCallId)).toEqual(['readA', 'readB', 'write', 'readC']);
+    expect(session.events().filter(event => event.type === 'tool.called').map(event => event.payload.toolCallId)).toEqual(['readA', 'readB', 'write', 'readC']);
+    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.payload.toolCallId)).toEqual(['readA', 'readB', 'write', 'readC']);
     for (const event of session.events()) if (event.type === 'tool.effect.prepared') {
-      expect(session.events()[event.sourceEventIndex]).toMatchObject({ type: 'tool.called', toolCallId: (event.data as { id: string }).id });
+      expect(session.events()[event.payload.sourceEventIndex]).toMatchObject({ type: 'tool.called', payload: { toolCallId: (event.payload.data as { id: string }).id } });
     }
   });
 
@@ -173,10 +173,10 @@ describe('routed tool execution in a real Turn', () => {
     const task = runTurn(agent, '按模型能力串行读取', { parallelToolCalls: false });
     await vi.waitFor(() => expect(order).toEqual(['A-start']));
     expect(second).not.toHaveBeenCalled();
-    expect(session.events().filter(event => event.type === 'tool.called').map(event => event.name)).toEqual(['readA']);
+    expect(session.events().filter(event => event.type === 'tool.called').map(event => event.payload.name)).toEqual(['readA']);
     releaseFirst(); await task;
     expect(order).toEqual(['A-start', 'A-end', 'B']);
-    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.toolCallId)).toEqual(['readA', 'readB']);
+    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.payload.toolCallId)).toEqual(['readA', 'readB']);
   });
 
   it('preserves ordered denied results and checkpoint identities inside a parallel read group', async () => {
@@ -193,11 +193,11 @@ describe('routed tool execution in a real Turn', () => {
     await vi.waitFor(() => expect(session.events().filter(event => event.type === 'tool.called')).toHaveLength(3));
     releaseFirst(); await task;
     expect(denied).not.toHaveBeenCalled();
-    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.toolCallId)).toEqual(['readA', 'readB', 'readC']);
+    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.payload.toolCallId)).toEqual(['readA', 'readB', 'readC']);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     const prepared = session.events().find(event => event.type === 'tool.effect.prepared')!;
     if (prepared.type !== 'tool.effect.prepared') throw new Error('fixture checkpoint missing');
-    expect(session.events()[prepared.sourceEventIndex]).toMatchObject({ type: 'tool.called', toolCallId: 'readC' });
+    expect(session.events()[prepared.payload.sourceEventIndex]).toMatchObject({ type: 'tool.called', payload: { toolCallId: 'readC' } });
   });
 
   it('waits for every parallel tool to settle on cancellation and preserves actual completed read facts', async () => {
@@ -218,7 +218,7 @@ describe('routed tool execution in a real Turn', () => {
     releaseSecond();
     await expect(task).rejects.toMatchObject({ name: 'AbortError' });
     expect(session.events().filter(event => event.type === 'tool.result')).toEqual([
-      expect.objectContaining({ toolCallId: 'readB', result: { status: 'success', output: 'already read' } }),
+      expect.objectContaining({ payload: expect.objectContaining({ toolCallId: 'readB', result: { status: 'success', output: 'already read' } }) }),
     ]);
     expect(session.events().at(-1)?.type).toBe('turn.cancelled');
   });
@@ -228,7 +228,7 @@ describe('routed tool execution in a real Turn', () => {
     const output = `BEGIN ${'x'.repeat(40_000)} END`;
     agent.tools.register(reading('large', async () => ({ status: 'success', output, artifacts: [artifact('real.txt')] })));
     await runTurn(agent, '读取大结果');
-    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output, artifacts: [artifact('real.txt')] } });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { result: { status: 'success', output, artifacts: [artifact('real.txt')] } } });
     const projected = requests[1]!.messages.find(message => message.role === 'tool')!;
     expect(new TextEncoder().encode(projected.content).length).toBeLessThanOrEqual(8192);
     expect(JSON.parse(projected.content)).toMatchObject({ status: 'success', artifacts: [artifact('real.txt')], truncation: { truncated: true } });

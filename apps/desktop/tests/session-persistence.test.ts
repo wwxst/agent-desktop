@@ -7,7 +7,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ClientStateSnapshot } from '@agent-desktop/client';
 import { runTurn } from '@agent-desktop/agent-loop';
 import type { Model, ModelRequest, ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, projectRecoveryFacts, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import {
+  InMemorySession,
+  projectRecoveryFacts,
+  type SessionEvent,
+  type SessionEventInput,
+  type StepId,
+  type TurnId,
+} from '@agent-desktop/session';
 import {
   loadDesktopState,
   parseDesktopState,
@@ -40,23 +47,40 @@ async function readStoredJson(filePath: string): Promise<string> {
   } finally { database.close(); }
 }
 
-function sessionEvents(number: string): readonly SessionEvent[] {
+/** 事件 envelope 的元数据由 Session 分配；测试固定时间戳，避免每次 helper 调用产生随机差异。 */
+function stableEvents(events: readonly SessionEvent[]): readonly SessionEvent[] {
+  return events.map((event) => ({
+    ...event,
+    timestamp: `2026-10-18T00:00:${String(event.sequence).padStart(2, '0')}.000Z`,
+  }));
+}
+
+function appendSessionInputs(
+  sessionId: string,
+  inputs: readonly SessionEventInput[],
+  existing: readonly SessionEvent[] = [],
+): readonly SessionEvent[] {
+  const session = new InMemorySession(existing, sessionId);
+  return stableEvents([...existing, ...session.appendMany(inputs)]);
+}
+
+function sessionEvents(number: string, sessionId: string): readonly SessionEvent[] {
   const turnId = `turn-${number}` as TurnId;
   const stepId = `step-${number}` as StepId;
-  return [
-    { type: 'turn.started', turnId },
-    { type: 'user.message', turnId, content: `请记住数字 ${number}。` },
-    { type: 'step.started', turnId, stepId },
+  return appendSessionInputs(sessionId, [
+    { type: 'turn.started', turnId, payload: {} },
+    { type: 'user.message', turnId, payload: { content: `请记住数字 ${number}。` } },
+    { type: 'step.started', turnId, payload: { stepId } },
     {
       type: 'assistant.message',
       turnId,
-      stepId,
+      payload: { stepId,
       content: '已经记住。',
-      toolCalls: [],
+      toolCalls: [] },
     },
-    { type: 'step.completed', turnId, stepId },
-    { type: 'turn.completed', turnId },
-  ];
+    { type: 'step.completed', turnId, payload: { stepId } },
+    { type: 'turn.completed', turnId, payload: {} },
+  ]);
 }
 
 function clientState(): ClientStateSnapshot {
@@ -163,12 +187,12 @@ function persistedState(): PersistedDesktopState {
         attachments: [{ path: 'D:\\videos\\input-a.mp4', role: 'video' }],
         workingDirectory: 'D:\\videos',
         permissionMode: 'auto-review',
-        events: sessionEvents('731'),
+        events: sessionEvents('731', 'session-a'),
       },
       {
         id: 'session-b',
         attachments: [],
-        events: sessionEvents('952'),
+        events: sessionEvents('952', 'session-b'),
       },
     ],
     clientState: clientState(),
@@ -228,8 +252,8 @@ describe('desktop session persistence', () => {
 
     expect(restored).toEqual(state);
     expect(restored?.activeSessionId).toBe('session-b');
-    expect(restored?.sessions[0]?.events).toEqual(sessionEvents('731'));
-    expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
+    expect(restored?.sessions[0]?.events).toEqual(sessionEvents('731', 'session-a'));
+    expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952', 'session-b'));
     expect(restored?.clientState.conversations[0]).toMatchObject({
       title: '记住 731',
       titleManuallyRenamed: true,
@@ -315,17 +339,18 @@ describe('desktop session persistence', () => {
       durationMs: 42,
       detail: { kind: 'command' as const, ...commandOutput },
     };
-    const commandEvent: SessionEvent = {
+    const commandInput: SessionEventInput = {
       type: 'tool.result',
       turnId: 'turn-731' as TurnId,
-      stepId: 'step-731' as StepId,
-      toolCallId: 'command-call' as SessionEvent extends { type: 'tool.result'; toolCallId: infer Id } ? Id : never,
-      result: { status: 'error', message: commandOutput.note, output: commandOutput },
+      payload: { stepId: 'step-731' as StepId,
+        toolCallId: 'command-call' as ToolCallId,
+        result: { status: 'error', message: commandOutput.note, output: commandOutput } },
     };
+    const commandEvent = appendSessionInputs('session-a', [commandInput], state.sessions[0]!.events).at(-1)!;
     const modified: PersistedDesktopState = {
       ...state,
       sessions: state.sessions.map((session) => session.id === 'session-a'
-        ? { ...session, events: [...session.events, commandEvent] }
+        ? { ...session, events: appendSessionInputs('session-a', [commandInput], session.events) }
         : session),
       clientState: {
         ...state.clientState,
@@ -354,25 +379,26 @@ describe('desktop session persistence', () => {
 
   it('restores host evidence that an opaque operation never entered execution', async () => {
     const filePath = await temporaryStatePath(); const state = persistedState();
-    const event: SessionEvent = { type: 'tool.result', turnId: 'turn-731' as TurnId, stepId: 'step-731' as StepId,
+    const input: SessionEventInput = { type: 'tool.result', turnId: 'turn-731' as TurnId, payload: { stepId: 'step-731' as StepId,
       toolCallId: 'approval-timeout' as never, executionBoundary: 'not-executed',
-      result: { status: 'error', failureKind: 'transient', message: '审批超时，未执行。' } };
+      result: { status: 'error', failureKind: 'transient', message: '审批超时，未执行。' } } };
+    const event = appendSessionInputs('session-a', [input], state.sessions[0]!.events).at(-1)!;
     await saveDesktopState(filePath, { ...state, sessions: state.sessions.map((session, index) => index === 0
-      ? { ...session, events: [...session.events, event] } : session) });
+      ? { ...session, events: appendSessionInputs('session-a', [input], session.events) } : session) });
     expect((await loadDesktopState(filePath))?.sessions[0]?.events.at(-1)).toEqual(event);
   });
 
   it('restores Router proof that an opaque approval was cancelled before execution without a tool result', async () => {
     const filePath = await temporaryStatePath(); const state = persistedState();
     const turnId = 'turn-approval-cancelled' as TurnId;
-    const events: readonly SessionEvent[] = [
-      { type: 'turn.started', turnId },
-      { type: 'tool.called', turnId, stepId: 'step-approval' as StepId, toolCallId: 'approval' as ToolCallId,
-        name: 'opaque_write', input: {}, boundary: 'opaque' },
-      { type: 'effect.outcome.verified', turnId, sourceEventIndex: 1, scope: 'entire-call', outcome: 'not-applied',
-        evidence: { source: 'host', reference: 'tool-router:before-execution', description: '工具在准备或审批阶段取消，未进入执行闭包。' } },
-      { type: 'turn.cancelled', turnId, reason: 'user' },
-    ];
+    const events: readonly SessionEvent[] = appendSessionInputs('session-a', [
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'tool.called', turnId, payload: { stepId: 'step-approval' as StepId, toolCallId: 'approval' as ToolCallId,
+        name: 'opaque_write', input: {}, boundary: 'opaque' } },
+      { type: 'effect.outcome.verified', turnId, payload: { sourceEventIndex: 1, scope: 'entire-call', outcome: 'not-applied',
+        evidence: { source: 'host', reference: 'tool-router:before-execution', description: '工具在准备或审批阶段取消，未进入执行闭包。' } } },
+      { type: 'turn.cancelled', turnId, payload: { reason: 'user' } },
+    ]);
     await saveDesktopState(filePath, { ...state, sessions: [{ ...state.sessions[0]!, events }, state.sessions[1]!] });
     const restored = (await loadDesktopState(filePath))!.sessions[0]!.events;
     expect(restored).toEqual(events);
@@ -416,27 +442,27 @@ describe('desktop session persistence', () => {
     const cancelledStepId = 'step-cancelled' as StepId;
     const cancelledCallId = 'call-cancelled' as ToolCallId;
     // 磁盘上保留被取消 Turn 的未完成 Step：assistant.message 与 dangling Tool Call 都是 append-only 事实。
-    const cancelledEvents: readonly SessionEvent[] = [
-      { type: 'turn.started', turnId: cancelledTurnId },
-      { type: 'user.message', turnId: cancelledTurnId, content: '被取消的剪辑任务' },
-      { type: 'step.started', turnId: cancelledTurnId, stepId: cancelledStepId },
+    const cancelledInputs: readonly SessionEventInput[] = [
+      { type: 'turn.started', turnId: cancelledTurnId, payload: {} },
+      { type: 'user.message', turnId: cancelledTurnId, payload: { content: '被取消的剪辑任务' } },
+      { type: 'step.started', turnId: cancelledTurnId, payload: { stepId: cancelledStepId } },
       {
         type: 'assistant.message',
         turnId: cancelledTurnId,
-        stepId: cancelledStepId,
+        payload: { stepId: cancelledStepId,
         content: '正在裁剪。',
-        toolCalls: [{ id: cancelledCallId, name: 'trim_video', input: { start: 0 } }],
+        toolCalls: [{ id: cancelledCallId, name: 'trim_video', input: { start: 0 } }] },
       },
       {
         type: 'tool.called',
         turnId: cancelledTurnId,
-        stepId: cancelledStepId,
+        payload: { stepId: cancelledStepId,
         toolCallId: cancelledCallId,
         name: 'trim_video',
-        input: { start: 0 },
+        input: { start: 0 } },
       },
     ];
-    const diskEvents = [...sessionEvents('731'), ...cancelledEvents];
+    const diskEvents = appendSessionInputs('session-a', cancelledInputs, sessionEvents('731', 'session-a'));
     await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [{ ...state.sessions[0]!, events: diskEvents }, state.sessions[1]!],
@@ -447,7 +473,7 @@ describe('desktop session persistence', () => {
 
     // 磁盘历史是 append-only 事实：load 只还原，不删除未完成 Step。
     expect(restored?.sessions[0]?.events).toEqual(diskEvents);
-    expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952'));
+    expect(restored?.sessions[1]?.events).toEqual(sessionEvents('952', 'session-b'));
     // 读取只读取磁盘事实，不改写已经追加的历史。
     expect(await readStoredJson(filePath)).toBe(sourceBeforeLoad);
 
@@ -741,30 +767,30 @@ describe('desktop session persistence', () => {
     const turnId = 'turn-write' as TurnId;
     const stepId = 'step-write' as StepId;
     const toolCallId = 'call-write' as ToolCallId;
-    const events: readonly SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: readonly SessionEvent[] = appendSessionInputs('session-a', [
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId,
         name: 'write_text_file',
-        input: { filePath: 'D:/videos/剪辑清单.txt', content: '第一段' },
+        input: { filePath: 'D:/videos/剪辑清单.txt', content: '第一段' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId,
         // 产物事实随成功结果持久化：重启后仍要能定位到同一个真实路径。
         result: {
           status: 'success',
           output: { filePath: 'D:/videos/剪辑清单.txt', bytes: 9 },
           artifacts: [artifact('D:/videos/剪辑清单.txt')],
-        },
+        } },
       },
-      { type: 'turn.completed', turnId },
-    ];
+      { type: 'turn.completed', turnId, payload: {} },
+    ]);
     await saveDesktopState(filePath, {
       ...state,
       sessions: [{ ...state.sessions[0]!, events }, state.sessions[1]!],
@@ -782,12 +808,12 @@ describe('desktop session persistence', () => {
     const stepId = 'step-edit' as StepId;
     const toolCallId = 'call-edit' as ToolCallId;
     const editedPath = 'D:/videos/字幕.srt';
-    const events: readonly SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: readonly SessionEvent[] = appendSessionInputs('session-a', [
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId,
         name: 'edit_text_file',
         input: {
@@ -795,20 +821,20 @@ describe('desktop session persistence', () => {
           expectedSha256: 'edit-version',
           oldText: '旧台词',
           newText: '新台词',
-        },
+        } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId,
         result: {
           status: 'success',
           output: { filePath: editedPath, replacements: 1, bytes: 9 },
-        },
+        } },
       },
-      { type: 'turn.completed', turnId },
-    ];
+      { type: 'turn.completed', turnId, payload: {} },
+    ]);
     const originalConversation = state.clientState.conversations[0]!;
     const editActivity = {
       id: toolCallId,
@@ -849,28 +875,31 @@ describe('desktop session persistence', () => {
     const filePath = await temporaryStatePath();
     const state = persistedState();
     const turnId = 'turn-bad' as TurnId;
+    const malformedEvents = appendSessionInputs('session-a', [
+      { type: 'turn.started', turnId, payload: {} },
+      {
+        type: 'tool.called',
+        turnId,
+        payload: { stepId: 'step-bad' as StepId,
+          toolCallId: 'call-bad' as ToolCallId,
+          name: 'write_text_file',
+          input: { filePath: 'D:/videos/a.txt' } },
+      },
+      {
+        type: 'tool.result',
+        turnId,
+        payload: { stepId: 'step-bad' as StepId,
+          toolCallId: 'call-bad' as ToolCallId,
+          result: { status: 'success', output: {}, artifacts: [] } },
+      },
+    ]).map((event) => event.type === 'tool.result'
+      ? { ...event, payload: { ...event.payload, result: { ...event.payload.result, artifacts: [7] } } }
+      : event);
     await writeStoredJson(filePath, JSON.stringify({
       ...state,
       sessions: [{
         ...state.sessions[0]!,
-        events: [
-          { type: 'turn.started', turnId },
-          {
-            type: 'tool.called',
-            turnId,
-            stepId: 'step-bad',
-            toolCallId: 'call-bad',
-            name: 'write_text_file',
-            input: { filePath: 'D:/videos/a.txt' },
-          },
-          {
-            type: 'tool.result',
-            turnId,
-            stepId: 'step-bad',
-            toolCallId: 'call-bad',
-            result: { status: 'success', output: {}, artifacts: [7] },
-          },
-        ],
+        events: malformedEvents,
       }, state.sessions[1]!],
     }));
 

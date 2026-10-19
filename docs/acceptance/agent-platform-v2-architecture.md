@@ -38,7 +38,7 @@ agent-loop    -> agent, model, session, tools
 
 Desktop 的 [`index.ts`](../../apps/desktop/src/main/index.ts) 是组合根，连接运行时、设置、授权、能力、扩展与持久化。[`extension-runtime.ts`](../../apps/desktop/src/main/extension-runtime.ts) 在宿主内准备技能、MCP 工具和插件钩子；包装保留工具契约、准备入口、脱敏投影与子工具名单，带命令钩子的通用工具仍按不透明执行边界处理。Core 只接收注册后的工具和系统指令。
 
-语义验收的媒体与视觉调用通过同一个 Router 解析当前已授权的注册实例，受外层声明的子工具名单及子工具时限约束。子调用保留外层身份和检查点，不制造独立 Session 子调用。Renderer 经 Preload 消费客户端命令、事件和投影；共享客户端不获得本机文件、进程或数据库访问权限。`AgentRuntime.subscribe` 已由宿主用于触发状态投影，Renderer 直接消费 Runtime 事件协议仍未完成。
+语义验收的媒体与视觉调用通过同一个 Router 解析当前已授权的注册实例，受外层声明的子工具名单及子工具时限约束。子调用保留外层身份和检查点，不制造独立 Session 子调用。Renderer 经 Preload 消费客户端命令、事件和投影；共享客户端不获得本机文件、进程或数据库访问权限。`AgentRuntime.subscribe` 已由宿主用于触发状态投影，原始 Core 事件保留在宿主，不为界面展示复制一套执行事实。
 
 ## 执行边界与持久化
 
@@ -46,7 +46,7 @@ Desktop 的 [`index.ts`](../../apps/desktop/src/main/index.ts) 是组合根，�
 
 [`desktop-database.ts`](../../apps/desktop/src/main/desktop-database.ts) 和 [`session-persistence.ts`](../../apps/desktop/src/main/session-persistence.ts) 在宿主中保存 SQLite 数据、执行事实及消息绑定；Core 的 Session 保留追加式事实接口。模型上下文、任务状态、界面活动和 JSONL 执行诊断都是消费者，不能成为另一套执行真相。原始保存错误必须中止执行，不能转换为普通工具失败后继续。
 
-每轮快照保存公开模型设置、工作目录、权限与实际工具名称集合。普通恢复要求工具集合一致，未知效果核验恢复只允许原集合的安全子集；恢复准备仅在本地重建随包服务定义，第三方 MCP 不建立连接或列举，因此依赖第三方 MCP 的普通恢复会明确拒绝。工具名称快照不能检测同名工具结构、实现、插件版本或技能正文变化。Session 仍以事件索引表达稳定顺序，没有统一持久化的 `sessionId/sequence/timestamp/itemId` 字段。准备或审批取消的未执行证明复用宿主 `effect.outcome.verified`，不保存普通工具结果，也不制造未知副作用。
+每轮快照保存公开模型设置、工作目录、权限与实际工具名称集合。普通恢复要求工具集合一致，未知效果核验恢复只允许原集合的安全子集；恢复准备仅在本地重建随包服务定义，第三方 MCP 不建立连接或列举，因此依赖第三方 MCP 的普通恢复会明确拒绝。工具名称快照不能检测同名工具结构、实现、插件版本或技能正文变化。Session 已统一持久化 `sessionId/turnId/itemId/sequence/timestamp/type/payload`，来源引用仍使用稳定数组索引。身份只由 Session 追加入口分配，Desktop 写盘后提交同一批内存事实；恢复验证封装并保留原身份、序号和时间。准备或审批取消的未执行证明复用宿主 `effect.outcome.verified`，不保存普通工具结果，也不制造未知副作用。
 
 [`video-job.ts`](../../packages/video-agent/src/video-job.ts) 和 [`semantic-check.ts`](../../packages/video-agent/src/semantic-check.ts) 复用匹配候选内容摘要的连续帧、视觉观察和语音时间轴检查点；最终语义判断每次重新执行。该源码路径与检查点自动化证据不等于真实跨进程崩溃、重启及长视频验收已经通过。
 

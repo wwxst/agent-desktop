@@ -42,10 +42,10 @@ export class VerifyToolOutcomeTool implements Tool {
     const source = events[input.sourceEventIndex];
     if (source?.type !== 'tool.called') return error('核验来源必须是已保存的 tool.called 事实。');
     const prepared = events.findLast((event): event is Extract<SessionEvent, { type: 'tool.effect.prepared' }> =>
-      event.type === 'tool.effect.prepared' && event.sourceEventIndex === input.sourceEventIndex);
-    if (prepared === undefined || !isRecord(prepared.data) || prepared.data.kind !== 'text-file'
-      || typeof prepared.data.path !== 'string' || typeof prepared.data.expectedAfterSha256 !== 'string'
-      || typeof prepared.data.expectedBytes !== 'number') {
+      event.type === 'tool.effect.prepared' && event.payload.sourceEventIndex === input.sourceEventIndex);
+    if (prepared === undefined || !isRecord(prepared.payload.data) || prepared.payload.data.kind !== 'text-file'
+      || typeof prepared.payload.data.path !== 'string' || typeof prepared.payload.data.expectedAfterSha256 !== 'string'
+      || typeof prepared.payload.data.expectedBytes !== 'number') {
       return error('该工具调用没有可自动核验的文本文件检查点。');
     }
     const currentTurn = [...events].reverse().find((event) => event.type === 'turn.started'
@@ -53,45 +53,38 @@ export class VerifyToolOutcomeTool implements Tool {
     if (currentTurn?.type !== 'turn.started') return error('核验工具必须在当前活动 Turn 中执行。');
 
     // 既有目标按完整真实路径校验；创建目标不存在时，改用父目录授权，避免把“尚未创建”误当越界。
-    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), prepared.data.path, this.workspace.fileAccess === 'all');
+    const scoped = await resolveScopedPath(this.workspace.confirmedDirectory(), prepared.payload.data.path, this.workspace.fileAccess === 'all');
     let targetPath: string;
     if (scoped.ok) targetPath = scoped.path;
     else {
       let missing = false;
-      try { await lstat(prepared.data.path); }
+      try { await lstat(prepared.payload.data.path); }
       catch (cause) {
         if ((cause as NodeJS.ErrnoException).code === 'ENOENT') missing = true;
         else throw cause;
       }
       if (!missing) return error(scoped.message);
-      const parent = await resolveScopedPath(this.workspace.confirmedDirectory(), dirname(prepared.data.path), this.workspace.fileAccess === 'all');
+      const parent = await resolveScopedPath(this.workspace.confirmedDirectory(), dirname(prepared.payload.data.path), this.workspace.fileAccess === 'all');
       if (!parent.ok) return error(parent.message);
-      targetPath = join(parent.path, basename(prepared.data.path));
+      targetPath = join(parent.path, basename(prepared.payload.data.path));
     }
 
     let outcome: 'completed' | 'not-applied' | 'unresolved';
     try {
       const bytes = await readFile(targetPath);
       const digest = createHash('sha256').update(bytes).digest('hex');
-      if (digest === prepared.data.expectedAfterSha256 && bytes.byteLength === prepared.data.expectedBytes) outcome = 'completed';
-      else if (prepared.data.beforeSha256 !== null && digest === prepared.data.beforeSha256) outcome = 'not-applied';
+      if (digest === prepared.payload.data.expectedAfterSha256 && bytes.byteLength === prepared.payload.data.expectedBytes) outcome = 'completed';
+      else if (prepared.payload.data.beforeSha256 !== null && digest === prepared.payload.data.beforeSha256) outcome = 'not-applied';
       else outcome = 'unresolved';
     } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code === 'ENOENT' && prepared.data.beforeSha256 === null) outcome = 'not-applied';
+      if ((cause as NodeJS.ErrnoException).code === 'ENOENT' && prepared.payload.data.beforeSha256 === null) outcome = 'not-applied';
       else throw cause;
     }
     context.signal?.throwIfAborted();
-    const scope = source.boundary === 'checkpointed' ? 'entire-call' : 'file-effect';
-    this.session.append({
-      type: 'effect.outcome.verified',
-      turnId: currentTurn.turnId,
-      sourceEventIndex: input.sourceEventIndex,
-      scope,
-      outcome,
-      evidence: { source: 'tool', reference: targetPath,
+    const scope = source.payload.boundary === 'checkpointed' ? 'entire-call' : 'file-effect';
+    this.session.append({ type: 'effect.outcome.verified', turnId: currentTurn.turnId, payload: { sourceEventIndex: input.sourceEventIndex, scope, outcome, evidence: { source: 'tool', reference: targetPath,
         description: outcome === 'completed' ? '文件字节与执行前检查点的预期结果一致。'
-          : outcome === 'not-applied' ? '文件仍是执行前版本，或创建目标尚不存在。' : '文件既不是执行前版本，也不是预期结果，无法确认实际效果。' },
-    });
+          : outcome === 'not-applied' ? '文件仍是执行前版本，或创建目标尚不存在。' : '文件既不是执行前版本，也不是预期结果，无法确认实际效果。' } } });
     return { status: 'success', output: { sourceEventIndex: input.sourceEventIndex, scope, outcome, path: targetPath } };
   }
 }

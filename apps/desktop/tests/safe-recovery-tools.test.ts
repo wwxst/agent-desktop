@@ -19,11 +19,11 @@ describe('Desktop safe recovery tools', () => {
       await writeFile(join(directory, 'note.txt'), 'actual recovery evidence\n');
       const original = prepareTurnStart('读取本地证据并整理计划');
       const unknownIndex = original.events.length;
-      const history: SessionEvent[] = [...original.events,
-        { type: 'tool.called', turnId: original.turnId, stepId: 'old-step' as never,
-          toolCallId: 'old-call' as never, name: 'external_write', input: {}, boundary: 'opaque' },
-        { type: 'turn.interrupted', turnId: original.turnId, reason: 'process-exit' },
-      ];
+      const history: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([...original.events,
+        { type: 'tool.called', turnId: original.turnId, payload: { stepId: 'old-step' as never,
+          toolCallId: 'old-call' as never, name: 'external_write', input: {}, boundary: 'opaque' } },
+        { type: 'turn.interrupted', turnId: original.turnId, payload: { reason: 'process-exit' } },
+      ])];
       const session = new InMemorySession(history);
       const recovery = prepareTurnStart('核验原任务', { sourceTurnId: original.turnId, mode: 'verify' });
       session.appendMany(recovery.events);
@@ -66,10 +66,10 @@ describe('Desktop safe recovery tools', () => {
         { beforeToolCall: input => taskToolGate(session.events(), input), qualifyToolEvidence: qualifyTaskToolEvidence });
 
       const results = session.events().filter(event => event.type === 'tool.result');
-      expect(results.map(event => event.result.status)).toEqual(['success', 'success', 'success', 'success', 'success', 'error', 'error']);
-      expect(results[1]?.result).toMatchObject({ status: 'success', output: { lines: ['actual recovery evidence'] } });
-      expect(results[2]?.result).toMatchObject({ status: 'success', output: { matches: [expect.objectContaining({ line: 'actual recovery evidence' })] } });
-      expect(results[4]?.result).toMatchObject({ status: 'success', output: { output: 'saved history' } });
+      expect(results.map(event => event.payload.result.status)).toEqual(['success', 'success', 'success', 'success', 'success', 'error', 'error']);
+      expect(results[1]?.payload.result).toMatchObject({ status: 'success', output: { lines: ['actual recovery evidence'] } });
+      expect(results[2]?.payload.result).toMatchObject({ status: 'success', output: { matches: [expect.objectContaining({ line: 'actual recovery evidence' })] } });
+      expect(results[4]?.payload.result).toMatchObject({ status: 'success', output: { output: 'saved history' } });
       expect(session.events().some(event => event.type === 'plan.updated' && event.turnId === recovery.turnId)).toBe(true);
       expect(projectRecoveryFacts(session.events()).unknownEffects.map(fact => fact.sourceEventIndex)).toEqual([unknownIndex]);
       expect(workspace.requestApproval).not.toHaveBeenCalled();

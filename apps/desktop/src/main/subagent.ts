@@ -21,7 +21,7 @@ export async function runReadOnlySubagent(task: ReadOnlyTask, context: ToolExecu
   publish: (activity: SubagentActivity) => void, save: (record: SubagentRecord) => void,
   fileAccess?: 'all'): Promise<SubagentResult> {
   const taskId = randomUUID();
-  const session = new InMemorySession();
+  const session = new InMemorySession([], taskId);
   const controller = new AbortController();
   const cancel = () => controller.abort();
   context.signal?.addEventListener('abort', cancel, { once: true });

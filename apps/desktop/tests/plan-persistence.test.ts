@@ -1,3 +1,4 @@
+import { InMemorySession } from '@agent-desktop/session';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,7 +43,7 @@ afterEach(async () => {
 describe('plan evidence SQLite round trip', () => {
   it('rejects a pending start-event reference without changing persisted execution facts', async () => {
     const filePath = await databasePath();
-    const initial: SessionEvent[] = [{ type: 'turn.started', turnId: root }, { type: 'user.message', turnId: root, content: '原任务' }];
+    const initial: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([{ type: 'turn.started', turnId: root, payload: {} }, { type: 'user.message', turnId: root, payload: { content: '原任务' } }])];
     const session = new DesktopPersistentSession(filePath, 'session', initial, (_id, events) => persistedState(events), () => {});
     session.persist();
 
@@ -57,21 +58,21 @@ describe('plan evidence SQLite round trip', () => {
 
   it('preserves successful, failed and unknown execution evidence through a recovery plan and two reloads', async () => {
     const filePath = await databasePath();
-    const initial: SessionEvent[] = [
-      { type: 'turn.started', turnId: root },
-      { type: 'user.message', turnId: root, content: '读取后写入文件' },
-      { type: 'tool.called', turnId: root, stepId, toolCallId: callId, name: 'read_file', input: {}, boundary: 'read-only' },
-      { type: 'tool.result', turnId: root, stepId, toolCallId: callId, result: { status: 'success', output: '真实文件内容' } },
-      { type: 'tool.called', turnId: root, stepId, toolCallId: 'write-call' as ToolCallId,
-        name: 'write_text_file', input: {}, boundary: 'checkpointed' },
-      { type: 'tool.effect.prepared', turnId: root, sourceEventIndex: 4, data: { kind: 'text-file' } },
-      { type: 'tool.result', turnId: root, stepId, toolCallId: 'write-call' as ToolCallId,
-        result: { status: 'error', message: '写入后响应丢失', failureKind: 'unknown-outcome' } },
-      { type: 'turn.failed', turnId: root, errorName: 'Error', errorMessage: '写入未确认' },
-      { type: 'turn.started', turnId: resumed },
-      { type: 'user.message', turnId: resumed, content: '核验原任务' },
-      { type: 'turn.recovery.started', turnId: resumed, sourceTurnId: root, mode: 'verify' },
-    ];
+    const initial: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId: root, payload: {} },
+      { type: 'user.message', turnId: root, payload: { content: '读取后写入文件' } },
+      { type: 'tool.called', turnId: root, payload: { stepId, toolCallId: callId, name: 'read_file', input: {}, boundary: 'read-only' } },
+      { type: 'tool.result', turnId: root, payload: { stepId, toolCallId: callId, result: { status: 'success', output: '真实文件内容' } } },
+      { type: 'tool.called', turnId: root, payload: { stepId, toolCallId: 'write-call' as ToolCallId,
+        name: 'write_text_file', input: {}, boundary: 'checkpointed' } },
+      { type: 'tool.effect.prepared', turnId: root, payload: { sourceEventIndex: 4, data: { kind: 'text-file' } } },
+      { type: 'tool.result', turnId: root, payload: { stepId, toolCallId: 'write-call' as ToolCallId,
+        result: { status: 'error', message: '写入后响应丢失', failureKind: 'unknown-outcome' } } },
+      { type: 'turn.failed', turnId: root, payload: { errorName: 'Error', errorMessage: '写入未确认' } },
+      { type: 'turn.started', turnId: resumed, payload: {} },
+      { type: 'user.message', turnId: resumed, payload: { content: '核验原任务' } },
+      { type: 'turn.recovery.started', turnId: resumed, payload: { sourceTurnId: root, mode: 'verify' } },
+    ])];
     const session = new DesktopPersistentSession(filePath, 'session', initial, (_id, events) => persistedState(events), () => {});
     const steps = [planStep('read', 'completed', [3]), planStep('write', 'failed', [6]), planStep('verify', 'blocked', [4])];
     expect(await new UpdatePlanTool(session, qualifyTaskToolEvidence).execute({ explanation: '沿原任务事实继续核验', steps }, context))
@@ -94,7 +95,7 @@ describe('plan evidence SQLite round trip', () => {
   it('propagates and latches the original SQLite save error without appending the plan', async () => {
     const validPath = await databasePath();
     const filePath = join(validPath, 'missing', 'state.sqlite');
-    const initial: SessionEvent[] = [{ type: 'turn.started', turnId: root }];
+    const initial: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([{ type: 'turn.started', turnId: root, payload: {} }])];
     const failures: SessionPersistenceError[] = [];
     const session = new DesktopPersistentSession(filePath, 'session', initial,
       (_id, events) => persistedState(events), error => failures.push(error));

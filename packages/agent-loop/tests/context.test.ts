@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ModelRequestError, type Model, type ModelMessage, type ModelRequest, type ModelResponse, type ModelToolDefinition, type ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, SessionPersistenceError, TurnCancellationError, type ContextCompactedEvent, type QualifyToolEvidence, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import { InMemorySession, SessionPersistenceError, TurnCancellationError, type QualifyToolEvidence, type SessionEvent, type SessionEventInput, type StepId, type TurnId } from '@agent-desktop/session';
 import { ContextBudgetError, createContextSourceDigest, estimateContextTokens, prepareModelContext, validateContextCompactedEvent, type ContextBudget } from '../src/context.js';
+
+function createSession(inputs: readonly SessionEventInput[] = []): InMemorySession {
+  const session = new InMemorySession();
+  session.appendMany(inputs);
+  return session;
+}
 
 const root = 'original' as TurnId;
 const current = 'current' as TurnId;
@@ -10,22 +16,22 @@ const artifact = (path: string) => ({ id: `test-${path}`, path, mimeType: 'text/
 const tools: readonly ModelToolDefinition[] = [{ name: 'read', description: 'read real data', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }];
 
 function history(count = 5, outputSize = 1400): { session: InMemorySession; ends: number[] } {
-  const events: SessionEvent[] = [{ type: 'turn.started', turnId: root }, { type: 'user.message', turnId: root, content: '保留约束：只读 data，报告证据，不覆盖任何文件。' }];
+  const events: SessionEventInput[] = [{ type: 'turn.started', turnId: root, payload: {} }, { type: 'user.message', turnId: root, payload: { content: '保留约束：只读 data，报告证据，不覆盖任何文件。' } }];
   const ends: number[] = [];
   for (let index = 0; index < count; index += 1) {
     const stepId = `step-${index}` as StepId;
     const toolCallId = `call-${index}` as ToolCallId;
     events.push(
-      { type: 'step.started', turnId: root, stepId },
-      { type: 'assistant.message', turnId: root, stepId, content: 'checking', toolCalls: [{ id: toolCallId, name: 'read', input: { path: `data/${index}` } }] },
-      { type: 'tool.called', turnId: root, stepId, toolCallId, name: 'read', input: { path: `data/${index}` }, boundary: 'read-only' },
-      { type: 'tool.result', turnId: root, stepId, toolCallId, result: { status: 'success', output: `fact-${index}:${'x'.repeat(outputSize)}` } },
-      { type: 'step.completed', turnId: root, stepId },
+      { type: 'step.started', turnId: root, payload: { stepId } },
+      { type: 'assistant.message', turnId: root, payload: { stepId, content: 'checking', toolCalls: [{ id: toolCallId, name: 'read', input: { path: `data/${index}` } }] } },
+      { type: 'tool.called', turnId: root, payload: { stepId, toolCallId, name: 'read', input: { path: `data/${index}` }, boundary: 'read-only' } },
+      { type: 'tool.result', turnId: root, payload: { stepId, toolCallId, result: { status: 'success', output: `fact-${index}:${'x'.repeat(outputSize)}` } } },
+      { type: 'step.completed', turnId: root, payload: { stepId } },
     );
     ends.push(events.length - 1);
   }
-  events.push({ type: 'turn.completed', turnId: root }, { type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: '继续检查，保持此前约束。' });
-  return { session: new InMemorySession(events), ends };
+  events.push({ type: 'turn.completed', turnId: root, payload: {} }, { type: 'turn.started', turnId: current, payload: {} }, { type: 'user.message', turnId: current, payload: { content: '继续检查，保持此前约束。' } });
+  return { session: createSession(events), ends };
 }
 
 function summarize(request: ModelRequest): ModelResponse {
@@ -55,11 +61,11 @@ async function budgetAboveRaw(session: InMemorySession): Promise<ContextBudget> 
 describe('model context projection', () => {
   it('keeps ordinary conversations unchanged without a budget or execution facts', async () => {
     const stepId = 'answer' as StepId;
-    const session = new InMemorySession([
-      { type: 'turn.started', turnId: root }, { type: 'user.message', turnId: root, content: 'Remember 731.' },
-      { type: 'assistant.message', turnId: root, stepId, content: '731 saved in this conversation.', toolCalls: [] },
-      { type: 'step.completed', turnId: root, stepId }, { type: 'turn.completed', turnId: root },
-      { type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: 'What number?' },
+    const session = createSession([
+      { type: 'turn.started', turnId: root, payload: {} }, { type: 'user.message', turnId: root, payload: { content: 'Remember 731.' } },
+      { type: 'assistant.message', turnId: root, payload: { stepId, content: '731 saved in this conversation.', toolCalls: [] } },
+      { type: 'step.completed', turnId: root, payload: { stepId } }, { type: 'turn.completed', turnId: root, payload: {} },
+      { type: 'turn.started', turnId: current, payload: {} }, { type: 'user.message', turnId: current, payload: { content: 'What number?' } },
     ]);
     const complete = vi.fn<Model['complete']>();
     expect(await context(session, { complete })).toEqual([
@@ -72,19 +78,19 @@ describe('model context projection', () => {
     const stepId = 'incomplete' as StepId;
     const written = 'written' as ToolCallId;
     const missing = 'missing' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId: root }, { type: 'user.message', turnId: root, content: 'Do not replace my original file.' },
-      { type: 'step.started', turnId: root, stepId },
-      { type: 'assistant.message', turnId: root, stepId, toolCalls: [{ id: written, name: 'write', input: {} }, { id: missing, name: 'external', input: {} }] },
-      { type: 'tool.called', turnId: root, stepId, toolCallId: written, name: 'write', input: { path: 'actual.txt' }, boundary: 'checkpointed' },
-      { type: 'tool.result', turnId: root, stepId, toolCallId: written, result: { status: 'success', output: 'critical-written-fact', artifacts: [artifact('actual.txt')] } },
-      { type: 'tool.called', turnId: root, stepId, toolCallId: missing, name: 'external', input: { target: 'remote' }, boundary: 'checkpointed' },
-      { type: 'tool.effect.prepared', turnId: root, sourceEventIndex: 6, data: { intent: 'real prepared effect' } },
-      { type: 'plan.updated', turnId: root, revision: 1, explanation: 'model intent only', steps: [{ id: 'a', description: 'finish remaining work', requestedStatus: 'completed', completionKind: 'tool', evidenceEventIndexes: [5] }] },
-      { type: 'turn.cancelled', turnId: root, reason: 'user' }, { type: 'turn.started', turnId: current },
-      { type: 'user.message', turnId: current, content: 'Please verify before continuing.' },
-      { type: 'turn.recovery.started', turnId: current, sourceTurnId: root, mode: 'verify' },
-    ];
+    const events = [...createSession([
+      { type: 'turn.started', turnId: root, payload: {} }, { type: 'user.message', turnId: root, payload: { content: 'Do not replace my original file.' } },
+      { type: 'step.started', turnId: root, payload: { stepId } },
+      { type: 'assistant.message', turnId: root, payload: { stepId, toolCalls: [{ id: written, name: 'write', input: {} }, { id: missing, name: 'external', input: {} }] } },
+      { type: 'tool.called', turnId: root, payload: { stepId, toolCallId: written, name: 'write', input: { path: 'actual.txt' }, boundary: 'checkpointed' } },
+      { type: 'tool.result', turnId: root, payload: { stepId, toolCallId: written, result: { status: 'success', output: 'critical-written-fact', artifacts: [artifact('actual.txt')] } } },
+      { type: 'tool.called', turnId: root, payload: { stepId, toolCallId: missing, name: 'external', input: { target: 'remote' }, boundary: 'checkpointed' } },
+      { type: 'tool.effect.prepared', turnId: root, payload: { sourceEventIndex: 6, data: { intent: 'real prepared effect' } } },
+      { type: 'plan.updated', turnId: root, payload: { revision: 1, explanation: 'model intent only', steps: [{ id: 'a', description: 'finish remaining work', requestedStatus: 'completed', completionKind: 'tool', evidenceEventIndexes: [5] }] } },
+      { type: 'turn.cancelled', turnId: root, payload: { reason: 'user' } }, { type: 'turn.started', turnId: current, payload: {} },
+      { type: 'user.message', turnId: current, payload: { content: 'Please verify before continuing.' } },
+      { type: 'turn.recovery.started', turnId: current, payload: { sourceTurnId: root, mode: 'verify' } },
+    ]).events()];
     const session = new InMemorySession(events);
     const messages = await context(session, { complete: vi.fn<Model['complete']>() });
     const text = messages.map(message => message.content ?? '').join('\n');
@@ -97,7 +103,7 @@ describe('model context projection', () => {
 
   it('preserves the latest Session plan even when a normal new Turn is not its recovery child', async () => {
     const { session } = history(0);
-    session.append({ type: 'plan.updated', turnId: root, revision: 1, explanation: 'existing plan intent', steps: [{ id: 'work', description: 'remaining original work', requestedStatus: 'pending', completionKind: 'tool', evidenceEventIndexes: [] }] });
+    session.append({ type: 'plan.updated', turnId: root, payload: { revision: 1, explanation: 'existing plan intent', steps: [{ id: 'work', description: 'remaining original work', requestedStatus: 'pending', completionKind: 'tool', evidenceEventIndexes: [] }] } });
     const text = (await context(session, { complete: vi.fn<Model['complete']>() })).map(message => message.content ?? '').join('\n');
     expect(text).toContain('remaining original work'); expect(text).toContain('"rootTurnId":"original"');
     expect(text).toContain('requestedStatus 不是执行完成证据');
@@ -105,7 +111,7 @@ describe('model context projection', () => {
 
   it('counts system text, UTF-8 user text and actual tool schemas in the mandatory input budget', async () => {
     for (const extra of ['user', 'system', 'schema'] as const) {
-      const session = new InMemorySession([{ type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: extra === 'user' ? '约束'.repeat(2500) : 'short task' }]);
+      const session = createSession([{ type: 'turn.started', turnId: current, payload: {} }, { type: 'user.message', turnId: current, payload: { content: extra === 'user' ? '约束'.repeat(2500) : 'short task' } }]);
       const complete = vi.fn<Model['complete']>();
       await expect(prepareModelContext({ model: { complete }, session, turnId: current,
         systemPrompt: extra === 'system' ? 's'.repeat(9000) : systemPrompt,
@@ -133,7 +139,7 @@ describe('model context projection', () => {
     expect(messages.at(-1)).toEqual({ role: 'user', content: '继续检查，保持此前约束。' });
     assertToolPairs(messages);
     const summaries = session.events().flatMap((event, index) => event.type === 'context.compacted' ? [{ event, index }] : []);
-    expect(summaries).toHaveLength(2); expect(summaries[1]?.event.previousSummaryEventIndex).toBe(summaries[0]?.index);
+    expect(summaries).toHaveLength(2); expect(summaries[1]?.event.payload.previousSummaryEventIndex).toBe(summaries[0]?.index);
     expect(validateContextCompactedEvent(session.events(), summaries[1]!.index).cumulativeCoveredStepEndEventIndexes).toEqual(ends.slice(0, 3));
     expect(session.events().slice(0, raw.length)).toEqual(raw);
   });
@@ -150,7 +156,7 @@ describe('model context projection', () => {
     const events = [...session.events()];
     for (const index of [10, 15]) {
       const event = events[index]; if (event?.type !== 'tool.result') throw new Error('fixture tool result missing');
-      events[index] = { ...event, result: { status: 'success', output: 'large-recent-data'.repeat(240) } };
+      events[index] = { ...event, payload: { ...event.payload, result: { status: 'success', output: 'large-recent-data'.repeat(240) } } };
     }
     const currentSession = new InMemorySession(events); const complete = vi.fn<Model['complete']>(async request => summarize(request));
     const messages = await context(currentSession, { complete }, { contextWindow: 7000, maxOutputTokens: 800 });
@@ -162,7 +168,7 @@ describe('model context projection', () => {
     const { session } = history(2, 2900);
     const events = [...session.events()]; const user = events[1]; if (user?.type !== 'user.message') throw new Error('fixture user missing');
     const content = 'mandatory user constraint '.repeat(125);
-    events[1] = { ...user, content };
+    events[1] = { ...user, payload: { ...user.payload, content } };
     const currentSession = new InMemorySession(events); const complete = vi.fn<Model['complete']>(async request => summarize(request));
     const messages = await context(currentSession, { complete }, { contextWindow: 6500, maxOutputTokens: 800 });
     expect(complete).toHaveBeenCalledTimes(2); expect(messages.filter(message => message.role === 'tool')).toHaveLength(0);
@@ -171,13 +177,13 @@ describe('model context projection', () => {
 
   it('uses an input digest for completed external-call identity instead of duplicating a large successful write payload', async () => {
     const stepId = 'done-write' as StepId; const id = 'written' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: 'continue' },
-      { type: 'assistant.message', turnId: current, stepId, toolCalls: [{ id, name: 'write', input: { text: 'body'.repeat(900) } }] },
-      { type: 'tool.called', turnId: current, stepId, toolCallId: id, name: 'write', input: { text: 'body'.repeat(900) }, boundary: 'checkpointed' },
-      { type: 'tool.result', turnId: current, stepId, toolCallId: id, result: { status: 'success', output: 'actual write complete', artifacts: [artifact('file.txt')] } },
-      { type: 'step.completed', turnId: current, stepId },
-    ];
+    const events = [...createSession([
+      { type: 'turn.started', turnId: current, payload: {} }, { type: 'user.message', turnId: current, payload: { content: 'continue' } },
+      { type: 'assistant.message', turnId: current, payload: { stepId, toolCalls: [{ id, name: 'write', input: { text: 'body'.repeat(900) } }] } },
+      { type: 'tool.called', turnId: current, payload: { stepId, toolCallId: id, name: 'write', input: { text: 'body'.repeat(900) }, boundary: 'checkpointed' } },
+      { type: 'tool.result', turnId: current, payload: { stepId, toolCallId: id, result: { status: 'success', output: 'actual write complete', artifacts: [artifact('file.txt')] } } },
+      { type: 'step.completed', turnId: current, payload: { stepId } },
+    ]).events()];
     const messages = await context(new InMemorySession(events), { complete: vi.fn<Model['complete']>() }, { contextWindow: 10000, maxOutputTokens: 800 });
     const factText = messages.filter(message => message.role === 'user').map(message => message.content).join('\n');
     expect(factText).toContain('inputSourceDigest'); expect(factText).toContain('file.txt'); expect(factText).not.toContain('bodybody');
@@ -228,7 +234,7 @@ describe('model context projection', () => {
   it('propagates a failed summary checkpoint and preserves raw history', async () => {
     const error = new SessionPersistenceError(new Error('disk full'));
     class FailingSession extends InMemorySession {
-      override append(event: SessionEvent): void { if (event.type === 'context.compacted') throw error; super.append(event); }
+      override append<Event extends SessionEventInput>(event: Event): Extract<SessionEvent, { type: Event['type'] }> { if (event.type === 'context.compacted') throw error; return super.append(event); }
     }
     const original = history().session.events(); const session = new FailingSession(original);
     await expect(context(session, { complete: async request => summarize(request) }, { contextWindow: 7000, maxOutputTokens: 800 })).rejects.toBe(error);
@@ -268,7 +274,7 @@ describe('model context projection', () => {
     const complete = vi.fn<Model['complete']>();
     expect(await context(restored, { complete }, budget)).toEqual(before); expect(complete).not.toHaveBeenCalled();
     const index = restored.events().findLastIndex(event => event.type === 'context.compacted');
-    expect(validateContextCompactedEvent(restored.events(), index).event.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(validateContextCompactedEvent(restored.events(), index).event.payload.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
   });
 });
 
@@ -276,19 +282,17 @@ describe('summary provenance', () => {
   function withSummary(): { events: SessionEvent[]; summaryIndex: number; ends: number[] } {
     const { session, ends } = history(3, 100);
     const events = [...session.events()]; const summaryIndex = events.length;
-    const event: ContextCompactedEvent = { type: 'context.compacted', turnId: current, coveredStepEndEventIndexes: [ends[0]!],
-      sourceDigest: createContextSourceDigest(events, [ends[0]!]), summary: JSON.stringify({ summary: 'actual old fact', sourceEventIndexes: [3, 5] }),
-      estimatorVersion: 1, estimatedBefore: 1000, estimatedAfter: 500 };
+    const event = session.append({ type: 'context.compacted', turnId: current, payload: { coveredStepEndEventIndexes: [ends[0]!], sourceDigest: createContextSourceDigest(events, [ends[0]!]), summary: JSON.stringify({ summary: 'actual old fact', sourceEventIndexes: [3, 5] }), estimatorVersion: 1, estimatedBefore: 1000, estimatedAfter: 500 } });
     events.push(event); return { events, summaryIndex, ends };
   }
 
   it('hashes canonical objects, preserving array order and all original source fields', () => {
     const { session, ends } = history(1, 10); const first = [...session.events()];
     const result = first[5]; if (result?.type !== 'tool.result') throw new Error('fixture result missing');
-    first[5] = { ...result, result: { status: 'success', output: { z: [1, 2], a: 'fact' } } };
-    const second = [...first]; second[5] = { ...result, result: { status: 'success', output: { a: 'fact', z: [1, 2] } } };
+    first[5] = { ...result, payload: { ...result.payload, result: { status: 'success', output: { z: [1, 2], a: 'fact' } } } };
+    const second = [...first]; second[5] = { ...result, payload: { ...result.payload, result: { status: 'success', output: { a: 'fact', z: [1, 2] } } } };
     expect(createContextSourceDigest(first, ends)).toBe(createContextSourceDigest(second, ends));
-    second[5] = { ...result, result: { status: 'success', output: { a: 'fact', z: [2, 1] } } };
+    second[5] = { ...result, payload: { ...result.payload, result: { status: 'success', output: { a: 'fact', z: [2, 1] } } } };
     expect(createContextSourceDigest(first, ends)).not.toBe(createContextSourceDigest(second, ends));
   });
 
@@ -296,22 +300,21 @@ describe('summary provenance', () => {
     const { events, summaryIndex, ends } = withSummary();
     expect(validateContextCompactedEvent(events, summaryIndex).cumulativeCoveredStepEndEventIndexes).toEqual([ends[0]]);
     const tampered = [...events]; const result = tampered[5]; if (result?.type !== 'tool.result') throw new Error('fixture result missing');
-    tampered[5] = { ...result, result: { status: 'success', output: 'tampered raw result' } };
+    tampered[5] = { ...result, payload: { ...result.payload, result: { status: 'success', output: 'tampered raw result' } } };
     expect(() => validateContextCompactedEvent(tampered, summaryIndex)).toThrow('原始事实不一致');
     const event = events[summaryIndex]; if (event?.type !== 'context.compacted') throw new Error('fixture summary missing');
-    expect(() => validateContextCompactedEvent([...events, { ...event, previousSummaryEventIndex: summaryIndex }], summaryIndex + 1)).toThrow('重复覆盖');
-    expect(() => validateContextCompactedEvent([...events.slice(0, summaryIndex), { ...event, coveredStepEndEventIndexes: [summaryIndex + 1] }], summaryIndex)).toThrow('未来');
-    expect(() => validateContextCompactedEvent([...events.slice(0, summaryIndex), { ...event, previousSummaryEventIndex: summaryIndex }], summaryIndex)).toThrow('自己或未来');
+    expect(() => validateContextCompactedEvent([...events, { ...event, payload: { ...event.payload, previousSummaryEventIndex: summaryIndex } }], summaryIndex + 1)).toThrow('重复覆盖');
+    expect(() => validateContextCompactedEvent([...events.slice(0, summaryIndex), { ...event, payload: { ...event.payload, coveredStepEndEventIndexes: [summaryIndex + 1] } }], summaryIndex)).toThrow('未来');
+    expect(() => validateContextCompactedEvent([...events.slice(0, summaryIndex), { ...event, payload: { ...event.payload, previousSummaryEventIndex: summaryIndex } }], summaryIndex)).toThrow('自己或未来');
   });
 });
 
 describe('plan evidence available to the model', () => {
-  const plan: SessionEvent = { type: 'plan.updated', turnId: current, revision: 1, explanation: '检查资料并给出回复',
-    steps: [{ id: 'check', description: '检查资料', requestedStatus: 'in_progress', completionKind: 'tool', evidenceEventIndexes: [] }] };
+  const plan: SessionEventInput = { type: 'plan.updated', turnId: current, payload: { revision: 1, explanation: '检查资料并给出回复', steps: [{ id: 'check', description: '检查资料', requestedStatus: 'in_progress', completionKind: 'tool', evidenceEventIndexes: [] }] } };
   const qualify: QualifyToolEvidence = source => ({ eligible: source.type === 'effect.outcome.verified'
-    ? source.scope === 'entire-call' && source.outcome === 'completed'
-    : source.result.status === 'success' && source.result.output === 'qualified-read',
-    label: source.type === 'effect.outcome.verified' ? '仅核验当前操作效果' : source.result.status === 'error' ? '真实工具失败' : source.result.output === 'qualified-read' ? '资料已读取' : '仅确认工具返回' });
+    ? source.payload.scope === 'entire-call' && source.payload.outcome === 'completed'
+    : source.payload.result.status === 'success' && source.payload.result.output === 'qualified-read',
+    label: source.type === 'effect.outcome.verified' ? '仅核验当前操作效果' : source.payload.result.status === 'error' ? '真实工具失败' : source.payload.result.output === 'qualified-read' ? '资料已读取' : '仅确认工具返回' });
   function directory(messages: readonly ModelMessage[]): Record<string, unknown>[] | undefined {
     const message = messages.find(message => message.role === 'user' && message.content.startsWith('计划证据目录'));
     return message?.role === 'user' ? JSON.parse(message.content.slice(message.content.indexOf('\n') + 1)) as Record<string, unknown>[] : undefined;
@@ -323,25 +326,23 @@ describe('plan evidence available to the model', () => {
 
   it('exposes stable task-chain result and verification indexes with their real qualification and composite call identity', async () => {
     const stepId = 'same-step' as StepId; const toolCallId = 'same-call' as ToolCallId; const other = 'unrelated' as TurnId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId: other },
-      { type: 'tool.called', turnId: other, stepId, toolCallId, name: 'unrelated-tool', input: {}, boundary: 'read-only' },
-      { type: 'tool.result', turnId: other, stepId, toolCallId, result: { status: 'success', output: 'unrelated-fact' } },
-      { type: 'turn.started', turnId: root },
-      { type: 'tool.called', turnId: root, stepId, toolCallId, name: 'read_file', input: {}, boundary: 'read-only' },
-      { type: 'tool.result', turnId: root, stepId, toolCallId, result: { status: 'success', output: 'qualified-read' } },
-      { type: 'turn.failed', turnId: root, errorName: 'Error', errorMessage: 'original failure' },
-      { type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: '继续检查' },
-      { type: 'turn.recovery.started', turnId: current, sourceTurnId: root, mode: 'continue' }, plan,
-      { type: 'tool.called', turnId: current, stepId, toolCallId, name: 'external-tool', input: {}, boundary: 'opaque' },
-      { type: 'tool.result', turnId: current, stepId, toolCallId, result: { status: 'success', output: 'opaque-return' } },
-      { type: 'effect.outcome.verified', turnId: current, sourceEventIndex: 11, scope: 'entire-call', outcome: 'unresolved',
-        evidence: { source: 'host', reference: 'terminal:1', description: '命令效果未明' } },
-      { type: 'tool.called', turnId: current, stepId: 'failed' as StepId, toolCallId, name: 'read_file', input: {}, boundary: 'read-only' },
-      { type: 'tool.result', turnId: current, stepId: 'failed' as StepId, toolCallId, result: { status: 'error', message: 'real read error', failureKind: 'permanent' } },
-      { type: 'effect.outcome.verified', turnId: current, sourceEventIndex: 4, scope: 'entire-call', outcome: 'completed',
-        evidence: { source: 'user', reference: '原轮次的资料', description: '人工确认原操作结果' } },
-    ];
+    const events = [...createSession([
+      { type: 'turn.started', turnId: other, payload: {} },
+      { type: 'tool.called', turnId: other, payload: { stepId, toolCallId, name: 'unrelated-tool', input: {}, boundary: 'read-only' } },
+      { type: 'tool.result', turnId: other, payload: { stepId, toolCallId, result: { status: 'success', output: 'unrelated-fact' } } },
+      { type: 'turn.started', turnId: root, payload: {} },
+      { type: 'tool.called', turnId: root, payload: { stepId, toolCallId, name: 'read_file', input: {}, boundary: 'read-only' } },
+      { type: 'tool.result', turnId: root, payload: { stepId, toolCallId, result: { status: 'success', output: 'qualified-read' } } },
+      { type: 'turn.failed', turnId: root, payload: { errorName: 'Error', errorMessage: 'original failure' } },
+      { type: 'turn.started', turnId: current, payload: {} }, { type: 'user.message', turnId: current, payload: { content: '继续检查' } },
+      { type: 'turn.recovery.started', turnId: current, payload: { sourceTurnId: root, mode: 'continue' } }, plan,
+      { type: 'tool.called', turnId: current, payload: { stepId, toolCallId, name: 'external-tool', input: {}, boundary: 'opaque' } },
+      { type: 'tool.result', turnId: current, payload: { stepId, toolCallId, result: { status: 'success', output: 'opaque-return' } } },
+      { type: 'effect.outcome.verified', turnId: current, payload: { sourceEventIndex: 11, scope: 'entire-call', outcome: 'unresolved', evidence: { source: 'host', reference: 'terminal:1', description: '命令效果未明' } } },
+      { type: 'tool.called', turnId: current, payload: { stepId: 'failed' as StepId, toolCallId, name: 'read_file', input: {}, boundary: 'read-only' } },
+      { type: 'tool.result', turnId: current, payload: { stepId: 'failed' as StepId, toolCallId, result: { status: 'error', message: 'real read error', failureKind: 'permanent' } } },
+      { type: 'effect.outcome.verified', turnId: current, payload: { sourceEventIndex: 4, scope: 'entire-call', outcome: 'completed', evidence: { source: 'user', reference: '原轮次的资料', description: '人工确认原操作结果' } } },
+    ]).events()];
     const callback = vi.fn(qualify); const session = new InMemorySession(events);
     const evidence = directory(await prepare(session, callback))!;
     expect(evidence.map(item => item.sourceEventIndex)).toEqual([5, 6, 12, 13, 15, 16]);
@@ -362,7 +363,7 @@ describe('plan evidence available to the model', () => {
 
   it('keeps exact result indexes after compression without copying large output into the directory', async () => {
     const { session } = history(5, 1400);
-    session.append({ type: 'turn.recovery.started', turnId: current, sourceTurnId: root, mode: 'continue' });
+    session.append({ type: 'turn.recovery.started', turnId: current, payload: { sourceTurnId: root, mode: 'continue' } });
     session.append(plan);
     const messages = await prepare(session, qualify, { contextWindow: 9500, maxOutputTokens: 800 });
     const evidence = directory(messages)!;
@@ -374,10 +375,10 @@ describe('plan evidence available to the model', () => {
   });
 
   it('counts the evidence directory in mandatory input rather than dropping it to fit a budget', async () => {
-    const session = new InMemorySession([{ type: 'turn.started', turnId: current }, { type: 'user.message', turnId: current, content: '检查' }, plan,
-      { type: 'tool.called', turnId: current, stepId: 's' as StepId, toolCallId: 'c' as ToolCallId, name: 'read', input: {}, boundary: 'read-only' },
-      { type: 'tool.result', turnId: current, stepId: 's' as StepId, toolCallId: 'c' as ToolCallId, result: { status: 'success', output: 'small' } },
-      { type: 'step.completed', turnId: current, stepId: 's' as StepId }]);
+    const session = createSession([{ type: 'turn.started', turnId: current, payload: {} }, { type: 'user.message', turnId: current, payload: { content: '检查' } }, plan,
+      { type: 'tool.called', turnId: current, payload: { stepId: 's' as StepId, toolCallId: 'c' as ToolCallId, name: 'read', input: {}, boundary: 'read-only' } },
+      { type: 'tool.result', turnId: current, payload: { stepId: 's' as StepId, toolCallId: 'c' as ToolCallId, result: { status: 'success', output: 'small' } } },
+      { type: 'step.completed', turnId: current, payload: { stepId: 's' as StepId } }]);
     const complete = vi.fn<Model['complete']>(); const original = [...session.events()];
     await expect(prepareModelContext({ session, model: { complete }, turnId: current, systemPrompt, tools,
       qualifyToolEvidence: () => ({ eligible: false, label: 'actual business qualification '.repeat(300) }),

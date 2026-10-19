@@ -64,8 +64,8 @@ describe('Whisper host adapter', () => {
     const video = join(outside, 'source.mp4'); await writeFile(video, 'source');
     const session = new InMemorySession(); const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
     const result = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [video], target: { kind: 'automatic' } }] }, context);
-    session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} });
-    session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, result });
+    session.append({ type: 'tool.called', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} } });
+    session.append({ type: 'tool.result', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: 'declare' as never, result } });
     const wav = join(readVideoDeliveryFacts(session.events()).items[0]!.workingDirectory, 'audio.wav'); await writeFile(wav, 'audio');
     const raw = rawTool({ status: 'success', output: { structuredContent: { text: 'spoken', segments: [{ start: 0, end: 1, text: 'spoken' }] } } });
     const access: WhisperFileAccess = { workspace: { confirmedDirectory: () => workspace }, attachments: () => [video], events: () => session.events() };

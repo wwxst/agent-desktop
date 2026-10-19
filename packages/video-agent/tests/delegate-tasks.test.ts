@@ -5,7 +5,11 @@ import { InMemorySession } from '@agent-desktop/session';
 
 const context: ToolExecutionContext = { toolCallId: 'parent' as never, reportProgress: () => {} };
 const tasks = [{ title: 'A', instruction: '检查 A' }, { title: 'B', instruction: '检查 B' }];
-const session = () => new InMemorySession([{ type: 'turn.started', turnId: 'turn-1' as never }]);
+const session = () => {
+  const history = new InMemorySession();
+  history.append({ type: 'turn.started', turnId: 'turn-1' as never, payload: {} });
+  return history;
+};
 
 describe('read-only delegation', () => {
   it('starts two tasks together, retains an independent failure, and enforces the turn total', async () => {
@@ -41,7 +45,7 @@ describe('read-only delegation', () => {
     const tool = new DelegateTasksTool(run, history);
     expect(await tool.execute({ tasks }, context)).toMatchObject({ status: 'success' });
     expect(await tool.execute({ tasks }, context)).toMatchObject({ status: 'error' });
-    history.append({ type: 'turn.started', turnId: 'turn-2' as never });
+    history.append({ type: 'turn.started', turnId: 'turn-2' as never, payload: {} });
     expect(await tool.execute({ tasks }, context)).toMatchObject({ status: 'success' });
     expect(run).toHaveBeenCalledTimes(4);
   });

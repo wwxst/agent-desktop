@@ -22,10 +22,10 @@ describe('Runnable Echo Agent', () => {
     expect(result.stepCount).toBe(2);
     expect(result.response).toEqual({ text: 'Echo result: hello', toolCalls: [] });
     expect(eventsOfType(events, 'tool.called')).toMatchObject([
-      { name: 'echo', input: { text: 'hello' } },
+      { payload: { name: 'echo', input: { text: 'hello' } } },
     ]);
     expect(eventsOfType(events, 'tool.result')).toMatchObject([
-      { result: { status: 'success', output: 'hello' } },
+      { payload: { result: { status: 'success', output: 'hello' } } },
     ]);
   });
 
@@ -62,7 +62,7 @@ describe('Runnable Echo Agent', () => {
     expect(completedTurns.map((event) => event.turnId)).toEqual(
       startedTurns.map((event) => event.turnId),
     );
-    expect(eventsOfType(events, 'user.message').map((event) => event.content)).toEqual([
+    expect(eventsOfType(events, 'user.message').map((event) => event.payload.content)).toEqual([
       'hello',
       'world',
     ]);

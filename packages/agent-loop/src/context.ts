@@ -3,8 +3,8 @@ import { ModelRequestError, type Model, type ModelMessage, type ModelResponse, t
 import { formatModelToolResult } from '@agent-desktop/tools';
 import {
   projectRecoveryAncestry, projectRecoveryFacts, recoverSessionEvents, SessionPersistenceError,
-  type AssistantMessageEvent, type ContextCompactedEvent, type Session, type SessionEvent,
-  type QualifyToolEvidence, type StepCompletedEvent, type ToolCalledEvent, type ToolResultEvent, type TurnId,
+  type ContextCompactedEvent, type Session, type SessionEvent, type SessionEventInput,
+  type QualifyToolEvidence, type ToolCalledEvent, type TurnId,
 } from '@agent-desktop/session';
 
 export interface ContextBudget { readonly contextWindow: number; readonly maxOutputTokens: number; }
@@ -25,10 +25,11 @@ class SummaryFormatError extends Error {
   override readonly name = 'SummaryFormatError';
 }
 interface SummaryPayload { readonly summary: string; readonly sourceEventIndexes: readonly number[]; }
-interface IndexedStepSource { readonly sourceEventIndex: number; readonly event: AssistantMessageEvent | ToolResultEvent; }
-interface CompleteStep { readonly endEventIndex: number; readonly event: StepCompletedEvent; readonly sources: readonly IndexedStepSource[]; }
-export interface ValidatedContextSummary {
-  readonly event: ContextCompactedEvent;
+type SummaryEventInput = Extract<SessionEventInput, { type: 'context.compacted' }>;
+interface IndexedStepSource { readonly sourceEventIndex: number; readonly event: Extract<SessionEventInput, { type: 'assistant.message' | 'tool.result' }>; }
+interface CompleteStep { readonly endEventIndex: number; readonly event: Extract<SessionEventInput, { type: 'step.completed' }>; readonly sources: readonly IndexedStepSource[]; }
+export interface ValidatedContextSummary<Event extends SummaryEventInput = ContextCompactedEvent> {
+  readonly event: Event;
   readonly cumulativeCoveredStepEndEventIndexes: readonly number[];
   readonly sourceEventIndexes: readonly number[];
   readonly payload: SummaryPayload;
@@ -58,14 +59,17 @@ function throwIfAborted(signal?: AbortSignal): void {
   throw new DOMException('The operation was aborted', 'AbortError');
 }
 
-function modelSourceEvent(event: SessionEvent): unknown {
-  if (event.type !== 'tool.result') return event;
-  return { ...event, result: { status: event.result.status, content: formatModelToolResult(event.result) } };
+function modelSourceEvent(event: SessionEventInput): unknown {
+  // 模型资料只投影业务字段；统一事件身份、时序和时间留给运行时及持久化消费者。
+  if (event.type !== 'tool.result') return { type: event.type, turnId: event.turnId, payload: event.payload };
+  return { type: event.type, turnId: event.turnId,
+    payload: { ...event.payload,
+      result: { status: event.payload.result.status, content: formatModelToolResult(event.payload.result) } } };
 }
-const stepKey = (event: { readonly turnId: TurnId; readonly stepId: string }): string => JSON.stringify([event.turnId, event.stepId]);
+const stepKey = (event: { readonly turnId: TurnId; readonly payload: { readonly stepId: string } }): string => JSON.stringify([event.turnId, event.payload.stepId]);
 
 /** 以完成事件的精确位置选择整个 Step，不把索引区间中的其他轮次一并覆盖。 */
-function completeSteps(events: readonly SessionEvent[]): CompleteStep[] {
+function completeSteps(events: readonly SessionEventInput[]): CompleteStep[] {
   const sources = new Map<string, IndexedStepSource[]>();
   const steps: CompleteStep[] = [];
   events.forEach((event, sourceEventIndex) => {
@@ -91,10 +95,10 @@ function selectedSources(steps: readonly CompleteStep[], covered: readonly numbe
   return sources;
 }
 
-function sourcePayload(previous: ContextCompactedEvent | undefined, sources: readonly { readonly sourceEventIndex: number; readonly event: unknown }[]) {
-  return { previousSummarySourceDigest: previous?.sourceDigest ?? null, previousSummaryText: previous?.summary ?? null, newStepSources: sources };
+function sourcePayload(previous: SummaryEventInput | undefined, sources: readonly { readonly sourceEventIndex: number; readonly event: unknown }[]) {
+  return { previousSummarySourceDigest: previous?.payload.sourceDigest ?? null, previousSummaryText: previous?.payload.summary ?? null, newStepSources: sources };
 }
-function sourceDigest(previous: ContextCompactedEvent | undefined, sources: readonly IndexedStepSource[]): string {
+function sourceDigest(previous: SummaryEventInput | undefined, sources: readonly IndexedStepSource[]): string {
   return createHash('sha256').update(canonicalJson(sourcePayload(previous, sources)), 'utf8').digest('hex');
 }
 
@@ -114,30 +118,32 @@ function parseSummary(text: string, allowedSources: ReadonlySet<number>): Summar
 }
 
 /** 文件/重启消费者复用同一校验，摘要来源不能由旧缓存或模型自行声称。 */
-export function validateContextCompactedEvent(events: readonly SessionEvent[], eventIndex: number): ValidatedContextSummary {
-  const chain: { index: number; event: ContextCompactedEvent }[] = [];
+export function validateContextCompactedEvent(events: readonly SessionEvent[], eventIndex: number): ValidatedContextSummary;
+export function validateContextCompactedEvent(events: readonly SessionEventInput[], eventIndex: number): ValidatedContextSummary<SummaryEventInput>;
+export function validateContextCompactedEvent(events: readonly SessionEventInput[], eventIndex: number): ValidatedContextSummary<SummaryEventInput> {
+  const chain: { index: number; event: SummaryEventInput }[] = [];
   let currentIndex = eventIndex;
   while (true) {
     const event = events[currentIndex];
     if (!Number.isSafeInteger(currentIndex) || currentIndex < 0 || event?.type !== 'context.compacted') throw new SummaryFormatError('摘要事件来源不存在。');
     chain.push({ index: currentIndex, event });
-    if (event.previousSummaryEventIndex === undefined) break;
-    if (event.previousSummaryEventIndex >= currentIndex) throw new SummaryFormatError('摘要不能引用自己或未来摘要。');
-    currentIndex = event.previousSummaryEventIndex;
+    if (event.payload.previousSummaryEventIndex === undefined) break;
+    if (event.payload.previousSummaryEventIndex >= currentIndex) throw new SummaryFormatError('摘要不能引用自己或未来摘要。');
+    currentIndex = event.payload.previousSummaryEventIndex;
   }
   const steps = completeSteps(events);
   const covered = new Set<number>();
   const allowedSources = new Set<number>();
-  let previous: ContextCompactedEvent | undefined;
-  let validated: ValidatedContextSummary | undefined;
+  let previous: SummaryEventInput | undefined;
+  let validated: ValidatedContextSummary<SummaryEventInput> | undefined;
   for (const { index, event } of chain.reverse()) {
-    if (event.coveredStepEndEventIndexes.length === 0 || event.coveredStepEndEventIndexes.some(end => end >= index || covered.has(end))) throw new SummaryFormatError('摘要覆盖不能为空，不能包含未来或重复覆盖的步骤。');
-    const sources = selectedSources(steps, event.coveredStepEndEventIndexes);
+    if (event.payload.coveredStepEndEventIndexes.length === 0 || event.payload.coveredStepEndEventIndexes.some(end => end >= index || covered.has(end))) throw new SummaryFormatError('摘要覆盖不能为空，不能包含未来或重复覆盖的步骤。');
+    const sources = selectedSources(steps, event.payload.coveredStepEndEventIndexes);
     if (sources.some(source => allowedSources.has(source.sourceEventIndex))) throw new SummaryFormatError('摘要不能重复覆盖同一原始事实。');
-    if (sourceDigest(previous, sources) !== event.sourceDigest) throw new SummaryFormatError('摘要来源摘要与原始事实不一致。');
+    if (sourceDigest(previous, sources) !== event.payload.sourceDigest) throw new SummaryFormatError('摘要来源摘要与原始事实不一致。');
     for (const source of sources) allowedSources.add(source.sourceEventIndex);
-    const payload = parseSummary(event.summary, allowedSources);
-    for (const end of event.coveredStepEndEventIndexes) covered.add(end);
+    const payload = parseSummary(event.payload.summary, allowedSources);
+    for (const end of event.payload.coveredStepEndEventIndexes) covered.add(end);
     validated = { event, payload, cumulativeCoveredStepEndEventIndexes: [...covered], sourceEventIndexes: [...allowedSources] };
     previous = event;
   }
@@ -169,7 +175,7 @@ function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: 
   for (const fact of facts.successfulCalls) {
     // 残留成功结果必须原文可见；恢复链原成功外部调用也不得靠模型摘要来决定重放。
     const incomplete = !completeKeys.has(stepKey(fact.call));
-    if (incomplete || (ancestry.turnIds.length > 1 && taskTurns.has(fact.call.turnId) && fact.call.boundary !== 'read-only')) {
+    if (incomplete || (ancestry.turnIds.length > 1 && taskTurns.has(fact.call.turnId) && fact.call.payload.boundary !== 'read-only')) {
       retained.add(fact.sourceEventIndex);
       if (fact.resultEventIndex !== undefined) retained.add(fact.resultEventIndex);
     }
@@ -184,8 +190,8 @@ function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: 
   for (const index of new Set([sessionPlanIndex, latestPlanIndex])) {
     if (index < 0) continue;
     const plan = events[index]!;
-    text.push(`最新计划声明（意图，requestedStatus 不是执行完成证据）：\n${canonicalJson({ sourceEventIndex: index, rootTurnId: projectRecoveryAncestry(events, plan.turnId).rootTurnId, event: plan })}`);
-    if (plan.type === 'plan.updated') for (const step of plan.steps) for (const index of step.evidenceEventIndexes) retained.add(index);
+    text.push(`最新计划声明（意图，requestedStatus 不是执行完成证据）：\n${canonicalJson({ sourceEventIndex: index, rootTurnId: projectRecoveryAncestry(events, plan.turnId).rootTurnId, event: modelSourceEvent(plan) })}`);
+    if (plan.type === 'plan.updated') for (const step of plan.payload.steps) for (const index of step.evidenceEventIndexes) retained.add(index);
   }
   if (latestPlanIndex >= 0) {
     // 目录只在本任务已经有计划时提供；索引来自原历史，不复制大输出或用 ToolCallId 猜跨轮归属。
@@ -194,25 +200,25 @@ function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: 
     const evidence: unknown[] = [];
     events.forEach((event, sourceEventIndex) => {
       if (!taskTurns.has(event.turnId)) return;
-      if (event.type === 'tool.called') calls.set(canonicalJson([event.turnId, event.stepId, event.toolCallId]), { index: sourceEventIndex, event });
+      if (event.type === 'tool.called') calls.set(canonicalJson([event.turnId, event.payload.stepId, event.payload.toolCallId]), { index: sourceEventIndex, event });
       if (event.type === 'tool.result') {
-        const call = calls.get(canonicalJson([event.turnId, event.stepId, event.toolCallId]));
-        evidence.push({ sourceEventIndex, type: event.type, turnId: event.turnId, stepId: event.stepId, toolCallId: event.toolCallId,
-          ...(call === undefined ? {} : { callSourceEventIndex: call.index, toolName: call.event.name,
-            pendingEffectVerification: unknownSources.has(call.index) }), resultStatus: event.result.status,
-          ...(event.result.status === 'error' && event.result.failureKind !== undefined ? { failureKind: event.result.failureKind } : {}),
+        const call = calls.get(canonicalJson([event.turnId, event.payload.stepId, event.payload.toolCallId]));
+        evidence.push({ sourceEventIndex, type: event.type, turnId: event.turnId, stepId: event.payload.stepId, toolCallId: event.payload.toolCallId,
+          ...(call === undefined ? {} : { callSourceEventIndex: call.index, toolName: call.event.payload.name,
+            pendingEffectVerification: unknownSources.has(call.index) }), resultStatus: event.payload.result.status,
+          ...(event.payload.result.status === 'error' && event.payload.result.failureKind !== undefined ? { failureKind: event.payload.result.failureKind } : {}),
           ...(qualifyToolEvidence === undefined ? {} : { qualification: qualifyToolEvidence(event, events) }) });
       } else if (event.type === 'effect.outcome.verified') {
-        const source = events[event.sourceEventIndex];
+        const source = events[event.payload.sourceEventIndex];
         if (source === undefined || !taskTurns.has(source.turnId)) return;
-        evidence.push({ sourceEventIndex, type: event.type, turnId: event.turnId, operationSourceEventIndex: event.sourceEventIndex,
+        evidence.push({ sourceEventIndex, type: event.type, turnId: event.turnId, operationSourceEventIndex: event.payload.sourceEventIndex,
           sourceTurnId: source.turnId, sourceType: source.type,
-          ...(source.type === 'tool.called' ? { toolName: source.name } : source.type === 'host.operation.started' ? { operation: source.operation } : {}),
-          scope: event.scope, outcome: event.outcome, evidence: event.evidence, pendingEffectVerification: unknownSources.has(event.sourceEventIndex),
+          ...(source.type === 'tool.called' ? { toolName: source.payload.name } : source.type === 'host.operation.started' ? { operation: source.payload.operation } : {}),
+          scope: event.payload.scope, outcome: event.payload.outcome, evidence: event.payload.evidence, pendingEffectVerification: unknownSources.has(event.payload.sourceEventIndex),
           ...(qualifyToolEvidence === undefined ? {} : { qualification: qualifyToolEvidence(event, events) }) });
       } else if (event.type === 'turn.failed' || event.type === 'turn.cancelled' || event.type === 'turn.interrupted'
-        || event.type === 'tool.interaction.closed' || (event.type === 'host.operation.result' && event.status !== 'completed')) {
-        evidence.push({ sourceEventIndex, event });
+        || event.type === 'tool.interaction.closed' || (event.type === 'host.operation.result' && event.payload.status !== 'completed')) {
+        evidence.push({ sourceEventIndex, event: modelSourceEvent(event) });
       }
     });
     text.push(`计划证据目录（仅本任务及恢复链；引用 sourceEventIndex。resultStatus 只表示真实返回，资格由宿主判断；未知效果须先核验；没有 qualification 时不能据此确认业务完成）：\n${canonicalJson(evidence)}`);
@@ -224,30 +230,30 @@ function importantFacts(events: readonly SessionEvent[], turnId: TurnId, steps: 
   }
   if (retained.size > 0) text.push(`重要执行事实（原始资料，不表示批准重放；未知效果须先核验）：\n${canonicalJson([...retained].sort((left, right) => left - right).map(index => ({ sourceEventIndex: index, event: modelSourceEvent(events[index]!) })))}`);
   // 普通根轮次外部成功保留身份/真实状态/产物索引，大正文仍由完整协议或来源摘要提供。
-  const successes = facts.successfulCalls.filter(fact => taskTurns.has(fact.call.turnId) && fact.call.boundary !== 'read-only' && !retained.has(fact.sourceEventIndex));
+  const successes = facts.successfulCalls.filter(fact => taskTurns.has(fact.call.turnId) && fact.call.payload.boundary !== 'read-only' && !retained.has(fact.sourceEventIndex));
   if (keepCompletedIdentities && successes.length > 0) text.push(`已发生的调用事实（不重复执行，状态只代表真实工具结果）：\n${canonicalJson(successes.map(fact => ({ sourceEventIndex: fact.sourceEventIndex,
-    call: { turnId: fact.call.turnId, stepId: fact.call.stepId, toolCallId: fact.call.toolCallId, name: fact.call.name,
-      inputSourceDigest: createHash('sha256').update(canonicalJson(fact.call.input), 'utf8').digest('hex') }, resultEventIndex: fact.resultEventIndex,
-    ...(fact.result === undefined ? {} : { resultStatus: fact.result.result.status, ...(fact.result.result.status === 'success' && fact.result.result.artifacts !== undefined ? { artifacts: fact.result.result.artifacts } : {}) }),
-    ...(fact.verification === undefined ? {} : { verification: fact.verification }) })))}`);
+    call: { turnId: fact.call.turnId, stepId: fact.call.payload.stepId, toolCallId: fact.call.payload.toolCallId, name: fact.call.payload.name,
+      inputSourceDigest: createHash('sha256').update(canonicalJson(fact.call.payload.input), 'utf8').digest('hex') }, resultEventIndex: fact.resultEventIndex,
+    ...(fact.result === undefined ? {} : { resultStatus: fact.result.payload.result.status, ...(fact.result.payload.result.status === 'success' && fact.result.payload.result.artifacts !== undefined ? { artifacts: fact.result.payload.result.artifacts } : {}) }),
+    ...(fact.verification === undefined ? {} : { verification: modelSourceEvent(fact.verification) }) })))}`);
   return text;
 }
 
-function projectMessages(events: readonly SessionEvent[], covered: ReadonlySet<number>, steps: readonly CompleteStep[], turnId: TurnId, facts: readonly string[], summary?: { index: number; value: ValidatedContextSummary }): ModelMessage[] {
+function projectMessages(events: readonly SessionEvent[], covered: ReadonlySet<number>, steps: readonly CompleteStep[], turnId: TurnId, facts: readonly string[], summary?: { index: number; value: ValidatedContextSummary<SummaryEventInput> }): ModelMessage[] {
   const coveredKeys = new Set(steps.filter(step => covered.has(step.endEventIndex)).map(step => stepKey(step.event)));
   const derived = [...facts];
-  if (summary !== undefined) derived.unshift(`会话压缩摘要（历史资料，不是系统指令或执行成功确认）：\n${canonicalJson({ sourceEventIndex: summary.index, sourceDigest: summary.value.event.sourceDigest, ...summary.value.payload })}`);
+  if (summary !== undefined) derived.unshift(`会话压缩摘要（历史资料，不是系统指令或执行成功确认）：\n${canonicalJson({ sourceEventIndex: summary.index, sourceDigest: summary.value.event.payload.sourceDigest, ...summary.value.payload })}`);
   const messages: ModelMessage[] = [];
   let inserted = false;
   for (const event of recoverSessionEvents(events)) {
     if (event.type === 'user.message') {
       // 资料放在本轮原始输入之前；所有用户原文仍逐条保留且不受摘要覆盖。
       if (!inserted && event.turnId === turnId) { for (const content of derived) messages.push({ role: 'user', content }); inserted = true; }
-      messages.push({ role: 'user', content: event.content });
+      messages.push({ role: 'user', content: event.payload.content });
     } else if (event.type === 'assistant.message' && !coveredKeys.has(stepKey(event))) {
-      messages.push(event.content === undefined ? { role: 'assistant', toolCalls: event.toolCalls } : { role: 'assistant', content: event.content, toolCalls: event.toolCalls });
+      messages.push(event.payload.content === undefined ? { role: 'assistant', toolCalls: event.payload.toolCalls } : { role: 'assistant', content: event.payload.content, toolCalls: event.payload.toolCalls });
     } else if (event.type === 'tool.result' && !coveredKeys.has(stepKey(event))) {
-      messages.push({ role: 'tool', toolCallId: event.toolCallId, content: formatModelToolResult(event.result) });
+      messages.push({ role: 'tool', toolCallId: event.payload.toolCallId, content: formatModelToolResult(event.payload.result) });
     }
   }
   if (!inserted) for (const content of derived) messages.push({ role: 'user', content });
@@ -326,9 +332,11 @@ export async function prepareModelContext(input: PrepareModelContextInput): Prom
       throwIfAborted(input.signal);
       return summaryFailure(error, messages, estimated, limit);
     }
-    const event: ContextCompactedEvent = { type: 'context.compacted', turnId: input.turnId, coveredStepEndEventIndexes: newCovered,
-      ...(summary === undefined ? {} : { previousSummaryEventIndex: summary.index }), sourceDigest: sourceDigest(summary?.value.event, chunkSources), summary: canonicalJson(payload),
-      estimatorVersion: 1, estimatedBefore: estimated, estimatedAfter: 0 };
+    const event: SummaryEventInput = { type: 'context.compacted', turnId: input.turnId,
+      payload: { coveredStepEndEventIndexes: newCovered,
+        ...(summary === undefined ? {} : { previousSummaryEventIndex: summary.index }),
+        sourceDigest: sourceDigest(summary?.value.event, chunkSources), summary: canonicalJson(payload),
+        estimatorVersion: 1, estimatedBefore: estimated, estimatedAfter: 0 } };
     const candidateIndex = input.session.events().length;
     const candidate = validateContextCompactedEvent([...input.session.events(), event], candidateIndex);
     const proposed = projectMessages(events, new Set(candidate.cumulativeCoveredStepEndEventIndexes), steps, input.turnId, facts, { index: candidateIndex, value: candidate });
@@ -336,9 +344,10 @@ export async function prepareModelContext(input: PrepareModelContextInput): Prom
     if (after >= estimated) return summaryFailure(new SummaryFormatError('摘要未降低上下文估算。'), messages, estimated, limit);
     // 来源和保存都在格式回退之外；内部错误不能被当作一次普通摘要失败掩盖。
     throwIfAborted(input.signal);
-    input.session.append({ ...event, estimatedAfter: after });
+    // 候选阶段不伪造封装；保存成功后使用 Session 实际分配身份的权威事件。
+    const saved = input.session.append({ ...event, payload: { ...event.payload, estimatedAfter: after } });
     latestIndex = candidateIndex;
-    summary = { index: latestIndex, value: { ...candidate, event: { ...event, estimatedAfter: after } } };
+    summary = { index: latestIndex, value: { ...candidate, event: saved } };
     covered = new Set(candidate.cumulativeCoveredStepEndEventIndexes); messages = proposed; estimated = after;
     if (estimated <= limit * 0.8) return messages;
   }

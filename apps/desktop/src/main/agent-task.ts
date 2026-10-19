@@ -98,10 +98,10 @@ export function findTurnArtifacts(
   const artifacts: TurnArtifact[] = [];
   for (const event of events) {
     if (event.type !== 'tool.result' || event.turnId !== turnId) continue;
-    if (event.result.status !== 'success') continue;
+    if (event.payload.result.status !== 'success') continue;
 
-    for (const artifact of event.result.artifacts ?? []) {
-      artifacts.push({ toolCallId: event.toolCallId, path: artifact.path });
+    for (const artifact of event.payload.result.artifacts ?? []) {
+      artifacts.push({ toolCallId: event.payload.toolCallId, path: artifact.path });
     }
   }
 

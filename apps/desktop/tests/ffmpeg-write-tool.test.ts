@@ -47,9 +47,9 @@ describe('FFmpeg plugin write and delivery contracts', () => {
         }
         return { text: '用户拒绝，未生成候选', toolCalls: [] };
       } } }, 'denied writer', { beforeToolCall: input => taskToolGate(session.events(), input) });
-      expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'trim')).toMatchObject({ boundary: 'checkpointed' });
-      expect(session.events().find(event => event.type === 'tool.result' && event.toolCallId === 'trim')).toMatchObject({ result: { status: 'error', failureKind: 'denied' } });
-      expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'repeat-trim')).toMatchObject({ boundary: 'not-executed' });
+      expect(session.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'trim')).toMatchObject({ payload: { boundary: 'checkpointed' } });
+      expect(session.events().find(event => event.type === 'tool.result' && event.payload.toolCallId === 'trim')).toMatchObject({ payload: { result: { status: 'error', failureKind: 'denied' } } });
+      expect(session.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'repeat-trim')).toMatchObject({ payload: { boundary: 'not-executed' } });
       expect(approve.mock.calls.filter(([approval]) => approval.kind === 'plugin-tool')).toHaveLength(1);
       expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
       expect(session.events().filter(event => event.type === 'tool.effect.prepared')).toHaveLength(1);
@@ -62,8 +62,8 @@ describe('FFmpeg plugin write and delivery contracts', () => {
       const source = join(directory, 'source.mp4'); await writeFile(source, 'input');
       const session = new InMemorySession(); const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
       const result = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
-      session.append({ type: 'tool.called', toolCallId: 'declare' as never, turnId: 't' as never, stepId: 's' as never, name: 'declare_video_outputs', input: {} });
-      session.append({ type: 'tool.result', toolCallId: 'declare' as never, turnId: 't' as never, stepId: 's' as never, result });
+      session.append({ type: 'tool.called', turnId: 't' as never, payload: { toolCallId: 'declare' as never, stepId: 's' as never, name: 'declare_video_outputs', input: {} } });
+      session.append({ type: 'tool.result', turnId: 't' as never, payload: { toolCallId: 'declare' as never, stepId: 's' as never, result } });
       const outputPath = join(readVideoDeliveryFacts(session.events()).items[0]!.workingDirectory, 'candidate.mp4'); await writeFile(outputPath, 'candidate');
       const access: ProbeFileAccess = { workspace: { confirmedDirectory: () => directory }, attachments: () => [], events: () => session.events() };
       for (const invalid of [
@@ -107,7 +107,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
       await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
       const facts = readVideoDeliveryFacts(session.events());
       expect(facts.candidates).toEqual([]); expect(facts.published).toEqual([]);
-      expect(session.events().some(event => event.type === 'tool.result' && event.toolCallId === 'cancel-writer' && event.result.status === 'success')).toBe(false);
+      expect(session.events().some(event => event.type === 'tool.result' && event.payload.toolCallId === 'cancel-writer' && event.payload.result.status === 'success')).toBe(false);
     } finally { controller.abort(); await runtime?.close(); await rm(directory, { recursive: true, force: true }); }
   }, 20_000);
   it('produces seven independently validated outputs through real MCP and never publishes a failed eighth item', async () => {
@@ -165,7 +165,7 @@ describe('FFmpeg plugin write and delivery contracts', () => {
       expect(facts.candidates.every(candidate => candidate.producerToolCallId.startsWith('write-'))).toBe(true);
       expect(facts.validations.every(validation => /^[0-9a-f]{64}$/.test(validation.candidateSha256!) && validation.checks.every(check => check.outcome === 'passed'))).toBe(true);
       expect(projectOutputItemResults(facts).map(result => result.status)).toEqual([...names.map(() => 'published'), 'incomplete']);
-      const errors = session.events().filter(event => event.type === 'tool.result' && event.result.status === 'error');
+      const errors = session.events().filter(event => event.type === 'tool.result' && event.payload.result.status === 'error');
       expect(errors).toHaveLength(2); // 损坏媒体写出失败，无成功生产事实的第八项不能验收。
       for (const name of names) {
         const output = join(directory, `${name} 成片.mp4`); const info = mediaInfo(output);

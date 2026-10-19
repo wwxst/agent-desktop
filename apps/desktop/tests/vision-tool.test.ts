@@ -258,8 +258,8 @@ describe('Vision host adapter', () => {
     const declaration = await createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session }).tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({
       items: [{ sourcePaths: [source], target: { kind: 'automatic' }, requirements: [{ kind: 'semantic', description: '全部画面都是红色矩形' }] }],
     }, context);
-    session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} });
-    session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, result: declaration });
+    session.append({ type: 'tool.called', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} } });
+    session.append({ type: 'tool.result', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: 'declare' as never, result: declaration } });
     const item = readVideoDeliveryFacts(session.events()).items[0]!;
     const candidate = join(item.workingDirectory, 'candidate.mp4'); await writeFile(candidate, 'candidate');
     const timestamps = [0, 0.2, 0.4, 0.6, 0.8, 1, 1.2];
@@ -297,7 +297,7 @@ describe('Vision host adapter', () => {
     expect(complete).toHaveBeenCalledOnce();
     expect((await readdir(item.workingDirectory)).some(name => name.startsWith('.semantic-'))).toBe(false);
     // 内部观察归入 check_video_semantics 证据；不伪造独立公开调用事件。
-    expect(session.events().filter(event => event.type === 'tool.called' && event.name === 'analyze_images')).toEqual([]);
+    expect(session.events().filter(event => event.type === 'tool.called' && event.payload.name === 'analyze_images')).toEqual([]);
     const missingCheck = new CheckVideoSemanticsTool(() => session.events(), { model: { complete }, mediaTools });
     const missingRegistry = new InMemoryToolRegistry();
     missingRegistry.register(missingCheck);

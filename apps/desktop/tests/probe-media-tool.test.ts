@@ -27,7 +27,7 @@ const output = (inputPath: string) => ({ inputPath, duration: 1, width: 160, hei
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'probe-host-'));
   workspace = join(directory, 'workspace'); await mkdir(workspace);
-  selected = []; session = new InMemorySession();
+  selected = []; session = new InMemorySession([], 'media-session');
   access = { workspace: { confirmedDirectory: () => workspace }, attachments: () => selected, events: () => session.events() };
 });
 afterEach(async () => { await rm(directory, { recursive: true, force: true }); });
@@ -100,19 +100,19 @@ describe('host Probe capability boundary', () => {
         { beforeToolCall: input => taskToolGate(session.events(), input) });
       const results = session.events().filter(event => event.type === 'tool.result');
       expect(results).toHaveLength(7);
-      expect(results.every(event => event.result.status === 'success')).toBe(true);
-      expect(results[1]).toMatchObject({ result: { output: { fullyDecoded: true, hasVideoStream: true } } });
-      expect(results[2]).toMatchObject({ result: { output: { hasBlackSegments: false, segments: [] } } });
-      expect(results[3]).toMatchObject({ result: { output: { frames: expect.any(Array), duration: 2 } } });
-      expect(results[5]).toMatchObject({ result: { output: { complete: true, frames: expect.arrayContaining([{ path: expect.any(String), timestamp: 0 }]) } } });
-      expect(results[6]).toMatchObject({ result: { output: `Audio created: ${await realpath(outputPath)}` } });
+      expect(results.every(event => event.payload.result.status === 'success')).toBe(true);
+      expect(results[1]).toMatchObject({ payload: { result: { output: { fullyDecoded: true, hasVideoStream: true } } } });
+      expect(results[2]).toMatchObject({ payload: { result: { output: { hasBlackSegments: false, segments: [] } } } });
+      expect(results[3]).toMatchObject({ payload: { result: { output: { frames: expect.any(Array), duration: 2 } } } });
+      expect(results[5]).toMatchObject({ payload: { result: { output: { complete: true, frames: expect.arrayContaining([{ path: expect.any(String), timestamp: 0 }]) } } } });
+      expect(results[6]).toMatchObject({ payload: { result: { output: `Audio created: ${await realpath(outputPath)}` } } });
       const audio = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', outputPath], { encoding: 'utf8' })) as { streams: Array<{ codec_name: string; sample_rate: string; channels: number }> };
       expect(audio.streams[0]).toMatchObject({ codec_name: 'pcm_s16le', sample_rate: '16000', channels: 1 });
       expect(approve.mock.calls.filter(([request]) => request.kind === 'plugin-tool')).toHaveLength(7);
       expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
       const calledEvents = session.events().filter(event => event.type === 'tool.called');
       for (const call of calledEvents.slice(0, 3)) {
-        expect(session.events().some(event => event.type === 'tool.effect.prepared' && event.sourceEventIndex === session.events().indexOf(call))).toBe(false);
+        expect(session.events().some(event => event.type === 'tool.effect.prepared' && event.payload.sourceEventIndex === session.events().indexOf(call))).toBe(false);
       }
       // 真实 SDK 与 Loop 生成的事件必须能被重启时的权威解析器恢复；不放松磁盘校验。
       const restored = parseDesktopState(JSON.parse(JSON.stringify({ activeSessionId: 'media-session',
@@ -158,8 +158,8 @@ describe('host Probe capability boundary', () => {
     const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
     const declared = await agent.tools.list().find(tool => tool.name === 'declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
     const append = (name: string, input: unknown, result: Awaited<ReturnType<Tool['execute']>>) => {
-      session.append({ type: 'tool.called', toolCallId: name as never, turnId: 't' as never, stepId: 's' as never, name, input });
-      session.append({ type: 'tool.result', toolCallId: name as never, turnId: 't' as never, stepId: 's' as never, result });
+      session.append({ type: 'tool.called', turnId: 't' as never, payload: { toolCallId: name as never, stepId: 's' as never, name, input } });
+      session.append({ type: 'tool.result', turnId: 't' as never, payload: { toolCallId: name as never, stepId: 's' as never, result } });
     };
     append('declare_video_outputs', {}, declared);
     const item = readVideoDeliveryFacts(session.events()).items[0]!;
@@ -177,14 +177,14 @@ describe('host Probe capability boundary', () => {
     const otherSource = join(directory, 'removed-attachment.mp4'); await writeFile(otherSource, 'other media');
     const agent = createVideoAgent({ model: { complete: async () => ({ text: 'fixture', toolCalls: [] }) }, session });
     const declared = await agent.tools.get('declare_video_outputs')!.execute({ items: [{ sourcePaths: [source], target: { kind: 'automatic' } }] }, context);
-    session.append({ type: 'tool.called', toolCallId: 'declare' as never, turnId: 'first' as never, stepId: 'declare' as never, name: 'declare_video_outputs', input: {} });
-    session.append({ type: 'tool.result', toolCallId: 'declare' as never, turnId: 'first' as never, stepId: 'declare' as never, result: declared });
+    session.append({ type: 'tool.called', turnId: 'first' as never, payload: { toolCallId: 'declare' as never, stepId: 'declare' as never, name: 'declare_video_outputs', input: {} } });
+    session.append({ type: 'tool.result', turnId: 'first' as never, payload: { toolCallId: 'declare' as never, stepId: 'declare' as never, result: declared } });
     const candidate = join(readVideoDeliveryFacts(session.events()).items[0]!.workingDirectory, 'candidate.mp4');
     const produce = async (turn: string, inputPath: string) => {
       await writeFile(candidate, `media from ${inputPath}`);
       // 模型跨轮复用调用 ID；最新成功生产必须决定当前磁盘文件的来源。
-      session.append({ type: 'tool.called', toolCallId: 'trim' as never, turnId: turn as never, stepId: 'write' as never, name: 'trim_video', input: { inputPath, outputPath: candidate } });
-      session.append({ type: 'tool.result', toolCallId: 'trim' as never, turnId: turn as never, stepId: 'write' as never, result: { status: 'success', output: { outputPath: candidate } } });
+      session.append({ type: 'tool.called', turnId: turn as never, payload: { toolCallId: 'trim' as never, stepId: 'write' as never, name: 'trim_video', input: { inputPath, outputPath: candidate } } });
+      session.append({ type: 'tool.result', turnId: turn as never, payload: { toolCallId: 'trim' as never, stepId: 'write' as never, result: { status: 'success', output: { outputPath: candidate } } } });
     };
     const raw = rawTool(); const tool = adaptProbeMediaTool(raw, access);
     await produce('first', source);
@@ -240,10 +240,10 @@ describe('host Probe capability boundary', () => {
     ] } : { text: 'checks failed, audio saved', toolCalls: [] } } }, 'inspect then write',
     { beforeToolCall: input => taskToolGate(session.events(), input) });
     const results = session.events().filter(event => event.type === 'tool.result');
-    expect(results.slice(0, 3).map(event => event.result)).toMatchObject([
+    expect(results.slice(0, 3).map(event => event.payload.result)).toMatchObject([
       { status: 'error', failureKind: 'permanent' }, { status: 'error', failureKind: 'permanent' }, { status: 'error', failureKind: 'permanent' },
     ]);
-    expect(results[3]?.result.status).toBe('success');
+    expect(results[3]?.payload.result.status).toBe('success');
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     expect(audio.execute).toHaveBeenCalledOnce();
   });
@@ -278,11 +278,11 @@ describe('host Probe capability boundary', () => {
         return { text: '检查失败，仍可提取来源音频。', toolCalls: [] };
       } } }, 'inspect damaged candidate', { beforeToolCall: input => taskToolGate(session.events(), input) });
       const results = session.events().filter(event => event.type === 'tool.result');
-      expect(results.slice(1, 4).map(event => event.result)).toMatchObject([
+      expect(results.slice(1, 4).map(event => event.payload.result)).toMatchObject([
         { status: 'error', failureKind: 'permanent' }, { status: 'error', failureKind: 'permanent' }, { status: 'error', failureKind: 'permanent' },
       ]);
-      expect(results[4]).toMatchObject({ result: { status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked', detail: expect.stringContaining('候选探测失败') }] } } });
-      expect(results[5]).toMatchObject({ result: { status: 'success', output: `Audio created: ${await realpath(audioPath)}` } });
+      expect(results[4]).toMatchObject({ payload: { result: { status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked', detail: expect.stringContaining('候选探测失败') }] } } } });
+      expect(results[5]).toMatchObject({ payload: { result: { status: 'success', output: `Audio created: ${await realpath(audioPath)}` } } });
       expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     } finally { await runtime.close(); }
   }, 30_000);
@@ -292,7 +292,7 @@ describe('host Probe capability boundary', () => {
     const append = session.append.bind(session);
     vi.spyOn(session, 'append').mockImplementation(event => {
       if (event.type === 'tool.effect.prepared') throw failure;
-      append(event);
+      return append(event);
     });
     const wrote = vi.fn(); const raw = rawTool();
     raw.execute.mockImplementation(async (_input, execution) => {
@@ -305,7 +305,7 @@ describe('host Probe capability boundary', () => {
       { id: 'audio' as never, name: 'extract_audio', input: { videoPath: source, outputPath: join(workspace, 'audio.wav') } },
     ] }) } }, 'extract audio', { beforeToolCall: input => taskToolGate(session.events(), input) })).rejects.toBe(failure);
     expect(wrote).not.toHaveBeenCalled();
-    expect(session.events().some(event => event.type === 'tool.result' && event.toolCallId === 'audio')).toBe(false);
+    expect(session.events().some(event => event.type === 'tool.result' && event.payload.toolCallId === 'audio')).toBe(false);
   });
   it('uses a real bundled server with normalized approval and stable Agent evidence', async () => {
     const inputPath = join(workspace, '真实 video.mp4');
@@ -319,8 +319,8 @@ describe('host Probe capability boundary', () => {
       const tools = new InMemoryToolRegistry(); runtime.tools.forEach(tool => tools.register(tool));
       await runTurn({ tools, session, systemPrompt: { build: () => '' }, model: { complete: async request => request.messages.some(message => message.role === 'tool')
         ? { text: 'verified', toolCalls: [] } : { toolCalls: [{ id: 'probe' as never, name: 'probe_media', input: { inputPath: '真实 video.mp4' } }] } } }, 'probe');
-      expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ name: 'probe_media' });
-      expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: output(await realpath(inputPath)) } });
+      expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ payload: { name: 'probe_media' } });
+      expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { result: { status: 'success', output: output(await realpath(inputPath)) } } });
       expect(approve.mock.calls.map(([request]) => request.kind)).toEqual(['plugin-tool', 'plugin-start']);
       expect(approve.mock.calls[0]?.[0]).toMatchObject({ arguments: JSON.stringify({ inputPath: await realpath(inputPath) }) });
     } finally { await runtime.close(); }
@@ -332,9 +332,9 @@ describe('host Probe capability boundary', () => {
         { id: 'denied-probe' as never, name: 'probe_media', input: { inputPath } },
         { id: 'repeat-probe' as never, name: 'probe_media', input: { inputPath } },
       ] } : { text: 'denied', toolCalls: [] } } }, 'probe denied', { beforeToolCall: input => taskToolGate(deniedSession.events(), input) });
-      expect(deniedSession.events().find(event => event.type === 'tool.result' && event.toolCallId === 'denied-probe'))
-        .toMatchObject({ result: { status: 'error', failureKind: 'denied', message: '用户拒绝了该工具操作。' } });
-      expect(deniedSession.events().find(event => event.type === 'tool.called' && event.toolCallId === 'repeat-probe')).toMatchObject({ boundary: 'not-executed' });
+      expect(deniedSession.events().find(event => event.type === 'tool.result' && event.payload.toolCallId === 'denied-probe'))
+        .toMatchObject({ payload: { result: { status: 'error', failureKind: 'denied', message: '用户拒绝了该工具操作。' } } });
+      expect(deniedSession.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'repeat-probe')).toMatchObject({ payload: { boundary: 'not-executed' } });
       expect(projectRecoveryFacts(deniedSession.events()).unknownEffects).toEqual([]);
     }
     finally { await denied.close(); }

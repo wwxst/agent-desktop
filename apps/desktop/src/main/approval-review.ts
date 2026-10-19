@@ -29,7 +29,7 @@ export async function reviewApproval(target: ToolApprovalTarget, settings: Runti
   let response;
   try {
     response = await model.complete({ systemPrompt: REVIEW_POLICY,
-      messages: [{ role: 'user', content: JSON.stringify({ userRequest: taskRequest?.content, operation: target }) }], tools: [],
+      messages: [{ role: 'user', content: JSON.stringify({ userRequest: taskRequest?.payload.content, operation: target }) }], tools: [],
       maxOutputTokens: 1024, signal: reviewSignal });
   } catch (error) {
     signal?.throwIfAborted();

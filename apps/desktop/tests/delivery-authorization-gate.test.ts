@@ -24,11 +24,11 @@ afterEach(async () => {
 
 async function invoke(session: InMemorySession, tool: Tool, input: unknown, id: string): Promise<ToolResult> {
   session.append({
-    type: 'tool.called', turnId, stepId, toolCallId: id as never, name: tool.name, input,
-    ...(tool.executionBoundary === undefined ? {} : { boundary: tool.executionBoundary }),
+    type: 'tool.called', turnId, payload: { stepId, toolCallId: id as never, name: tool.name, input,
+    ...(tool.executionBoundary === undefined ? {} : { boundary: tool.executionBoundary }) },
   });
   const result = await tool.execute(input, { toolCallId: id as never, reportProgress: () => {}, checkpoint: () => {} });
-  session.append({ type: 'tool.result', turnId, stepId, toolCallId: id as never, result });
+  session.append({ type: 'tool.result', turnId, payload: { stepId, toolCallId: id as never, result } });
   return result;
 }
 
@@ -69,9 +69,9 @@ describe('video delivery authorization recovery gate', () => {
     const complete = vi.fn<Model['complete']>().mockResolvedValueOnce({ toolCalls: [{ id: 'publish' as never, name: wrapped.name, input: { credential: 'secret' } }] })
       .mockResolvedValueOnce({ text: '完成', toolCalls: [] });
     await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '交付', { toolCapabilities: ['media'] });
-    expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ input: { credential: '[REDACTED]' } });
+    expect(session.events().find(event => event.type === 'tool.called')).toMatchObject({ payload: { input: { credential: '[REDACTED]' } } });
     expect(JSON.stringify(session.events())).not.toContain('secret');
-    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: { normalized: true } } });
+    expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { result: { status: 'success', output: { normalized: true } } } });
     expect(nestedExecute).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled();
 
     const { prepare: _prepare, ...missingPreparation } = inner;
@@ -114,14 +114,14 @@ describe('video delivery authorization recovery gate', () => {
     expect(declared.status).toBe('success');
     const item = (declared.output as { items: { id: string; workingDirectory: string }[] }).items[0]!;
     const candidate = join(item.workingDirectory, 'candidate.mp4'); await writeFile(candidate, 'candidate');
-    session.append({ type: 'tool.called', turnId, stepId, toolCallId: 'produce' as never, name: 'trim_video',
-      input: { inputPath: source, outputPath: candidate, start: 0, duration: 1 }, boundary: 'checkpointed' });
-    session.append({ type: 'tool.result', turnId, stepId, toolCallId: 'produce' as never,
-      result: { status: 'success', output: { outputPath: candidate } } });
-    session.append({ type: 'tool.called', turnId, stepId, toolCallId: 'decode' as never, name: 'decode_video',
-      input: { inputPath: candidate }, boundary: 'read-only' });
-    session.append({ type: 'tool.result', turnId, stepId, toolCallId: 'decode' as never,
-      result: { status: 'success', output: { inputPath: candidate, hasVideoStream: true, fullyDecoded: true, videoCodec: 'h264', durationSeconds: 1 } } });
+    session.append({ type: 'tool.called', turnId, payload: { stepId, toolCallId: 'produce' as never, name: 'trim_video',
+      input: { inputPath: source, outputPath: candidate, start: 0, duration: 1 }, boundary: 'checkpointed' } });
+    session.append({ type: 'tool.result', turnId, payload: { stepId, toolCallId: 'produce' as never,
+      result: { status: 'success', output: { outputPath: candidate } } } });
+    session.append({ type: 'tool.called', turnId, payload: { stepId, toolCallId: 'decode' as never, name: 'decode_video',
+      input: { inputPath: candidate }, boundary: 'read-only' } });
+    session.append({ type: 'tool.result', turnId, payload: { stepId, toolCallId: 'decode' as never,
+      result: { status: 'success', output: { inputPath: candidate, hasVideoStream: true, fullyDecoded: true, videoCodec: 'h264', durationSeconds: 1 } } } });
     const validationTool = new ValidateVideoCandidateTool(readEvents);
     const validationInput = { outputItemId: item.id, candidatePath: candidate };
     const validation = await invoke(session, validationTool, validationInput, 'validate');

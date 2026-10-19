@@ -61,7 +61,7 @@ describe('video delivery call identity', () => {
     expect(facts.published).toEqual([{ outputItemId: facts.items[0]!.id, validationId: facts.validations[0]!.id, path: target }]);
     expect(await readFile(target, 'utf8')).toBe('candidate fixture bytes');
     expect(producedVideoItem(session.events(), facts.candidates[0]!.path)?.id).toBe(facts.items[0]!.id);
-    expect(session.events().findLast(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success' } });
+    expect(session.events().findLast(event => event.type === 'tool.result')).toMatchObject({ payload: { result: { status: 'success' } } });
   });
 
   it('uses new candidate identity and preserves source ancestry when a producer ID repeats in later turns', async () => {

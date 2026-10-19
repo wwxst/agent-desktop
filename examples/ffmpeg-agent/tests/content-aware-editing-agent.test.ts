@@ -150,7 +150,7 @@ describe('Content-aware Editing Decision Agent', () => {
       const calls = toolCalls(events);
 
       expect(result.stepCount).toBe(8);
-      expect(calls.map((event) => event.name)).toEqual([
+      expect(calls.map((event) => event.payload.name)).toEqual([
         'extract_video_frames',
         'analyze_images',
         'extract_video_range_frames',
@@ -159,16 +159,16 @@ describe('Content-aware Editing Decision Agent', () => {
         'trim_video',
         'concat_videos',
       ]);
-      expect(calls.slice(4).map((event) => event.input)).toEqual([
+      expect(calls.slice(4).map((event) => event.payload.input)).toEqual([
         { inputPath: 'input.mp4', outputPath: firstKeep, start: 8, duration: 14 },
         { inputPath: 'input.mp4', outputPath: secondKeep, start: 28, duration: 6 },
         { inputPaths: [firstKeep, secondKeep], outputPath: finalPath },
       ]);
       const localVisionResultIndex = events.findIndex((event) => (
-        event.type === 'tool.result' && event.toolCallId === ('range-analyze' as ToolCallId)
+        event.type === 'tool.result' && event.payload.toolCallId === ('range-analyze' as ToolCallId)
       ));
       const firstTrimIndex = events.findIndex((event) => (
-        event.type === 'tool.called' && event.toolCallId === ('trim-first' as ToolCallId)
+        event.type === 'tool.called' && event.payload.toolCallId === ('trim-first' as ToolCallId)
       ));
       expect(localVisionResultIndex).toBeGreaterThan(-1);
       expect(firstTrimIndex).toBeGreaterThan(localVisionResultIndex);

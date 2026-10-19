@@ -36,7 +36,18 @@ async function readState(databasePath: string, app?: ElectronApplication): Promi
     } finally { database.close(); }
   };
   // 强杀后没有主进程写者，直接从验收进程读取同一数据库。
-  return app === undefined ? query(undefined, databasePath) : app.evaluate(query, databasePath);
+  const state = app === undefined ? query(undefined, databasePath) : await app.evaluate(query, databasePath);
+  // 验收直接检查落盘封装，不能先剥掉元数据再让旧断言继续通过。
+  for (const session of state.sessions) {
+    for (const [index, event] of session.events.entries()) {
+      expect(Object.keys(event).sort()).toEqual(['itemId', 'payload', 'sequence', 'sessionId', 'timestamp', 'turnId', 'type']);
+      expect(event.sessionId).toBe(session.id);
+      expect(event.sequence).toBe(index + 1);
+      expect(event.itemId).toMatch(/^.+$/);
+      expect(Number.isFinite(Date.parse(event.timestamp))).toBe(true);
+    }
+  }
+  return state;
 }
 
 test('keeps the first draft turn and its binding across a forced exit and two restarts without replaying tools', async ({}, info) => {
@@ -157,8 +168,8 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     expect(started.clientState.drafts).toEqual([spareDraft]);
     expect(started.clientState.sidebar).toEqual(draft.clientState.sidebar);
     expect(session.events.filter(event => event.type === 'tool.called')).toHaveLength(1);
-    expect(session.events.find(event => event.type === 'tool.called')).toMatchObject({ name: 'read_file', boundary: 'read-only', toolCallId: 'read-before-exit' });
-    expect(session.events.find(event => event.type === 'tool.result')).toMatchObject({ toolCallId: 'read-before-exit', result: { status: 'success' } });
+    expect(session.events.find(event => event.type === 'tool.called')).toMatchObject({ payload: { name: 'read_file', boundary: 'read-only', toolCallId: 'read-before-exit' } });
+    expect(session.events.find(event => event.type === 'tool.result')).toMatchObject({ payload: { toolCallId: 'read-before-exit', result: { status: 'success' } } });
     await page.screenshot({ path: resolve(evidence, '02-started-before-kill.png') });
 
     killedProcessId = app.process().pid;
@@ -171,6 +182,7 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     await copyFile(databasePath, resolve(evidence, '03-after-forced-exit.sqlite'));
 
     // 第一次启动写下 process-exit；第二次启动仍保留正式历史与同一绑定，不产生新中断或模型调用。
+    let firstRestartEvents: typeof session.events | undefined;
     for (const restart of [1, 2] as const) {
       app = await launch();
       page = await app.firstWindow();
@@ -183,7 +195,13 @@ test('keeps the first draft turn and its binding across a forced exit and two re
       const restoredSession = restored.sessions.find(item => item.id === sessionId)!;
       const restoredConversation = restored.clientState.conversations.find(item => item.id === sessionId)!;
       expect(restoredSession.turnMessageBindings).toEqual([binding]);
-      expect(restoredSession.events.filter(event => event.type === 'turn.interrupted')).toEqual([{ type: 'turn.interrupted', turnId: binding.turnId, reason: 'process-exit' }]);
+      expect(restoredSession.events.filter(event => event.type === 'turn.interrupted')).toEqual([{
+        sessionId, itemId: `turn:${binding.turnId}`, sequence: session.events.length + 1,
+        timestamp: expect.any(String), type: 'turn.interrupted', turnId: binding.turnId, payload: { reason: 'process-exit' },
+      }]);
+      expect(restoredSession.events.slice(0, session.events.length)).toEqual(session.events);
+      if (restart === 1) firstRestartEvents = restoredSession.events;
+      else expect(restoredSession.events).toEqual(firstRestartEvents);
       expect(restoredSession.events.filter(event => event.type === 'turn.started')).toHaveLength(1);
       expect(restoredSession.events.filter(event => event.type === 'tool.called')).toHaveLength(1);
       expect(restoredConversation.messages.map(message => message.id)).toEqual([binding.userMessageId, binding.assistantMessageId]);
@@ -215,7 +233,10 @@ test('keeps the first draft turn and its binding across a forced exit and two re
     const continuedBinding = continuedSession.turnMessageBindings![1]!;
     expect(continuedBinding.executionVersion).toBe(1);
     expect(continuedBinding.turnId).not.toBe(binding.turnId);
-    expect(continuedSession.events.find(event => event.type === 'turn.recovery.started')).toEqual({ type: 'turn.recovery.started', turnId: continuedBinding.turnId, sourceTurnId: binding.turnId, mode: 'continue' });
+    expect(continuedSession.events.find(event => event.type === 'turn.recovery.started')).toMatchObject({
+      sessionId, itemId: `turn:${continuedBinding.turnId}`, type: 'turn.recovery.started', turnId: continuedBinding.turnId,
+      payload: { sourceTurnId: binding.turnId, mode: 'continue' },
+    });
     expect(continuedConversation.messages.map(message => message.id)).toEqual([binding.userMessageId, binding.assistantMessageId, continuedBinding.userMessageId, continuedBinding.assistantMessageId]);
     expect(continuedConversation.messages[2]).toMatchObject({ role: 'user', text: '继续未完成任务', attachments: [] });
     expect(continuedConversation.messages[1]).toMatchObject({ id: binding.assistantMessageId, status: 'failed', errorMessage: '应用退出时任务被中断。',
@@ -264,13 +285,13 @@ test('runs workspace file changes, full-access commands, plans and outcome verif
   const plan = async (phase: 'initial' | 'files' | 'unknown' | 'verified' | 'released') => {
     const { events } = await session();
     const resultIndex = (callId: string) => {
-      const index = events.findIndex(event => event.type === 'tool.result' && event.toolCallId === callId);
+      const index = events.findIndex(event => event.type === 'tool.result' && event.payload.toolCallId === callId);
       if (index < 0) throw new Error(`普通工具验收缺少真实结果：${callId}`);
       return index;
     };
     const completed = phase !== 'initial';
     const verifiedIndex = phase === 'verified' || phase === 'released'
-      ? events.findIndex(event => event.type === 'effect.outcome.verified' && event.evidence.source === 'user') : undefined;
+      ? events.findIndex(event => event.type === 'effect.outcome.verified' && event.payload.evidence.source === 'user') : undefined;
     return { explanation: '以实际文件、命令和人工核验事实推进', steps: [
       { id: 'create', description: '创建普通文本', requestedStatus: completed ? 'completed' : 'pending', completionKind: 'tool', evidenceEventIndexes: completed ? [resultIndex('core-create')] : [] },
       { id: 'edit', description: '按真实摘要修改文本', requestedStatus: completed ? 'completed' : 'pending', completionKind: 'tool', evidenceEventIndexes: completed ? [resultIndex('core-edit')] : [] },
@@ -359,11 +380,11 @@ test('runs workspace file changes, full-access commands, plans and outcome verif
     const beforeVerification = await readState(databasePath, app); await writeFile(resolve(evidence, '01-before-manual-verification.json'), JSON.stringify(beforeVerification, null, 2));
     const events = (await session()).events;
     expect(requests.find(input => input.tools !== undefined)?.tools?.some(tool => tool.function.name === 'run_command')).toBe(true);
-    const commandIndex = events.findIndex(event => event.type === 'tool.called' && event.toolCallId === 'core-command');
-    expect(events.find(event => event.type === 'tool.effect.prepared' && event.sourceEventIndex === commandIndex)).toMatchObject({ data: { kind: 'command', command, workingDirectory: workspace } });
-    expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-command')).toMatchObject({ result: { status: 'error', failureKind: 'unknown-outcome', output: { exitCode: 7, termination: 'exited' } } });
-    expect(events.find(event => event.type === 'tool.called' && event.toolCallId === 'core-blocked')).toMatchObject({ boundary: 'not-executed' });
-    expect(events.find(event => event.type === 'tool.result' && event.toolCallId === 'core-blocked')).toMatchObject({ result: { output: { sourceEventIndexes: [commandIndex] } } });
+    const commandIndex = events.findIndex(event => event.type === 'tool.called' && event.payload.toolCallId === 'core-command');
+    expect(events.find(event => event.type === 'tool.effect.prepared' && event.payload.sourceEventIndex === commandIndex)).toMatchObject({ payload: { data: { kind: 'command', command, workingDirectory: workspace } } });
+    expect(events.find(event => event.type === 'tool.result' && event.payload.toolCallId === 'core-command')).toMatchObject({ payload: { result: { status: 'error', failureKind: 'unknown-outcome', output: { exitCode: 7, termination: 'exited' } } } });
+    expect(events.find(event => event.type === 'tool.called' && event.payload.toolCallId === 'core-blocked')).toMatchObject({ payload: { boundary: 'not-executed' } });
+    expect(events.find(event => event.type === 'tool.result' && event.payload.toolCallId === 'core-blocked')).toMatchObject({ payload: { result: { output: { sourceEventIndexes: [commandIndex] } } } });
     const conversation = beforeVerification.clientState.conversations.find(item => item.id === sessionId)!;
     expect(conversation.messages.at(-1)).toMatchObject({ taskState: { status: 'blocked', unknownEffects: [{ sourceEventIndex: commandIndex, label: 'run_command' }],
       plan: { revision: 3, steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'blocked' }] } } });
@@ -375,14 +396,14 @@ test('runs workspace file changes, full-access commands, plans and outcome verif
     await page.getByLabel('run_command核验说明', { exact: true }).fill(description);
     await page.getByRole('button', { name: '确认已完成', exact: true }).click();
     await expect(page.getByLabel('run_command核验说明', { exact: true })).toHaveCount(0);
-    const verification = (await session()).events.find(event => event.type === 'effect.outcome.verified' && event.sourceEventIndex === commandIndex);
-    expect(verification).toMatchObject({ scope: 'entire-call', outcome: 'completed', evidence: { source: 'user', description } });
+    const verification = (await session()).events.find(event => event.type === 'effect.outcome.verified' && event.payload.sourceEventIndex === commandIndex);
+    expect(verification).toMatchObject({ payload: { scope: 'entire-call', outcome: 'completed', evidence: { source: 'user', description } } });
     await page.getByRole('button', { name: '继续未完成任务', exact: true }).click();
     await expect(page.getByText('人工核验后的剩余任务完成', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeEnabled();
     await expect.poll(savedTaskStatus).toBe('completed');
     expect(await readFile(blockedPath, 'utf8')).toBe('written-after-manual-verification');
-    expect((await session()).events.filter(event => event.type === 'tool.called' && event.name === 'run_command')).toHaveLength(1);
+    expect((await session()).events.filter(event => event.type === 'tool.called' && event.payload.name === 'run_command')).toHaveLength(1);
     const finished = await readState(databasePath, app); await writeFile(resolve(evidence, '02-after-manual-continue.json'), JSON.stringify(finished, null, 2));
     expect(finished.clientState.conversations.find(item => item.id === sessionId)!.messages.at(-1)).toMatchObject({ taskState: { status: 'completed', plan: { revision: 5,
       steps: [{ status: 'completed' }, { status: 'completed' }, { status: 'completed' }, { status: 'completed' }] } } });

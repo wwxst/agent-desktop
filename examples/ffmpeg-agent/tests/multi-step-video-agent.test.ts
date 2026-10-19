@@ -95,20 +95,20 @@ describe('Multi-step Video Editing Agent', () => {
     expect(result.stepCount).toBe(5);
     expect(result.response).toEqual({ text: 'Video editing complete: final.mp4', toolCalls: [] });
     expect(session.events().filter((event) => event.type === 'turn.started')).toHaveLength(1);
-    expect(toolEvents(session).map((event) => event.name)).toEqual([
+    expect(toolEvents(session).map((event) => event.payload.name)).toEqual([
       'concat_videos',
       'add_audio',
       'resize_video',
       'add_subtitles',
     ]);
-    expect(toolEvents(session).map((event) => event.input)).toEqual([
+    expect(toolEvents(session).map((event) => event.payload.input)).toEqual([
       { inputPaths: ['A.mp4', 'B.mp4'], outputPath: 'step-1.mp4' },
       { videoPath: 'step-1.mp4', audioPath: 'voice.mp3', outputPath: 'step-2.mp4' },
       { inputPath: 'step-2.mp4', outputPath: 'step-3.mp4', width: 320, height: 480 },
       { videoPath: 'step-3.mp4', subtitlePath: 'subtitle.srt', outputPath: 'final.mp4' },
     ]);
     // 写出型工具只报告结构化生产事实：中间片段不会被登记成最终交付产物。
-    expect(resultEvents(session).map((event) => event.result)).toEqual([
+    expect(resultEvents(session).map((event) => event.payload.result)).toEqual([
       { status: 'success', output: { outputPath: 'step-1.mp4' } },
       { status: 'success', output: { outputPath: 'step-2.mp4' } },
       { status: 'success', output: { outputPath: 'step-3.mp4' } },

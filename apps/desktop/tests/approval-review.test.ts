@@ -1,3 +1,4 @@
+import { InMemorySession } from '@agent-desktop/session';
 import { describe, expect, it, vi } from 'vitest';
 import { UNKNOWN_MODEL_CAPABILITIES } from '@agent-desktop/client/model-capabilities';
 
@@ -19,11 +20,11 @@ describe('automatic approval review', () => {
       modelApiKey: 'key', modelBaseUrl: 'https://example.test/v1', modelId: 'reviewer', modelProtocol: 'chat-completions',
       modelCapabilities: { ...UNKNOWN_MODEL_CAPABILITIES, streaming: 'supported', chatCompletions: 'supported' },
       conversationModel: { providerId: 'test', modelId: 'reviewer' },
-    }, [
-      { type: 'user.message', turnId: 'turn' as never, content: '请执行这个命令。' },
-      { type: 'tool.result', turnId: 'turn' as never, stepId: 'step' as never, toolCallId: 'call' as never,
-        result: { status: 'success', output: secret } },
-    ]);
+    }, [...new InMemorySession([], 'session').appendMany([
+      { type: 'user.message', turnId: 'turn' as never, payload: { content: '请执行这个命令。' } },
+      { type: 'tool.result', turnId: 'turn' as never, payload: { stepId: 'step' as never, toolCallId: 'call' as never,
+        result: { status: 'success', output: secret } } },
+    ])]);
 
     expect(result.decision).toBe('approve');
     const request = model.complete.mock.calls[0]![0] as { messages: Array<{ content: string }> };

@@ -138,7 +138,7 @@ describe('Semantic Video Editing Agent', () => {
       const calls = toolCalls(session.events());
 
       expect(result.stepCount).toBe(10);
-      expect(calls.map((event) => event.name)).toEqual([
+      expect(calls.map((event) => event.payload.name)).toEqual([
         'extract_audio',
         'transcribe_audio',
         'extract_video_range_frames',
@@ -149,7 +149,7 @@ describe('Semantic Video Editing Agent', () => {
         'trim_video',
         'concat_videos',
       ]);
-      expect(calls.slice(6).map((event) => event.input)).toEqual([
+      expect(calls.slice(6).map((event) => event.payload.input)).toEqual([
         { inputPath, outputPath: francePath, start: 5, duration: 6 },
         { inputPath, outputPath: japanPath, start: 20, duration: 6 },
         { inputPaths: [francePath, japanPath], outputPath: finalPath },

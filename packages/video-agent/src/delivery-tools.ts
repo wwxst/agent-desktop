@@ -291,7 +291,7 @@ export class DeclareVideoOutputsTool implements Tool {
 function collectToolNames(events: readonly SessionEvent[]): Map<string, string> {
   const toolNames = new Map<string, string>();
   for (const event of events) {
-    if (event.type === 'tool.called') toolNames.set(videoToolCallKey(event), event.name);
+    if (event.type === 'tool.called') toolNames.set(videoToolCallKey(event), event.payload.name);
   }
   return toolNames;
 }
@@ -314,21 +314,21 @@ function collectSuccessfulProducers(
 
   events.forEach((event, index) => {
     if (event.type === 'tool.called') {
-      calls.set(videoToolCallKey(event), { input: event.input, calledIndex: index });
+      calls.set(videoToolCallKey(event), { input: event.payload.input, calledIndex: index });
       return;
     }
-    if (event.type !== 'tool.result' || event.result.status !== 'success') return;
+    if (event.type !== 'tool.result' || event.payload.result.status !== 'success') return;
     const name = toolNames.get(videoToolCallKey(event));
     const call = calls.get(videoToolCallKey(event));
     if (name === undefined || call === undefined || !VIDEO_WRITE_TOOL_NAMES.has(name)) return;
-    if (!isRecord(event.result.output) || typeof event.result.output.outputPath !== 'string') return;
+    if (!isRecord(event.payload.result.output) || typeof event.payload.result.output.outputPath !== 'string') return;
     producers.push({
-      toolCallId: event.toolCallId,
+      toolCallId: event.payload.toolCallId,
       name,
       input: call.input,
       calledIndex: call.calledIndex,
       resultIndex: index,
-      outputPath: resolve(event.result.output.outputPath),
+      outputPath: resolve(event.payload.result.output.outputPath),
     });
   });
 
@@ -442,12 +442,12 @@ function findCheckEvidence(
   for (let index = producerResultIndex + 1; index < events.length; index += 1) {
     const event = events[index];
     if (event === undefined) continue;
-    if (event.type !== 'tool.result' || event.result.status !== 'success') continue;
+    if (event.type !== 'tool.result' || event.payload.result.status !== 'success') continue;
     if (toolNames.get(videoToolCallKey(event)) !== toolName) continue;
-    if (!isRecord(event.result.output) || typeof event.result.output.inputPath !== 'string') continue;
-    const checkedPath = resolve(event.result.output.inputPath);
+    if (!isRecord(event.payload.result.output) || typeof event.payload.result.output.inputPath !== 'string') continue;
+    const checkedPath = resolve(event.payload.result.output.inputPath);
     if (checkedPath !== candidatePath && checkedPath !== canonicalPath) continue;
-    found = { toolCallId: event.toolCallId as ToolCallId, output: event.result.output };
+    found = { toolCallId: event.payload.toolCallId as ToolCallId, output: event.payload.result.output };
   }
   return found;
 }

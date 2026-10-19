@@ -1,5 +1,5 @@
 import { readDesktopDocument, writeDesktopDocuments } from './desktop-database.js';
-import { InMemorySession, SessionPersistenceError, type Session } from '@agent-desktop/session';
+import { InMemorySession, SessionPersistenceError, getSessionEventItemId, type Session, type SessionEventInput } from '@agent-desktop/session';
 import type {
   AgentActivityDetail,
   AgentActivityDirectoryEntry,
@@ -19,7 +19,7 @@ import type {
   TerminalSnapshot,
   PermissionMode,
 } from '@agent-desktop/client';
-import { isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTurnState, type SessionEvent, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
+import { isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTurnState, type SessionEvent, type StepId, type TaskPlanStep, type TurnId } from '@agent-desktop/session';
 import { validateContextCompactedEvent } from '@agent-desktop/agent-loop';
 import { projectAgentTaskState } from './agent-task-state.js';
 import type { SubagentRecord } from './subagent.js';
@@ -76,22 +76,27 @@ export class DesktopPersistentSession implements Session {
     private readonly stateForEvents: (sessionId: string, events: readonly SessionEvent[], bindings: readonly TurnMessageBinding[], clientState?: ClientStateSnapshot) => PersistedDesktopState,
     private readonly onPersistenceFailure: (error: SessionPersistenceError) => void,
     initialBindings: readonly TurnMessageBinding[] = [],
-  ) { this.memory = new InMemorySession(initialEvents); this.bindings = [...initialBindings]; }
+  ) { this.memory = new InMemorySession(initialEvents, sessionId); this.bindings = [...initialBindings]; }
 
-  append(event: SessionEvent): void { this.appendMany([event]); }
+  get id(): string { return this.sessionId; }
 
-  appendMany(events: readonly SessionEvent[]): void {
+  append<Event extends SessionEventInput>(event: Event): Extract<SessionEvent, { readonly type: Event['type'] }> {
+    return this.appendMany([event])[0] as Extract<SessionEvent, { readonly type: Event['type'] }>;
+  }
+
+  appendMany(events: readonly SessionEventInput[]): readonly SessionEvent[] {
     if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
-    const candidateEvents = [...this.memory.events(), ...events];
-    try {
-      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, candidateEvents, this.bindings) }]);
-    } catch (cause) {
-      const error = new SessionPersistenceError(cause);
-      this.persistenceFailure = error;
-      this.onPersistenceFailure(error);
-      throw error;
-    }
-    this.memory.appendMany(events);
+    // Session 只生成一次封装；SQLite 与内存提交同一批身份、时间和序号。
+    return this.memory.appendMany(events, candidateEvents => {
+      try {
+        writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, candidateEvents, this.bindings) }]);
+      } catch (cause) {
+        const error = new SessionPersistenceError(cause);
+        this.persistenceFailure = error;
+        this.onPersistenceFailure(error);
+        throw error;
+      }
+    });
   }
 
   events(): readonly SessionEvent[] { return this.memory.events(); }
@@ -99,19 +104,19 @@ export class DesktopPersistentSession implements Session {
   turnMessageBindings(): readonly TurnMessageBinding[] { return this.bindings; }
 
   /** 事件、从草稿迁移后的展示和身份关联同次提交；事务失败不推进任何内存事实。 */
-  commitStart(start: { readonly events: readonly SessionEvent[] }, clientState: ClientStateSnapshot, binding: TurnMessageBinding): void {
+  commitStart(start: { readonly events: readonly SessionEventInput[] }, clientState: ClientStateSnapshot, binding: TurnMessageBinding): void {
     if (this.persistenceFailure !== undefined) throw this.persistenceFailure;
-    const events = [...this.memory.events(), ...start.events];
     const bindings = [...this.bindings, binding];
-    try {
-      writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, events, bindings, clientState) }]);
-    } catch (cause) {
-      const error = new SessionPersistenceError(cause);
-      this.persistenceFailure = error;
-      this.onPersistenceFailure(error);
-      throw error;
-    }
-    this.memory.appendMany(start.events);
+    this.memory.appendMany(start.events, events => {
+      try {
+        writeDesktopDocuments(this.filePath, [{ name: 'session-state', value: this.stateForEvents(this.sessionId, events, bindings, clientState) }]);
+      } catch (cause) {
+        const error = new SessionPersistenceError(cause);
+        this.persistenceFailure = error;
+        this.onPersistenceFailure(error);
+        throw error;
+      }
+    });
     this.bindings.push(binding);
   }
 
@@ -128,7 +133,7 @@ export class DesktopPersistentSession implements Session {
   }
 }
 
-type SessionToolCall = Extract<SessionEvent, { type: 'assistant.message' }>['toolCalls'][number];
+type SessionToolCall = Extract<SessionEvent, { type: 'assistant.message' }>['payload']['toolCalls'][number];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -212,58 +217,39 @@ function readToolCall(value: unknown, field: string): SessionToolCall {
   return { id, name, input: value.input } as SessionToolCall;
 }
 
-function readSessionEvent(value: unknown, field: string): SessionEvent {
-  if (!isRecord(value)) invalid(field);
-  const type = readString(value.type, `${field}.type`);
-  const turnId = readString(value.turnId, `${field}.turnId`);
-
+function readSessionPayload(type: string, turnId: TurnId, value: Record<string, unknown>, field: string): SessionEventInput {
   switch (type) {
     case 'turn.configuration':
-      return { type, turnId, data: parseTurnConfiguration(value.data) } as SessionEvent;
+      return { type, turnId, payload: { data: parseTurnConfiguration(value.data) } } as SessionEventInput;
     case 'turn.started':
     case 'turn.completed':
-      return { type, turnId } as SessionEvent;
+      return { type, turnId, payload: {  } } as SessionEventInput;
     case 'turn.failed':
-      return { type, turnId, errorName: readString(value.errorName, `${field}.errorName`),
-        errorMessage: readString(value.errorMessage, `${field}.errorMessage`) } as SessionEvent;
+      return { type, turnId, payload: { errorName: readString(value.errorName, `${field}.errorName`), errorMessage: readString(value.errorMessage, `${field}.errorMessage`) } } as SessionEventInput;
     case 'turn.cancelled':
-      return { type, turnId,
-        reason: readChoice(value.reason, ['user', 'window-closed', 'external'], `${field}.reason`) } as SessionEvent;
+      return { type, turnId, payload: { reason: readChoice(value.reason, ['user', 'window-closed', 'external'], `${field}.reason`) } } as SessionEventInput;
     case 'turn.interrupted':
-      return { type, turnId,
-        reason: readChoice(value.reason, ['process-exit', 'legacy-unknown'], `${field}.reason`) } as SessionEvent;
+      return { type, turnId, payload: { reason: readChoice(value.reason, ['process-exit', 'legacy-unknown'], `${field}.reason`) } } as SessionEventInput;
     case 'turn.recovery.started':
-      return { type, turnId, sourceTurnId: readString(value.sourceTurnId, `${field}.sourceTurnId`),
-        mode: readChoice(value.mode, ['continue', 'verify'], `${field}.mode`) } as SessionEvent;
+      return { type, turnId, payload: { sourceTurnId: readString(value.sourceTurnId, `${field}.sourceTurnId`), mode: readChoice(value.mode, ['continue', 'verify'], `${field}.mode`) } } as SessionEventInput;
     case 'context.compacted': {
       const sourceDigest = readString(value.sourceDigest, `${field}.sourceDigest`);
       if (!/^[a-f0-9]{64}$/.test(sourceDigest)) invalid(`${field}.sourceDigest`);
       const summary = readString(value.summary, `${field}.summary`);
       if (!summary.trim()) invalid(`${field}.summary`);
       if (value.estimatorVersion !== 1) invalid(`${field}.estimatorVersion`);
-      return { type, turnId, sourceDigest, summary, estimatorVersion: 1,
-        coveredStepEndEventIndexes: readEventIndexes(value.coveredStepEndEventIndexes, `${field}.coveredStepEndEventIndexes`),
-        ...(value.previousSummaryEventIndex === undefined ? {} : {
-          previousSummaryEventIndex: readNonNegativeInteger(value.previousSummaryEventIndex, `${field}.previousSummaryEventIndex`) }),
-        estimatedBefore: readNonNegativeInteger(value.estimatedBefore, `${field}.estimatedBefore`),
-        estimatedAfter: readNonNegativeInteger(value.estimatedAfter, `${field}.estimatedAfter`) } as SessionEvent;
+      return { type, turnId, payload: { sourceDigest, summary, estimatorVersion: 1, coveredStepEndEventIndexes: readEventIndexes(value.coveredStepEndEventIndexes, `${field}.coveredStepEndEventIndexes`), ...(value.previousSummaryEventIndex === undefined ? {} : {
+          previousSummaryEventIndex: readNonNegativeInteger(value.previousSummaryEventIndex, `${field}.previousSummaryEventIndex`) }), estimatedBefore: readNonNegativeInteger(value.estimatedBefore, `${field}.estimatedBefore`), estimatedAfter: readNonNegativeInteger(value.estimatedAfter, `${field}.estimatedAfter`) } } as SessionEventInput;
     }
     case 'plan.updated':
-      return { type, turnId, revision: readNonNegativeInteger(value.revision, `${field}.revision`),
-        explanation: readString(value.explanation, `${field}.explanation`),
-        steps: readPlanSteps(value.steps, `${field}.steps`) } as SessionEvent;
+      return { type, turnId, payload: { revision: readNonNegativeInteger(value.revision, `${field}.revision`), explanation: readString(value.explanation, `${field}.explanation`), steps: readPlanSteps(value.steps, `${field}.steps`) } } as SessionEventInput;
     case 'tool.effect.prepared':
       if (!Object.hasOwn(value, 'data')) invalid(`${field}.data`);
-      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
-        data: value.data } as SessionEvent;
+      return { type, turnId, payload: { sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`), data: value.data } } as SessionEventInput;
     case 'host.operation.started':
-      return { type, turnId, operation: readString(value.operation, `${field}.operation`),
-        description: readString(value.description, `${field}.description`) } as SessionEvent;
+      return { type, turnId, payload: { operation: readString(value.operation, `${field}.operation`), description: readString(value.description, `${field}.description`) } } as SessionEventInput;
     case 'host.operation.result':
-      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
-        status: readChoice(value.status, ['completed', 'failed', 'cancelled'], `${field}.status`),
-        ...(value.errorName === undefined ? {} : { errorName: readString(value.errorName, `${field}.errorName`) }),
-        ...(value.errorMessage === undefined ? {} : { errorMessage: readString(value.errorMessage, `${field}.errorMessage`) }) } as SessionEvent;
+      return { type, turnId, payload: { sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`), status: readChoice(value.status, ['completed', 'failed', 'cancelled'], `${field}.status`), ...(value.errorName === undefined ? {} : { errorName: readString(value.errorName, `${field}.errorName`) }), ...(value.errorMessage === undefined ? {} : { errorMessage: readString(value.errorMessage, `${field}.errorMessage`) }) } } as SessionEventInput;
     case 'effect.outcome.verified': {
       if (!isRecord(value.evidence)) invalid(`${field}.evidence`);
       const source = readChoice(value.evidence.source, ['tool', 'user', 'host'], `${field}.evidence.source`);
@@ -271,24 +257,15 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
       const outcome = readChoice(value.outcome, ['completed', 'not-applied', 'unresolved'], `${field}.outcome`);
       // 宿主可报告整次调用未确认，或 Router 已证明未执行；不能伪造宿主已证明效果完成。
       if (source === 'host' && (scope !== 'entire-call' || outcome === 'completed')) invalid(`${field}.evidence.source`);
-      return { type, turnId, sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`),
-        scope, outcome, evidence: { source,
+      return { type, turnId, payload: { sourceEventIndex: readNonNegativeInteger(value.sourceEventIndex, `${field}.sourceEventIndex`), scope, outcome, evidence: { source,
           reference: readString(value.evidence.reference, `${field}.evidence.reference`),
-          description: readString(value.evidence.description, `${field}.evidence.description`) } } as SessionEvent;
+          description: readString(value.evidence.description, `${field}.evidence.description`) } } } as SessionEventInput;
     }
     case 'user.message':
-      return {
-        type,
-        turnId,
-        content: readString(value.content, `${field}.content`),
-      } as unknown as SessionEvent;
+      return { type, turnId, payload: { content: readString(value.content, `${field}.content`) } } as SessionEventInput;
     case 'step.started':
     case 'step.completed':
-      return {
-        type,
-        turnId,
-        stepId: readString(value.stepId, `${field}.stepId`),
-      } as SessionEvent;
+      return { type, turnId, payload: { stepId: readString(value.stepId, `${field}.stepId`) } } as SessionEventInput;
     case 'assistant.message': {
       if (!Array.isArray(value.toolCalls)) invalid(`${field}.toolCalls`);
       const toolCalls = value.toolCalls.map((item, index) => (
@@ -296,31 +273,15 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
       ));
       const content = value.content;
       if (content !== undefined && typeof content !== 'string') invalid(`${field}.content`);
-      return {
-        type,
-        turnId,
-        stepId: readString(value.stepId, `${field}.stepId`),
-        ...(content === undefined ? {} : { content }),
-        toolCalls,
-      } as unknown as SessionEvent;
+      return { type, turnId, payload: { stepId: readString(value.stepId, `${field}.stepId`) as StepId, ...(content === undefined ? {} : { content }), toolCalls } };
     }
     case 'tool.called':
       if (!Object.hasOwn(value, 'input')) invalid(`${field}.input`);
-      return {
-        type,
-        turnId,
-        stepId: readString(value.stepId, `${field}.stepId`),
-        toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
-        name: readString(value.name, `${field}.name`),
-        input: value.input,
-        ...(value.boundary === undefined ? {} : { boundary: readChoice(value.boundary,
-          ['not-executed', 'read-only', 'checkpointed', 'opaque'], `${field}.boundary`) }),
-      } as SessionEvent;
+      return { type, turnId, payload: { stepId: readString(value.stepId, `${field}.stepId`), toolCallId: readString(value.toolCallId, `${field}.toolCallId`), name: readString(value.name, `${field}.name`), input: value.input, ...(value.boundary === undefined ? {} : { boundary: readChoice(value.boundary,
+          ['not-executed', 'read-only', 'checkpointed', 'opaque'], `${field}.boundary`) }) } } as SessionEventInput;
     case 'tool.interaction.closed': {
       if (value.reason !== 'cancelled' && value.reason !== 'window-closed') invalid(`${field}.reason`);
-      return { type, turnId, stepId: readString(value.stepId, `${field}.stepId`),
-        toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
-        requestId: readString(value.requestId, `${field}.requestId`), reason: value.reason } as SessionEvent;
+      return { type, turnId, payload: { stepId: readString(value.stepId, `${field}.stepId`), toolCallId: readString(value.toolCallId, `${field}.toolCallId`), requestId: readString(value.requestId, `${field}.requestId`), reason: value.reason } } as SessionEventInput;
     }
     case 'tool.result': {
       if (!isRecord(value.result)) invalid(`${field}.result`);
@@ -341,19 +302,28 @@ function readSessionEvent(value: unknown, field: string): SessionEvent {
                 ['transient', 'permanent', 'denied', 'cancelled', 'unknown-outcome'], `${field}.result.failureKind`) }),
             }
           : invalid(`${field}.result.status`);
-      return {
-        type,
-        turnId,
-        stepId: readString(value.stepId, `${field}.stepId`),
-        toolCallId: readString(value.toolCallId, `${field}.toolCallId`),
-        result,
-        ...(value.executionBoundary === undefined ? {} : { executionBoundary: readChoice(value.executionBoundary,
-          ['not-executed'], `${field}.executionBoundary`) }),
-      } as SessionEvent;
+      return { type, turnId, payload: { stepId: readString(value.stepId, `${field}.stepId`), toolCallId: readString(value.toolCallId, `${field}.toolCallId`), result, ...(value.executionBoundary === undefined ? {} : { executionBoundary: readChoice(value.executionBoundary,
+          ['not-executed'], `${field}.executionBoundary`) }) } } as SessionEventInput;
     }
     default:
       return invalid(`${field}.type`);
   }
+}
+
+/** 只接受当前统一封装；恢复沿用磁盘身份，不重新分配时间或顺序。 */
+function readSessionEvent(value: unknown, field: string, sessionId: string, sequence: number): SessionEvent {
+  if (!isRecord(value) || !isRecord(value.payload)) invalid(field);
+  const keys = ['sessionId', 'turnId', 'itemId', 'sequence', 'timestamp', 'type', 'payload'];
+  if (Object.keys(value).some(key => !keys.includes(key))) invalid(field);
+  if (value.sessionId !== sessionId) invalid(`${field}.sessionId`);
+  if (value.sequence !== sequence) invalid(`${field}.sequence`);
+  const timestamp = readString(value.timestamp, `${field}.timestamp`);
+  if (!Number.isFinite(Date.parse(timestamp)) || new Date(timestamp).toISOString() !== timestamp) invalid(`${field}.timestamp`);
+  const itemId = readString(value.itemId, `${field}.itemId`);
+  const turnId = readString(value.turnId, `${field}.turnId`) as TurnId;
+  if (!itemId.trim() || !turnId.trim()) invalid(field);
+  const input = readSessionPayload(readString(value.type, `${field}.type`), turnId, value.payload, `${field}.payload`);
+  return { ...input, sessionId, sequence, timestamp, itemId };
 }
 
 /** 索引只引用此前真实事件；未来/自身索引不能作为核验或压缩依据。 */
@@ -365,19 +335,19 @@ function priorEvent(events: readonly SessionEvent[], index: number, sourceIndex:
 }
 
 /**
- * 磁盘是实际外部边界：新事件引用在解析时一次确认，旧残留事件仍原样保留。
+ * 磁盘是实际外部边界：统一封装与来源引用在解析时一次确认。
  * 这里只检查来源身份/范围；工具业务资格和执行状态继续由 Session 的纯投影负责。
  */
-function readSessionEvents(value: unknown, field: string): readonly SessionEvent[] {
+function readSessionEvents(value: unknown, field: string, sessionId: string): readonly SessionEvent[] {
   if (!Array.isArray(value)) invalid(field);
-  const events = value.map((event, index) => readSessionEvent(event, `${field}[${index}]`));
+  const events = value.map((event, index) => readSessionEvent(event, `${field}[${index}]`, sessionId, index + 1));
   for (const [index, event] of events.entries()) {
     const eventField = `${field}[${index}]`;
     switch (event.type) {
       case 'turn.recovery.started': {
         // 关系只能指向此前已存在的轮次，天然排除自循环及未来恢复源。
         const priorEvents = events.slice(0, index);
-        const sourceStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.sourceTurnId);
+        const sourceStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.payload.sourceTurnId);
         const turnStartIndex = priorEvents.findIndex(source => source.type === 'turn.started' && source.turnId === event.turnId);
         if (sourceStartIndex < 0 || turnStartIndex < 0 || sourceStartIndex >= turnStartIndex
           || priorEvents.some(source => source.type === 'turn.recovery.started' && source.turnId === event.turnId)) {
@@ -386,24 +356,24 @@ function readSessionEvents(value: unknown, field: string): readonly SessionEvent
         break;
       }
       case 'tool.effect.prepared': {
-        const source = priorEvent(events, index, event.sourceEventIndex, ['tool.called'], `${eventField}.sourceEventIndex`);
+        const source = priorEvent(events, index, event.payload.sourceEventIndex, ['tool.called'], `${eventField}.sourceEventIndex`);
         if (source.turnId !== event.turnId
-          || (source.type === 'tool.called' && (source.boundary === 'not-executed' || source.boundary === 'read-only'))) {
+          || (source.type === 'tool.called' && (source.payload.boundary === 'not-executed' || source.payload.boundary === 'read-only'))) {
           invalid(`${eventField}.sourceEventIndex`);
         }
         break;
       }
       case 'host.operation.result': {
-        const source = priorEvent(events, index, event.sourceEventIndex, ['host.operation.started'], `${eventField}.sourceEventIndex`);
+        const source = priorEvent(events, index, event.payload.sourceEventIndex, ['host.operation.started'], `${eventField}.sourceEventIndex`);
         if (source.turnId !== event.turnId) invalid(`${eventField}.sourceEventIndex`);
         break;
       }
       case 'effect.outcome.verified': {
-        const source = priorEvent(events, index, event.sourceEventIndex,
+        const source = priorEvent(events, index, event.payload.sourceEventIndex,
           ['tool.called', 'host.operation.started'], `${eventField}.sourceEventIndex`);
         // 核验可跨本会话轮次，但文件部分不能指向宿主阶段或从未执行的调用。
-        if ((event.scope === 'file-effect' && source.type !== 'tool.called')
-          || (source.type === 'tool.called' && source.boundary === 'not-executed')) invalid(`${eventField}.sourceEventIndex`);
+        if ((event.payload.scope === 'file-effect' && source.type !== 'tool.called')
+          || (source.type === 'tool.called' && source.payload.boundary === 'not-executed')) invalid(`${eventField}.sourceEventIndex`);
         break;
       }
       case 'context.compacted': {
@@ -415,7 +385,7 @@ function readSessionEvents(value: unknown, field: string): readonly SessionEvent
         // 后面的恢复关系尚未校验，不能反过来影响当前计划的来源归属。
         const priorEvents = events.slice(0, index);
         const root = projectRecoveryAncestry(priorEvents, event.turnId).rootTurnId;
-        for (const [stepIndex, step] of event.steps.entries()) {
+        for (const [stepIndex, step] of event.payload.steps.entries()) {
           for (const [offset, sourceIndex] of step.evidenceEventIndexes.entries()) {
             const sourceField = `${eventField}.steps[${stepIndex}].evidenceEventIndexes[${offset}]`;
             const source = events[sourceIndex];
@@ -426,6 +396,8 @@ function readSessionEvents(value: unknown, field: string): readonly SessionEvent
         break;
       }
     }
+    // 来源已在上面的分支核验；身份生成规则与追加入口共用唯一实现。
+    if (event.itemId !== getSessionEventItemId(event, events.slice(0, index), event.sequence)) invalid(`${eventField}.itemId`);
   }
   return events;
 }
@@ -914,7 +886,9 @@ function parseDesktopSession(
   if (workingDirectory !== undefined && typeof workingDirectory !== 'string') {
     invalid(`${field}.workingDirectory`);
   }
-  const events = readSessionEvents(value.events, `${field}.events`);
+  const id = readString(value.id, `${field}.id`);
+  if (!id.trim()) invalid(`${field}.id`);
+  const events = readSessionEvents(value.events, `${field}.events`, id);
   let turnMessageBindings: readonly TurnMessageBinding[] | undefined;
   if (value.turnMessageBindings !== undefined) {
     if (!Array.isArray(value.turnMessageBindings)) invalid(`${field}.turnMessageBindings`);
@@ -933,7 +907,7 @@ function parseDesktopSession(
       || new Set(messageIds).size !== messageIds.length) invalid(`${field}.turnMessageBindings`);
   }
   return {
-    id: readString(value.id, `${field}.id`),
+    id,
     attachments: readAttachments(value, field),
     ...(value.terminalHistory === undefined ? {} : { terminalHistory: readTerminalHistory(value.terminalHistory, field) }),
     ...(workingDirectory === undefined ? {} : { workingDirectory }),
@@ -950,9 +924,10 @@ function readSubagentHistory(value: unknown, field: string): readonly SubagentRe
     if (!isRecord(record) || !Array.isArray(record.events) || !isRecord(record.result)) invalid(field);
     const result = record.result;
     if (!['completed', 'failed', 'cancelled', 'budget-exhausted'].includes(String(result.status))) invalid(field);
+    const taskId = readString(result.taskId, field);
     return { parentToolCallId: readString(record.parentToolCallId, field),
-      events: readSessionEvents(record.events, `${field}.events`),
-      result: { taskId: readString(result.taskId, field), title: readString(result.title, field),
+      events: readSessionEvents(record.events, `${field}.events`, taskId),
+      result: { taskId, title: readString(result.title, field),
         status: result.status as SubagentRecord['result']['status'], summary: readString(result.summary, field),
         evidence: readStringArray(result.evidence, field) } };
   });

@@ -47,7 +47,9 @@ function toolContext(signal?: AbortSignal): ToolExecutionContext {
 }
 
 function newSession(): InMemorySession {
-  return new InMemorySession([{ type: 'turn.started', turnId }]);
+  const session = new InMemorySession();
+  session.append({ type: 'turn.started', turnId, payload: {} });
+  return session;
 }
 
 function nextCallId(): ToolCallId {
@@ -63,17 +65,17 @@ async function runTool(
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   const toolCallId = nextCallId();
-  session.append({ type: 'tool.called', turnId, stepId, toolCallId, name: tool.name, input });
+  session.append({ type: 'tool.called', turnId, payload: { stepId, toolCallId, name: tool.name, input } });
   const result = await tool.execute(input, toolContext(signal));
-  session.append({ type: 'tool.result', turnId, stepId, toolCallId, result });
+  session.append({ type: 'tool.result', turnId, payload: { stepId, toolCallId, result } });
   return result;
 }
 
 /** 追加一条真实媒体检查结果；它模拟 probe_media / decode_video / detect_black_segments 的返回。 */
 function appendCheck(session: InMemorySession, name: string, inputPath: string, output: unknown): ToolCallId {
   const toolCallId = nextCallId();
-  session.append({ type: 'tool.called', turnId, stepId, toolCallId, name, input: { inputPath } });
-  session.append({ type: 'tool.result', turnId, stepId, toolCallId, result: { status: 'success', output } });
+  session.append({ type: 'tool.called', turnId, payload: { stepId, toolCallId, name, input: { inputPath } } });
+  session.append({ type: 'tool.result', turnId, payload: { stepId, toolCallId, result: { status: 'success', output } } });
   return toolCallId;
 }
 
@@ -170,18 +172,13 @@ async function produceCandidate(
   tools.session.append({
     type: 'tool.called',
     turnId,
-    stepId,
-    toolCallId,
-    name,
-    input,
+    payload: { stepId, toolCallId, name, input },
   });
   await writeFile(path, `candidate:${fileName}`);
   tools.session.append({
     type: 'tool.result',
     turnId,
-    stepId,
-    toolCallId,
-    result: { status: 'success', output: { outputPath: path } },
+    payload: { stepId, toolCallId, result: { status: 'success', output: { outputPath: path } } },
   });
   return { toolCallId, path };
 }
@@ -558,11 +555,10 @@ describe('candidate validation', () => {
     const outsider = join(directory, 'outsider.mp4');
     const toolCallId = nextCallId();
     tools.session.append({
-      type: 'tool.called', turnId, stepId, toolCallId, name: 'trim_video', input: { outputPath: outsider },
+      type: 'tool.called', turnId, payload: { stepId, toolCallId, name: 'trim_video', input: { outputPath: outsider } },
     });
     tools.session.append({
-      type: 'tool.result', turnId, stepId, toolCallId,
-      result: { status: 'success', output: { outputPath: outsider } },
+      type: 'tool.result', turnId, payload: { stepId, toolCallId, result: { status: 'success', output: { outputPath: outsider } } },
     });
 
     const result = await runTool(tools.session, tools.validate, {
@@ -592,10 +588,10 @@ describe('candidate validation', () => {
   it('ignores a look-alike fact produced by a tool that is not a delivery tool', async () => {
     const session = newSession();
     session.append({
-      type: 'tool.called', turnId, stepId, toolCallId: 'call-fake' as ToolCallId, name: 'probe_media', input: {},
+      type: 'tool.called', turnId, payload: { stepId, toolCallId: 'call-fake' as ToolCallId, name: 'probe_media', input: {} },
     });
     session.append({
-      type: 'tool.result', turnId, stepId, toolCallId: 'call-fake' as ToolCallId,
+      type: 'tool.result', turnId, payload: { stepId, toolCallId: 'call-fake' as ToolCallId,
       result: {
         status: 'success',
         output: {
@@ -609,7 +605,7 @@ describe('candidate validation', () => {
           }],
         },
       },
-    });
+    } });
 
     expect(readVideoDeliveryFacts(session.events()).items).toEqual([]);
   });

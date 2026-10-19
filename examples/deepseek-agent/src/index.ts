@@ -42,16 +42,16 @@ class EchoTool implements Tool {
 }
 
 function formatToolResult(event: ToolResultEvent): string {
-  return event.result.status === 'success'
-    ? String(event.result.output)
-    : event.result.message;
+  return event.payload.result.status === 'success'
+    ? String(event.payload.result.output)
+    : event.payload.result.message;
 }
 
 /** 从当前 Turn 新增的 Session 事实中展示真实模型发起的工具调用和执行结果。 */
 function printTurnEvents(events: readonly SessionEvent[]): void {
   for (const event of events) {
     if (event.type === 'tool.called') {
-      output.write(`Tool Call > ${event.name}\n`);
+      output.write(`Tool Call > ${event.payload.name}\n`);
     }
 
     if (event.type === 'tool.result') {

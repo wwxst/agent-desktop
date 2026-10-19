@@ -288,9 +288,9 @@ function readVideoOutputFact(toolName: string | undefined, output: unknown): Vid
   return null;
 }
 
-/** 模型调用标识只在当前步骤内有意义，交付事实使用完整执行身份配对。 */
+/** 工具事件沿用 Session 分配的对象身份，交付层不再重建调用身份。 */
 export const videoToolCallKey = (event: ToolCalledEvent | ToolResultEvent): string =>
-  JSON.stringify([event.turnId, event.stepId, event.toolCallId]);
+  event.itemId;
 
 /**
  * 从会话事实读出当前交付状态。
@@ -302,7 +302,7 @@ export function readVideoDeliveryFacts(events: readonly SessionEvent[]): VideoDe
   // Trace 不复制工具内容，工具名必须从 Session 的 tool.called 事实里读。
   const toolNames = new Map<string, string>();
   for (const event of events) {
-    if (event.type === 'tool.called') toolNames.set(videoToolCallKey(event), event.name);
+    if (event.type === 'tool.called') toolNames.set(videoToolCallKey(event), event.payload.name);
   }
 
   let items: readonly OutputItem[] = [];
@@ -312,8 +312,8 @@ export function readVideoDeliveryFacts(events: readonly SessionEvent[]): VideoDe
   const published: PublishedOutput[] = [];
 
   for (const event of events) {
-    if (event.type !== 'tool.result' || event.result.status !== 'success') continue;
-    const fact = readVideoOutputFact(toolNames.get(videoToolCallKey(event)), event.result.output);
+    if (event.type !== 'tool.result' || event.payload.result.status !== 'success') continue;
+    const fact = readVideoOutputFact(toolNames.get(videoToolCallKey(event)), event.payload.result.output);
     if (fact === null) continue;
 
     switch (fact.kind) {

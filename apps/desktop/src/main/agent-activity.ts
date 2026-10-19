@@ -198,13 +198,30 @@ export function readActivityFiles(input: unknown): readonly AgentActivityFile[] 
  * 取回本次工具调用真实写入 Session 的输入。
  * Trace 只保存运行元数据、不复制工具内容，因此文件事实必须从 Session 事实里读。
  */
+function findToolCallSource(events: readonly SessionEvent[], toolCallId: string,
+  location?: { readonly turnId: string; readonly stepId: string }): Extract<SessionEvent, { type: 'tool.called' }> | undefined {
+  // 回调查询当前调用；历史 Trace 带有轮次和步骤，必须同时匹配，不能命中复用原始 ID 的后续调用。
+  return events.findLast((event): event is Extract<SessionEvent, { type: 'tool.called' }> => event.type === 'tool.called' && event.payload.toolCallId === toolCallId
+    && (location === undefined || (event.turnId === location.turnId && event.payload.stepId === location.stepId)));
+}
+
 export function findToolCallInput(events: readonly SessionEvent[], toolCallId: string): unknown {
-  // 工具调用事件在 trace 回调前刚追加，从末尾反向查找即可命中，不需要遍历整段历史。
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.type === 'tool.called' && event.toolCallId === toolCallId) return event.input;
-  }
-  return undefined;
+  return findToolCallSource(events, toolCallId)?.payload.input;
+}
+
+/** 实时详情及进度沿用当前已落盘调用的权威身份；缺少来源是宿主调用顺序错误。 */
+export function getToolActivityId(events: readonly SessionEvent[], toolCallId: string): string {
+  const source = findToolCallSource(events, toolCallId);
+  if (source === undefined) throw new Error('工具活动缺少已保存的 tool.called 来源。');
+  return source.itemId;
+}
+
+/** 模型活动从真实步骤取回身份，不用 Trace 字段重新拼接另一套 ID。 */
+function getModelActivityId(events: readonly SessionEvent[], location: { readonly turnId: string; readonly stepId: string }): string {
+  const source = events.findLast(event => event.type === 'step.started' && event.turnId === location.turnId
+    && event.payload.stepId === location.stepId);
+  if (source === undefined) throw new Error('模型活动缺少已保存的 step.started 来源。');
+  return source.itemId;
 }
 
 /** 命令的完整原文来自 Session 的 tool.called 事实；实时进度只携带输出片段。 */
@@ -216,13 +233,13 @@ export function findCommandText(events: readonly SessionEvent[], toolCallId: str
 /** 成功结果里的 filePath 是工具解析并实际操作的真实路径，优先于模型输入的相对路径。 */
 function findSuccessfulToolResultFilePath(
   events: readonly SessionEvent[],
-  toolCallId: string,
+  itemId: string,
 ): string | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event?.type !== 'tool.result' || event.toolCallId !== toolCallId) continue;
-    if (event.result.status !== 'success' || !isRecord(event.result.output)) return undefined;
-    return typeof event.result.output.filePath === 'string' ? event.result.output.filePath : undefined;
+    if (event?.type !== 'tool.result' || event.itemId !== itemId) continue;
+    if (event.payload.result.status !== 'success' || !isRecord(event.payload.result.output)) return undefined;
+    return typeof event.payload.result.output.filePath === 'string' ? event.payload.result.output.filePath : undefined;
   }
   return undefined;
 }
@@ -234,13 +251,13 @@ export function projectAgentActivity(
 ): AgentActivityItem | undefined {
   switch (event.type) {
     case 'model.started':
-      return { id: `model:${event.stepId}`, kind: 'analysis', status: 'running' };
+      return { id: getModelActivityId(events, event), kind: 'analysis', status: 'running' };
     case 'model.retrying':
-      return { id: `model:${event.stepId}`, kind: 'analysis', status: 'running',
+      return { id: getModelActivityId(events, event), kind: 'analysis', status: 'running',
         retryNote: `服务暂时不可用，${event.waitMs / 1000} 秒后进行第 ${event.attempt} 次尝试。` };
     case 'model.completed':
       return {
-        id: `model:${event.stepId}`,
+        id: getModelActivityId(events, event),
         kind: 'analysis',
         status: 'completed',
         durationMs: event.durationMs,
@@ -248,7 +265,7 @@ export function projectAgentActivity(
       };
     case 'model.failed':
       return {
-        id: `model:${event.stepId}`,
+        id: getModelActivityId(events, event),
         kind: 'analysis',
         status: 'failed',
         durationMs: event.durationMs,
@@ -256,14 +273,16 @@ export function projectAgentActivity(
     case 'tool.started':
     case 'tool.completed':
     case 'tool.failed': {
+      const source = findToolCallSource(events, event.toolCallId, event);
+      if (source === undefined) throw new Error('工具活动缺少已保存的 tool.called 来源。');
       const resultFilePath = event.type === 'tool.completed' && event.toolName === 'edit_text_file'
-        ? findSuccessfulToolResultFilePath(events, event.toolCallId)
+        ? findSuccessfulToolResultFilePath(events, source.itemId)
         : undefined;
       const files = resultFilePath === undefined
-        ? readActivityFiles(findToolCallInput(events, event.toolCallId))
+        ? readActivityFiles(source.payload.input)
         : [{ path: resultFilePath, label: basename(resultFilePath), role: 'input' as const }];
       return {
-        id: event.toolCallId,
+        id: source.itemId,
         kind: 'tool',
         status: event.type === 'tool.started' ? 'running'
           : event.type === 'tool.completed' ? 'completed' : 'failed',
@@ -277,10 +296,10 @@ export function projectAgentActivity(
       // 轮次取消没有 Tool Result；用已有 Session 事实结束当前活动，保持核心追踪契约不变。
       const pending = events.findLast(entry => entry.type === 'tool.called' && entry.turnId === event.turnId);
       if (pending?.type !== 'tool.called' || events.some(entry => entry.type === 'tool.result'
-        && entry.turnId === pending.turnId && entry.stepId === pending.stepId
-        && entry.toolCallId === pending.toolCallId)) return undefined;
-      const files = readActivityFiles(pending.input);
-      return { id: pending.toolCallId, kind: 'tool', status: 'cancelled', toolName: pending.name,
+        && entry.turnId === pending.turnId && entry.payload.stepId === pending.payload.stepId
+        && entry.payload.toolCallId === pending.payload.toolCallId)) return undefined;
+      const files = readActivityFiles(pending.payload.input);
+      return { id: pending.itemId, kind: 'tool', status: 'cancelled', toolName: pending.payload.name,
         ...(files.length === 0 ? {} : { files }) };
     }
     default:
@@ -300,13 +319,13 @@ export function isSessionFilePath(
   if (sessionPaths.includes(filePath)) return true;
   return events.some((event) => {
     if (event.type === 'tool.called') {
-      return readActivityFiles(event.input).some((file) => file.path === filePath);
+      return readActivityFiles(event.payload.input).some((file) => file.path === filePath);
     }
     // 成功结果报告的产物或实际文件路径都是这次会话真实操作过的文件。
     // 工具输入可能只有相对路径，因此定位时也要承认工具执行后解析出的绝对路径。
-    if (event.type === 'tool.result' && event.result.status === 'success') {
-      if ((event.result.artifacts ?? []).some((artifact) => artifact.path === filePath)) return true;
-      return isRecord(event.result.output) && event.result.output.filePath === filePath;
+    if (event.type === 'tool.result' && event.payload.result.status === 'success') {
+      if ((event.payload.result.artifacts ?? []).some((artifact) => artifact.path === filePath)) return true;
+      return isRecord(event.payload.result.output) && event.payload.result.output.filePath === filePath;
     }
     return false;
   });

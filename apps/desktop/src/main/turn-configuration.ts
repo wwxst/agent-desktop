@@ -16,7 +16,7 @@ export interface TurnConfiguration {
 export function readTurnConfiguration(events: readonly SessionEvent[], turnId: TurnId): TurnConfiguration {
   const event = events.findLast(item => item.type === 'turn.configuration' && item.turnId === turnId);
   if (event?.type !== 'turn.configuration') throw new Error('原任务缺少有效配置快照，无法安全恢复；请重新提交任务。');
-  return parseTurnConfiguration(event.data);
+  return parseTurnConfiguration(event.payload.data);
 }
 
 export function parseTurnConfiguration(value: unknown): TurnConfiguration {

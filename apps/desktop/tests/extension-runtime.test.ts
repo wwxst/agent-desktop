@@ -266,8 +266,8 @@ describe('actual extension runtime tool chain', () => {
       expect(persisted).not.toContain(secret);
       expect(persisted).toContain('[REDACTED]');
       expect(JSON.stringify(approvals.mock.calls)).not.toContain(secret);
-      expect(session.events().filter(event => event.type === 'tool.called' && event.toolCallId.startsWith('echo-secret')))
-        .toMatchObject([{ input: { credential: '[REDACTED]' } }, { boundary: 'not-executed', input: { credential: '[REDACTED]' } }]);
+      expect(session.events().filter(event => event.type === 'tool.called' && event.payload.toolCallId.startsWith('echo-secret')))
+        .toMatchObject([{ payload: { input: { credential: '[REDACTED]' } } }, { payload: { boundary: 'not-executed', input: { credential: '[REDACTED]' } } }]);
     } finally { await runtime.close(); }
   });
 
@@ -318,11 +318,11 @@ describe('actual extension runtime tool chain', () => {
         beforeToolCall: input => taskToolGate(session.events(), input),
       });
       expect(approve.mock.calls.map(([request]) => request.kind)).toEqual(['plugin-start', 'plugin-tool']);
-      expect(session.events().filter(event => event.type === 'tool.result').map(event => event.result)).toMatchObject([
+      expect(session.events().filter(event => event.type === 'tool.result').map(event => event.payload.result)).toMatchObject([
         { status: 'error', failureKind: 'denied' }, { status: 'error', failureKind: 'permanent' },
       ]);
-      expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'repeat'))
-        .toMatchObject({ boundary: 'not-executed' });
+      expect(session.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'repeat'))
+        .toMatchObject({ payload: { boundary: 'not-executed' } });
       expect(session.events().some(event => event.type === 'tool.effect.prepared')).toBe(false);
       expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
       await expect(readFile(join(files.directory, 'waiting'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
@@ -370,15 +370,15 @@ describe('actual extension runtime tool chain', () => {
       await vi.waitFor(async () => expect(await readFile(join(files.directory, 'waiting'), 'utf8')).toBe('waiting'));
       await runtime.close();
       await pending;
-      expect(session.events().filter(event => event.type === 'tool.result').map(event => event.result)).toMatchObject([
+      expect(session.events().filter(event => event.type === 'tool.result').map(event => event.payload.result)).toMatchObject([
         { status: 'error', failureKind: 'unknown-outcome' }, { status: 'error', failureKind: 'permanent' },
       ]);
       const unknown = projectRecoveryFacts(session.events()).unknownEffects;
       expect(unknown).toHaveLength(1);
-      expect(unknown[0]!.source).toMatchObject({ type: 'tool.called', toolCallId: 'lost', boundary: 'checkpointed' });
+      expect(unknown[0]!.source).toMatchObject({ type: 'tool.called', payload: { toolCallId: 'lost', boundary: 'checkpointed' } });
       expect(unknown[0]!.preparedEventIndexes).toHaveLength(1);
-      expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'later'))
-        .toMatchObject({ boundary: 'not-executed' });
+      expect(session.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'later'))
+        .toMatchObject({ payload: { boundary: 'not-executed' } });
     } finally { await runtime.close(); }
   });
 
@@ -502,8 +502,8 @@ describe('actual extension runtime tool chain', () => {
         .mockResolvedValueOnce({ toolCalls: [{ id: 'composite-call' as never, name: 'composite', input: {} }] })
         .mockResolvedValueOnce({ text: '完成', toolCalls: [] });
       await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '读取');
-      expect(session.events().filter(event => event.type === 'tool.called').map(event => event.name)).toEqual(['composite']);
-      expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: { status: 'success', output: {} } });
+      expect(session.events().filter(event => event.type === 'tool.called').map(event => event.payload.name)).toEqual(['composite']);
+      expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ payload: { result: { status: 'success', output: {} } } });
       expect(approve).toHaveBeenCalledTimes(2);
       // 媒体适配器前后任一层有钩子时，最终门禁看到的都必须是外层不透明边界。
       const raw: Tool = { name: 'media', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
@@ -526,7 +526,7 @@ describe('actual extension runtime tool chain', () => {
         systemPrompt: { build: () => '' } }, '执行未准备工具');
       expect(raw.execute).not.toHaveBeenCalled();
       expect(approve).toHaveBeenCalledTimes(blockedApprovalCount);
-      expect(blockedSession.events().find(event => event.type === 'tool.called')).toMatchObject({ name: 'media', boundary: 'not-executed' });
+      expect(blockedSession.events().find(event => event.type === 'tool.called')).toMatchObject({ payload: { name: 'media', boundary: 'not-executed' } });
       expect(projectRecoveryFacts(blockedSession.events()).unknownEffects).toEqual([]);
     } finally { await runtime.close(); }
   });
@@ -559,8 +559,11 @@ describe('actual extension runtime tool chain', () => {
         await runTurn({ model: { complete }, tools, session, systemPrompt: { build: () => '' } }, '写入', { toolCapabilities: ['code'] });
         expect(order).toEqual(approved ? ['approve:exact', 'hook', 'execute:exact', 'hook'] : ['approve:exact']);
         expect(JSON.stringify(session.events())).not.toContain('secret');
-        expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({ result: approved
-          ? { status: 'success', output: { value: 'exact' } } : { status: 'error', failureKind: 'denied' } });
+        expect(session.events().find(event => event.type === 'tool.result')).toMatchObject({
+          payload: { result: approved
+            ? { status: 'success', output: { value: 'exact' } }
+            : { status: 'error', failureKind: 'denied' } },
+        });
       }
       expect(nested).toHaveBeenCalledOnce(); expect(execute).not.toHaveBeenCalled(); expect(approve).toHaveBeenCalledTimes(2);
     } finally { await runtime.close(); }

@@ -99,11 +99,11 @@ describe('terminal authorization and ownership', () => {
 
     expect(requestApproval).toHaveBeenCalledOnce();
     expect(native.spawn).not.toHaveBeenCalled();
-    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.result)).toMatchObject([
+    expect(session.events().filter(event => event.type === 'tool.result').map(event => event.payload.result)).toMatchObject([
       { status: 'error', failureKind: 'denied' }, { status: 'error', failureKind: 'permanent' },
     ]);
-    expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'repeat'))
-      .toMatchObject({ boundary: 'not-executed' });
+    expect(session.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'repeat'))
+      .toMatchObject({ payload: { boundary: 'not-executed' } });
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
 

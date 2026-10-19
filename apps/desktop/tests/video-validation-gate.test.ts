@@ -64,7 +64,7 @@ describe('video validation through the Desktop recovery gate', () => {
           call('probe_media', { inputPath: candidatePath }, 'probe')] };
         if (request === 6) return { toolCalls: [call('validate_video_candidate', { outputItemId, candidatePath })] };
         if (request === 7) {
-          prePublishEvents = [...session.events()];
+          prePublishEvents = [...new InMemorySession([], 'session').appendMany([...session.events()])];
           prePublishValidationId = readVideoDeliveryFacts(prePublishEvents).validations.at(-1)!.id;
           return { toolCalls: [call('publish_video_output', { validationId: prePublishValidationId })] };
         }
@@ -93,16 +93,16 @@ describe('video validation through the Desktop recovery gate', () => {
       await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
 
       const calls = session.events().filter(event => event.type === 'tool.called');
-      expect(calls.find(event => event.type === 'tool.called' && event.name === 'validate_video_candidate'))
-        .toMatchObject({ boundary: 'read-only' });
-      expect(calls.filter(event => event.type === 'tool.called' && event.name === 'declare_video_outputs'))
-        .toMatchObject([{ boundary: 'checkpointed' }]);
+      expect(calls.find(event => event.type === 'tool.called' && event.payload.name === 'validate_video_candidate'))
+        .toMatchObject({ payload: { boundary: 'read-only' } });
+      expect(calls.filter(event => event.type === 'tool.called' && event.payload.name === 'declare_video_outputs'))
+        .toMatchObject([{ payload: { boundary: 'checkpointed' } }]);
       expect(session.events().filter(event => event.type === 'tool.effect.prepared').map(event => event.type === 'tool.effect.prepared'
-        ? (event.data as { readonly kind?: unknown }).kind : undefined)).toEqual(['video-output-directory', 'video-publish']);
+        ? (event.payload.data as { readonly kind?: unknown }).kind : undefined)).toEqual(['video-output-directory', 'video-publish']);
       const publishResults = session.events().filter(event => event.type === 'tool.result'
-        && calls.some(callEvent => callEvent.type === 'tool.called' && callEvent.toolCallId === event.toolCallId
-          && callEvent.name === 'publish_video_output'));
-      expect(publishResults.map(event => event.type === 'tool.result' ? event.result.status : undefined)).toEqual(['error', 'success']);
+        && calls.some(callEvent => callEvent.type === 'tool.called' && callEvent.payload.toolCallId === event.payload.toolCallId
+          && callEvent.payload.name === 'publish_video_output'));
+      expect(publishResults.map(event => event.type === 'tool.result' ? event.payload.result.status : undefined)).toEqual(['error', 'success']);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

@@ -1,3 +1,4 @@
+import { InMemorySession } from '@agent-desktop/session';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,7 +23,7 @@ const artifact = (path: string) => ({ id: 'test-artifact', path, mimeType: 'text
 
 /** 只保留测试需要的字段，让每个用例只表达它真正关心的事实。 */
 function toolCalled(input: unknown): SessionEvent {
-  return { type: 'tool.called', turnId, stepId, toolCallId, name: 'trim_video', input };
+  return new InMemorySession([], 'session').append({ type: 'tool.called', turnId, payload: { stepId, toolCallId, name: 'trim_video', input } });
 }
 
 const temporaryDirectories: string[] = [];
@@ -97,27 +98,27 @@ describe('readActivityFiles', () => {
   it('treats a file reported by a successful result as revealable even when the input only has a relative path', () => {
     // write_text_file 的输入里是模型写的相对路径，产物事实才是绝对真实路径；
     // 只按输入校验会让刚创建出来的产物卡无法定位。
-    const events: readonly SessionEvent[] = [
+    const events: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
       {
         type: 'tool.called',
         turnId: 'turn-write' as TurnId,
-        stepId: 'step-write' as StepId,
+        payload: { stepId: 'step-write' as StepId,
         toolCallId: 'call-write' as ToolCallId,
         name: 'write_text_file',
-        input: { filePath: '剪辑清单.txt', content: '第一段' },
+        input: { filePath: '剪辑清单.txt', content: '第一段' } },
       },
       {
         type: 'tool.result',
         turnId: 'turn-write' as TurnId,
-        stepId: 'step-write' as StepId,
+        payload: { stepId: 'step-write' as StepId,
         toolCallId: 'call-write' as ToolCallId,
         result: {
           status: 'success',
           output: { filePath: 'D:/videos/剪辑清单.txt' },
           artifacts: [artifact('D:/videos/剪辑清单.txt')],
-        },
+        } },
       },
-    ];
+    ])];
 
     expect(isSessionFilePath(events, [], 'D:/videos/剪辑清单.txt')).toBe(true);
     // 没有出现在这次会话事实里的路径仍然被拒绝。
@@ -133,10 +134,10 @@ describe('readActivityFiles', () => {
 
 describe('findToolCallInput', () => {
   it('reads the input that the Session really recorded for this Tool Call', () => {
-    const events: readonly SessionEvent[] = [
+    const events: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
       toolCalled({ videoPath: 'E:/videos/first.mp4' }),
-      { type: 'tool.called', turnId, stepId, toolCallId: 'call-2' as ToolCallId, name: 'trim_video', input: { videoPath: 'E:/videos/second.mp4' } },
-    ];
+      { type: 'tool.called', turnId, payload: { stepId, toolCallId: 'call-2' as ToolCallId, name: 'trim_video', input: { videoPath: 'E:/videos/second.mp4' } } },
+    ])];
 
     expect(findToolCallInput(events, 'call-1')).toEqual({ videoPath: 'E:/videos/first.mp4' });
     expect(findToolCallInput(events, 'call-2')).toEqual({ videoPath: 'E:/videos/second.mp4' });
@@ -146,14 +147,17 @@ describe('findToolCallInput', () => {
 
 describe('projectAgentActivity', () => {
   it('projects the model step into one analysis row that keeps its real duration and tool count', () => {
+    const modelEvents: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'step.started', turnId, payload: { stepId } },
+    ])];
     expect(projectAgentActivity({
       type: 'model.started', turnId, stepId, messageCount: 2, toolDefinitionCount: 13,
-    }, [])).toEqual({ id: 'model:step-1', kind: 'analysis', status: 'running' });
+    }, modelEvents)).toEqual({ id: 'model:["turn-1","step-1"]', kind: 'analysis', status: 'running' });
 
     expect(projectAgentActivity({
       type: 'model.completed', turnId, stepId, durationMs: 640, toolCallCount: 2, hasText: false,
-    }, [])).toEqual({
-      id: 'model:step-1',
+    }, modelEvents)).toEqual({
+      id: 'model:["turn-1","step-1"]',
       kind: 'analysis',
       status: 'completed',
       durationMs: 640,
@@ -162,8 +166,8 @@ describe('projectAgentActivity', () => {
 
     expect(projectAgentActivity({
       type: 'model.failed', turnId, stepId, durationMs: 90, errorName: 'Error', errorMessage: '模型调用失败',
-    }, [])).toEqual({
-      id: 'model:step-1',
+    }, modelEvents)).toEqual({
+      id: 'model:["turn-1","step-1"]',
       kind: 'analysis',
       status: 'failed',
       durationMs: 90,
@@ -171,10 +175,10 @@ describe('projectAgentActivity', () => {
   });
 
   it('projects Tool lifecycle events into one row that is replaced in place by id', () => {
-    const events: readonly SessionEvent[] = [toolCalled({
+    const events: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([toolCalled({
       videoPath: 'E:/videos/input.mp4',
       outputPath: 'E:/videos/edited.mp4',
-    })];
+    })])];
     const files = [
       { path: 'E:/videos/input.mp4', label: 'input.mp4', role: 'input' },
       { path: 'E:/videos/edited.mp4', label: 'edited.mp4', role: 'output' },
@@ -183,26 +187,26 @@ describe('projectAgentActivity', () => {
     expect(projectAgentActivity({
       type: 'tool.started', turnId, stepId, toolCallId, toolName: 'trim_video',
     }, events)).toEqual({
-      id: 'call-1', kind: 'tool', status: 'running', toolName: 'trim_video', files,
+      id: 'tool:["turn-1","step-1","call-1"]', kind: 'tool', status: 'running', toolName: 'trim_video', files,
     });
 
     expect(projectAgentActivity({
       type: 'tool.completed', turnId, stepId, toolCallId, toolName: 'trim_video', durationMs: 860,
     }, events)).toEqual({
-      id: 'call-1', kind: 'tool', status: 'completed', toolName: 'trim_video', durationMs: 860, files,
+      id: 'tool:["turn-1","step-1","call-1"]', kind: 'tool', status: 'completed', toolName: 'trim_video', durationMs: 860, files,
     });
 
     expect(projectAgentActivity({
       type: 'tool.failed', turnId, stepId, toolCallId, toolName: 'trim_video', durationMs: 120, errorName: 'Error',
     }, events)).toEqual({
-      id: 'call-1', kind: 'tool', status: 'failed', toolName: 'trim_video', durationMs: 120, files,
+      id: 'tool:["turn-1","step-1","call-1"]', kind: 'tool', status: 'failed', toolName: 'trim_video', durationMs: 120, files,
     });
     expect(projectAgentActivity({
       type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1,
-    }, events)).toEqual({ id: 'call-1', kind: 'tool', status: 'cancelled', toolName: 'trim_video', files });
-    expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, [
-      ...events, { type: 'tool.result', turnId, stepId, toolCallId, result: { status: 'success', output: {} } },
-    ])).toBeUndefined();
+    }, events)).toEqual({ id: 'tool:["turn-1","step-1","call-1"]', kind: 'tool', status: 'cancelled', toolName: 'trim_video', files });
+    expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, [...new InMemorySession([], 'session').appendMany([
+      ...events, { type: 'tool.result', turnId, payload: { stepId, toolCallId, result: { status: 'success', output: {} } } },
+    ])])).toBeUndefined();
   });
 
   it('keeps the current cancelled call when an older turn or step reused its model id', () => {
@@ -210,21 +214,21 @@ describe('projectAgentActivity', () => {
       { turnId: 'older-turn' as TurnId, stepId },
       { turnId, stepId: 'older-step' as StepId },
     ]) {
-      const events: readonly SessionEvent[] = [
-        { type: 'tool.result', ...previous, toolCallId, result: { status: 'success', output: {} } },
+      const events: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+        { type: 'tool.result', turnId: previous.turnId, payload: { stepId: previous.stepId, toolCallId, result: { status: 'success', output: {} } } },
         toolCalled({ videoPath: 'E:/videos/current.mp4' }),
-      ];
+      ])];
       expect(projectAgentActivity({ type: 'turn.cancelled', turnId, durationMs: 80, stepCount: 1 }, events))
-        .toMatchObject({ id: toolCallId, status: 'cancelled', toolName: 'trim_video' });
+        .toMatchObject({ id: 'tool:["turn-1","step-1","call-1"]', status: 'cancelled', toolName: 'trim_video' });
     }
   });
 
   it('uses the successful edit result path for the completed file-change activity', () => {
-    const editEvents: readonly SessionEvent[] = [
+    const editEvents: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId,
         name: 'edit_text_file',
         input: {
@@ -232,24 +236,24 @@ describe('projectAgentActivity', () => {
           expectedSha256: 'read-version',
           oldText: '旧台词',
           newText: '新台词',
-        },
+        } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId,
         result: {
           status: 'success',
           output: { filePath: 'E:/videos/字幕.srt', replacements: 1, bytes: 9 },
-        },
+        } },
       },
-    ];
+    ])];
 
     expect(projectAgentActivity({
       type: 'tool.completed', turnId, stepId, toolCallId, toolName: 'edit_text_file', durationMs: 18,
     }, editEvents)).toEqual({
-      id: 'call-1',
+      id: 'tool:["turn-1","step-1","call-1"]',
       kind: 'tool',
       status: 'completed',
       toolName: 'edit_text_file',
@@ -260,7 +264,7 @@ describe('projectAgentActivity', () => {
   });
 
   it('omits the file list when the Tool Call used no file from the current contract', () => {
-    const events: readonly SessionEvent[] = [toolCalled({ start: 0, end: 12 })];
+    const events: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([toolCalled({ start: 0, end: 12 })])];
     const item = projectAgentActivity({
       type: 'tool.completed', turnId, stepId, toolCallId, toolName: 'trim_video', durationMs: 40,
     }, events);
@@ -328,7 +332,7 @@ describe('projectAgentActivityDetail', () => {
 
 describe('isSessionFilePath', () => {
   it('accepts selected videos and files the Session really used, and rejects anything else', () => {
-    const events: readonly SessionEvent[] = [toolCalled({ videoPath: 'E:/videos/input.mp4' })];
+    const events: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([toolCalled({ videoPath: 'E:/videos/input.mp4' })])];
 
     expect(isSessionFilePath(events, ['E:/videos/selected.mp4'], 'E:/videos/selected.mp4')).toBe(true);
     expect(isSessionFilePath(events, [], 'E:/videos/input.mp4')).toBe(true);

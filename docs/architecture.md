@@ -7,7 +7,8 @@
 ## 通用任务执行事实
 
 ```text
-Session Event          会话事件          原始执行事实只追加，引用使用同会话稳定事件索引。
+Session Event          会话事件          统一封装只追加，来源引用保留同会话稳定事件索引。
+Event Envelope         事件封装          会话、轮次、对象、序号、时间和类型包围唯一业务负载。
 Turn Terminal          轮次终态          循环保存完成、失败或取消；异常退出由宿主识别。
 Context Projection     上下文投影        完整步骤进入模型协议，原始历史不因投影而删除。
 Recovery Ancestry      恢复祖先链        新轮次关联源轮次，核验轮次不代替原任务完成。
@@ -16,7 +17,11 @@ Plan Evidence          计划证据          模型输入、状态投影和磁�
 Turn Message Binding   轮次消息绑定      以明确消息标识绑定已原子保存的新版本任务起点。
 ```
 
-Session 提供同步 `appendMany`，供宿主一次提交执行起点与展示绑定。Loop 的 `prepareTurnStart` 只准备事实，`runTurn` 保存后调用 `runStartedTurn`；后者只接受最新、尚无模型步骤和终态的起点。Loop 独占自身终态，已提交完成后的宿主或诊断错误不改写该事实。工具结果仍按轮次、步骤、调用标识组合归属，模型调用 ID 不是全会话身份。
+Session 提供同步 `appendMany`，供宿主一次提交执行起点与展示绑定。调用方只提供 `SessionEventInput` 的 `type/turnId/payload`，Session 唯一分配 `sessionId/itemId/sequence/timestamp`，返回的完整事件就是已提交的事实。业务字段只存在于 `payload`。序号从 1 开始连续增长；来源索引仍指向只追加数组的零基位置。工具对象身份包含轮次、步骤和调用标识，模型调用 ID 不是全会话身份；检查点与核验继承被引用操作的 `itemId`。
+
+Desktop 先将 Session 生成的完整候选历史写入 SQLite，成功后才提交同一批内存事件；失败不消耗序号。重启按当前七字段封装读取，核验会话归属、连续序号、时间和对象身份，保留原值，不迁移旧平铺记录。Runtime 以真实 `sequence` 发布增量事件；模型上下文仅投影所需业务字段，不向供应商发送封装元数据。
+
+Loop 的 `prepareTurnStart` 只准备事实，`runTurn` 保存后调用 `runStartedTurn`；后者只接受最新、尚无模型步骤和终态的起点。Loop 独占自身终态，已提交完成后的宿主或诊断错误不改写该事实。
 
 计划意图、压缩来源、工具执行边界、执行前检查点、宿主操作与核验事实统一保存在 Session。纯投影重建计划及任务状态，宿主提供工具业务证据资格；Core 不理解插件协议、SQLite 或视频验收。具体批准方案及六阶段取舍见 [通用智能体最小设计](design/general-agent-core.md)。后续能力以实际消费者接入与验证为准。
 

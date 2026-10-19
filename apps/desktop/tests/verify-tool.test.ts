@@ -17,13 +17,13 @@ const workspaceFor = (directory: string): WorkspacePort => ({
   requestApproval: async () => true,
 });
 
-const prepare = (path: string, beforeSha256: string | null, expectedAfterSha256: string, expectedBytes: number, boundary: 'checkpointed' | 'opaque' = 'checkpointed') => [
-  { type: 'turn.started', turnId },
-  { type: 'user.message', turnId, content: 'verify' },
-  { type: 'step.started', turnId, stepId },
-  { type: 'tool.called', turnId, stepId, toolCallId: 'source-call' as never, name: 'write_text_file', input: {}, boundary },
-  { type: 'tool.effect.prepared', turnId, sourceEventIndex: 3, data: { kind: 'text-file', path, beforeSha256, expectedAfterSha256, expectedBytes } },
-] satisfies SessionEvent[];
+const prepare = (path: string, beforeSha256: string | null, expectedAfterSha256: string, expectedBytes: number, boundary: 'checkpointed' | 'opaque' = 'checkpointed') => [...new InMemorySession([], 'session').appendMany([
+  { type: 'turn.started', turnId, payload: {} },
+  { type: 'user.message', turnId, payload: { content: 'verify' } },
+  { type: 'step.started', turnId, payload: { stepId } },
+  { type: 'tool.called', turnId, payload: { stepId, toolCallId: 'source-call' as never, name: 'write_text_file', input: {}, boundary } },
+  { type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex: 3, data: { kind: 'text-file', path, beforeSha256, expectedAfterSha256, expectedBytes } } },
+])] satisfies SessionEvent[];
 
 describe('VerifyToolOutcomeTool', () => {
   let directory: string | undefined;

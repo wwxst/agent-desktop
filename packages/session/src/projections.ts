@@ -1,6 +1,6 @@
 import type {
   EffectOutcomeVerifiedEvent, HostOperationResultEvent, HostOperationStartedEvent,
-  PlanUpdatedEvent, QualifyToolEvidence, RecoveryMode, SessionEvent, SourceEventIndex,
+  QualifyToolEvidence, RecoveryMode, SessionEvent, SessionEventInput, SourceEventIndex,
   TaskPlanStatus, TaskPlanStep, ToolCalledEvent, ToolResultEvent, TurnId, TurnState,
 } from './index.js';
 
@@ -89,7 +89,7 @@ export function projectTurnState(events: readonly SessionEvent[], turnId: TurnId
 export function projectRecoveryAncestry(events: readonly SessionEvent[], turnId: TurnId): RecoveryAncestry {
   const parents = new Map<TurnId, { sourceTurnId: TurnId; mode: RecoveryMode }>();
   for (const event of events) {
-    if (event.type === 'turn.recovery.started') parents.set(event.turnId, event);
+    if (event.type === 'turn.recovery.started') parents.set(event.turnId, event.payload);
   }
   const rootFor = (id: TurnId): TurnId => {
     // 真实文件/IPC 边界保证 source 指向此前轮次；同进程投影不重复外部字段校验。
@@ -115,9 +115,6 @@ type HostRecord = {
   resultEventIndex?: number; result?: HostOperationResultEvent; verification?: EffectOutcomeVerifiedEvent;
 };
 
-// 供应商可以跨步骤/轮次复用调用 ID；三个身份合起来才对应同一次结果。
-const callKey = (event: ToolCalledEvent | ToolResultEvent): string => JSON.stringify([event.turnId, event.stepId, event.toolCallId]);
-
 /** 会话级未知事实只有这一处计算，门禁、上下文和恢复界面消费同一结果。 */
 export function projectRecoveryFacts(events: readonly SessionEvent[]): RecoveryFacts {
   const calls = new Map<number, CallRecord>();
@@ -127,25 +124,25 @@ export function projectRecoveryFacts(events: readonly SessionEvent[]): RecoveryF
     switch (event.type) {
       case 'tool.called':
         calls.set(index, { sourceEventIndex: index, call: event, preparedEventIndexes: [] });
-        callIndexes.set(callKey(event), index);
+        callIndexes.set(event.itemId, index);
         break;
       case 'tool.result': {
-        const sourceIndex = callIndexes.get(callKey(event));
+        const sourceIndex = callIndexes.get(event.itemId);
         const record = sourceIndex === undefined ? undefined : calls.get(sourceIndex);
         if (record !== undefined) { record.result = event; record.resultEventIndex = index; }
         break;
       }
-      case 'tool.effect.prepared': calls.get(event.sourceEventIndex)?.preparedEventIndexes.push(index); break;
+      case 'tool.effect.prepared': calls.get(event.payload.sourceEventIndex)?.preparedEventIndexes.push(index); break;
       case 'host.operation.started': hosts.set(index, { sourceEventIndex: index, source: event }); break;
       case 'host.operation.result': {
-        const record = hosts.get(event.sourceEventIndex);
+        const record = hosts.get(event.payload.sourceEventIndex);
         if (record !== undefined) { record.result = event; record.resultEventIndex = index; }
         break;
       }
       case 'effect.outcome.verified': {
         // 文件部分的匹配不能覆盖整调用未明；只取最新 entire-call 结论。
-        if (event.scope !== 'entire-call') break;
-        const record = calls.get(event.sourceEventIndex) ?? hosts.get(event.sourceEventIndex);
+        if (event.payload.scope !== 'entire-call') break;
+        const record = calls.get(event.payload.sourceEventIndex) ?? hosts.get(event.payload.sourceEventIndex);
         if (record !== undefined) record.verification = event;
         break;
       }
@@ -159,26 +156,26 @@ export function projectRecoveryFacts(events: readonly SessionEvent[]): RecoveryF
     const fact: RecoveryCallFact = { sourceEventIndex, call,
       ...(resultEventIndex === undefined ? {} : { resultEventIndex }),
       ...(result === undefined ? {} : { result }), ...(verification === undefined ? {} : { verification }) };
-    if (result?.result.status === 'success' || verification?.outcome === 'completed') successfulCalls.push(fact);
-    if (result?.result.status === 'error' && result.result.failureKind === 'denied') deniedCalls.push(fact);
-    const boundary = call.boundary ?? 'opaque';
+    if (result?.payload.result.status === 'success' || verification?.payload.outcome === 'completed') successfulCalls.push(fact);
+    if (result?.payload.result.status === 'error' && result.payload.result.failureKind === 'denied') deniedCalls.push(fact);
+    const boundary = call.payload.boundary ?? 'opaque';
     // 未执行/裸读取不制造副作用；未知旧边界保守按 opaque，不能据此猜退出原因。
-    if (boundary === 'not-executed' || boundary === 'read-only' || result?.executionBoundary === 'not-executed') continue;
+    if (boundary === 'not-executed' || boundary === 'read-only' || result?.payload.executionBoundary === 'not-executed') continue;
     let unknown = boundary === 'opaque'
-      ? result?.result.status !== 'success'
-      : result?.result.status === 'error' && result.result.failureKind === 'unknown-outcome';
-    if (boundary === 'checkpointed' && preparedEventIndexes.length > 0 && result?.result.status !== 'success') {
-      const kind = result?.result.status === 'error' ? result.result.failureKind : undefined;
+      ? result?.payload.result.status !== 'success'
+      : result?.payload.result.status === 'error' && result.payload.result.failureKind === 'unknown-outcome';
+    if (boundary === 'checkpointed' && preparedEventIndexes.length > 0 && result?.payload.result.status !== 'success') {
+      const kind = result?.payload.result.status === 'error' ? result.payload.result.failureKind : undefined;
       unknown = kind !== 'denied' && kind !== 'permanent';
     }
     // NoExit 终端在启动/发送成功后仍可能执行；宿主未明观察保留原 success。
-    if (verification !== undefined) unknown = verification.outcome === 'unresolved';
+    if (verification !== undefined) unknown = verification.payload.outcome === 'unresolved';
     if (unknown) unknownEffects.push({ sourceEventIndex, source: call, preparedEventIndexes,
       ...(resultEventIndex === undefined ? {} : { resultEventIndex }),
       ...(verification === undefined ? {} : { verification }) });
   }
   for (const record of hosts.values()) {
-    const unknown = record.verification === undefined ? record.result?.status !== 'completed' : record.verification.outcome === 'unresolved';
+    const unknown = record.verification === undefined ? record.result?.payload.status !== 'completed' : record.verification.payload.outcome === 'unresolved';
     if (unknown) unknownEffects.push({ sourceEventIndex: record.sourceEventIndex, source: record.source, preparedEventIndexes: [],
       ...(record.resultEventIndex === undefined ? {} : { resultEventIndex: record.resultEventIndex }),
       ...(record.verification === undefined ? {} : { verification: record.verification }) });
@@ -188,18 +185,21 @@ export function projectRecoveryFacts(events: readonly SessionEvent[]): RecoveryF
 }
 
 /** 计划完成必须取得真实来源资格；模型声明本身不是执行成功的证据。 */
-export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: TurnId, qualifyToolEvidence: QualifyToolEvidence): TaskPlanProjection | undefined {
+export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: TurnId, qualifyToolEvidence: QualifyToolEvidence,
+  candidate?: Extract<SessionEventInput, { readonly type: 'plan.updated' }>): TaskPlanProjection | undefined {
   const ancestry = projectRecoveryAncestry(events, rootTurnId);
   const turns = new Set(ancestry.turnIds);
-  const verifyTurns = new Set(events.filter(event => event.type === 'turn.recovery.started' && event.mode === 'verify').map(event => event.turnId));
-  const declarations: { event: PlanUpdatedEvent; index: number }[] = [];
+  const verifyTurns = new Set(events.filter(event => event.type === 'turn.recovery.started' && event.payload.mode === 'verify').map(event => event.turnId));
+  const declarations: { event: Extract<SessionEventInput, { readonly type: 'plan.updated' }>; index: number }[] = [];
   events.forEach((event, index) => { if (event.type === 'plan.updated' && turns.has(event.turnId)) declarations.push({ event, index }); });
+  // 预览输入与已有声明使用同一规则，不为尚未追加的模型候选伪造事件元数据。
+  if (candidate !== undefined && turns.has(candidate.turnId)) declarations.push({ event: candidate, index: events.length });
   const recovery = projectRecoveryFacts(events);
   const unknownIndexes = new Set(recovery.unknownEffects.flatMap(fact => [fact.sourceEventIndex, ...(fact.resultEventIndex === undefined ? [] : [fact.resultEventIndex])]));
   const isUnknownEvidence = (index: number): boolean => {
     const event = events[index];
     // 旧 completed 核验也指向同一次外部操作；新 unresolved 观察会使该来源待确认。
-    return unknownIndexes.has(index) || (event?.type === 'effect.outcome.verified' && unknownIndexes.has(event.sourceEventIndex));
+    return unknownIndexes.has(index) || (event?.type === 'effect.outcome.verified' && unknownIndexes.has(event.payload.sourceEventIndex));
   };
   let projection: TaskPlanProjection | undefined;
   // 完成证据与暂时 blocked 展示分开派生，不能趁新的未知观察删掉已完成的原步骤。
@@ -208,7 +208,7 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
   for (let version = 0; version < declarations.length; version += 1) {
     const { event: declaration, index } = declarations[version]!;
     const end = declarations[version + 1]?.index ?? events.length;
-    const steps = declaration.steps.map((step): ProjectedTaskPlanStep => {
+    const steps = declaration.payload.steps.map((step): ProjectedTaskPlanStep => {
       const previous = completedSteps.get(step.id);
       const known = knownSteps.get(step.id);
       // 实际完成的是稳定的原步骤。后续版本可保留该事实，但不能换描述/类型或退回未完成。
@@ -227,21 +227,21 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
           || !isTaskPlanEvidenceEvent(evidence) || !turns.has(evidence.turnId)) continue;
         if (isUnknownEvidence(evidenceIndex)) blocked = true;
         if (evidence.type === 'tool.result' || evidence.type === 'effect.outcome.verified') {
-          const source = evidence.type === 'effect.outcome.verified' ? events[evidence.sourceEventIndex]
-            : events.slice(0, evidenceIndex).findLast((event): event is ToolCalledEvent => event.type === 'tool.called' && callKey(event) === callKey(evidence));
+          const source = evidence.type === 'effect.outcome.verified' ? events[evidence.payload.sourceEventIndex]
+            : events.slice(0, evidenceIndex).findLast((event): event is ToolCalledEvent => event.type === 'tool.called' && event.itemId === evidence.itemId);
           // 旧历史可以保留未配对结果，但新计划不能拿没有真实调用/被门禁拒绝的结果确认完成。
           if (source === undefined || !turns.has(source.turnId) || (source.type !== 'tool.called' && source.type !== 'host.operation.started')
-            || (source.type === 'tool.called' && source.boundary === 'not-executed')) continue;
-          const eligibleResult = evidence.type === 'tool.result' ? evidence.result.status === 'success'
-            : evidence.scope === 'entire-call' && evidence.outcome === 'completed';
+            || (source.type === 'tool.called' && source.payload.boundary === 'not-executed')) continue;
+          const eligibleResult = evidence.type === 'tool.result' ? evidence.payload.result.status === 'success'
+            : evidence.payload.scope === 'entire-call' && evidence.payload.outcome === 'completed';
           if (eligibleResult) {
             const qualification = qualifyToolEvidence(evidence, events);
             evidenceLabels.push(qualification.label);
             if (step.completionKind === 'tool' && qualification.eligible) completed = true;
           }
-          if (evidence.type === 'tool.result' && evidence.result.status === 'error') failed = true;
+          if (evidence.type === 'tool.result' && evidence.payload.result.status === 'error') failed = true;
         }
-        if (evidence.type === 'turn.failed' || (evidence.type === 'host.operation.result' && evidence.status === 'failed')) failed = true;
+        if (evidence.type === 'turn.failed' || (evidence.type === 'host.operation.result' && evidence.payload.status === 'failed')) failed = true;
         if (evidence.type === 'turn.cancelled' || evidence.type === 'turn.interrupted' || evidence.type === 'tool.interaction.closed') blocked = true;
       }
       if (step.completionKind === 'response') {
@@ -250,7 +250,7 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
         for (let eventIndex = index + 1; eventIndex < end; eventIndex += 1) {
           const event = events[eventIndex]!;
           if (!turns.has(event.turnId) || verifyTurns.has(event.turnId)) continue;
-          if (event.type === 'assistant.message' && event.toolCalls.length === 0 && event.content !== undefined) finalTurns.add(event.turnId);
+          if (event.type === 'assistant.message' && event.payload.toolCalls.length === 0 && event.payload.content !== undefined) finalTurns.add(event.turnId);
           if (event.type === 'turn.completed' && finalTurns.has(event.turnId)) completed = true;
         }
       }
@@ -269,7 +269,7 @@ export function projectTaskPlan(events: readonly SessionEvent[], rootTurnId: Tur
     });
     // 更新必须保留已完成的稳定步骤；不能靠后续声明撤销实际完成事实。
     for (const id of completedSteps.keys()) if (!steps.some(step => step.id === id)) throw new TaskPlanUpdateError('已完成计划步骤不得删除或撤销。');
-    projection = { rootTurnId: ancestry.rootTurnId, revision: declaration.revision, sourceEventIndex: index, explanation: declaration.explanation, steps };
+    projection = { rootTurnId: ancestry.rootTurnId, revision: declaration.payload.revision, sourceEventIndex: index, explanation: declaration.payload.explanation, steps };
   }
   return projection;
 }

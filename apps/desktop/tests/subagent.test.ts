@@ -37,7 +37,8 @@ describe('desktop read-only child execution', () => {
     const save = vi.fn();
     expect(await runReadOnlySubagent({ title: '检查', instruction: '检查文件' }, context, process.cwd(),
       settings, vi.fn(), vi.fn(), save)).toMatchObject({ status: 'failed', evidence: [] });
-    expect(save.mock.calls[0]![0].events).toContainEqual(expect.objectContaining({ type: 'tool.result', result: expect.objectContaining({ status: 'error', failureKind: 'permanent', message: 'Tool not found: write_text_file' }) }));
+    expect(save.mock.calls[0]![0].events).toContainEqual(expect.objectContaining({ type: 'tool.result',
+      payload: expect.objectContaining({ result: expect.objectContaining({ status: 'error', failureKind: 'permanent', message: 'Tool not found: write_text_file' }) }) }));
   });
   it('enforces the eight-step and time budgets and saves an unfinished result', async () => {
     fake.complete.mockResolvedValue({ toolCalls: [{ id: 'x' as never, name: 'unknown', input: {} }] });

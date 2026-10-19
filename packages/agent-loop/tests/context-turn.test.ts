@@ -1,23 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ModelRequest, ModelUsage, ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, SessionPersistenceError, type SessionEvent, type StepId, type TurnId } from '@agent-desktop/session';
+import { InMemorySession, SessionPersistenceError, type SessionEvent, type SessionEventInput, type StepId, type TurnId } from '@agent-desktop/session';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
 import { ContextBudgetError, runTurn } from '../src/index.js';
 
 function oldHistory(): SessionEvent[] {
   const turnId = 'old' as TurnId;
-  const events: SessionEvent[] = [{ type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '原始约束：只读，不覆盖文件。' }];
+  const events: SessionEventInput[] = [{ type: 'turn.started', turnId, payload: {} }, { type: 'user.message', turnId, payload: { content: '原始约束：只读，不覆盖文件。' } }];
   for (let index = 0; index < 5; index += 1) {
     const stepId = String(index) as StepId;
     const toolCallId = String(index) as ToolCallId;
-    events.push({ type: 'step.started', turnId, stepId },
-      { type: 'assistant.message', turnId, stepId, toolCalls: [{ id: toolCallId, name: 'read', input: { index } }] },
-      { type: 'tool.called', turnId, stepId, toolCallId, name: 'read', input: { index }, boundary: 'read-only' },
-      { type: 'tool.result', turnId, stepId, toolCallId, result: { status: 'success', output: 'x'.repeat(1000) } },
-      { type: 'step.completed', turnId, stepId });
+    events.push({ type: 'step.started', turnId, payload: { stepId } },
+      { type: 'assistant.message', turnId, payload: { stepId, toolCalls: [{ id: toolCallId, name: 'read', input: { index } }] } },
+      { type: 'tool.called', turnId, payload: { stepId, toolCallId, name: 'read', input: { index }, boundary: 'read-only' } },
+      { type: 'tool.result', turnId, payload: { stepId, toolCallId, result: { status: 'success', output: 'x'.repeat(1000) } } },
+      { type: 'step.completed', turnId, payload: { stepId } });
   }
-  events.push({ type: 'turn.completed', turnId });
-  return events;
+  events.push({ type: 'turn.completed', turnId, payload: {} });
+  return [...new InMemorySession().appendMany(events)];
 }
 
 describe('context consumed by the real execution loop', () => {
@@ -62,7 +62,7 @@ describe('context consumed by the real execution loop', () => {
   it('stops before the formal request when summary persistence fails', async () => {
     const failure = new SessionPersistenceError(new Error('database full'));
     class FailingSession extends InMemorySession {
-      override append(event: SessionEvent): void { if (event.type === 'context.compacted') throw failure; super.append(event); }
+      override append<Event extends SessionEventInput>(event: Event): Extract<SessionEvent, { type: Event['type'] }> { if (event.type === 'context.compacted') throw failure; return super.append(event); }
     }
     const session = new FailingSession(oldHistory());
     const complete = vi.fn(async (request: ModelRequest) => {

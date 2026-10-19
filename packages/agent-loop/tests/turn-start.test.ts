@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@agent-desktop/agent';
-import { InMemorySession, SessionPersistenceError, TurnCancellationError, type SessionEvent } from '@agent-desktop/session';
+import { InMemorySession, SessionPersistenceError, TurnCancellationError, type SessionEvent, type SessionEventInput } from '@agent-desktop/session';
 import { InMemoryToolRegistry } from '@agent-desktop/tools';
 import { prepareTurnStart, runStartedTurn, runTurn } from '../src/index.js';
 
@@ -14,7 +14,7 @@ describe('persisted turn start and terminal ownership', () => {
     const agent = createAgent();
     const source = prepareTurnStart('original');
     agent.session.appendMany(source.events);
-    agent.session.append({ type: 'turn.failed', turnId: source.turnId, errorName: 'Error', errorMessage: 'offline' });
+    agent.session.append({ type: 'turn.failed', turnId: source.turnId, payload: { errorName: 'Error', errorMessage: 'offline' } });
     const start = prepareTurnStart('continue', { sourceTurnId: source.turnId, mode: 'continue' });
     expect(agent.session.events()).toHaveLength(3);
     agent.session.appendMany(start.events);
@@ -28,7 +28,7 @@ describe('persisted turn start and terminal ownership', () => {
   it('does not call the model when the atomic start fails', async () => {
     const failure = new SessionPersistenceError(new Error('disk full'));
     class FailingSession extends InMemorySession {
-      override appendMany(_events: readonly SessionEvent[]): void { throw failure; }
+      override appendMany(_events: readonly SessionEventInput[]): readonly SessionEvent[] { throw failure; }
     }
     const agent = createAgent(new FailingSession());
     await expect(runTurn(agent, 'draft')).rejects.toBe(failure);
@@ -41,7 +41,7 @@ describe('persisted turn start and terminal ownership', () => {
     const controller = new AbortController();
     controller.abort(new TurnCancellationError('window-closed'));
     await expect(runTurn(agent, 'cancel', { signal: controller.signal })).rejects.toBe(controller.signal.reason);
-    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.cancelled', reason: 'window-closed' });
+    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.cancelled', payload: { reason: 'window-closed' } });
     expect(agent.model.complete).not.toHaveBeenCalled();
   });
 
@@ -59,7 +59,7 @@ describe('persisted turn start and terminal ownership', () => {
     await expect(runTurn(agent, 'start', { trace: event => {
       if (event.type === 'turn.started') throw new Error('trace unavailable');
     } })).rejects.toThrow('trace unavailable');
-    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorMessage: 'trace unavailable' });
+    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.failed', payload: { errorMessage: 'trace unavailable' } });
     expect(agent.model.complete).not.toHaveBeenCalled();
   });
 
@@ -71,7 +71,7 @@ describe('persisted turn start and terminal ownership', () => {
       throw new DOMException('aborted', 'AbortError');
     } } };
     await expect(runTurn(agent, 'request', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' });
-    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.cancelled', reason: 'user' });
+    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.cancelled', payload: { reason: 'user' } });
   });
 
   it('does not emit model failure diagnostics for a persistence exception', async () => {

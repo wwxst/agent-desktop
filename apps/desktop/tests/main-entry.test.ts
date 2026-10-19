@@ -1,3 +1,4 @@
+import { InMemorySession } from '@agent-desktop/session';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -266,7 +267,7 @@ vi.mock('../src/main/agent-task.js', async (importOriginal) => ({
     const [agent, , , options] = args;
     // 夹具替换了整个执行阶段，也必须结清宿主提交的真实轮次，不能留下伪成功的起点。
     if (options.turnId !== undefined && projectTurnState(agent.session.events(), options.turnId) === 'started') {
-      agent.session.append({ type: 'turn.completed', turnId: options.turnId });
+      agent.session.append({ type: 'turn.completed', turnId: options.turnId, payload: {} });
     }
     return result;
   },
@@ -477,10 +478,10 @@ describe('desktop main session lifecycle', () => {
     firstAgent.session.append({
       type: 'tool.called',
       turnId: 'turn-session-1',
-      stepId: 'step-session-1',
+      payload: { stepId: 'step-session-1',
       toolCallId: 'call-artifact',
       name: 'trim_video',
-      input: { outputPath: firstOutputPath },
+      input: { outputPath: firstOutputPath } },
     });
     revealFile!({}, firstOutputPath);
     expect(mainMocks.showItemInFolder).toHaveBeenCalledWith(firstOutputPath);
@@ -537,11 +538,11 @@ describe('desktop main session lifecycle', () => {
     expect(mainMocks.showItemInFolder).toHaveBeenLastCalledWith(firstOutputPath);
     expect(followUpAgent).not.toBe(firstAgent);
     expect(followUpAgent.session).toBe(firstAgent.session);
-    expect(firstAgent.session.events()).not.toContainEqual(expect.objectContaining({ type: 'user.message', content: expect.stringContaining('记住数字 952') }));
+    expect(firstAgent.session.events()).not.toContainEqual(expect.objectContaining({ type: 'user.message', payload: { content: expect.stringContaining('记住数字 952') } }));
 
     await switchSession!({}, secondSessionId);
-    expect(secondAgent.session.events()).toContainEqual(expect.objectContaining({ type: 'user.message', content: expect.stringContaining('记住数字 952') }));
-    expect(secondAgent.session.events()).not.toContainEqual(expect.objectContaining({ type: 'user.message', content: expect.stringContaining('记住数字 731') }));
+    expect(secondAgent.session.events()).toContainEqual(expect.objectContaining({ type: 'user.message', payload: { content: expect.stringContaining('记住数字 952') } }));
+    expect(secondAgent.session.events()).not.toContainEqual(expect.objectContaining({ type: 'user.message', payload: { content: expect.stringContaining('记住数字 731') } }));
     expect(() => switchSession!({}, 'missing-session')).toThrow('找不到对应的会话');
     rmSync(artifactDirectory, { recursive: true, force: true });
   });
@@ -555,21 +556,21 @@ describe('desktop main session lifecycle', () => {
       const agent = mainMocks.agents.at(-1)!;
       const turnId = 'turn-delivery';
       const stepId = 'step-delivery';
-      agent.session.append({ type: 'turn.started', turnId });
-      agent.session.append({ type: 'step.started', turnId, stepId });
+      agent.session.append({ type: 'turn.started', turnId, payload: {} });
+      agent.session.append({ type: 'step.started', turnId, payload: { stepId } });
       // 真实链路里这些事实由交付工具产生；这里直接写入同一份结构，验证宿主的读取投影。
       agent.session.append({
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: 'call-declare',
         name: 'declare_video_outputs',
-        input: {},
+        input: {} },
       });
       agent.session.append({
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: 'call-declare',
         result: {
           status: 'success',
@@ -592,20 +593,20 @@ describe('desktop main session lifecycle', () => {
               },
             ],
           },
-        },
+        } },
       });
       agent.session.append({
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: 'call-publish',
         name: 'publish_video_output',
-        input: { validationId: 'validation-1' },
+        input: { validationId: 'validation-1' } },
       });
       agent.session.append({
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: 'call-publish',
         result: {
           status: 'success',
@@ -614,7 +615,7 @@ describe('desktop main session lifecycle', () => {
             output: { outputItemId: 'out-1', validationId: 'validation-1', path: 'D:/videos/a-result.mp4' },
           },
           artifacts: [artifact('D:/videos/a-result.mp4')],
-        },
+        } },
       });
       return {
         responseText: '第一项已交付。',
@@ -729,7 +730,7 @@ describe('desktop main session lifecycle', () => {
     expect(await deleteSession!({}, secondExtraSessionId)).toBe(baseSessionId);
     expect(secondExtraAgent.session.events()).toContainEqual(expect.objectContaining({
       type: 'user.message',
-      content: expect.stringContaining('只属于被删除会话'),
+      payload: { content: expect.stringContaining('只属于被删除会话') },
     }));
 
     expect(await getActiveSessionId!({})).toBe(baseSessionId);
@@ -783,7 +784,7 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.webContentsSend.mockClear();
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
-      _agent: unknown,
+      agent: unknown,
       _prompt: unknown,
       _attachments: unknown,
       options: DesktopTaskOptions,
@@ -818,11 +819,15 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.webContentsSend.mockClear();
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (
-      _agent: unknown,
+      agent: unknown,
       _prompt: unknown,
       _attachments: unknown,
       options: DesktopTaskOptions,
     ) => {
+      const session = (agent as { session: { append(event: unknown): void } }).session;
+      session.append({ type: 'tool.called', turnId: options.turnId!, payload: {
+        stepId: 'detail-step', toolCallId: 'read-1', name: 'read_file', input: { path: 'D:/work/readme.md' }, boundary: 'read-only',
+      } });
       options.onToolResult?.('read-1' as Parameters<NonNullable<DesktopTaskOptions['onToolResult']>>[0], 'read_file', {
         status: 'success',
         output: {
@@ -835,14 +840,9 @@ describe('desktop main session lifecycle', () => {
 
     await runAgentTask!({}, taskRequest('读取文件'));
 
-    expect(mainMocks.webContentsSend).toHaveBeenCalledWith('desktop:agent-event', {
-      type: 'activity.detail',
-      activityId: 'read-1',
-      detail: {
-        kind: 'file-content', filePath: 'D:/work/readme.md', startLine: 1,
-        endLine: 1, totalLines: 1, lines: ['hello'],
-      },
-    });
+    expect(mainMocks.webContentsSend.mock.calls.some(([, event]) => event.type === 'activity.detail'
+      && event.detail.kind === 'file-content' && event.detail.filePath === 'D:/work/readme.md'
+      && event.detail.lines?.[0] === 'hello')).toBe(true);
   });
 
   it('cancels only the active task and clears the controller for the next task', async () => {
@@ -877,7 +877,7 @@ describe('desktop main session lifecycle', () => {
     });
     expect(mainMocks.agents.at(-1)!.session).toBe(cancelledAgent.session);
     expect(cancelledAgent.session.events()).toContainEqual(expect.objectContaining({
-      type: 'user.message', content: expect.stringContaining('长任务'),
+      type: 'user.message', payload: { content: expect.stringContaining('长任务') },
     }));
   });
 
@@ -1003,26 +1003,26 @@ describe('desktop main session lifecycle', () => {
     // 第一个工具已真实产出文件，随后整轮失败：失败路径必须带上这份产物。
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
       const agent = mainMocks.agents.at(-1)!;
-      agent.session.append({ type: 'turn.started', turnId: 'turn-failed' });
-      agent.session.append({ type: 'step.started', turnId: 'turn-failed', stepId: 'step-failed' });
+      agent.session.append({ type: 'turn.started', turnId: 'turn-failed', payload: {} });
+      agent.session.append({ type: 'step.started', turnId: 'turn-failed', payload: { stepId: 'step-failed' } });
       agent.session.append({
         type: 'tool.called',
         turnId: 'turn-failed',
-        stepId: 'step-failed',
+        payload: { stepId: 'step-failed',
         toolCallId: 'call-done',
         name: 'trim_video',
-        input: { outputPath: 'D:/videos/done.mp4' },
+        input: { outputPath: 'D:/videos/done.mp4' } },
       });
       agent.session.append({
         type: 'tool.result',
         turnId: 'turn-failed',
-        stepId: 'step-failed',
+        payload: { stepId: 'step-failed',
         toolCallId: 'call-done',
         result: {
           status: 'success',
           output: 'Video created: D:/videos/done.mp4',
           artifacts: [artifact('D:/videos/done.mp4')],
-        },
+        } },
       });
       throw new Error('第二个工具执行失败。');
     });
@@ -1043,26 +1043,26 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
       const agent = mainMocks.agents.at(-1)!;
-      agent.session.append({ type: 'turn.started', turnId: 'turn-earlier-success' });
-      agent.session.append({ type: 'step.started', turnId: 'turn-earlier-success', stepId: 'step-earlier-success' });
+      agent.session.append({ type: 'turn.started', turnId: 'turn-earlier-success', payload: {} });
+      agent.session.append({ type: 'step.started', turnId: 'turn-earlier-success', payload: { stepId: 'step-earlier-success' } });
       agent.session.append({
         type: 'tool.called',
         turnId: 'turn-earlier-success',
-        stepId: 'step-earlier-success',
+        payload: { stepId: 'step-earlier-success',
         toolCallId: 'call-earlier-success',
         name: 'trim_video',
-        input: { outputPath: 'D:/videos/earlier.mp4' },
+        input: { outputPath: 'D:/videos/earlier.mp4' } },
       });
       agent.session.append({
         type: 'tool.result',
         turnId: 'turn-earlier-success',
-        stepId: 'step-earlier-success',
+        payload: { stepId: 'step-earlier-success',
         toolCallId: 'call-earlier-success',
         result: {
           status: 'success',
           output: 'Video created: D:/videos/earlier.mp4',
           artifacts: [artifact('D:/videos/earlier.mp4')],
-        },
+        } },
       });
       return {
         responseText: '上一轮完成。',
@@ -1099,35 +1099,35 @@ describe('desktop main session lifecycle', () => {
 
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
       const agent = mainMocks.agents.at(-1)!;
-      agent.session.append({ type: 'turn.started', turnId: 'turn-cancelled-artifacts' });
-      agent.session.append({ type: 'step.started', turnId: 'turn-cancelled-artifacts', stepId: 'step-cancelled' });
+      agent.session.append({ type: 'turn.started', turnId: 'turn-cancelled-artifacts', payload: {} });
+      agent.session.append({ type: 'step.started', turnId: 'turn-cancelled-artifacts', payload: { stepId: 'step-cancelled' } });
       agent.session.append({
         type: 'tool.called',
         turnId: 'turn-cancelled-artifacts',
-        stepId: 'step-cancelled',
+        payload: { stepId: 'step-cancelled',
         toolCallId: 'call-cancelled-done',
         name: 'trim_video',
-        input: { outputPath: 'D:/videos/cancelled-done.mp4' },
+        input: { outputPath: 'D:/videos/cancelled-done.mp4' } },
       });
       agent.session.append({
         type: 'tool.result',
         turnId: 'turn-cancelled-artifacts',
-        stepId: 'step-cancelled',
+        payload: { stepId: 'step-cancelled',
         toolCallId: 'call-cancelled-done',
         result: {
           status: 'success',
           output: 'Video created: D:/videos/cancelled-done.mp4',
           artifacts: [artifact('D:/videos/cancelled-done.mp4')],
-        },
+        } },
       });
       // 取消发生在下一个工具执行中：只有 tool.called，没有结果。
       agent.session.append({
         type: 'tool.called',
         turnId: 'turn-cancelled-artifacts',
-        stepId: 'step-cancelled',
+        payload: { stepId: 'step-cancelled',
         toolCallId: 'call-in-flight',
         name: 'trim_video',
-        input: { outputPath: 'D:/videos/never-finished.mp4' },
+        input: { outputPath: 'D:/videos/never-finished.mp4' } },
       });
       const abortError = new Error('The operation was aborted');
       abortError.name = 'AbortError';
@@ -1304,8 +1304,8 @@ describe('desktop main session lifecycle', () => {
       for (let index = 0; index < 2; index += 1) {
         mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
           const turnId = `hook-turn-${index}`;
-          mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId });
-          mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId });
+          mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId, payload: {} });
+          mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId, payload: {} });
           return { responseText: '完成', turnId, artifacts: [] };
         });
         await expect(run({}, taskRequest('继续任务'))).resolves.toMatchObject({ status: 'success' });
@@ -1318,8 +1318,8 @@ describe('desktop main session lifecycle', () => {
       await newSession({});
       await mainMocks.handlers.get('desktop:set-permission-mode')!({}, 'full-access');
       mainMocks.runDesktopAgentTask.mockImplementationOnce(async () => {
-        mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId: 'hook-new-session' });
-        mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId: 'hook-new-session' });
+        mainMocks.agents.at(-1)!.session.append({ type: 'turn.started', turnId: 'hook-new-session', payload: {} });
+        mainMocks.agents.at(-1)!.session.append({ type: 'turn.completed', turnId: 'hook-new-session', payload: {} });
         return { responseText: '完成', turnId: 'hook-new-session', artifacts: [] };
       });
       await expect(run({}, taskRequest('新会话任务'))).resolves.toMatchObject({ status: 'success' });
@@ -1338,12 +1338,12 @@ describe('desktop main session lifecycle', () => {
     let sourceEventIndex = -1;
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent) => {
       sourceTurnId = agent.session.events().findLast((event: { type: string }) => event.type === 'turn.started').turnId;
-      agent.session.append({ type: 'tool.called', turnId: sourceTurnId, stepId: 'write-step', toolCallId: 'write',
-        name: 'write_text_file', input: { path: 'D:/clips/unknown.txt' }, boundary: 'checkpointed' });
+      agent.session.append({ type: 'tool.called', turnId: sourceTurnId, payload: { stepId: 'write-step', toolCallId: 'write',
+        name: 'write_text_file', input: { path: 'D:/clips/unknown.txt' }, boundary: 'checkpointed' } });
       sourceEventIndex = agent.session.events().length - 1;
-      agent.session.append({ type: 'tool.result', turnId: sourceTurnId, stepId: 'write-step', toolCallId: 'write',
-        result: { status: 'error', message: 'response lost', failureKind: 'unknown-outcome' } });
-      agent.session.append({ type: 'turn.completed', turnId: sourceTurnId });
+      agent.session.append({ type: 'tool.result', turnId: sourceTurnId, payload: { stepId: 'write-step', toolCallId: 'write',
+        result: { status: 'error', message: 'response lost', failureKind: 'unknown-outcome' } } });
+      agent.session.append({ type: 'turn.completed', turnId: sourceTurnId, payload: {} });
       expect(agent.tools.get('save_memory')).toBeDefined();
       return { responseText: '待核验。', turnId: sourceTurnId, artifacts: [] };
     });
@@ -1351,11 +1351,11 @@ describe('desktop main session lifecycle', () => {
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent) => {
       const turnId = agent.session.events().findLast((event: { type: string }) => event.type === 'turn.started').turnId;
       expect(agent.tools.get('save_memory')).toBeUndefined();
-      agent.session.append({ type: 'effect.outcome.verified', turnId, sourceEventIndex, outcome: 'completed',
-        scope: 'entire-call', evidence: { source: 'user', reference: 'manual-verification', description: '已核对写入结果。' } });
+      agent.session.append({ type: 'effect.outcome.verified', turnId, payload: { sourceEventIndex, outcome: 'completed',
+        scope: 'entire-call', evidence: { source: 'user', reference: 'manual-verification', description: '已核对写入结果。' } } });
       expect(projectRecoveryFacts(agent.session.events()).unknownEffects).toEqual([]);
       expect(agent.tools.get('save_memory')).toBeUndefined();
-      agent.session.append({ type: 'turn.completed', turnId });
+      agent.session.append({ type: 'turn.completed', turnId, payload: {} });
       return { responseText: '已核验。', turnId, artifacts: [] };
     });
     await expect(recover({}, { ...taskRequest('核验未确定的外部效果', true), sessionId, sourceTurnId, mode: 'verify' })).resolves.toMatchObject({ status: 'success' });
@@ -1373,14 +1373,14 @@ describe('desktop main session lifecycle', () => {
       const turn = session.events().findLast((event) => (
         typeof event === 'object' && event !== null && (event as { type?: unknown }).type === 'turn.started'
       )) as { turnId: string };
-      session.append({ type: 'step.started', turnId: turn.turnId, stepId: 'verify-step' });
-      session.append({ type: 'tool.called', turnId: turn.turnId, stepId: 'verify-step', toolCallId: 'verify-call',
-        name: 'write_text_file', input: { path: 'D:/clips/result.txt' }, boundary: 'checkpointed' });
+      session.append({ type: 'step.started', turnId: turn.turnId, payload: { stepId: 'verify-step' } });
+      session.append({ type: 'tool.called', turnId: turn.turnId, payload: { stepId: 'verify-step', toolCallId: 'verify-call',
+        name: 'write_text_file', input: { path: 'D:/clips/result.txt' }, boundary: 'checkpointed' } });
       sourceEventIndex = session.events().length - 1;
-      session.append({ type: 'tool.result', turnId: turn.turnId, stepId: 'verify-step', toolCallId: 'verify-call',
-        result: { status: 'error', message: '写入后连接断开。', failureKind: 'unknown-outcome' } });
-      session.append({ type: 'step.completed', turnId: turn.turnId, stepId: 'verify-step' });
-      session.append({ type: 'turn.completed', turnId: turn.turnId });
+      session.append({ type: 'tool.result', turnId: turn.turnId, payload: { stepId: 'verify-step', toolCallId: 'verify-call',
+        result: { status: 'error', message: '写入后连接断开。', failureKind: 'unknown-outcome' } } });
+      session.append({ type: 'step.completed', turnId: turn.turnId, payload: { stepId: 'verify-step' } });
+      session.append({ type: 'turn.completed', turnId: turn.turnId, payload: {} });
       return { responseText: '结果待核验。', turnId: turn.turnId, artifacts: [] };
     });
 
@@ -1388,7 +1388,7 @@ describe('desktop main session lifecycle', () => {
     const state = await verify({}, { sessionId, sourceEventIndex, outcome: 'completed', description: '已核对实际结果。' });
     expect(state).toMatchObject({ rootTurnId: expect.any(String), status: 'completed' });
     expect(mainMocks.agents.at(-1)!.session.events()).toContainEqual(expect.objectContaining({
-      type: 'effect.outcome.verified', sourceEventIndex, outcome: 'completed', scope: 'entire-call',
+      type: 'effect.outcome.verified', payload: expect.objectContaining({ sourceEventIndex, outcome: 'completed', scope: 'entire-call' }),
     }));
     expect(() => verify({}, { sessionId, sourceEventIndex, outcome: 'completed', description: '已核对实际结果。' })).toThrow('该外部效果已经核验或不存在');
   });
@@ -1431,9 +1431,9 @@ describe('desktop main session lifecycle', () => {
       }
       const persisted = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state') as PersistedDesktopState;
       const events = persisted.sessions.find(session => session.id === sessionId)!.events;
-      expect(events).toContainEqual(expect.objectContaining({ type: 'turn.cancelled', reason }));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'turn.cancelled', payload: expect.objectContaining({ reason }) }));
       expect(events.some(event => event.type === 'turn.failed')).toBe(false);
-      expect(events).toContainEqual(expect.objectContaining({ type: 'host.operation.result', status: 'cancelled' }));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'host.operation.result', payload: expect.objectContaining({ status: 'cancelled' }) }));
       expect(mainMocks.runDesktopAgentTask.mock.calls.length).toBe(priorLoopCalls);
     } finally { files.mockRestore(); }
   });
@@ -1462,10 +1462,10 @@ describe('desktop main session lifecycle', () => {
     await restart();
     const first = readSaved().sessions[0]!.events;
     expect(first).toMatchObject([
-      { type: 'host.operation.started', operation: 'terminal-connection-lost' },
-      { type: 'host.operation.result', status: 'failed', sourceEventIndex: 0 },
-      { type: 'effect.outcome.verified', scope: 'entire-call', outcome: 'unresolved', sourceEventIndex: 0,
-        evidence: { source: 'host', reference: 'terminal:legacy-terminal' } },
+      { type: 'host.operation.started', payload: { operation: 'terminal-connection-lost' } },
+      { type: 'host.operation.result', payload: { status: 'failed', sourceEventIndex: 0 } },
+      { type: 'effect.outcome.verified', payload: { scope: 'entire-call', outcome: 'unresolved', sourceEventIndex: 0,
+        evidence: { source: 'host', reference: 'terminal:legacy-terminal' } } },
     ]);
     expect(projectRecoveryFacts(first).unknownEffects).toHaveLength(1);
     expect(readSaved().sessions[0]!.terminalHistory?.status).toBe('running');
@@ -1488,10 +1488,10 @@ describe('desktop main session lifecycle', () => {
     const turnId = 'real-terminal-task' as never;
     const snapshot: PersistedDesktopState = {
       activeSessionId: sessionId,
-      sessions: [{ id: sessionId, attachments: [], events: [
-        { type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '检查旧任务。' },
-        { type: 'turn.failed', turnId, errorName: 'Error', errorMessage: '旧任务未完成。' },
-      ], terminalHistory: { terminalId: 'terminal-with-task', workingDirectory: 'D:/work', command: 'echo old', output: 'old',
+      sessions: [{ id: sessionId, attachments: [], events: [...new InMemorySession([], sessionId).appendMany([
+        { type: 'turn.started', turnId, payload: {} }, { type: 'user.message', turnId, payload: { content: '检查旧任务。' } },
+        { type: 'turn.failed', turnId, payload: { errorName: 'Error', errorMessage: '旧任务未完成。' } },
+      ])], terminalHistory: { terminalId: 'terminal-with-task', workingDirectory: 'D:/work', command: 'echo old', output: 'old',
         droppedBytes: 0, status: 'running', exitCode: null } }],
       clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '旧任务', titleManuallyRenamed: false,
         messages: [], prompt: '', attachments: [] }] },
@@ -1507,14 +1507,14 @@ describe('desktop main session lifecycle', () => {
     await restart();
     const first = readSaved().sessions[0]!.events;
     const source = first[3]!;
-    expect(source).toMatchObject({ type: 'host.operation.started', operation: 'terminal-connection-lost' });
+    expect(source).toMatchObject({ type: 'host.operation.started', payload: { operation: 'terminal-connection-lost' } });
     expect(source.turnId).not.toBe(turnId);
     const state = mainMocks.handlers.get('desktop:verify-task-effect')!({}, { sessionId, sourceEventIndex: 3, outcome: 'not-applied',
       description: '已确认旧进程停止且未应用结果。' });
     expect(state).toMatchObject({ rootTurnId: turnId, latestTurnId: turnId, status: 'failed' });
     const verified = readSaved().sessions[0]!.events;
-    expect(verified.at(-1)).toMatchObject({ type: 'effect.outcome.verified', turnId: source.turnId, sourceEventIndex: 3,
-      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'user' } });
+    expect(verified.at(-1)).toMatchObject({ type: 'effect.outcome.verified', turnId: source.turnId, payload: { sourceEventIndex: 3,
+      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'user' } } });
     expect(projectRecoveryFacts(verified).unknownEffects).toEqual([]);
     await restart();
     expect(readSaved().sessions[0]!.events).toEqual(verified);
@@ -1531,7 +1531,7 @@ describe('desktop main session lifecycle', () => {
       const runtime = mainMocks.extensionRuntimes.at(-1)!;
       if (closeFails) vi.mocked(runtime.close).mockRejectedValueOnce(cleanupError);
       mainMocks.writeDesktopDocuments.mockImplementationOnce(() => { throw cause; });
-      try { agent.session.append({ type: 'step.started', turnId: 'persistence-failed-turn', stepId: 'step' }); }
+      try { agent.session.append({ type: 'step.started', turnId: 'persistence-failed-turn', payload: { stepId: 'step' } }); }
       catch (error) { original = error; throw error; }
       throw new Error('故障注入未触发。');
     });
@@ -1542,7 +1542,7 @@ describe('desktop main session lifecycle', () => {
     expect(runtime.close).toHaveBeenCalledOnce();
     const saved = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state') as PersistedDesktopState;
     expect(saved.sessions.find(session => session.id === sessionId)!.events
-      .some(event => event.type === 'host.operation.started' && event.operation === 'close')).toBe(false);
+      .some(event => event.type === 'host.operation.started' && event.payload.operation === 'close')).toBe(false);
     // 失败锁存只属于刚结束的宿主进程；重启后读取已提交事实，以便下一项继续验证。
     // 此文件的 Renderer 替身没有新增会话消息，只保留本项 Session 并提供匹配的展示快照。
     writeDesktopDocuments('E:/user-data/agent-desktop.sqlite', [{ name: 'session-state', value: {
@@ -1560,10 +1560,10 @@ describe('desktop main session lifecycle', () => {
     const run = mainMocks.handlers.get('desktop:run-agent-task')!;
     mainMocks.runDesktopAgentTask.mockImplementationOnce(async (agent, _prompt, _attachments, options: DesktopTaskOptions) => {
       const turnId = options.turnId!;
-      agent.session.append({ type: 'step.started', turnId, stepId: 'start-save-step' });
-      agent.session.append({ type: 'assistant.message', turnId, stepId: 'start-save-step', content: '已完成上一轮。', toolCalls: [] });
-      agent.session.append({ type: 'step.completed', turnId, stepId: 'start-save-step' });
-      agent.session.append({ type: 'turn.completed', turnId });
+      agent.session.append({ type: 'step.started', turnId, payload: { stepId: 'start-save-step' } });
+      agent.session.append({ type: 'assistant.message', turnId, payload: { stepId: 'start-save-step', content: '已完成上一轮。', toolCalls: [] } });
+      agent.session.append({ type: 'step.completed', turnId, payload: { stepId: 'start-save-step' } });
+      agent.session.append({ type: 'turn.completed', turnId, payload: {} });
       return { responseText: '已完成上一轮。', turnId, artifacts: [] };
     });
     await expect(run({}, taskRequest('建立已提交历史'))).resolves.toMatchObject({ status: 'success' });
@@ -1571,7 +1571,8 @@ describe('desktop main session lifecycle', () => {
     const session = agent.session as DesktopPersistentSession;
     const beforeEvents = [...session.events()];
     const latestTurnId = beforeEvents.findLast(event => event.type === 'turn.started')!.turnId;
-    expect(beforeEvents).toContainEqual(expect.objectContaining({ type: 'turn.configuration', turnId: latestTurnId }));
+    expect(beforeEvents).toContainEqual(expect.objectContaining({ type: 'turn.configuration', turnId: latestTurnId,
+      payload: { data: expect.any(Object) } }));
     const beforeBindings = [...session.turnMessageBindings()];
     const beforeDocument = readDesktopDocument('E:/user-data/agent-desktop.sqlite', 'session-state');
     const request = taskRequest('保存起点前失败');
@@ -1602,7 +1603,7 @@ describe('desktop main session lifecycle', () => {
       await expect(run({}, request)).rejects.toBe(originalError);
       await expect(mainMocks.handlers.get('desktop:save-client-state')!({}, request.clientState)).rejects.toBe(originalError);
       let appendError: unknown;
-      try { session.append({ type: 'turn.completed', turnId: beforeBindings[0]!.turnId }); }
+      try { session.append({ type: 'turn.completed', turnId: beforeBindings[0]!.turnId, payload: {} }); }
       catch (error) { appendError = error; }
       expect(appendError).toBe(originalError);
       expect(mainMocks.writeDesktopDocuments.mock.calls.length).toBe(priorWrites + 1);
@@ -1625,11 +1626,11 @@ describe('desktop main session lifecycle', () => {
     const filePath = 'E:/user-data/agent-desktop.sqlite';
     const snapshot: PersistedDesktopState = {
       activeSessionId: sessionId,
-      sessions: [{ id: sessionId, attachments: [], events: [
-        { type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '旧任务' },
-        { type: 'tool.called', turnId, stepId: 'legacy-step' as never, toolCallId: 'legacy-call' as never,
-          name: 'legacy_write', input: { path: 'D:/legacy-result.txt' } },
-      ] }],
+      sessions: [{ id: sessionId, attachments: [], events: [...new InMemorySession([], sessionId).appendMany([
+        { type: 'turn.started', turnId, payload: {} }, { type: 'user.message', turnId, payload: { content: '旧任务' } },
+        { type: 'tool.called', turnId, payload: { stepId: 'legacy-step' as never, toolCallId: 'legacy-call' as never,
+          name: 'legacy_write', input: { path: 'D:/legacy-result.txt' } } },
+      ])] }],
       clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '旧任务', titleManuallyRenamed: false,
         messages: [{ id: 1, role: 'user', text: '旧任务', attachments: [] },
           { id: 2, role: 'assistant', status: 'failed', errorMessage: '旧执行结果未确认。', activity: [], activityExpanded: false }],
@@ -1662,12 +1663,12 @@ describe('desktop main session lifecycle', () => {
       activeSessionId: sessionId,
       sessions: [{ id: sessionId, attachments: [], turnMessageBindings: [
         { executionVersion: 1, turnId, userMessageId: 1, assistantMessageId: 2 },
-      ], events: [
-        { type: 'turn.started', turnId }, { type: 'user.message', turnId, content: '正常回答' },
-        { type: 'step.started', turnId, stepId: 'completed-step' as never },
-        { type: 'assistant.message', turnId, stepId: 'completed-step' as never, content: '来自真实事件的最终回答。', toolCalls: [] },
-        { type: 'step.completed', turnId, stepId: 'completed-step' as never }, { type: 'turn.completed', turnId },
-      ] }],
+      ], events: [...new InMemorySession([], sessionId).appendMany([
+        { type: 'turn.started', turnId, payload: {} }, { type: 'user.message', turnId, payload: { content: '正常回答' } },
+        { type: 'step.started', turnId, payload: { stepId: 'completed-step' as never } },
+        { type: 'assistant.message', turnId, payload: { stepId: 'completed-step' as never, content: '来自真实事件的最终回答。', toolCalls: [] } },
+        { type: 'step.completed', turnId, payload: { stepId: 'completed-step' as never } }, { type: 'turn.completed', turnId, payload: {} },
+      ])] }],
       clientState: { activeSessionId: sessionId, conversations: [{ id: sessionId, title: '正常回答', titleManuallyRenamed: false,
         messages: [{ id: 1, role: 'user', text: '正常回答', attachments: [] },
           { id: 2, role: 'assistant', status: 'completed', activity: [], activityExpanded: false,

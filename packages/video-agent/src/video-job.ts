@@ -136,7 +136,7 @@ export function projectVideoJob(events: readonly SessionEvent[], jobId: string):
   const observations = new Map<number, readonly VideoJobObservation[]>();
   for (const event of events) {
     if (event.type !== 'tool.effect.prepared') continue;
-    const checkpoint = readCheckpoint(event.data);
+    const checkpoint = readCheckpoint(event.payload.data);
     if (checkpoint === undefined || checkpoint.jobId !== jobId) continue;
     if (state === undefined) state = { jobId, outputItemId: checkpoint.outputItemId,
       candidatePath: checkpoint.candidatePath, candidateSha256: checkpoint.candidateSha256, segments: [], observations: [] };

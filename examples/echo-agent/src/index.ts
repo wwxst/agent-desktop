@@ -6,16 +6,16 @@ import { createEchoAgent } from './echo.ts';
 
 /** Echo Tool 只返回字符串；失败时展示 Session 中已经稳定化的错误消息。 */
 function formatToolResult(event: ToolResultEvent): string {
-  return event.result.status === 'success'
-    ? String(event.result.output)
-    : event.result.message;
+  return event.payload.result.status === 'success'
+    ? String(event.payload.result.output)
+    : event.payload.result.message;
 }
 
 /** 展示当前 Turn 新产生的工具事件，让终端用户可以直接观察 Runtime 闭环。 */
 function printTurnEvents(events: readonly SessionEvent[]): void {
   for (const event of events) {
     if (event.type === 'tool.called') {
-      output.write(`Tool Call > ${event.name}\n`);
+      output.write(`Tool Call > ${event.payload.name}\n`);
     }
 
     if (event.type === 'tool.result') {

@@ -81,7 +81,7 @@ describe('runTurn', () => {
 
     await runTurn(createTestAgent(model, session, tools), 'checkpoint');
     const checkpoint = session.events().find(event => event.type === 'tool.effect.prepared');
-    expect(checkpoint).toMatchObject({ type: 'tool.effect.prepared', sourceEventIndex: 4, data: { kind: 'test-write' } });
+    expect(checkpoint).toMatchObject({ type: 'tool.effect.prepared', payload: { sourceEventIndex: 4, data: { kind: 'test-write' } } });
     expect(order).toEqual(['side-effect']);
     expect(session.events()[5]?.type).toBe('tool.effect.prepared');
   });
@@ -173,10 +173,7 @@ describe('runTurn', () => {
       .rejects.toMatchObject({ name: 'AbortError' });
     expect(toolCalls).toBe(1);
     expect(modelCalls).toBe(1);
-    expect(session.events()).toContainEqual(expect.objectContaining({
-      type: 'tool.result',
-      result: { status: 'success', output: 'artifact.mp4' },
-    }));
+    expect(session.events()).toContainEqual(expect.objectContaining({ type: 'tool.result', payload: expect.objectContaining({ result: { status: 'success', output: 'artifact.mp4' } }) }));
   });
 
   it('passes AbortSignal to the model and reports cancellation distinctly', async () => {
@@ -240,10 +237,10 @@ describe('runTurn', () => {
     expect(result.response).toEqual({ text: '你好', toolCalls: [] });
     // 增量只用于实时展示；Session 只保留一次完整 assistant 事实。
     expect(session.events().filter((event) => event.type === 'assistant.message')).toEqual([
-      expect.objectContaining({ content: '你好', toolCalls: [] }),
+      expect.objectContaining({ payload: expect.objectContaining({ content: '你好', toolCalls: [] }) }),
     ]);
     expect(session.events().some((event) => (
-      event.type === 'assistant.message' && event.content === '你'
+      event.type === 'assistant.message' && event.payload.content === '你'
     ))).toBe(false);
   });
 
@@ -307,7 +304,7 @@ describe('runTurn', () => {
       {
         onToolResult: (toolCallId, toolName, result) => {
           reported.push({ toolCallId, toolName, result });
-          expect(session.events().at(-1)).toMatchObject({ type: 'tool.result', toolCallId, result });
+          expect(session.events().at(-1)).toMatchObject({ type: 'tool.result', payload: { toolCallId, result } });
         },
       },
     );
@@ -441,9 +438,9 @@ describe('runTurn', () => {
     const events = session.events();
     const calls = events.filter((event): event is Extract<SessionEvent, { type: 'tool.called' }> => event.type === 'tool.called');
     const results = events.filter((event): event is Extract<SessionEvent, { type: 'tool.result' }> => event.type === 'tool.result');
-    expect(calls.map((event) => event.toolCallId)).toEqual([firstId, secondId]);
-    expect(results.map((event) => event.toolCallId)).toEqual([firstId, secondId]);
-    expect(calls[0]?.stepId).toBe(calls[1]?.stepId);
+    expect(calls.map((event) => event.payload.toolCallId)).toEqual([firstId, secondId]);
+    expect(results.map((event) => event.payload.toolCallId)).toEqual([firstId, secondId]);
+    expect(calls[0]?.payload.stepId).toBe(calls[1]?.payload.stepId);
     expect(eventTypes(session).filter((type) => type === 'step.completed')).toHaveLength(2);
     expect(model.requests[1]?.messages.slice(-2)).toEqual([
       { role: 'tool', toolCallId: firstId, content: '1' },
@@ -462,7 +459,7 @@ describe('runTurn', () => {
     await runTurn(createTestAgent(model, session), 'use missing');
 
     const result = session.events().find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => event.type === 'tool.result');
-    expect(result?.result).toEqual({ status: 'error', failureKind: 'permanent', message: 'Tool not found: missing' });
+    expect(result?.payload.result).toEqual({ status: 'error', failureKind: 'permanent', message: 'Tool not found: missing' });
     expect(model.requests[1]?.messages.at(-1)).toEqual({
       role: 'tool',
       toolCallId: callId,
@@ -519,7 +516,7 @@ describe('runTurn', () => {
     await runTurn(createTestAgent(model, session, tools), 'run boom');
 
     const result = session.events().find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => event.type === 'tool.result');
-    expect(result?.result).toEqual({ status: 'error', message: 'boom' });
+    expect(result?.payload.result).toEqual({ status: 'error', message: 'boom' });
     expect(model.requests[1]?.messages.at(-1)).toEqual({ role: 'tool', toolCallId: callId, content: 'boom' });
   });
 
@@ -589,12 +586,12 @@ describe('runTurn', () => {
     const session = new InMemorySession();
     const priorTurnId = 'prior-turn' as TurnId;
     const priorStepId = 'prior-step' as import('@agent-desktop/session').StepId;
-    session.append({ type: 'turn.started', turnId: priorTurnId });
-    session.append({ type: 'user.message', turnId: priorTurnId, content: 'previous' });
-    session.append({ type: 'step.started', turnId: priorTurnId, stepId: priorStepId });
-    session.append({ type: 'assistant.message', turnId: priorTurnId, stepId: priorStepId, content: 'previous answer', toolCalls: [] });
-    session.append({ type: 'step.completed', turnId: priorTurnId, stepId: priorStepId });
-    session.append({ type: 'turn.completed', turnId: priorTurnId });
+    session.append({ type: 'turn.started', turnId: priorTurnId, payload: {} });
+    session.append({ type: 'user.message', turnId: priorTurnId, payload: { content: 'previous' } });
+    session.append({ type: 'step.started', turnId: priorTurnId, payload: { stepId: priorStepId } });
+    session.append({ type: 'assistant.message', turnId: priorTurnId, payload: { stepId: priorStepId, content: 'previous answer', toolCalls: [] } });
+    session.append({ type: 'step.completed', turnId: priorTurnId, payload: { stepId: priorStepId } });
+    session.append({ type: 'turn.completed', turnId: priorTurnId, payload: {} });
     const model = new ScriptedModel([{ text: 'current answer', toolCalls: [] }]);
 
     await runTurn(createTestAgent(model, session), 'current');
@@ -740,9 +737,9 @@ describe('runTurn', () => {
       toolName: 'failing',
     });
     expect(failedEvent).not.toHaveProperty('errorMessage');
-    expect(session.events().find((event) => event.type === 'tool.result')).toMatchObject({
+    expect(session.events().find((event) => event.type === 'tool.result')).toMatchObject({ payload: {
       result: { status: 'error', message: 'Failed to open E:\\private\\clip.mp4' },
-    });
+    } });
     expect(traceEvents.at(-1)?.type).toBe('turn.completed');
   });
 
@@ -866,7 +863,7 @@ describe('runTurn', () => {
     // 流式增量、未完成 Step 与 dangling Tool Call 都不是可恢复事实。
     expect(JSON.stringify(recoveredEvents)).not.toContain('正在裁剪');
     expect(recoveredEvents.some((event) => (
-      event.type === 'tool.called' && event.toolCallId === cancelledCallId
+      event.type === 'tool.called' && event.payload.toolCallId === cancelledCallId
     ))).toBe(false);
 
     const continuationModel = new ScriptedModel([{ text: '继续完成。', toolCalls: [] }]);

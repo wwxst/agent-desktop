@@ -109,7 +109,7 @@ describe('Visual Media Inspection Agent', () => {
 
       expect(result.stepCount).toBe(3);
       expect(result.response).toEqual({ text: 'The video shows a sampled scene.', toolCalls: [] });
-      expect(calls.map((event) => event.name)).toEqual([
+      expect(calls.map((event) => event.payload.name)).toEqual([
         'extract_video_frames',
         'analyze_images',
       ]);
@@ -117,12 +117,12 @@ describe('Visual Media Inspection Agent', () => {
       expect(events.filter((event) => event.type === 'turn.completed')).toHaveLength(1);
       expect(events.filter((event) => event.type === 'step.completed')).toHaveLength(3);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(events.find(event => event.type === 'tool.result' && event.toolCallId === ('analyze-call' as ToolCallId))).toMatchObject({ result: { status: 'success', output: { frames: expect.any(Array) } } });
+      expect(events.find(event => event.type === 'tool.result' && event.payload.toolCallId === ('analyze-call' as ToolCallId))).toMatchObject({ payload: { result: { status: 'success', output: { frames: expect.any(Array) } } } });
       const extractResult = events.find((event): event is Extract<SessionEvent, { type: 'tool.result' }> => (
-        event.type === 'tool.result' && event.toolCallId === ('extract-call' as ToolCallId)
+        event.type === 'tool.result' && event.payload.toolCallId === ('extract-call' as ToolCallId)
       ));
-      expect(extractResult?.result).toMatchObject({ status: 'success' });
-      const extractedOutput = (extractResult?.result as { output: { duration: number; frames: readonly { path: string }[] } }).output;
+      expect(extractResult?.payload.result).toMatchObject({ status: 'success' });
+      const extractedOutput = (extractResult?.payload.result as { output: { duration: number; frames: readonly { path: string }[] } }).output;
       expect(extractedOutput.duration).toBe(42);
       expect(extractedOutput.frames).toHaveLength(6);
       expect(extractedOutput.frames[0]?.path).toBe(framePaths[0]);

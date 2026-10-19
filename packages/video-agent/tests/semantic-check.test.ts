@@ -33,11 +33,12 @@ const frames = [{ path: 'frame-1.jpg', timestamp: 0 }, { path: 'frame-2.jpg', ti
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'semantic-contract-'));
-  session = new InMemorySession([{ type: 'turn.started', turnId: 't' as never }]);
+  session = new InMemorySession();
+  session.append({ type: 'turn.started', turnId: 't' as never, payload: {} });
   const result = await new DeclareVideoOutputsTool(() => session.events()).execute({ items: [{ sourcePaths: [join(directory, 'source.mp4')],
     target: { kind: 'automatic' }, requirements: [{ kind: 'semantic', description: '红色矩形' }] }] }, context);
-  session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} });
-  session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: 'declare' as never, result });
+  session.append({ type: 'tool.called', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: 'declare' as never, name: 'declare_video_outputs', input: {} } });
+  session.append({ type: 'tool.result', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: 'declare' as never, result } });
   const item = readVideoDeliveryFacts(session.events()).items[0]!;
   input = { outputItemId: item.id, candidatePath: join(item.workingDirectory, 'candidate.mp4') };
   requirementId = item.requirements.find((requirement) => requirement.kind === 'semantic')!.id;
@@ -104,7 +105,7 @@ describe('semantic evidence completeness', () => {
     fullFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: false, frameCount: 2, reason: '需要分段' } });
     segmentFrames.execute.mockResolvedValueOnce({ status: 'success', output: { complete: true, totalFrames: 2, startFrame: 0, endFrame: 2,
       frames: [{ path: input.candidatePath, timestamp: 0 }, { path: input.candidatePath, timestamp: 0.1 }] } });
-    const execution = { ...context, checkpoint: (data: unknown) => session.append({ type: 'tool.effect.prepared', turnId: 't' as never, sourceEventIndex: 0, data }) };
+    const execution = { ...context, checkpoint: (data: unknown) => session.append({ type: 'tool.effect.prepared', turnId: 't' as never, payload: { sourceEventIndex: 0, data } }) };
     expect((await executeSemantic(tool(), input, execution)).status).toBe('success');
     expect(segmentFrames.execute).toHaveBeenCalledOnce();
     fullFrames.execute.mockClear();
@@ -149,13 +150,13 @@ describe('semantic evidence completeness', () => {
       model, mediaTools: [restrictedProbe, fullFrames], vision,
     });
 
-    session.append({ type: 'tool.called', turnId: 't' as never, stepId: 's' as never, toolCallId: context.toolCallId,
-      name: check.name, input, boundary: 'opaque' });
+    session.append({ type: 'tool.called', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: context.toolCallId,
+      name: check.name, input, boundary: 'opaque' } });
     const result = await executeSemantic(check, input, context, [restrictedProbe], ['unknown']);
     expect(result).toMatchObject({
       status: 'success', output: { coverage: 'incomplete', checks: [{ outcome: 'blocked' }] },
     });
-    session.append({ type: 'tool.result', turnId: 't' as never, stepId: 's' as never, toolCallId: context.toolCallId, result });
+    session.append({ type: 'tool.result', turnId: 't' as never, payload: { stepId: 's' as never, toolCallId: context.toolCallId, result } });
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     expect(restrictedProbe.execute).not.toHaveBeenCalled();
     expect(fullFrames.execute).not.toHaveBeenCalled();
@@ -216,17 +217,20 @@ describe('semantic evidence completeness', () => {
     });
     if (stage === 'audio' || stage === 'speech') probe.execute.mockResolvedValueOnce({ status: 'success', output: { audioCodec: 'aac', duration: 0.2 } });
     const check = new CheckVideoSemanticsTool(() => session.events(), { model, mediaTools: [probe, fullFrames, audio, speech], vision });
-    session.append({ type: 'tool.called', turnId: 't' as never, stepId: 'check-step' as never, toolCallId: 'nested' as never,
-      name: check.name, input, boundary: 'opaque' });
+    session.append({ type: 'tool.called', turnId: 't' as never, payload: { stepId: 'check-step' as never, toolCallId: 'nested' as never,
+      name: check.name, input, boundary: 'opaque' } });
     const sourceEventIndex = session.events().length - 1;
     const result = await executeSemantic(check, input, { ...context, checkpoint: data => session.append({
-      type: 'tool.effect.prepared', turnId: 't' as never, sourceEventIndex, data,
+      type: 'tool.effect.prepared', turnId: 't' as never, payload: { sourceEventIndex, data },
     }) });
     expect(result).toEqual(unknown);
-    if (stage !== 'probe') expect(session.events()).toContainEqual({ type: 'tool.effect.prepared', turnId: 't', sourceEventIndex,
+    if (stage !== 'probe') expect(session.events()).toContainEqual({
+      sessionId: session.id, itemId: session.events()[sourceEventIndex]!.itemId,
+      sequence: sourceEventIndex + 2, timestamp: expect.any(String),
+      type: 'tool.effect.prepared', turnId: 't', payload: { sourceEventIndex,
       data: { kind: 'semantic-temporary-directory', outputItemId: input.outputItemId, candidatePath: input.candidatePath,
-        directoryPrefix: join(input.candidatePath, '..', '.semantic-') } });
-    session.append({ type: 'tool.result', turnId: 't' as never, stepId: 'check-step' as never, toolCallId: 'nested' as never, result });
+        directoryPrefix: join(input.candidatePath, '..', '.semantic-') } } });
+    session.append({ type: 'tool.result', turnId: 't' as never, payload: { stepId: 'check-step' as never, toolCallId: 'nested' as never, result } });
     expect(projectRecoveryFacts(session.events()).unknownEffects.filter(effect => effect.sourceEventIndex === sourceEventIndex)).toHaveLength(1);
     expect(model.complete).not.toHaveBeenCalled();
   });

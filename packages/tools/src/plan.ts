@@ -1,7 +1,7 @@
 import type { ToolResult } from '@agent-desktop/model';
 import {
   isTaskPlanEvidenceEvent, projectRecoveryAncestry, projectTaskPlan, projectTurnState, TaskPlanUpdateError,
-  type PlanUpdatedEvent, type QualifyToolEvidence, type Session, type TaskPlanStatus, type TaskPlanStep,
+  type SessionEventInput, type QualifyToolEvidence, type Session, type TaskPlanStatus, type TaskPlanStep,
 } from '@agent-desktop/session';
 import type { Tool, ToolExecutionContext } from './contract.js';
 
@@ -91,14 +91,13 @@ export class UpdatePlanTool implements Tool {
       }
       if (step.completionKind === 'tool' && step.requestedStatus === 'completed' && source.type === 'tool.result') {
         const call = events.slice(0, index).findLast(event => event.type === 'tool.called' && event.turnId === source.turnId
-          && event.stepId === source.stepId && event.toolCallId === source.toolCallId);
-        if (call?.type === 'tool.called' && call.name === this.name) return failure('计划工具自身结果不能确认工作完成。');
+          && event.payload.stepId === source.payload.stepId && event.payload.toolCallId === source.payload.toolCallId);
+        if (call?.type === 'tool.called' && call.payload.name === this.name) return failure('计划工具自身结果不能确认工作完成。');
       }
     }
-    const event: PlanUpdatedEvent = { type: 'plan.updated', turnId: current.turnId, revision: (previous?.revision ?? 0) + 1,
-      explanation: input.explanation, steps };
+    const event: Extract<SessionEventInput, { type: 'plan.updated' }> = { type: 'plan.updated', turnId: current.turnId, payload: { revision: (previous?.revision ?? 0) + 1, explanation: input.explanation, steps } };
     let candidate;
-    try { candidate = projectTaskPlan([...events, event], ancestry.rootTurnId, this.qualifyToolEvidence); }
+    try { candidate = projectTaskPlan(events, ancestry.rootTurnId, this.qualifyToolEvidence, event); }
     catch (error) {
       if (error instanceof TaskPlanUpdateError) return failure(error.message);
       throw error;
@@ -112,7 +111,7 @@ export class UpdatePlanTool implements Tool {
     // 只有候选投影通过后才追加；保存或程序错误直接传播，不能返回默认成功。
     context.signal?.throwIfAborted();
     this.session.append(event);
-    return { status: 'success', output: { rootTurnId: ancestry.rootTurnId, revision: event.revision,
+    return { status: 'success', output: { rootTurnId: ancestry.rootTurnId, revision: event.payload.revision,
       steps: candidate!.steps.map(({ id, status }) => ({ id, status })) } };
   }
 }

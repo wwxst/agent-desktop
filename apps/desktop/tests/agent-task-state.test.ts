@@ -10,11 +10,11 @@ const step = 'step-1' as StepId;
 const call = 'call-1' as ToolCallId;
 
 function eventsFor(name: string, output: unknown): SessionEvent[] {
-  return [
-    { type: 'turn.started', turnId: turn },
-    { type: 'tool.called', turnId: turn, stepId: step, toolCallId: call, name, input: {}, boundary: 'read-only' },
-    { type: 'tool.result', turnId: turn, stepId: step, toolCallId: call, result: { status: 'success', output } },
-  ];
+  return [...new InMemorySession([], 'session').appendMany([
+    { type: 'turn.started', turnId: turn, payload: {} },
+    { type: 'tool.called', turnId: turn, payload: { stepId: step, toolCallId: call, name, input: {}, boundary: 'read-only' } },
+    { type: 'tool.result', turnId: turn, payload: { stepId: step, toolCallId: call, result: { status: 'success', output } } },
+  ])];
 }
 
 describe('Desktop task state projection', () => {
@@ -37,10 +37,10 @@ describe('Desktop task state projection', () => {
   it('projects a plan from real tool facts and preserves task ancestry', () => {
     const events = eventsFor('read_file', { path: 'notes.txt' });
     events.push(
-      { type: 'plan.updated', turnId: turn, revision: 1, explanation: '读取并回复', steps: [{
+      new InMemorySession([], 'session').append({ type: 'plan.updated', turnId: turn, payload: { revision: 1, explanation: '读取并回复', steps: [{
         id: 'read', description: '读取文件', requestedStatus: 'completed', completionKind: 'tool', evidenceEventIndexes: [2],
-      }] },
-      { type: 'turn.completed', turnId: turn },
+      }] } }),
+      new InMemorySession([], 'session').append({ type: 'turn.completed', turnId: turn, payload: {} }),
     );
     expect(projectAgentTaskState(events, turn)).toEqual({
       rootTurnId: turn,
@@ -83,8 +83,8 @@ describe('Desktop per-call recovery gate', () => {
 
     expect(approve).toHaveBeenCalledOnce();
     expect(execute).not.toHaveBeenCalled();
-    expect(session.events().find(event => event.type === 'tool.called' && event.toolCallId === 'reordered'))
-      .toMatchObject({ boundary: 'not-executed' });
+    expect(session.events().find(event => event.type === 'tool.called' && event.payload.toolCallId === 'reordered'))
+      .toMatchObject({ payload: { boundary: 'not-executed' } });
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     requests = 0;
     await runTurn(agent, '重新申请', options);
@@ -95,13 +95,13 @@ describe('Desktop per-call recovery gate', () => {
   it('uses a successful result from an interrupted recovery chain instead of replaying its writer', async () => {
     const original = prepareTurnStart('写入原文件');
     const sourceEventIndex = original.events.length;
-    const session = new InMemorySession([...original.events,
-      { type: 'tool.called', turnId: original.turnId, stepId: step, toolCallId: call,
-        name: 'writer', input: { path: 'done' }, boundary: 'checkpointed' },
-      { type: 'tool.result', turnId: original.turnId, stepId: step, toolCallId: call,
-        result: { status: 'success', output: 'already written' } },
-      { type: 'turn.interrupted', turnId: original.turnId, reason: 'process-exit' },
-    ]);
+    const session = new InMemorySession([...new InMemorySession([], 'session').appendMany([...original.events,
+      { type: 'tool.called', turnId: original.turnId, payload: { stepId: step, toolCallId: call,
+        name: 'writer', input: { path: 'done' }, boundary: 'checkpointed' } },
+      { type: 'tool.result', turnId: original.turnId, payload: { stepId: step, toolCallId: call,
+        result: { status: 'success', output: 'already written' } } },
+      { type: 'turn.interrupted', turnId: original.turnId, payload: { reason: 'process-exit' } },
+    ])]);
     const recovery = prepareTurnStart('继续', { sourceTurnId: original.turnId, mode: 'continue' });
     session.appendMany(recovery.events);
     const execute = vi.fn<Tool['execute']>(async () => ({ status: 'success', output: 'duplicate' }));
@@ -121,8 +121,8 @@ describe('Desktop per-call recovery gate', () => {
 
     expect(execute).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
-    expect(session.events().find(event => event.type === 'tool.result' && event.toolCallId === 'duplicate'))
-      .toMatchObject({ result: { status: 'error', failureKind: 'permanent', output: { sourceEventIndexes: [sourceEventIndex] } } });
+    expect(session.events().find(event => event.type === 'tool.result' && event.payload.toolCallId === 'duplicate'))
+      .toMatchObject({ payload: { result: { status: 'error', failureKind: 'permanent', output: { sourceEventIndexes: [sourceEventIndex] } } } });
     expect(projectRecoveryFacts(session.events()).successfulCalls).toHaveLength(1);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
   });
@@ -130,11 +130,11 @@ describe('Desktop per-call recovery gate', () => {
   it('permits observation while an effect is unknown and releases a writer only after not-applied verification', () => {
     const original = prepareTurnStart('原外部操作');
     const sourceEventIndex = original.events.length;
-    const session = new InMemorySession([...original.events,
-      { type: 'tool.called', turnId: original.turnId, stepId: step, toolCallId: call,
-        name: 'external', input: {}, boundary: 'opaque' },
-      { type: 'turn.interrupted', turnId: original.turnId, reason: 'process-exit' },
-    ]);
+    const session = new InMemorySession([...new InMemorySession([], 'session').appendMany([...original.events,
+      { type: 'tool.called', turnId: original.turnId, payload: { stepId: step, toolCallId: call,
+        name: 'external', input: {}, boundary: 'opaque' } },
+      { type: 'turn.interrupted', turnId: original.turnId, payload: { reason: 'process-exit' } },
+    ])]);
     const recovery = prepareTurnStart('继续核验', { sourceTurnId: original.turnId, mode: 'verify' });
     session.appendMany(recovery.events);
     const writer: Tool = { name: 'writer', description: '', inputSchema: {}, executionBoundary: 'checkpointed',
@@ -144,11 +144,11 @@ describe('Desktop per-call recovery gate', () => {
     expect(taskToolGate(session.events(), input).blocked?.sourceEventIndexes).toEqual([sourceEventIndex]);
     expect(taskToolGate(session.events(), { ...input, tool: { ...writer, executionBoundary: 'read-only' } }).blocked).toBeUndefined();
 
-    session.append({ type: 'effect.outcome.verified', turnId: recovery.turnId, sourceEventIndex,
-      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'user', reference: '人工核验', description: '确认未发生外部操作。' } });
+    session.append({ type: 'effect.outcome.verified', turnId: recovery.turnId, payload: { sourceEventIndex,
+      scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'user', reference: '人工核验', description: '确认未发生外部操作。' } } });
 
     expect(taskToolGate(session.events(), { ...input, sourceEventIndex: session.events().length }).blocked).toBeUndefined();
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
-    expect(session.events()[sourceEventIndex]).toMatchObject({ type: 'tool.called', boundary: 'opaque' });
+    expect(session.events()[sourceEventIndex]).toMatchObject({ type: 'tool.called', payload: { boundary: 'opaque' } });
   });
 });

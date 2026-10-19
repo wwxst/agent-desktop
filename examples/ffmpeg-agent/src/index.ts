@@ -19,17 +19,17 @@ import {
 } from '@agent-desktop/video-agent';
 
 function formatToolResult(event: ToolResultEvent): string {
-  if (event.result.status === 'error') return event.result.message;
-  return typeof event.result.output === 'string'
-    ? event.result.output
-    : JSON.stringify(event.result.output);
+  if (event.payload.result.status === 'error') return event.payload.result.message;
+  return typeof event.payload.result.output === 'string'
+    ? event.payload.result.output
+    : JSON.stringify(event.payload.result.output);
 }
 
 /** 从当前 Turn 新增的事实中展示模型调用、FFmpeg 结果和最终回答。 */
 function printTurnEvents(events: readonly SessionEvent[]): void {
   for (const event of events) {
     if (event.type === 'tool.called') {
-      output.write(`Tool Call > ${event.name}\n`);
+      output.write(`Tool Call > ${event.payload.name}\n`);
     }
 
     if (event.type === 'tool.result') {

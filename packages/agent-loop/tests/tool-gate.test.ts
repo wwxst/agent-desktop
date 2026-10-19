@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '@agent-desktop/agent';
 import type { Model, ModelResponse, ToolCallId } from '@agent-desktop/model';
-import { InMemorySession, projectRecoveryFacts, SessionPersistenceError, type SessionEvent } from '@agent-desktop/session';
+import { InMemorySession, projectRecoveryFacts, SessionPersistenceError, type SessionEvent, type SessionEventInput } from '@agent-desktop/session';
 import { InMemoryToolRegistry, type Tool } from '@agent-desktop/tools';
 import { runTurn, ToolBudgetError, type RunTurnOptions } from '../src/index.js';
 
@@ -17,9 +17,10 @@ function agentFor(responses: readonly ModelResponse[], session = new InMemorySes
 /** 记录实际保存批次，反证门禁拒绝不能留下悬空调用或提前向外发布。 */
 class RecordingSession extends InMemorySession {
   readonly batches: Array<readonly SessionEvent[]> = [];
-  override appendMany(events: readonly SessionEvent[]): void {
+  override appendMany(inputs: readonly SessionEventInput[]): readonly SessionEvent[] {
+    const events = super.appendMany(inputs);
     this.batches.push(events);
-    super.appendMany(events);
+    return events;
   }
 }
 
@@ -43,8 +44,8 @@ describe('per-call host gate and bounded tool attempts', () => {
 
     expect(execute).toHaveBeenCalledOnce();
     const sourceEventIndex = beforeToolCall.mock.calls[0]![0].sourceEventIndex;
-    expect(agent.session.events()[sourceEventIndex]).toMatchObject({ type: 'tool.called', boundary: 'checkpointed' });
-    expect(agent.session.events()[sourceEventIndex + 1]).toMatchObject({ type: 'tool.effect.prepared', sourceEventIndex });
+    expect(agent.session.events()[sourceEventIndex]).toMatchObject({ type: 'tool.called', payload: { boundary: 'checkpointed' } });
+    expect(agent.session.events()[sourceEventIndex + 1]).toMatchObject({ type: 'tool.effect.prepared', payload: { sourceEventIndex } });
   });
 
   it('rechecks a result before the next call and atomically saves a blocked pair without execution traces', async () => {
@@ -66,10 +67,10 @@ describe('per-call host gate and bounded tool attempts', () => {
     expect(execute).toHaveBeenCalledOnce();
     const firstIndex = session.events().findIndex(event => event.type === 'tool.called');
     expect(session.batches.find(events => events.length === 2 && events[0]?.type === 'tool.called')).toEqual([
-      expect.objectContaining({ type: 'tool.called', toolCallId: 'second', boundary: 'not-executed' }),
-      expect.objectContaining({ type: 'tool.result', toolCallId: 'second', result: {
+      expect.objectContaining({ type: 'tool.called', payload: expect.objectContaining({ toolCallId: 'second', boundary: 'not-executed' }) }),
+      expect.objectContaining({ type: 'tool.result', payload: expect.objectContaining({ toolCallId: 'second', result: {
         status: 'error', failureKind: 'permanent', message: '须先核验已有外部效果。', output: { sourceEventIndexes: [firstIndex] },
-      } }),
+      } }) }),
     ]);
     expect(projectRecoveryFacts(session.events()).unknownEffects.map(fact => fact.sourceEventIndex)).toEqual([firstIndex]);
     expect(trace.mock.calls.filter(([event]) => event.type.startsWith('tool.')).map(([event]) => event.toolCallId)).toEqual(['first', 'first']);
@@ -86,8 +87,8 @@ describe('per-call host gate and bounded tool attempts', () => {
 
     expect(beforeToolCall.mock.calls[0]![0].tool).toBeUndefined();
     expect(session.batches.find(events => events[0]?.type === 'tool.called')).toEqual([
-      expect.objectContaining({ type: 'tool.called', boundary: 'not-executed' }),
-      expect.objectContaining({ type: 'tool.result', result: { status: 'error', failureKind: 'permanent', message: 'Tool not found: absent' } }),
+      expect.objectContaining({ type: 'tool.called', payload: expect.objectContaining({ boundary: 'not-executed' }) }),
+      expect.objectContaining({ type: 'tool.result', payload: expect.objectContaining({ result: { status: 'error', failureKind: 'permanent', message: 'Tool not found: absent' } }) }),
     ]);
     expect(projectRecoveryFacts(session.events()).unknownEffects).toEqual([]);
     expect(trace.mock.calls.filter(([event]) => event.type.startsWith('tool.')).map(([event]) => event.type)).toEqual(['tool.started', 'tool.failed']);
@@ -96,9 +97,9 @@ describe('per-call host gate and bounded tool attempts', () => {
   it('does not execute or publish a blocked attempt when saving its paired facts fails', async () => {
     const failure = new SessionPersistenceError(new Error('paired commit failed'));
     class FailingSession extends RecordingSession {
-      override appendMany(events: readonly SessionEvent[]): void {
+      override appendMany(events: readonly SessionEventInput[]): readonly SessionEvent[] {
         if (events[0]?.type === 'tool.called') throw failure;
-        super.appendMany(events);
+        return super.appendMany(events);
       }
     }
     const agent = agentFor([{ toolCalls: [call('blocked')] }], new FailingSession());
@@ -127,11 +128,11 @@ describe('per-call host gate and bounded tool attempts', () => {
 
     expect(execute).toHaveBeenCalledOnce();
     expect(beforeToolCall).toHaveBeenCalledTimes(2);
-    expect(agent.session.events().filter(event => event.type === 'tool.called').map(event => event.toolCallId)).toEqual(['success', 'blocked']);
-    expect(agent.session.events().filter(event => event.type === 'tool.result').map(event => event.result.status)).toEqual(['success', 'error']);
+    expect(agent.session.events().filter(event => event.type === 'tool.called').map(event => event.payload.toolCallId)).toEqual(['success', 'blocked']);
+    expect(agent.session.events().filter(event => event.type === 'tool.result').map(event => event.payload.result.status)).toEqual(['success', 'error']);
     expect(projectRecoveryFacts(agent.session.events()).successfulCalls).toHaveLength(1);
     expect(projectRecoveryFacts(agent.session.events()).unknownEffects).toEqual([]);
-    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorName: 'ToolBudgetError' });
+    expect(agent.session.events().at(-1)).toMatchObject({ type: 'turn.failed', payload: { errorName: 'ToolBudgetError' } });
     expect(agent.model.complete).toHaveBeenCalledOnce();
   });
 
@@ -141,7 +142,7 @@ describe('per-call host gate and bounded tool attempts', () => {
 
     await expect(runTurn(agent, '连续尝试', { maxToolCalls: 2 })).rejects.toBeInstanceOf(ToolBudgetError);
 
-    expect(agent.session.events().filter(event => event.type === 'tool.called').map(event => event.toolCallId)).toEqual(['one', 'two']);
+    expect(agent.session.events().filter(event => event.type === 'tool.called').map(event => event.payload.toolCallId)).toEqual(['one', 'two']);
     expect(agent.session.events().filter(event => event.type === 'tool.result')).toHaveLength(2);
     expect(projectRecoveryFacts(agent.session.events()).unknownEffects).toEqual([]);
     expect(agent.model.complete).toHaveBeenCalledTimes(3);

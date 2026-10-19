@@ -1,3 +1,4 @@
+import { InMemorySession } from '@agent-desktop/session';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,10 +47,10 @@ describe('DesktopPersistentSession', () => {
     const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-persistent-session-'));
     temporaryDirectories.push(directory);
     const filePath = join(directory, 'state.sqlite');
-    const initial: SessionEvent[] = [{ type: 'turn.started', turnId: 'turn-1' as TurnId }];
+    const initial: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([{ type: 'turn.started', turnId: 'turn-1' as TurnId, payload: {} }])];
     const session = new DesktopPersistentSession(filePath, 'session', initial, (_id, events) => persistedState(events), () => undefined);
 
-    session.append({ type: 'turn.completed', turnId: 'turn-1' as TurnId });
+    session.append({ type: 'turn.completed', turnId: 'turn-1' as TurnId, payload: {} });
 
     expect(session.events()).toHaveLength(2);
     expect((readDesktopDocument(filePath, 'session-state') as PersistedDesktopState).sessions[0]!.events).toEqual(session.events());
@@ -59,10 +60,10 @@ describe('DesktopPersistentSession', () => {
     const directory = await mkdtemp(join(tmpdir(), 'agent-desktop-persistent-session-failure-'));
     temporaryDirectories.push(directory);
     const filePath = join(directory, 'missing', 'state.sqlite');
-    const initial: SessionEvent[] = [{ type: 'turn.started', turnId: 'turn-1' as TurnId }];
+    const initial: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([{ type: 'turn.started', turnId: 'turn-1' as TurnId, payload: {} }])];
     const failures: SessionPersistenceError[] = [];
     const session = new DesktopPersistentSession(filePath, 'session', initial, (_id, events) => persistedState(events), error => failures.push(error));
-    const event: SessionEvent = { type: 'turn.completed', turnId: 'turn-1' as TurnId };
+    const event: SessionEvent = new InMemorySession([], 'session').append({ type: 'turn.completed', turnId: 'turn-1' as TurnId, payload: {} });
 
     expect(() => session.append(event)).toThrow(SessionPersistenceError);
     expect(session.events()).toEqual(initial);
@@ -100,9 +101,10 @@ describe('DesktopPersistentSession', () => {
     session.commitStart(start, promoted, binding);
 
     expect(writes).toBe(1);
-    expect(session.events()).toEqual(start.events);
+    const committedEvents = session.events();
+    expect(committedEvents).toHaveLength(start.events.length);
     expect(session.turnMessageBindings()).toEqual([binding]);
-    expect(readDesktopDocument(filePath, 'session-state')).toEqual(persistedState(start.events, [binding], promoted));
+    expect(readDesktopDocument(filePath, 'session-state')).toEqual(persistedState(committedEvents, [binding], promoted));
     const firstReload = (await loadDesktopState(filePath))!;
     expect(firstReload.clientState.drafts ?? []).toEqual([]);
     expect(firstReload.clientState.conversations[0]!.messages[1]).toMatchObject({
@@ -138,7 +140,7 @@ describe('DesktopPersistentSession', () => {
       { id: 12, role: 'assistant', status: 'completed', result: { responseText: '第一次结果', traceId: 'trace-1' },
         activity: [], activityExpanded: false },
     ]);
-    session.append({ type: 'turn.completed', turnId: first.turnId });
+    session.append({ type: 'turn.completed', turnId: first.turnId, payload: {} });
     snapshot = clientState([...snapshot.conversations[0]!.messages,
       { id: 21, role: 'user', text: prompt, attachments: ['source.mp4'], attachmentRoles: ['video'] },
       { id: 22, role: 'assistant', status: 'processing', streamedText: '', activity: [], activityExpanded: false },
@@ -158,8 +160,8 @@ describe('DesktopPersistentSession', () => {
   it('retains legacy events without inventing a binding when committing a new recovery start', async () => {
     const filePath = await databasePath();
     const legacy = prepareTurnStart('旧任务');
-    const initial: readonly SessionEvent[] = [...legacy.events,
-      { type: 'turn.interrupted', turnId: legacy.turnId, reason: 'legacy-unknown' }];
+    const initial: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([...legacy.events,
+      { type: 'turn.interrupted', turnId: legacy.turnId, payload: { reason: 'legacy-unknown' } }])];
     let snapshot = clientState([
       { id: 1, role: 'user', text: '旧任务', attachments: [] },
       { id: 2, role: 'assistant', status: 'failed', errorMessage: '旧执行记录无法确认', activity: [], activityExpanded: false },
@@ -178,7 +180,7 @@ describe('DesktopPersistentSession', () => {
     session.commitStart(recovery, snapshot, binding);
 
     const loaded = (await loadDesktopState(filePath))!;
-    expect(loaded.sessions[0]!.events).toEqual([...initial, ...recovery.events]);
+    expect(loaded.sessions[0]!.events).toEqual(session.events());
     expect(loaded.sessions[0]!.turnMessageBindings).toEqual([binding]);
     expect(loaded.clientState.conversations[0]!.messages[1]).toEqual(snapshot.conversations[0]!.messages[1]);
     expect(loaded.clientState.conversations[0]!.messages[3]).toMatchObject({
@@ -189,7 +191,7 @@ describe('DesktopPersistentSession', () => {
   it('rolls back a real SQLite trigger failure and latches the same error without changing events or bindings', async () => {
     const filePath = await databasePath();
     const previous = prepareTurnStart('原任务');
-    const initial: readonly SessionEvent[] = [...previous.events, { type: 'turn.cancelled', turnId: previous.turnId, reason: 'user' }];
+    const initial: readonly SessionEvent[] = [...new InMemorySession([], 'session').appendMany([...previous.events, { type: 'turn.cancelled', turnId: previous.turnId, payload: { reason: 'user' } }])];
     const originalBinding: TurnMessageBinding = { executionVersion: 1, turnId: previous.turnId, userMessageId: 1, assistantMessageId: 2 };
     const snapshot = clientState([
       { id: 1, role: 'user', text: '原任务', attachments: [] },
@@ -228,7 +230,7 @@ describe('DesktopPersistentSession', () => {
 
     // 底层数据库恢复后也不能悄悄继续；所有提交入口仍传播首次失败的同一个对象。
     for (const action of [() => session.commitStart(start, nextSnapshot, binding),
-      () => session.append({ type: 'turn.completed', turnId: previous.turnId }), () => session.persist()]) {
+      () => session.append({ type: 'turn.completed', turnId: previous.turnId, payload: {} }), () => session.persist()]) {
       let laterError: unknown;
       try { action(); } catch (error) { laterError = error; }
       expect(laterError).toBe(originalError);

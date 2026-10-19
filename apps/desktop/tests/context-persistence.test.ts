@@ -30,19 +30,22 @@ async function databasePath() {
   return join(directory, 'agent-desktop.sqlite');
 }
 function history(): SessionEvent[] {
-  const events: SessionEvent[] = [{ type: 'turn.started', turnId: root }, { type: 'user.message', turnId: root, content: rule }];
+  const session = new InMemorySession([], 'session');
+  const events: SessionEvent[] = [...session.appendMany([{ type: 'turn.started', turnId: root, payload: {} }, { type: 'user.message', turnId: root, payload: { content: rule } }])];
   for (let offset = 0; offset < 5; offset += 1) {
     const stepId = `read-step-${offset}` as StepId;
     const toolCallId = `read-call-${offset}` as ToolCallId;
     events.push(
-      { type: 'step.started', turnId: root, stepId },
-      { type: 'assistant.message', turnId: root, stepId, toolCalls: [{ id: toolCallId, name: 'read', input: { path: `data/${offset}` } }] },
-      { type: 'tool.called', turnId: root, stepId, toolCallId, name: 'read', input: { path: `data/${offset}` }, boundary: 'read-only' },
-      { type: 'tool.result', turnId: root, stepId, toolCallId, result: { status: 'success', output: `原始事实-${offset}:` + 'x'.repeat(1400) } },
-      { type: 'step.completed', turnId: root, stepId },
+      ...session.appendMany([
+        { type: 'step.started', turnId: root, payload: { stepId } },
+        { type: 'assistant.message', turnId: root, payload: { stepId, toolCalls: [{ id: toolCallId, name: 'read', input: { path: `data/${offset}` } }] } },
+        { type: 'tool.called', turnId: root, payload: { stepId, toolCallId, name: 'read', input: { path: `data/${offset}` }, boundary: 'read-only' } },
+        { type: 'tool.result', turnId: root, payload: { stepId, toolCallId, result: { status: 'success', output: `原始事实-${offset}:` + 'x'.repeat(1400) } } },
+        { type: 'step.completed', turnId: root, payload: { stepId } },
+      ]),
     );
   }
-  events.push({ type: 'turn.completed', turnId: root });
+  events.push(session.append({ type: 'turn.completed', turnId: root, payload: {} }));
   return events;
 }
 function stream(response: ServerResponse, text: string, protocol: 'chat-completions' | 'responses') {
@@ -120,7 +123,7 @@ describe('persisted model context', () => {
     for (const { body } of normal) {
       const encoded = JSON.stringify(body);
       expect(encoded).toContain(rule);
-      expect(encoded).toContain(validated.event.sourceDigest);
+      expect(encoded).toContain(validated.event.payload.sourceDigest);
       expect(encoded).toContain('旧资料检查事实及来源已保留。');
       expect(body.tools as unknown[]).toHaveLength(1);
       if (protocol === 'responses') {
@@ -137,23 +140,25 @@ describe('persisted model context', () => {
 
   it('rejects changed source facts and invalid summary references read from real SQLite', async () => {
     const original = history();
-    const event: ContextCompactedEvent = { type: 'context.compacted', turnId: root,
-      coveredStepEndEventIndexes: [6], sourceDigest: createContextSourceDigest(original, [6]),
+    const event: ContextCompactedEvent = new InMemorySession([], 'session').append({ type: 'context.compacted', turnId: root,
+      payload: { coveredStepEndEventIndexes: [6], sourceDigest: createContextSourceDigest(original, [6]),
       summary: JSON.stringify({ summary: '原始资料事实', sourceEventIndexes: [3, 5] }),
-      estimatorVersion: 1, estimatedBefore: 9000, estimatedAfter: 6000 };
-    const valid = stateFor([...original, event]);
+      estimatorVersion: 1, estimatedBefore: 9000, estimatedAfter: 6000 } });
+    const validSession = new InMemorySession(original, 'session');
+    const valid = stateFor([...original, validSession.append(event)]);
+    const committedEvent = valid.sessions[0]!.events.at(-1)!;
     const path = await databasePath();
     await saveDesktopState(path, valid);
-    expect((await loadDesktopState(path))!.sessions[0]!.events.at(-1)).toEqual(event);
+    expect((await loadDesktopState(path))!.sessions[0]!.events.at(-1)).toEqual(valid.sessions[0]!.events.at(-1));
 
     const changed = [...original];
     const result = changed[5];
     if (result?.type !== 'tool.result') throw new Error('测试工具结果缺失。');
-    changed[5] = { ...result, result: { status: 'success', output: '摘要保存后被改写的事实' } };
-    writeDesktopDocuments(path, [{ name: 'session-state', value: { ...valid, sessions: [{ ...valid.sessions[0], events: [...changed, event] }] } }]);
-    await expect(loadDesktopState(path)).rejects.toThrow('原始事实不一致');
+    changed[5] = { ...result, payload: { ...result.payload, result: { status: 'success', output: '摘要保存后被改写的事实' } } };
+    writeDesktopDocuments(path, [{ name: 'session-state', value: { ...valid, sessions: [{ ...valid.sessions[0], events: [...changed, committedEvent] }] } }]);
+    await expect(loadDesktopState(path)).rejects.toThrow('摘要来源摘要与原始事实不一致');
     writeDesktopDocuments(path, [{ name: 'session-state', value: { ...valid, sessions: [{ ...valid.sessions[0], events: [...original,
-      { ...event, summary: JSON.stringify({ summary: '越界引用', sourceEventIndexes: [1] }) }] }] } }]);
+      { ...committedEvent, payload: { ...committedEvent.payload, summary: JSON.stringify({ summary: '越界引用', sourceEventIndexes: [1] }) } }] }] } }]);
     await expect(loadDesktopState(path)).rejects.toThrow('引用超出覆盖来源');
   });
 });

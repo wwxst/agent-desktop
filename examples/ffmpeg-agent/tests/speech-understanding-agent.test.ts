@@ -95,8 +95,8 @@ describe('Speech Understanding Agent', () => {
       );
 
       expect(result.stepCount).toBe(3);
-      expect(calls.map((event) => event.name)).toEqual(['extract_audio', 'transcribe_audio']);
-      expect(results.map((event) => event.result)).toEqual([
+      expect(calls.map((event) => event.payload.name)).toEqual(['extract_audio', 'transcribe_audio']);
+      expect(results.map((event) => event.payload.result)).toEqual([
         { status: 'success', output: `Audio created: ${audioPath}` },
         {
           status: 'success',

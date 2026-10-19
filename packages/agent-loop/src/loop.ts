@@ -4,7 +4,7 @@ import { ModelRequestError } from '@agent-desktop/model';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ModelResponse, ModelUsage, ToolCall, ToolResult } from '@agent-desktop/model';
 import { SessionPersistenceError, TurnCancellationError, projectTurnState,
-  type ExecutionBoundary, type QualifyToolEvidence, type RecoveryMode, type SessionEvent, type StepId, type ToolCalledEvent, type TurnId } from '@agent-desktop/session';
+  type ExecutionBoundary, type QualifyToolEvidence, type RecoveryMode, type SessionEventInput, type StepId, type TurnId } from '@agent-desktop/session';
 import { ToolExecutionError, ToolNotExecutedCancellationError, ToolNotExecutedError, ToolRouter, type Tool, type ToolExecutionContext, type ToolProgressEvent } from '@agent-desktop/tools';
 import { prepareModelContext, type ContextBudget } from './context.js';
 
@@ -62,13 +62,13 @@ function createTurnId(): TurnId {
 export function prepareTurnStart(
   input: string,
   recovery?: { readonly sourceTurnId: TurnId; readonly mode: RecoveryMode },
-): { readonly turnId: TurnId; readonly events: readonly SessionEvent[] } {
+): { readonly turnId: TurnId; readonly events: readonly SessionEventInput[] } {
   const turnId = createTurnId();
-  const events: SessionEvent[] = [
-    { type: 'turn.started', turnId },
-    { type: 'user.message', turnId, content: input },
+  const events: SessionEventInput[] = [
+    { type: 'turn.started', turnId, payload: {} },
+    { type: 'user.message', turnId, payload: { content: input } },
   ];
-  if (recovery !== undefined) events.push({ type: 'turn.recovery.started', turnId, ...recovery });
+  if (recovery !== undefined) events.push({ type: 'turn.recovery.started', turnId, payload: { ...recovery } });
   return { turnId, events };
 }
 
@@ -112,14 +112,10 @@ async function executeToolCall(
   const sourceEventIndex = agent.session.events().length;
   const decision = beforeToolCall?.({ turnId, stepId, call: persistedCall, tool, sourceEventIndex });
   const boundary = decision?.boundary ?? tool?.executionBoundary;
-  const called: ToolCalledEvent = {
-    type: 'tool.called',
-    turnId,
-    stepId,
-    toolCallId: toolCall.id,
-    name: toolCall.name,
-    input: persistedCall.input,
-    ...(boundary === undefined ? {} : { boundary }),
+  const called: Extract<SessionEventInput, { type: 'tool.called' }> = {
+    type: 'tool.called', turnId,
+    payload: { stepId, toolCallId: toolCall.id, name: toolCall.name, input: persistedCall.input,
+      ...(boundary === undefined ? {} : { boundary }) },
   };
   if (tool === undefined || decision?.blocked !== undefined) {
     const result: ToolResult = { status: 'error', failureKind: 'permanent',
@@ -128,16 +124,16 @@ async function executeToolCall(
     if (tool === undefined && decision?.blocked === undefined) {
       const startedAt = Date.now();
       await trace?.({ type: 'tool.started', turnId, stepId, toolCallId: toolCall.id, toolName: toolCall.name });
-      agent.session.appendMany([{ ...called, boundary: 'not-executed' },
-        { type: 'tool.result', turnId, stepId, toolCallId: toolCall.id, result }]);
+      agent.session.appendMany([{ ...called, payload: { ...called.payload, boundary: 'not-executed' } },
+        { type: 'tool.result', turnId, payload: { stepId, toolCallId: toolCall.id, result } }]);
       await trace?.({ type: 'tool.failed', turnId, stepId, toolCallId: toolCall.id,
         toolName: toolCall.name, durationMs: Date.now() - startedAt });
       await onToolResult?.(toolCall.id, toolCall.name, result);
       throwIfAborted(signal);
       return;
     }
-    const pair: readonly SessionEvent[] = [{ ...called, boundary: 'not-executed' },
-      { type: 'tool.result', turnId, stepId, toolCallId: toolCall.id, result }];
+    const pair: readonly SessionEventInput[] = [{ ...called, payload: { ...called.payload, boundary: 'not-executed' } },
+      { type: 'tool.result', turnId, payload: { stepId, toolCallId: toolCall.id, result } }];
     if (precedingResult === undefined) agent.session.appendMany(pair);
     else {
       // 并行读取的拒绝先明确记录“未执行”，结果仍按模型顺序提交。
@@ -175,16 +171,15 @@ async function executeToolCall(
         },
         // exactOptionalPropertyTypes 下，没有取消信号时必须省略字段而不是写入 undefined。
         ...(signal === undefined ? {} : { signal }),
-        checkpoint: (data) => agent.session.append({ type: 'tool.effect.prepared', turnId, sourceEventIndex, data }),
+        checkpoint: (data) => agent.session.append({ type: 'tool.effect.prepared', turnId, payload: { sourceEventIndex, data } }),
       };
       result = await router.execute(toolCall, context);
   } catch (error) {
     if (error instanceof SessionPersistenceError) throw error;
     if (error instanceof ToolNotExecutedCancellationError) {
       // 审批取消不是工具结果；宿主证明未跨执行边界，恢复时不能把 pending opaque 当成未知效果。
-      agent.session.append({ type: 'effect.outcome.verified', turnId, sourceEventIndex,
-        scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'host', reference: 'tool-router:before-execution',
-          description: '工具在准备或审批阶段取消，未进入执行闭包。' } });
+      agent.session.append({ type: 'effect.outcome.verified', turnId, payload: { sourceEventIndex, scope: 'entire-call', outcome: 'not-applied', evidence: { source: 'host', reference: 'tool-router:before-execution',
+          description: '工具在准备或审批阶段取消，未进入执行闭包。' } } });
       throw error.cancellation;
     }
     if (error instanceof Error && error.name === 'AbortError') throw error;
@@ -198,14 +193,9 @@ async function executeToolCall(
   // 先把真实结果写入 Session，再写完成诊断：
   // 诊断写入失败不能遮蔽已经发生的成功事实（例如一个已经真正发布的文件）。
   await precedingResult;
-  agent.session.append({
-    type: 'tool.result',
-    turnId,
-    stepId,
-    toolCallId: toolCall.id,
-    result,
-    ...(notExecuted ? { executionBoundary: 'not-executed' as const } : {}),
-  });
+  agent.session.append({ type: 'tool.result', turnId,
+    payload: { stepId, toolCallId: toolCall.id, result,
+      ...(notExecuted ? { executionBoundary: 'not-executed' as const } : {}) } });
 
   const durationMs = Date.now() - startedAt;
   if (result.status === 'success') {
@@ -330,7 +320,7 @@ export async function runStartedTurn(
       // 一次 Model.complete 调用严格对应一个新 Step。
       const stepId = createStepId();
       stepCount += 1;
-      agent.session.append({ type: 'step.started', turnId, stepId });
+      agent.session.append({ type: 'step.started', turnId, payload: { stepId } });
 
       // System Prompt、历史消息和工具描述都从 Agent 的当前依赖即时构建。
       const tools = router.definitions();
@@ -407,8 +397,8 @@ export async function runStartedTurn(
       // 先完整记录模型响应；文本与 Tool Calls 可以同时存在。
       const persistedToolCalls = response.toolCalls.map(call => projectToolCall(router.get(call.name), call));
       agent.session.append(response.text === undefined
-        ? { type: 'assistant.message', turnId, stepId, toolCalls: persistedToolCalls }
-        : { type: 'assistant.message', turnId, stepId, content: response.text, toolCalls: persistedToolCalls });
+        ? { type: 'assistant.message', turnId, payload: { stepId, toolCalls: persistedToolCalls } }
+        : { type: 'assistant.message', turnId, payload: { stepId, content: response.text, toolCalls: persistedToolCalls } });
 
       // 完整响应才能确认文字用途；临时片段不成为历史事实。
       onModelText?.(stepId, response.text ?? '', response.toolCalls.length === 0 ? 'final' : 'commentary');
@@ -439,11 +429,11 @@ export async function runStartedTurn(
       }
 
       // 所有工具结果写入后才完成 Step，下一次模型调用才能看到完整结果。
-      agent.session.append({ type: 'step.completed', turnId, stepId });
+      agent.session.append({ type: 'step.completed', turnId, payload: { stepId } });
 
       if (response.toolCalls.length === 0) {
         // 零 Tool Call 是 MVP 的自然终止条件，完成 Turn 后返回最后模型响应。
-        agent.session.append({ type: 'turn.completed', turnId });
+        agent.session.append({ type: 'turn.completed', turnId, payload: {} });
         await trace?.({
           type: 'turn.completed',
           turnId,
@@ -460,9 +450,8 @@ export async function runStartedTurn(
     // 完成已经提交后的诊断/通知失败不改变 Core 的终态。
     if (projectTurnState(agent.session.events(), turnId) !== 'started') throw error;
     if (error instanceof Error && error.name === 'AbortError') {
-      agent.session.append({ type: 'turn.cancelled', turnId,
-        reason: signal?.reason instanceof TurnCancellationError ? signal.reason.reason
-          : error instanceof TurnCancellationError ? error.reason : 'external' });
+      agent.session.append({ type: 'turn.cancelled', turnId, payload: { reason: signal?.reason instanceof TurnCancellationError ? signal.reason.reason
+          : error instanceof TurnCancellationError ? error.reason : 'external' } });
       await trace?.({
         type: 'turn.cancelled',
         turnId,
@@ -473,7 +462,7 @@ export async function runStartedTurn(
     }
     // runTurn 的 Error 异常记录后仍按原语义向上传播。
     if (!(error instanceof Error)) throw error;
-    agent.session.append({ type: 'turn.failed', turnId, errorName: error.name, errorMessage: error.message });
+    agent.session.append({ type: 'turn.failed', turnId, payload: { errorName: error.name, errorMessage: error.message } });
     await trace?.({
       type: 'turn.failed',
       turnId,

@@ -38,32 +38,29 @@ export function taskToolGate(
     return block('已有外部操作结果未知，请先核验其事实，不能执行新的外部操作。', facts.unknownEffects.map(fact => fact.sourceEventIndex));
   }
   const key = canonicalInput(input.call.input);
-  const sameCall = (call: Extract<SessionEvent, { readonly type: 'tool.called' }>) => call.name === input.call.name && canonicalInput(call.input) === key;
+  const sameCall = (call: Extract<SessionEvent, { readonly type: 'tool.called' }>) => call.payload.name === input.call.name && canonicalInput(call.payload.input) === key;
   const denied = facts.deniedCalls.filter(fact => fact.call.turnId === input.turnId && sameCall(fact.call));
   if (denied.length > 0) return block('用户已拒绝本轮相同调用，不重复请求审批。', denied.map(fact => fact.sourceEventIndex));
   if (boundary !== 'read-only') {
     const ancestry = projectRecoveryAncestry(events, input.turnId);
     const succeeded = facts.successfulCalls.filter(fact => ancestry.turnIds.includes(fact.call.turnId)
-      && fact.call.boundary !== 'read-only' && fact.call.boundary !== 'not-executed' && sameCall(fact.call));
+      && fact.call.payload.boundary !== 'read-only' && fact.call.payload.boundary !== 'not-executed' && sameCall(fact.call));
     if (succeeded.length > 0) return block('本任务相同外部操作已完成，请使用已有结果，不重复执行。', succeeded.map(fact => fact.sourceEventIndex));
   }
   return { boundary };
 }
 
-const toolCallKey = (event: { readonly turnId: string; readonly stepId: string; readonly toolCallId: string }) =>
-  `${event.turnId}\u0000${event.stepId}\u0000${event.toolCallId}`;
-
 function precedingCall(source: Extract<PlanEvidenceSource, { readonly type: 'tool.result' }>, events: readonly SessionEvent[]) {
   const sourceIndex = events.indexOf(source);
   for (let index = sourceIndex - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (event?.type === 'tool.called' && toolCallKey(event) === toolCallKey(source)) return event;
+    if (event?.type === 'tool.called' && event.itemId === source.itemId) return event;
   }
   return undefined;
 }
 
 function successOutput(source: Extract<PlanEvidenceSource, { readonly type: 'tool.result' }>): unknown {
-  return source.result.status === 'success' ? source.result.output : undefined;
+  return source.payload.result.status === 'success' ? source.payload.result.output : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -81,16 +78,16 @@ function allDelegateChildrenCompleted(output: unknown): boolean {
  */
 export const qualifyTaskToolEvidence: QualifyToolEvidence = (source, events) => {
   if (source.type === 'effect.outcome.verified') {
-    return source.scope === 'entire-call' && source.outcome === 'completed'
-      ? { eligible: true, label: source.evidence.description }
-      : { eligible: false, label: source.evidence.description };
+    return source.payload.scope === 'entire-call' && source.payload.outcome === 'completed'
+      ? { eligible: true, label: source.payload.evidence.description }
+      : { eligible: false, label: source.payload.evidence.description };
   }
-  if (source.result.status !== 'success') return { eligible: false, label: '工具执行失败' };
+  if (source.payload.result.status !== 'success') return { eligible: false, label: '工具执行失败' };
 
   const call = precedingCall(source, events);
   if (call === undefined) return { eligible: false, label: '工具调用来源未确认' };
   const output = successOutput(source);
-  switch (call.name) {
+  switch (call.payload.name) {
     case 'update_plan':
       return { eligible: false, label: '计划已更新，未证明业务步骤完成' };
     case 'delegate_tasks':
@@ -152,10 +149,10 @@ export function projectAgentTaskState(events: readonly SessionEvent[], turnId: T
   const unknownEffects = projectRecoveryFacts(events).unknownEffects.map((fact) => ({
     sourceEventIndex: fact.sourceEventIndex,
     source: fact.source.type === 'tool.called' ? 'tool' as const : 'host' as const,
-    label: fact.source.type === 'tool.called' ? fact.source.name : fact.source.operation,
+    label: fact.source.type === 'tool.called' ? fact.source.payload.name : fact.source.payload.operation,
     description: fact.source.type === 'tool.called'
-      ? `工具 ${fact.source.name} 的外部效果尚未确认。`
-      : fact.source.description,
+      ? `工具 ${fact.source.payload.name} 的外部效果尚未确认。`
+      : fact.source.payload.description,
   }));
   return {
     rootTurnId: ancestry.rootTurnId,

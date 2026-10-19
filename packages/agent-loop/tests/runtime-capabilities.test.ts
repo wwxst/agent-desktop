@@ -65,7 +65,7 @@ describe('current model request and commentary contracts', () => {
     const current = agent({ complete });
     await expect(runTurn(current, '持续工作')).rejects.toMatchObject({ name: 'StepBudgetError', message: '任务已达到模型步骤上限，尚未完成。' });
     expect(complete).toHaveBeenCalledTimes(64);
-    expect(current.session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorName: 'StepBudgetError' });
+    expect(current.session.events().at(-1)).toMatchObject({ type: 'turn.failed', payload: { errorName: 'StepBudgetError' } });
     expect(current.session.events().filter(event => event.type === 'step.completed')).toHaveLength(64);
   });
   it('counts unknown tool attempts toward the default 128 calls without replaying successes', async () => {
@@ -77,6 +77,6 @@ describe('current model request and commentary contracts', () => {
     expect(complete).toHaveBeenCalledOnce();
     expect(current.session.events().filter(event => event.type === 'tool.called')).toHaveLength(128);
     expect(current.session.events().filter(event => event.type === 'tool.result')).toHaveLength(128);
-    expect(current.session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorName: 'ToolBudgetError' });
+    expect(current.session.events().at(-1)).toMatchObject({ type: 'turn.failed', payload: { errorName: 'ToolBudgetError' } });
   });
 });

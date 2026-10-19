@@ -62,7 +62,7 @@ describe('AgentRuntime', () => {
     });
     expect(runtime.cancelTurn('window-closed')).toBe(true);
     await expect(task).rejects.toMatchObject({ name: 'AbortError', reason: 'window-closed' });
-    expect(session.events().at(-1)).toMatchObject({ type: 'turn.cancelled', reason: 'window-closed' });
+    expect(session.events().at(-1)).toMatchObject({ type: 'turn.cancelled', payload: { reason: 'window-closed' } });
     expect(runtime.cancelTurn()).toBe(false);
   });
 
@@ -121,12 +121,28 @@ describe('AgentRuntime', () => {
     });
     const published = notifications.flatMap(event => event.type === 'session.events' ? [...event.events] : []);
     expect(published).toEqual(session.events());
+    expect(published.map(event => event.sequence)).toEqual(published.map((_event, index) => index + 1));
+    expect(published.every(event => event.sessionId === session.id)).toBe(true);
+    for (const batch of notifications) if (batch.type === 'session.events') {
+      expect(batch.startSequence).toBe(batch.events[0]!.sequence);
+    }
     expect(notifications.filter(event => event.type === 'runtime.state').map(event => event.state.phase))
       .toEqual(expect.arrayContaining(['starting', 'waiting_for_approval', 'waiting_for_input', 'running', 'idle']));
     const count = notifications.length;
     unsubscribe();
     await runtime.submitUserMessage(agent, '后续');
     expect(notifications).toHaveLength(count);
+    // 重建 Runtime 后从持久化序号继续，只发布本次新增的完整事实。
+    const restoredSession = new InMemorySession(session.events());
+    const restoredRuntime = new AgentRuntime(restoredSession);
+    const restoredNotifications: AgentRuntimeEvent[] = [];
+    restoredRuntime.subscribe(event => restoredNotifications.push(event));
+    const nextSequence = session.events().at(-1)!.sequence + 1;
+    await restoredRuntime.submitUserMessage({ ...agent, session: restoredSession }, '恢复后继续');
+    const restoredFacts = restoredNotifications.flatMap(event => event.type === 'session.events' ? [...event.events] : []);
+    expect(restoredFacts[0]!.sequence).toBe(nextSequence);
+    expect(restoredFacts.every(event => event.sessionId === restoredSession.id)).toBe(true);
+    expect(restoredFacts).toEqual(restoredSession.events().slice(session.events().length));
   });
 
   it('resumes from persisted facts with a new Turn and does not replay the old call', async () => {
@@ -139,7 +155,7 @@ describe('AgentRuntime', () => {
     const result = await runtime.resumeTurn(agent, '继续', { sourceTurnId, mode: 'continue' });
     expect(result.turnId).not.toBe(sourceTurnId);
     expect(session.events().filter(event => event.type === 'turn.recovery.started')).toEqual([
-      { type: 'turn.recovery.started', turnId: result.turnId, sourceTurnId, mode: 'continue' },
+      { sessionId: session.id, itemId: `turn:${result.turnId}`, sequence: 7, timestamp: expect.any(String), type: 'turn.recovery.started', turnId: result.turnId, payload: { sourceTurnId, mode: 'continue' } },
     ]);
     await expect(runtime.resumeTurn(agent, '重复继续', { sourceTurnId, mode: 'continue' })).rejects.toThrow('没有后继');
     expect(complete).toHaveBeenCalledTimes(2);
@@ -162,7 +178,7 @@ describe('AgentRuntime', () => {
     const { runtime, agent, session } = fixture();
     await expect(runtime.startPreparedTurn(prepareTurnStart('准备'), async () => { throw new Error('prepare failed'); }))
       .rejects.toThrow('prepare failed');
-    expect(session.events().at(-1)).toMatchObject({ type: 'turn.failed', errorMessage: 'prepare failed' });
+    expect(session.events().at(-1)).toMatchObject({ type: 'turn.failed', payload: { errorMessage: 'prepare failed' } });
     const wrong: Agent = { ...agent, session: new InMemorySession() };
     await expect(runtime.submitUserMessage(wrong, '错误会话')).rejects.toThrow('同一个 Session');
     expect(wrong.session.events()).toEqual([]);
@@ -171,7 +187,7 @@ describe('AgentRuntime', () => {
   it('returns the host error projection if preparation already saved a terminal fact', async () => {
     const { runtime, session } = fixture();
     await expect(runtime.startPreparedTurn(prepareTurnStart('准备'), async context => {
-      session.append({ type: 'turn.failed', turnId: context.turnId, errorName: 'Error', errorMessage: 'host preparation' });
+      session.append({ type: 'turn.failed', turnId: context.turnId, payload: { errorName: 'Error', errorMessage: 'host preparation' } });
       return { status: 'error', errorMessage: 'host preparation' };
     })).resolves.toEqual({ status: 'error', errorMessage: 'host preparation' });
     expect(session.events().filter(event => event.type === 'turn.failed')).toHaveLength(1);

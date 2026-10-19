@@ -18,25 +18,25 @@ function outputEvents(
   status: 'success' | 'error',
 ): SessionEvent[] {
   const toolCallId = callId as ToolCallId;
-  return [
+  return [...new InMemorySession([], 'session').appendMany([
     {
       type: 'tool.called',
       turnId,
-      stepId,
+      payload: { stepId,
       toolCallId,
       name: 'trim_video',
-      input: { inputPath: 'input.mp4', outputPath, start: 0, duration: 4 },
+      input: { inputPath: 'input.mp4', outputPath, start: 0, duration: 4 } },
     },
     {
       type: 'tool.result',
       turnId,
-      stepId,
+      payload: { stepId,
       toolCallId,
       result: status === 'success'
         ? { status: 'success', output: `Video created: ${outputPath}`, artifacts: [artifact(outputPath)] }
-        : { status: 'error', message: 'FFmpeg failed' },
+        : { status: 'error', message: 'FFmpeg failed' } },
     },
-  ];
+  ])];
 }
 
 describe('desktop agent task', () => {
@@ -148,24 +148,24 @@ describe('desktop agent task', () => {
   it('does not expose extracted speech audio as a completed video artifact', () => {
     const audioCallId = 'speech-audio' as ToolCallId;
     const videoCallId = 'final-video' as ToolCallId;
-    const events: SessionEvent[] = [
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: audioCallId,
         name: 'extract_audio',
-        input: { videoPath: 'D:\\videos\\input.mp4', outputPath: 'D:\\videos\\speech.wav' },
+        input: { videoPath: 'D:\\videos\\input.mp4', outputPath: 'D:\\videos\\speech.wav' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: audioCallId,
-        result: { status: 'success', output: 'Audio created: D:\\videos\\speech.wav' },
+        result: { status: 'success', output: 'Audio created: D:\\videos\\speech.wav' } },
       },
       ...outputEvents(videoCallId, 'D:\\videos\\final.mp4', 'success'),
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([
       { toolCallId: videoCallId, path: 'D:\\videos\\final.mp4' },
@@ -199,59 +199,59 @@ describe('desktop agent task', () => {
   it('does not treat a cancelled call or an output directory as an artifact', () => {
     const cancelledCallId = 'cancelled' as ToolCallId;
     const framesCallId = 'frames' as ToolCallId;
-    const events: SessionEvent[] = [
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: cancelledCallId,
         name: 'trim_video',
-        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\half.mp4', start: 0, duration: 4 },
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\half.mp4', start: 0, duration: 4 } },
       },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: framesCallId,
         name: 'extract_video_frames',
-        input: { videoPath: 'input.mp4', outputDir: 'D:\\videos\\frames' },
+        input: { videoPath: 'input.mp4', outputDir: 'D:\\videos\\frames' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: framesCallId,
-        result: { status: 'success', output: 'frames' },
+        result: { status: 'success', output: 'frames' } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([]);
   });
 
   it('takes the artifacts reported by a successful result as the authoritative fact', () => {
     const writeCallId = 'write' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: writeCallId,
         name: 'write_text_file',
-        input: { filePath: 'D:\\videos\\剪辑清单.txt', content: '第一段' },
+        input: { filePath: 'D:\\videos\\剪辑清单.txt', content: '第一段' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: writeCallId,
         result: {
           status: 'success',
           output: { filePath: 'D:\\videos\\剪辑清单.txt' },
           artifacts: [artifact('D:\\videos\\剪辑清单.txt')],
-        },
+        } },
       },
-    ];
+    ])];
 
     // 产物来自成功结果自己报告的事实，不从输入形状或磁盘推断。
     expect(findTurnArtifacts(events, turnId)).toEqual([
@@ -261,47 +261,47 @@ describe('desktop agent task', () => {
 
   it('does not infer an artifact from tool input when the successful result reports none', () => {
     const callId = 'legacy-shaped' as ToolCallId;
-    const events: SessionEvent[] = [
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
         name: 'trim_video',
-        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\unreported.mp4' },
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\unreported.mp4' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
-        result: { status: 'success', output: 'Video created: D:\\videos\\unreported.mp4' },
+        result: { status: 'success', output: 'Video created: D:\\videos\\unreported.mp4' } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([]);
   });
 
   it('keeps every file one result reported, in the order the tool reported them', () => {
     const callId = 'multi' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
         name: 'write_text_file',
-        input: { filePath: 'D:\\videos\\a.txt' },
+        input: { filePath: 'D:\\videos\\a.txt' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
-        result: { status: 'success', output: {}, artifacts: [artifact('D:\\videos\\b.txt'), artifact('D:\\videos\\a.txt')] },
+        result: { status: 'success', output: {}, artifacts: [artifact('D:\\videos\\b.txt'), artifact('D:\\videos\\a.txt')] } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([
       { toolCallId: callId, path: 'D:\\videos\\b.txt' },
@@ -311,29 +311,29 @@ describe('desktop agent task', () => {
 
   it('does not double-count a media call that reports artifacts and also has an output path in its input', () => {
     const callId = 'trim' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
         name: 'trim_video',
-        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\trimmed.mp4' },
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\trimmed.mp4' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
         // 新事件里同一个文件既在输入里又在 artifacts 里：只能登记一次。
         result: {
           status: 'success',
           output: 'Video created: D:\\videos\\trimmed.mp4',
           artifacts: [artifact('D:\\videos\\trimmed.mp4')],
-        },
+        } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([
       { toolCallId: callId, path: 'D:\\videos\\trimmed.mp4' },
@@ -342,59 +342,59 @@ describe('desktop agent task', () => {
 
   it('reports no artifact for a read-only tool', () => {
     const readCallId = 'read' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: readCallId,
         name: 'read_file',
-        input: { filePath: 'D:\\videos\\字幕.srt', startLine: 1 },
+        input: { filePath: 'D:\\videos\\字幕.srt', startLine: 1 } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: readCallId,
-        result: { status: 'success', output: { filePath: 'D:\\videos\\字幕.srt', lines: [] } },
+        result: { status: 'success', output: { filePath: 'D:\\videos\\字幕.srt', lines: [] } } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([]);
   });
 
   it('does not treat a failed result as creating a file even when it reports artifacts', () => {
     const callId = 'failed-write' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
         name: 'write_text_file',
-        input: { filePath: 'D:\\videos\\半成品.txt' },
+        input: { filePath: 'D:\\videos\\半成品.txt' } },
       },
       {
         type: 'tool.result',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: callId,
-        result: { status: 'error', message: '用户拒绝创建该文件' },
+        result: { status: 'error', message: '用户拒绝创建该文件' } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([]);
   });
 
   it('finds the latest Turn from Session facts so a failed Turn can still be summarized', () => {
     const earlierTurnId = 'turn-earlier' as TurnId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId: earlierTurnId },
-      { type: 'turn.completed', turnId: earlierTurnId },
-      { type: 'turn.started', turnId },
-    ];
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId: earlierTurnId, payload: {} },
+      { type: 'turn.completed', turnId: earlierTurnId, payload: {} },
+      { type: 'turn.started', turnId, payload: {} },
+    ])];
 
     expect(findLatestTurnId(events)).toBe(turnId);
   });
@@ -402,12 +402,12 @@ describe('desktop agent task', () => {
   it('keeps the first successful output visible when a later tool in the same Turn fails', () => {
     const firstCallId = 'first' as ToolCallId;
     const secondCallId = 'second' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
-      { type: 'step.started', turnId, stepId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'step.started', turnId, payload: { stepId } },
       ...outputEvents(firstCallId, 'D:\\videos\\part1.mp4', 'success'),
       ...outputEvents(secondCallId, 'D:\\videos\\part2.mp4', 'error'),
-    ];
+    ])];
 
     // 整轮失败（第二个工具 error）不改变第一份文件已经真实生成的事实。
     expect(findTurnArtifacts(events, turnId)).toEqual([
@@ -418,20 +418,20 @@ describe('desktop agent task', () => {
   it('does not list an in-flight tool when the Turn is cancelled before it finishes', () => {
     const doneCallId = 'done' as ToolCallId;
     const runningCallId = 'running' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId },
-      { type: 'step.started', turnId, stepId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'step.started', turnId, payload: { stepId } },
       ...outputEvents(doneCallId, 'D:\\videos\\done.mp4', 'success'),
       // 取消发生在这一轮的工具执行中：只有 tool.called，没有 tool.result。
       {
         type: 'tool.called',
         turnId,
-        stepId,
+        payload: { stepId,
         toolCallId: runningCallId,
         name: 'trim_video',
-        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\never-finished.mp4' },
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\never-finished.mp4' } },
       },
-    ];
+    ])];
 
     expect(findTurnArtifacts(events, turnId)).toEqual([
       { toolCallId: doneCallId, path: 'D:\\videos\\done.mp4' },
@@ -441,31 +441,31 @@ describe('desktop agent task', () => {
   it('keeps the successful fact of an earlier Turn out of the cancelled Turn summary', () => {
     const earlierTurnId = 'turn-earlier' as TurnId;
     const earlierCallId = 'earlier' as ToolCallId;
-    const events: SessionEvent[] = [
-      { type: 'turn.started', turnId: earlierTurnId },
+    const events: SessionEvent[] = [...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId: earlierTurnId, payload: {} },
       {
         type: 'tool.called',
         turnId: earlierTurnId,
-        stepId,
+        payload: { stepId,
         toolCallId: earlierCallId,
         name: 'trim_video',
-        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\earlier.mp4' },
+        input: { inputPath: 'input.mp4', outputPath: 'D:\\videos\\earlier.mp4' } },
       },
       {
         type: 'tool.result',
         turnId: earlierTurnId,
-        stepId,
+        payload: { stepId,
         toolCallId: earlierCallId,
         result: {
           status: 'success',
           output: 'Video created: D:\\videos\\earlier.mp4',
           artifacts: [artifact('D:\\videos\\earlier.mp4')],
-        },
+        } },
       },
-      { type: 'turn.completed', turnId: earlierTurnId },
-      { type: 'turn.started', turnId },
-      { type: 'step.started', turnId, stepId },
-    ];
+      { type: 'turn.completed', turnId: earlierTurnId, payload: {} },
+      { type: 'turn.started', turnId, payload: {} },
+      { type: 'step.started', turnId, payload: { stepId } },
+    ])];
 
     const latestTurnId = findLatestTurnId(events);
     expect(latestTurnId).toBe(turnId);
@@ -516,24 +516,24 @@ describe('desktop agent task', () => {
   it('reconstructs the next model request from restored Session events', async () => {
     const restoredTurnId = 'turn-restored' as TurnId;
     const restoredStepId = 'step-restored' as StepId;
-    const session = new InMemorySession([
-      { type: 'turn.started', turnId: restoredTurnId },
+    const session = new InMemorySession([...new InMemorySession([], 'session').appendMany([
+      { type: 'turn.started', turnId: restoredTurnId, payload: {} },
       {
         type: 'user.message',
         turnId: restoredTurnId,
-        content: '请记住数字 731。',
+        payload: { content: '请记住数字 731。' },
       },
-      { type: 'step.started', turnId: restoredTurnId, stepId: restoredStepId },
+      { type: 'step.started', turnId: restoredTurnId, payload: { stepId: restoredStepId } },
       {
         type: 'assistant.message',
         turnId: restoredTurnId,
-        stepId: restoredStepId,
+        payload: { stepId: restoredStepId,
         content: '已经记住。',
-        toolCalls: [],
+        toolCalls: [] },
       },
-      { type: 'step.completed', turnId: restoredTurnId, stepId: restoredStepId },
-      { type: 'turn.completed', turnId: restoredTurnId },
-    ]);
+      { type: 'step.completed', turnId: restoredTurnId, payload: { stepId: restoredStepId } },
+      { type: 'turn.completed', turnId: restoredTurnId, payload: {} },
+    ])]);
     let request: ModelRequest | undefined;
     const agent = {
       model: {
